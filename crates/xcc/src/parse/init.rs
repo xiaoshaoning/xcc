@@ -21,6 +21,19 @@ impl Parser<'_> {
         if token.kind == crate::lex::TokenKind::Str {
             // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
             let span = self.span();
+            let spelling = {
+                // The literal's own spelling, before `string_literal` consumes the run.
+                let mut spelling = String::new();
+                let mut ahead = self.at;
+                while let Some(token) = self.tokens().get(ahead).copied() {
+                    if token.kind != crate::lex::TokenKind::Str {
+                        break;
+                    }
+                    spelling.push_str(self.spell(&token));
+                    ahead += 1;
+                }
+                spelling
+            };
             let (literal, bytes) = self.string_literal();
             if let Type::Array { element, count } = *self.types.kind(ty) {
                 // C99 6.7.8p14: an array of character type, which `int` is not even though a
@@ -34,7 +47,31 @@ impl Parser<'_> {
                     return;
                 }
                 match count {
-                    None => self.types.complete_array(ty, bytes + 1),
+                    None => {
+                        self.types.complete_array(ty, bytes + 1);
+                        // Now that the array has a size, a file-scope object gets its bytes.
+                        if self.bytes.is_some() {
+                            match crate::parse::bytes::string_literal_bytes(
+                                &self.types,
+                                ty,
+                                &spelling,
+                            ) {
+                                Some(literal_bytes) => {
+                                    let at = self.offset;
+                                    let end = at + literal_bytes.len();
+                                    if let Some(out) = self.bytes.as_mut() {
+                                        // The array's size came from this literal, so the buffer
+                                        // may still be the empty one it started as.
+                                        if out.len() < end {
+                                            out.resize(end, 0);
+                                        }
+                                        out[at..end].copy_from_slice(&literal_bytes);
+                                    }
+                                }
+                                None => self.bytes = None,
+                            }
+                        }
+                    }
                     Some(count) if count < bytes + 1 => {
                         self.error(
                             span,
@@ -67,6 +104,23 @@ impl Parser<'_> {
         if value.is_none() {
             let span = self.span();
             self.error(span, "expected an initialiser");
+        }
+        // A file-scope object's bytes are written from the same value the type checker sees;
+        // anything that is not a constant clears the buffer rather than leaving zeroes behind.
+        if self.bytes.is_some() {
+            let at = self.offset;
+            let written = value.and_then(|value| {
+                if value.constant.is_none() || value.cir.is_some() {
+                    return None;
+                }
+                crate::parse::bytes::constant_bytes(&self.types, ty, value)
+            });
+            match (self.bytes.as_mut(), written) {
+                (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => {
+                    out[at..at + bytes.len()].copy_from_slice(&bytes);
+                }
+                _ => self.bytes = None,
+            }
         }
     }
 
@@ -189,11 +243,12 @@ impl Parser<'_> {
 
     fn initialize_record(&mut self, record: RecordId, braced: bool) {
         let span = self.span();
-        let members: Vec<(Option<Symbol>, TypeId)> = self
+        let base = self.offset;
+        let members: Vec<(Option<Symbol>, TypeId, usize)> = self
             .types
             .members(record)
             .iter()
-            .map(|member| (member.name, member.ty))
+            .map(|member| (member.name, member.ty, member.offset as usize))
             .collect();
         let mut at = 0;
         let mut first = true;
@@ -218,9 +273,10 @@ impl Parser<'_> {
                     self.error_at_current("expected `=` after a designator");
                 }
             }
-            let Some((_, member)) = members.get(at).copied() else {
+            let Some((_, member, offset)) = members.get(at).copied() else {
                 break;
             };
+            self.offset = base + offset;
             at += 1;
             if self.at_punct("{") {
                 self.brace_initializer(member);
@@ -234,7 +290,7 @@ impl Parser<'_> {
     fn designated_member(
         &mut self,
         span: Span,
-        members: &[(Option<Symbol>, TypeId)],
+        members: &[(Option<Symbol>, TypeId, usize)],
         at: usize,
     ) -> usize {
         self.bump(); // the `.`
@@ -243,7 +299,7 @@ impl Parser<'_> {
                 self.bump();
                 match members
                     .iter()
-                    .position(|(member, _)| *member == Some(token.text))
+                    .position(|(member, _, _)| *member == Some(token.text))
                 {
                     Some(position) => position,
                     None => {
@@ -265,6 +321,24 @@ impl Parser<'_> {
         let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
             return;
         };
+        // A file-scope object's bytes are written here, at the offset the traversal put the
+        // cursor at. A leaf that cannot be written clears the buffer: a partly-filled object
+        // would be a wrong program, not a smaller one.
+        if self.bytes.is_some() {
+            let at = self.offset;
+            match crate::parse::bytes::constant_bytes(&self.types, ty, value) {
+                Some(bytes) => {
+                    if let Some(out) = self.bytes.as_mut() {
+                        if at + bytes.len() <= out.len() {
+                            out[at..at + bytes.len()].copy_from_slice(&bytes);
+                        } else {
+                            self.bytes = None;
+                        }
+                    }
+                }
+                None => self.bytes = None,
+            }
+        }
         if self.types.is_error(ty) || self.types.is_error(value.ty) {
             return;
         }

@@ -62,6 +62,8 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         globals: Vec::new(),
         body: None,
         last_declared: None,
+        bytes: None,
+        offset: 0,
         targets: Vec::new(),
     };
     parser.translation_unit();
@@ -198,6 +200,12 @@ struct Parser<'a> {
     body: Option<Body>,
     /// The name the last declarator declared, for a definition that follows it.
     last_declared: Option<Symbol>,
+    /// Where the bytes of a file-scope initialiser are being written, when one is: the same
+    /// traversal that checks an initialiser fills this, so the bytes and the diagnostics come
+    /// from one reading of the source (ADR-004).
+    bytes: Option<Vec<u8>>,
+    /// The offset into `bytes` that the initialiser being read is at.
+    offset: usize,
     /// Where `break` and `continue` go, innermost last: the block after the loop, and the block
     /// the next iteration starts at.
     targets: Vec<(cir::Block, cir::Block)>,
@@ -470,12 +478,17 @@ impl Parser<'_> {
                 let span = self.span();
                 if self.in_body() {
                     self.initializer(ty);
-                } else {
-                    self.not_implemented(
-                        span,
-                        "a file-scope initialiser is not lowered yet (the bytes walker)",
-                    );
-                    self.initializer(ty);
+                } else if let Some(bytes) = self.initializer_bytes(ty) {
+                    if let Some(name) = name {
+                        self.globals.push(cir::Global {
+                            name,
+                            ty,
+                            defined: true,
+                            init: Some(bytes),
+                            external: true,
+                            span,
+                        });
+                    }
                 }
             }
             last = Some(ty);
@@ -505,6 +518,25 @@ impl Parser<'_> {
             .fundamental("char")
             .unwrap_or_else(|| self.types.error());
         (self.types.array(char, Some(bytes + 1)), bytes)
+    }
+
+    /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value
+    /// in it is not something this can write.
+    ///
+    /// The traversal is `initializer`'s - brace elision, designators, and every diagnostic are
+    /// unchanged - with `bytes` set so the leaves land at their offsets. There is no second
+    /// reader: that was tried twice and failed both times (ADR-004).
+    fn initializer_bytes(&mut self, ty: TypeId) -> Option<Vec<u8>> {
+        // `char s[] = "hi"` has no size until the initialiser gives it one, so the buffer grows
+        // as the traversal learns; it is cut to the type's size at the end.
+        let size = self.types.size_of(ty).map(|size| size as usize);
+        self.bytes = Some(vec![0u8; size.unwrap_or(0)]);
+        self.offset = 0;
+        self.initializer(ty);
+        let mut bytes = self.bytes.take()?;
+        let size = self.types.size_of(ty).map(|size| size as usize)?;
+        bytes.resize(size, 0);
+        Some(bytes)
     }
 
     /// How a type is written in a diagnostic, with its tags: `pointer to struct Point`. The
@@ -1181,20 +1213,26 @@ block0 (entry)(v0: int, v1: int):
         let text = cir::dump::dump(&unit, &names);
         assert!(text.contains("global x: int"), "{text}");
         assert!(text.contains("global y: long long"), "{text}");
-        // A tentative definition is defined, and a file-scope initialiser is still refused
-        // because writing its bytes is the list walker's job.
+        // A tentative definition is defined with no bytes; an initialiser fills them, and the
+        // dump says how many the object has.
         assert_eq!(unit.globals.len(), 2);
-        let (unit, _, diagnostics) = module("int x = 5;");
+        let (unit, names, diagnostics) =
+            module("int x = 5; char s[] = \"hi\"; int a[3] = {1, 2, 3};");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let text = cir::dump::dump(&unit, &names);
+        assert!(text.contains("global x: int (4 bytes)"), "{text}");
         assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("not lowered yet")),
-            "an initialiser says it is not lowered yet"
+            text.contains("global s: array[3] of char (3 bytes)"),
+            "{text}"
         );
         assert!(
-            unit.globals.is_empty(),
-            "and no global claims to have bytes"
+            text.contains("global a: array[3] of int (12 bytes)"),
+            "{text}"
         );
+        // A value that is not a constant clears the buffer: no global claims bytes it lacks.
+        let (unit, names, _) = module("int f(void) { return 1; } int y = f();");
+        let text = cir::dump::dump(&unit, &names);
+        assert!(!text.contains("global y:"), "{text}");
     }
 
     #[test]
