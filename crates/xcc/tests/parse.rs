@@ -444,10 +444,9 @@ fn every_corpus_program_is_read_without_panicking_or_surprising_itself() {
             continue; // correct C99 behaviour on a program that is not C99
         }
         let complaints = check(&source);
-        if complaints
-            .iter()
-            .all(|message| message.contains("code generator"))
-        {
+        if complaints.iter().all(|message| {
+            message.contains("code generator") || message.contains("not lowered yet")
+        }) {
             parsed += 1;
         }
         // Every refusal must be a *known* one: something M3 has not built yet. Anything else
@@ -458,6 +457,7 @@ fn every_corpus_program_is_read_without_panicking_or_surprising_itself() {
         // is worth adding the first time it is needed for anything else.
         for complaint in &complaints {
             let known = complaint.contains("not implemented yet (M3.")
+                || complaint.contains("not lowered yet")
                 || complaint.contains("code generator")
                 || complaint.contains("further diagnostics not shown");
             if !known {

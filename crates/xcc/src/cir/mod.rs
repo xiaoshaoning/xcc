@@ -45,9 +45,9 @@ pub struct BlockData {
     pub span: Span,
 }
 
-/// A block handle: an index into [`Func::blocks`].
+/// A block handle: an index into [`Func::blocks`]. Only a builder makes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Block(u32);
+pub struct Block(pub(crate) u32);
 
 /// A binary operation on two values of one type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,6 +433,11 @@ impl Func {
         &self.blocks[block.0 as usize]
     }
 
+    /// Whether a block already ends.
+    pub fn terminated(&self, block: Block) -> bool {
+        self.blocks[block.0 as usize].term.is_some()
+    }
+
     /// Where the entry block is.
     pub fn entry_span(&self) -> Span {
         self.blocks[self.entry.0 as usize].span
@@ -456,6 +461,20 @@ impl<'a> Builder<'a> {
     pub fn new(func: &'a mut Func) -> Self {
         let current = func.entry;
         Self { func, current }
+    }
+
+    /// A builder that continues `block`, which must not end yet. This is how a front end that
+    /// keeps ownership of the function between statements comes back to it.
+    pub fn at(func: &'a mut Func, block: Block) -> Self {
+        assert!(
+            func.blocks[block.0 as usize].term.is_none(),
+            "block {} is already terminated",
+            block.0
+        );
+        Self {
+            func,
+            current: block,
+        }
     }
 
     /// The block being filled.

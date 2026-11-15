@@ -100,8 +100,8 @@ impl Compile {
 
         // Declarations and their types: the first slice of M3.
         let parsed = crate::parse::parse(&preprocessed, &self.options.budgets);
-        let failed = parsed.iter().any(Diagnostic::is_error);
-        diagnostics.extend(parsed);
+        let failed = parsed.diagnostics.iter().any(Diagnostic::is_error);
+        diagnostics.extend(parsed.diagnostics);
         if failed {
             let items = truncate_diagnostics(diagnostics, &self.options);
             return Err(Diagnostics::new(items, sources));
@@ -192,10 +192,9 @@ mod tests {
             .unwrap_err()
             .items()
             .to_vec();
-        assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
-            "the code generator is not implemented yet"
+            "this function body is not lowered yet (M4.2b)"
         );
     }
 

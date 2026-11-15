@@ -87,7 +87,19 @@ impl Parser<'_> {
             self.error(span, format!("cannot assign {from} to {to}"));
             return Some(Value::temporary(left.ty));
         }
-        Some(Value::temporary(left.ty))
+        let converted = self.convert(right, left.ty, span);
+        match (left.place, converted.cir) {
+            (Some(place), Some(value)) => {
+                self.emit(|builder| builder.store(place, value, span));
+                Some(Value::code(left.ty, value))
+            }
+            (None, _) if self.in_body() && !self.types.is_error(left.ty) => {
+                // A place the emitter cannot name yet: a global, a member, an element.
+                self.not_lowered(span, "this kind of assignment");
+                Some(Value::temporary(left.ty))
+            }
+            _ => Some(Value::new(left.ty, converted.constant, false)),
+        }
     }
 
     pub(super) fn conditional_expression(&mut self) -> Option<Value> {
@@ -112,11 +124,7 @@ impl Parser<'_> {
             (None, Some(f)) if condition.constant == Some(0) => Some(f),
             _ => None,
         };
-        Some(Value {
-            ty,
-            constant,
-            lvalue: false,
-        })
+        Some(Value::new(ty, constant, false))
     }
 
     /// The type of `a ? b : c` (C99 6.5.15): the common type of the two arms, which for
@@ -221,11 +229,7 @@ impl Parser<'_> {
         match operator {
             "+" | "-" => {
                 if arithmetic {
-                    return Value {
-                        ty: common(),
-                        constant: folded(left, right),
-                        lvalue: false,
-                    };
+                    return Value::new(common(), folded(left, right), false);
                 }
                 // `pointer + integer` and `integer + pointer` are the same expression; adding
                 // two pointers is not (and subtracting them is).
@@ -259,11 +263,7 @@ impl Parser<'_> {
             }
             "*" | "/" => {
                 if arithmetic {
-                    return Value {
-                        ty: common(),
-                        constant: folded(left, right),
-                        lvalue: false,
-                    };
+                    return Value::new(common(), folded(left, right), false);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -276,11 +276,7 @@ impl Parser<'_> {
                         } else {
                             self.promote(left.ty)
                         };
-                    return Value {
-                        ty,
-                        constant: folded(left, right),
-                        lvalue: false,
-                    };
+                    return Value::new(ty, folded(left, right), false);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -290,11 +286,11 @@ impl Parser<'_> {
                     || (self.types.is_pointer(left.ty) && right.constant == Some(0))
                     || (self.types.is_pointer(right.ty) && left.constant == Some(0));
                 if comparable {
-                    return Value {
-                        ty: self.types.fundamental("int").unwrap(),
-                        constant: folded(left, right),
-                        lvalue: false,
-                    };
+                    return Value::new(
+                        self.types.fundamental("int").unwrap(),
+                        folded(left, right),
+                        false,
+                    );
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -310,11 +306,7 @@ impl Parser<'_> {
                     ("||", Some(_), Some(b)) => Some(i64::from(b != 0)),
                     _ => None,
                 };
-                Value {
-                    ty: int,
-                    constant,
-                    lvalue: false,
-                }
+                Value::new(int, constant, false)
             }
             other => {
                 self.error(
@@ -386,36 +378,32 @@ impl Parser<'_> {
                             self.error(span, format!("unary `-` needs a number, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        Some(Value {
-                            ty: self.promote(ty),
-                            constant: value.constant.map(|value| value.wrapping_neg()),
-                            lvalue: false,
-                        })
+                        Some(Value::new(
+                            self.promote(ty),
+                            value.constant.map(|value| value.wrapping_neg()),
+                            false,
+                        ))
                     }
-                    "+" => Some(Value {
-                        ty: self.promote(ty),
-                        constant: value.constant,
-                        lvalue: false,
-                    }),
+                    "+" => Some(Value::new(self.promote(ty), value.constant, false)),
                     "~" => {
                         if !self.types.is_integer(ty) {
                             let ty = self.describe(ty);
                             self.error(span, format!("`~` needs an integer, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        Some(Value {
-                            ty: self.promote(ty),
-                            constant: value.constant.map(|value| !value),
-                            lvalue: false,
-                        })
+                        Some(Value::new(
+                            self.promote(ty),
+                            value.constant.map(|value| !value),
+                            false,
+                        ))
                     }
                     _ => {
                         self.require_scalar(&value, "`!`");
-                        Some(Value {
-                            ty: self.types.fundamental("int").unwrap(),
-                            constant: value.constant.map(|value| i64::from(value == 0)),
-                            lvalue: false,
-                        })
+                        Some(Value::new(
+                            self.types.fundamental("int").unwrap(),
+                            value.constant.map(|value| i64::from(value == 0)),
+                            false,
+                        ))
                     }
                 }
             }
@@ -442,11 +430,7 @@ impl Parser<'_> {
                     self.error(span, format!("`*` needs a pointer, not {ty}"));
                     return Some(Value::temporary(self.types.error()));
                 }
-                Some(Value {
-                    ty: self.types.pointee(value.ty),
-                    constant: None,
-                    lvalue: true,
-                })
+                Some(Value::new(self.types.pointee(value.ty), None, true))
             }
             "++" | "--" => {
                 self.bump();
@@ -553,19 +537,11 @@ impl Parser<'_> {
         match self.types.kind(base.ty) {
             Type::Pointer(element) => {
                 let element = *element;
-                Value {
-                    ty: element,
-                    constant: None,
-                    lvalue: true,
-                }
+                Value::new(element, None, true)
             }
             Type::Array { element, .. } => {
                 let element = *element;
-                Value {
-                    ty: element,
-                    constant: None,
-                    lvalue: true,
-                }
+                Value::new(element, None, true)
             }
             _ => {
                 let ty = self.describe(base.ty);
@@ -660,7 +636,19 @@ impl Parser<'_> {
             crate::lex::TokenKind::Number => {
                 self.bump();
                 let spelling = self.spell(&token).to_owned();
-                Some(self.number_value(&spelling, span))
+                let value = self.number_value(&spelling, span);
+                // A constant is a value like any other: `int x = 5;` stores one.
+                match (value.constant, self.types.is_integer(value.ty)) {
+                    (Some(bits), true) => {
+                        let emitted =
+                            self.emit(|builder| builder.constant(value.ty, bits as u64, span));
+                        Some(match emitted {
+                            Some(cir) => Value::code(value.ty, cir),
+                            None => value,
+                        })
+                    }
+                    _ => Some(value),
+                }
             }
             crate::lex::TokenKind::Chr => {
                 self.bump();
@@ -682,11 +670,7 @@ impl Parser<'_> {
                 // A string literal has an array type of its own (C99 6.2.5p20), which is what
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
                 let (ty, _) = self.string_literal();
-                Some(Value {
-                    ty,
-                    constant: None,
-                    lvalue: true,
-                })
+                Some(Value::new(ty, None, true))
             }
             crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
                 // `(int)x` is a cast; `(x)` groups.
@@ -755,11 +739,7 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         }
         match self.types.member(record, token.text) {
-            Some(member) => Value {
-                ty: member.ty,
-                constant: None,
-                lvalue: base.lvalue || arrow,
-            },
+            Some(member) => Value::new(member.ty, None, base.lvalue || arrow),
             None => {
                 let name = self.spell_of(token.text).to_owned();
                 self.error(span, format!("`{name}` is not a member"));
@@ -772,11 +752,7 @@ impl Parser<'_> {
         if self.at_punct("{") {
             // `(struct P){1, 2}`: an unnamed object with the type the cast named.
             self.brace_initializer(to);
-            return Value {
-                ty: to,
-                constant: None,
-                lvalue: true,
-            };
+            return Value::new(to, None, true);
         }
         let Some(from) = self.unary_expression() else {
             return Value::temporary(to);
@@ -790,11 +766,7 @@ impl Parser<'_> {
             self.error(span, format!("cannot convert {from} to {to}"));
             return Value::temporary(self.types.error());
         }
-        Value {
-            ty: to,
-            constant: from.constant,
-            lvalue: false,
-        }
+        Value::new(to, from.constant, false)
     }
 
     /// A number literal: an integer is folded and typed by its suffix and magnitude (C99
@@ -857,20 +829,20 @@ impl Parser<'_> {
         };
         match entry.kind {
             Kind::EnumConst(value) => Value::constant(entry.ty, value),
-            Kind::Function => Value {
-                ty: entry.ty,
-                constant: None,
-                lvalue: false,
-            },
+            Kind::Function => Value::new(entry.ty, None, false),
             Kind::Typedef => {
                 let spelling = self.spell_of(name).to_owned();
                 self.error(span, format!("`{spelling}` is a type, not a value"));
                 Value::temporary(self.types.error())
             }
-            Kind::Variable => Value {
-                ty: entry.ty,
-                constant: None,
-                lvalue: true,
+            Kind::Variable => match entry.storage {
+                // A variable with a slot is a load from it; one without is a place the emitter
+                // cannot name yet (a global, or a member), which its own statement will refuse.
+                Some(slot) => {
+                    let (ty, slot) = (entry.ty, slot);
+                    self.load_variable(ty, slot, span)
+                }
+                None => Value::new(entry.ty, None, true),
             },
         }
     }
@@ -917,26 +889,66 @@ impl Parser<'_> {
 
     /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),
     /// so the block is parsed without pushing a scope of its own.
-    pub(super) fn function_body(&mut self, result: TypeId) {
+    pub(super) fn function_body(&mut self, name: Option<Symbol>, result: TypeId) {
         self.function_result = Some(result);
         self.loops = 0;
         self.switches.clear();
         self.labels.clear();
         self.gotos.clear();
+        self.targets.clear();
+        let span = self.span();
+        let params = std::mem::take(&mut self.last_parameters);
+        let Some(name) = name else {
+            self.block_body();
+            self.function_result = None;
+            return;
+        };
+        let func = cir::Func::new(name, result, span);
+        let param_types: Vec<TypeId> = params.iter().map(|(_, ty, _)| *ty).collect();
+        let mut body = Body {
+            current: func.entry,
+            func,
+        };
+        body.builder().add_params(&param_types);
+        let param_values: Vec<cir::Value> = body.func.params().to_vec();
+        self.body = Some(body);
+
+        let errors_before = self.error_count();
         self.symbols.push();
-        for (name, ty, span) in std::mem::take(&mut self.last_parameters) {
-            if let Some(name) = name {
-                let _ = self.symbols.declare(
-                    name,
-                    Entry {
-                        ty,
-                        kind: Kind::Variable,
-                        span,
-                    },
-                );
+        for (position, (name, ty, span)) in params.into_iter().enumerate() {
+            let pointer = self.pointer_to(ty);
+            // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and the value that
+            // arrives is stored into it.
+            if let Some(slot) = self.emit(|builder| builder.slot(ty, pointer, span)) {
+                if let Some(value) = param_values.get(position) {
+                    self.emit(|builder| builder.store(slot, *value, span));
+                }
+                if let Some(name) = name {
+                    let _ = self.symbols.declare(
+                        name,
+                        Entry {
+                            ty,
+                            kind: Kind::Variable,
+                            span,
+                            storage: Some(slot),
+                        },
+                    );
+                }
             }
         }
         self.block_body();
+        // A function that falls off its end returns, and C says what that return is.
+        let terminated = self
+            .body
+            .as_ref()
+            .is_none_or(|body| body.func.terminated(body.current));
+        if !terminated {
+            if matches!(self.types.kind(result), Type::Void) {
+                self.emit(|builder| builder.ret(None, span));
+            } else {
+                self.emit(|builder| builder.unreachable(span));
+            }
+        }
         let gotos = std::mem::take(&mut self.gotos);
         for (name, span) in gotos {
             if !self.labels.contains_key(&name) {
@@ -946,5 +958,23 @@ impl Parser<'_> {
         }
         self.symbols.pop();
         self.function_result = None;
+        // The body is dropped, not lowered: the emitter does not express C yet. It is taken out
+        // of the parser so the next function starts clean.
+        let _body = self.body.take().expect("this function's body");
+        // M4.2's plumbing is here - a module, a body, slots, conversions, a verifier - but the
+        // emitter does not yet express C's expressions and statements, so a body whose code
+        // would be missing pieces is refused rather than half-lowered.
+        if self.error_count() == errors_before {
+            self.not_implemented(span, "this function body is not lowered yet (M4.2b)");
+        }
+    }
+
+    /// How many errors have been reported: enough to tell whether a function body was read
+    /// without one.
+    fn error_count(&self) -> usize {
+        self.diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.is_error())
+            .count()
     }
 }

@@ -29,21 +29,37 @@ impl Parser<'_> {
         let word = self.peek().map(|token| self.spell(token).to_owned());
         match word.as_deref() {
             Some("if") => {
+                if self.in_body() {
+                    let span = self.span();
+                    self.not_lowered(span, "`if`");
+                }
                 self.if_statement();
                 self.leave_nesting();
                 return;
             }
             Some("while") => {
+                if self.in_body() {
+                    let span = self.span();
+                    self.not_lowered(span, "`while`");
+                }
                 self.while_statement();
                 self.leave_nesting();
                 return;
             }
             Some("do") => {
+                if self.in_body() {
+                    let span = self.span();
+                    self.not_lowered(span, "`do`");
+                }
                 self.do_statement();
                 self.leave_nesting();
                 return;
             }
             Some("for") => {
+                if self.in_body() {
+                    let span = self.span();
+                    self.not_lowered(span, "`for`");
+                }
                 self.for_statement();
                 self.leave_nesting();
                 return;
@@ -59,6 +75,8 @@ impl Parser<'_> {
                 return;
             }
             Some("switch") => {
+                let span = self.span();
+                self.not_lowered(span, "`switch`");
                 self.switch_statement();
                 self.leave_nesting();
                 return;
@@ -74,6 +92,8 @@ impl Parser<'_> {
                 return;
             }
             Some("goto") => {
+                let span = self.span();
+                self.not_lowered(span, "`goto`");
                 self.goto_statement();
                 self.leave_nesting();
                 return;
@@ -228,6 +248,20 @@ impl Parser<'_> {
         }
     }
 
+    /// A variable read: the value in its slot.
+    pub(super) fn load_variable(&mut self, ty: TypeId, slot: cir::Value, span: Span) -> Value {
+        match self.emit(|builder| builder.load(slot, ty, span)) {
+            Some(value) => Value {
+                ty,
+                constant: None,
+                lvalue: true,
+                cir: Some(value),
+                place: Some(slot),
+            },
+            None => Value::new(ty, None, true),
+        }
+    }
+
     pub(super) fn return_statement(&mut self) {
         let span = self.span();
         self.bump();
@@ -265,6 +299,13 @@ impl Parser<'_> {
         if !self.eat(";") {
             self.error_at_current("expected `;` after `return`");
             self.skip_until(&[";"], true);
+        }
+        let span = self.span();
+        if let Some(value) = value {
+            let value = self.convert(value, result, span);
+            if let Some(cir) = value.cir {
+                self.emit(|builder| builder.ret(Some(cir), span));
+            }
         }
     }
 

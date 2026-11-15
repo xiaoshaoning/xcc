@@ -36,6 +36,9 @@ pub(crate) struct Entry {
     pub kind: Kind,
     /// Where it was declared, for the diagnostic about a redeclaration.
     pub span: Span,
+    /// The address of the variable, when it has one in the function being built: a slot pointer
+    /// from `cir`. Declaration and storage are one fact, so they are recorded together.
+    pub storage: Option<crate::cir::Value>,
 }
 
 /// One scope: the names declared in it, and the `struct`/`union` tags, which live in a
@@ -111,6 +114,11 @@ impl Symbols {
         Ok(())
     }
 
+    /// The declaration of `name` in the innermost scope, to be updated once its storage exists.
+    pub fn here_mut(&mut self, name: Symbol) -> Option<&mut Entry> {
+        self.innermost().names.get_mut(&name)
+    }
+
     /// The declaration of `name` in the innermost scope, if this scope has one: what a
     /// redeclaration has to be compared with.
     pub fn here(&self, name: Symbol) -> Option<&Entry> {
@@ -145,6 +153,7 @@ mod tests {
             ty,
             kind,
             span: Span::default(),
+            storage: None,
         }
     }
 

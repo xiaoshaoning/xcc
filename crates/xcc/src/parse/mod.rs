@@ -27,6 +27,7 @@ mod stmt;
 
 use std::collections::HashMap;
 
+use crate::cir;
 use crate::diag::{Diagnostic, Span};
 use crate::intern::Symbol;
 use crate::literal::{character_constant, string_length};
@@ -40,7 +41,7 @@ use crate::types::{Member, RecordKind, Type, TypeId, Types};
 /// Returns every diagnostic, in source order. An empty list means the declarations are
 /// well formed and typed; it says nothing about the code an expression would generate, because
 /// there is no code generation yet.
-pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Vec<Diagnostic> {
+pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
     let mut parser = Parser {
         preprocessed,
         at: 0,
@@ -55,9 +56,44 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Vec<Diagn
         labels: HashMap::new(),
         gotos: Vec::new(),
         last_parameters: Vec::new(),
+        funcs: Vec::new(),
+        globals: Vec::new(),
+        body: None,
+        last_declared: None,
+        targets: Vec::new(),
     };
     parser.translation_unit();
-    parser.diagnostics
+    Parsed {
+        module: cir::Module {
+            types: parser.types,
+            funcs: parser.funcs,
+            globals: parser.globals,
+        },
+        diagnostics: parser.diagnostics,
+    }
+}
+
+/// What parsing produced: a module with a body for every function that was lowered, and
+/// whatever was wrong with the source.
+pub(crate) struct Parsed {
+    /// The translation unit as `cir`: `Module::dump` writes it, a back end lowers it.
+    #[allow(dead_code)] // no back end reads it yet: M4.3
+    pub module: cir::Module,
+    /// Errors and warnings, in source order.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// A function whose body is being read: the `cir` function, and the block still being filled.
+struct Body {
+    func: cir::Func,
+    current: cir::Block,
+}
+
+impl Body {
+    /// A builder for the block being filled.
+    fn builder(&mut self) -> cir::Builder<'_> {
+        cir::Builder::at(&mut self.func, self.current)
+    }
 }
 
 /// A value: what an expression evaluates to, as far as the front end knows.
@@ -68,22 +104,41 @@ struct Value {
     constant: Option<i64>,
     /// Whether it can be assigned to: a variable, an element, a dereference.
     lvalue: bool,
+    /// The `cir` value, when code was generated for it.
+    cir: Option<cir::Value>,
+    /// The address, when the value is a place that can be assigned to or taken.
+    place: Option<cir::Value>,
 }
 
 impl Value {
+    /// A value with no code behind it: a type the parser worked out, and nothing to run. Error
+    /// paths produce these, so one mistake is one diagnostic.
+    fn new(ty: TypeId, constant: Option<i64>, lvalue: bool) -> Self {
+        Self {
+            ty,
+            constant,
+            lvalue,
+            cir: None,
+            place: None,
+        }
+    }
+
     fn temporary(ty: TypeId) -> Self {
+        Self::new(ty, None, false)
+    }
+
+    fn constant(ty: TypeId, constant: i64) -> Self {
+        Self::new(ty, Some(constant), false)
+    }
+
+    /// A value that code was generated for.
+    fn code(ty: TypeId, cir: cir::Value) -> Self {
         Self {
             ty,
             constant: None,
             lvalue: false,
-        }
-    }
-
-    fn constant(ty: TypeId, constant: i64) -> Self {
-        Self {
-            ty,
-            constant: Some(constant),
-            lvalue: false,
+            cir: Some(cir),
+            place: None,
         }
     }
 }
@@ -128,6 +183,17 @@ struct Parser<'a> {
     /// The parameter names of the last function declarator, which a definition declares in its
     /// body's scope.
     last_parameters: Vec<(Option<Symbol>, TypeId, Span)>,
+    /// The functions whose bodies have been read.
+    funcs: Vec<cir::Func>,
+    /// The globals declared so far.
+    globals: Vec<cir::Global>,
+    /// The function being read, while its body is being parsed.
+    body: Option<Body>,
+    /// The name the last declarator declared, for a definition that follows it.
+    last_declared: Option<Symbol>,
+    /// Where `break` and `continue` go, innermost last: the block after the loop, and the block
+    /// the next iteration starts at.
+    targets: Vec<(cir::Block, cir::Block)>,
 }
 
 impl Parser<'_> {
@@ -255,11 +321,12 @@ impl Parser<'_> {
             self.skip_until(&[";"], true);
             return;
         };
+        let name = self.last_declared;
         if self.at_punct("{") {
             match self.types.kind(declared) {
                 Type::Function { result, .. } => {
                     let result = *result;
-                    self.function_body(result);
+                    self.function_body(name, result);
                 }
                 _ => {
                     self.error_at_current("expected `;`");
@@ -299,6 +366,7 @@ impl Parser<'_> {
             let ty = self.apply_declarator(tree, base);
             let entry = Entry {
                 ty,
+                storage: None,
                 kind: if specs.is_typedef {
                     Kind::Typedef
                 } else if matches!(self.types.kind(ty), Type::Function { .. }) {
@@ -346,11 +414,27 @@ impl Parser<'_> {
                     );
                 }
             }
+            if self.in_body()
+                && !specs.is_typedef
+                && !matches!(self.types.kind(ty), Type::Function { .. })
+            {
+                // A local variable is a slot in the function's frame (ADR-002 invariant 3).
+                if let Some(name) = name {
+                    let pointer = self.pointer_to(ty);
+                    let span = self.span();
+                    if let Some(slot) = self.emit(|builder| builder.slot(ty, pointer, span)) {
+                        if let Some(entry) = self.symbols.here_mut(name) {
+                            entry.storage = Some(slot);
+                        }
+                    }
+                }
+            }
             // An initialiser: only a constant expression, for now.
             if self.eat("=") {
                 self.initializer(ty);
             }
             last = Some(ty);
+            self.last_declared = name;
             if !self.eat(",") {
                 return last;
             }
@@ -358,6 +442,92 @@ impl Parser<'_> {
     }
 
     /// How a name from the symbol table is spelled.
+    /// Run `emit` on the block being filled, if a function body is being read. `None` means
+    /// there is no body: a declaration at file scope, or an expression outside any function.
+    fn emit<T>(&mut self, emit: impl FnOnce(&mut cir::Builder<'_>) -> T) -> Option<T> {
+        let body = self.body.as_mut()?;
+        Some(emit(&mut body.builder()))
+    }
+
+    /// Whether code is being generated: false inside a declaration, true inside a body.
+    fn in_body(&self) -> bool {
+        self.body.is_some()
+    }
+
+    /// Say that code is being built but this construct cannot be lowered yet, once, and where.
+    /// A construct the emitter cannot express is refused rather than quietly left out: an
+    /// expression that emits nothing is a program that computes something else.
+    fn not_lowered(&mut self, span: Span, what: &str) {
+        if self.in_body() {
+            self.not_implemented(span, format!("{what} is not lowered yet (M4.2b)"));
+        }
+    }
+
+    /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
+    /// signed, decide which conversion C needs.
+    fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {
+        if self.types.same(value.ty, wanted) || self.types.is_error(wanted) {
+            return Value::new(wanted, value.constant, false);
+        }
+        let Some(source) = value.cir else {
+            return Value::new(wanted, None, false);
+        };
+        let Some(op) = self.conversion(value.ty, wanted) else {
+            let (from, to) = (self.describe(value.ty), self.describe(wanted));
+            self.error(
+                span,
+                format!("this compiler cannot convert {from} to {to} yet"),
+            );
+            return Value::new(self.types.error(), None, false);
+        };
+        let converted = self.emit(|builder| builder.convert(op, source, value.ty, wanted, span));
+        match converted {
+            Some(cir) => Value::code(wanted, cir),
+            None => Value::new(wanted, None, false),
+        }
+    }
+
+    /// Which conversion turns `from` into `to`, by C99 6.3.1.
+    fn conversion(&self, from: TypeId, to: TypeId) -> Option<cir::ConvertOp> {
+        let width = |ty: TypeId| match self.types.kind(ty) {
+            Type::Int { bits, .. } => Some(*bits),
+            Type::Bool => Some(8),
+            _ => None,
+        };
+        let signed = |ty: TypeId| matches!(self.types.kind(ty), Type::Int { signed: true, .. });
+        if self.types.is_pointer(from) && self.types.is_pointer(to) {
+            return Some(cir::ConvertOp::Bitcast);
+        }
+        if let (Some(from_bits), Some(to_bits)) = (width(from), width(to)) {
+            return Some(if to_bits == from_bits {
+                cir::ConvertOp::Bitcast
+            } else if to_bits < from_bits {
+                cir::ConvertOp::Truncate
+            } else if signed(from) && !matches!(self.types.kind(from), Type::Bool) {
+                cir::ConvertOp::SignExtend
+            } else {
+                cir::ConvertOp::ZeroExtend
+            });
+        }
+        let from_float = self.types.is_float(from);
+        let to_float = self.types.is_float(to);
+        match (from_float, to_float) {
+            (true, true) => Some(if self.types.size_of(to)? >= self.types.size_of(from)? {
+                cir::ConvertOp::FloatExtend
+            } else {
+                cir::ConvertOp::FloatTruncate
+            }),
+            (false, true) => Some(cir::ConvertOp::IntToFloat),
+            (true, false) => Some(cir::ConvertOp::FloatToInt),
+            (false, false) => None,
+        }
+    }
+
+    /// The type a pointer to `ty` has.
+    fn pointer_to(&mut self, ty: TypeId) -> TypeId {
+        self.types.pointer(ty)
+    }
+
     /// A run of adjacent string literals: the type C gives them - `char[n]`, where `n` counts
     /// the bytes and the NUL - and how many bytes they spell. Adjacent literals concatenate
     /// (C99 6.4.5p5), so `"ab" "cd"` is one array of five.
@@ -545,6 +715,7 @@ impl Parser<'_> {
                 ty: int,
                 kind: Kind::EnumConst(value),
                 span: token.span,
+                storage: None,
             };
             if self.symbols.declare(token.text, entry).is_err() {
                 let name = self.spell(&token).to_owned();
@@ -824,6 +995,7 @@ impl Parser<'_> {
             ty,
             kind: Kind::Variable,
             span,
+            storage: None,
         };
         if self.symbols.declare(name, entry).is_err() {
             let spelling = self.spell_of(name).to_owned();

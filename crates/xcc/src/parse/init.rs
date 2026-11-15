@@ -46,11 +46,7 @@ impl Parser<'_> {
                 return;
             }
             // Anything else takes the literal as the `char *` it decays to.
-            let value = self.decay(Value {
-                ty: literal,
-                constant: None,
-                lvalue: true,
-            });
+            let value = self.decay(Value::new(literal, None, true));
             if !self.types.is_assignable(ty, value.ty) {
                 let (from, to) = (self.describe(value.ty), self.describe(ty));
                 self.error(span, format!("cannot initialise {to} with {from}"));
