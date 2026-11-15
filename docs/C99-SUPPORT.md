@@ -60,13 +60,15 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 
 | construct | status |
 |---|---|
-| full C99 operator set and precedence, assignment operators, conditional, comma | `planned` |
-| casts, `sizeof`, `sizeof` a VLA, `offsetof` | `planned` |
+| full C99 operator set and precedence, assignment operators, conditional, comma | `sound` (M3.2), with C's usual arithmetic conversions, array-to-pointer decay and constant folding of integer expressions |
+| casts, `sizeof` a type, `sizeof` an expression | `sound` (M3.2) |
+| `sizeof` a VLA, `offsetof` | `planned` (M3.3, with VLAs) |
 | compound literals, designated initialisers (nested, and the GNU `[a ... b]` form) | `planned` - the GNU range form accepted with a warning |
 | constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1) |
-| implicit conversions, usual arithmetic conversions, folding of non-constant expressions | `planned` (M3.2) |
+| implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
-| all statement forms, `goto`, labels, `break`/`continue` | `planned` |
+| `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
+| `switch`, `goto`, labels | `planned` (M3.3) - refused with a diagnostic until then |
 | initialisation of aggregates, static and automatic | `planned` |
 | `__func__` | `planned` |
 

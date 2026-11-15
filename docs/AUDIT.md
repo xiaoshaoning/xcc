@@ -33,7 +33,31 @@ An audit answers three questions:
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-15 | M2 | `tests/corpus` | 426 | 38 (`#include`, no headers until M8) | 0 | 0 | 0 | 2 bugs, listed below |
 | 2026-11-15 | M3.1 | `tests/corpus` | 426 read | 0 parsed completely (every program has a body) | 426 refused with "not built yet" | 0 | n/a (no expressions yet) | 0 |
+| 2026-11-15 | M3.2 | `tests/corpus` | 464 read | 322 parsed completely | 142 refused (structs, `switch`, function pointers, initialiser lists: M3.3) + 25 correctly rejected as not-C99 | 0 | n/a | 9 checker bugs, below |
 | - | M3 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
+
+### M3.2 - 2026-11-15 - the corpus, parsed for meaning
+
+322 of 464 corpus programs now parse completely, up from 0. The test that made this possible
+also kept it honest: every refusal of every program must be a "not built yet" or a *correct*
+C99 rejection, and the correct ones are listed in the test with their reasons (implicit
+`printf`, Borland's `word`, `&` of a non-lvalue, a call with the wrong count). Anything else
+fails the test.
+
+The checker was wrong nine times before the corpus stopped arguing, each a real C rule:
+
+1. Array arguments did not decay: `f(a)` with `int a[10]` was refused. Decay is now one
+   function applied where a value is *used*, not where it is assigned to.
+2. Array *parameters* did not decay either: `int a[][3]` must be `int (*)[3]` (C99 6.7.5.3p7).
+3. `++`/`--` rejected pointers.
+4. `int + pointer` was rejected while `pointer + int` was accepted.
+5. `(&x)` complaints after an already-refused construct: a poisoned value must never produce a
+   second diagnostic, and several checks did not test for it.
+6. `sizeof` of a poisoned type complained, twice, with two different messages.
+7. `(int)x` was read as a parenthesised *expression*: the cast was tried only on an identifier.
+8. A label was read as an expression (`done: ;`).
+9. A refused declarator ended the whole declaration, so `typedef int (*A)(), (*B)();` left `B`
+   undeclared and cascaded.
 
 ### M2 - 2026-11-15 - `tests/corpus`, preprocessing only
 

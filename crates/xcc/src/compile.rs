@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn a_body_is_reported_before_the_missing_code_generator() {
+    fn a_body_is_read_and_then_the_code_generator_is_missing() {
         let mut compiler = Compile::new(Options::default());
         let errors = compiler
             .compile(
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
-            "function bodies are not implemented yet (M3.2)"
+            "the code generator is not implemented yet"
         );
     }
 

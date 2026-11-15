@@ -114,7 +114,7 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [ ] Acceptance: preprocesses every `.c` and header in borland-reborn's port corpus without
       crashing; token stream matches `clang -E` on the same files except Borland's extensions.
 
-## M3 - parser and types  (XL)  **in progress**: M3.1 declarations done
+## M3 - parser and types  (XL)  **in progress**: M3.1 declarations, M3.2 statements and expressions done
 
 - [x] **M3.1**, declarations: types (an arena, structural identity, Win64 sizes), scopes and
       shadowing, declarations and declarators (pointers, arrays, functions, all nesting),
@@ -123,9 +123,18 @@ Everything after this milestone depends on the API being right, so it comes befo
       budget. `struct`/`union`, grouped declarators and initialiser lists are refused with
       "not implemented yet (M3.3)" - and a refused `typedef` still declares its name, with the
       error type, so one refusal is one diagnostic and not a cascade down the file.
-- [ ] **M3.2**, statements and expressions: function bodies, the expression checker over
-      `cir`-shaped values, `sizeof` an expression, assignment compatibility.
-- [ ] **M3.3**, `struct`/`union`, bitfields, grouped declarators, initialiser lists.
+- [x] **M3.2**, statements and expressions: function bodies with parameter scopes, `if`,
+      `while`, `do`, `for` (with its own scope), `return`, `break`/`continue`, blocks and C99
+      declarations in them; one expression parser that types every value and folds the constant
+      ones (assignment and compound assignment, `?:`, all binary operators with C's precedence
+      and usual arithmetic conversions, unary `- + ~ ! * &`, `++`/`--`, casts, `sizeof` a type
+      or an expression, subscripting, calls with argument checking, array-to-pointer decay);
+      and the errors that follow: assignment to a non-lvalue, mismatched return, argument count
+      and type, `break` outside a loop, calling a non-function. The parse gate went from 0 to
+      **322 of 464** corpus programs read completely.
+- [ ] **M3.3**, `struct`/`union`, members, bitfields, grouped declarators (function pointers),
+      initialiser lists and compound literals, `switch`, `goto` and labels - the 142 programs
+      the gate still refuses.
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
 - [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,

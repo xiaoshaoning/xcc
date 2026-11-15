@@ -42,9 +42,40 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Vec<Diagn
         diagnostics: Vec::new(),
         budgets,
         nesting: 0,
+        function_result: None,
+        loops: 0,
+        last_parameters: Vec::new(),
     };
     parser.translation_unit();
     parser.diagnostics
+}
+
+/// A value: what an expression evaluates to, as far as the front end knows.
+#[derive(Debug, Clone, Copy)]
+struct Value {
+    ty: TypeId,
+    /// The value, when it is known at compile time.
+    constant: Option<i64>,
+    /// Whether it can be assigned to: a variable, an element, a dereference.
+    lvalue: bool,
+}
+
+impl Value {
+    fn temporary(ty: TypeId) -> Self {
+        Self {
+            ty,
+            constant: None,
+            lvalue: false,
+        }
+    }
+
+    fn constant(ty: TypeId, constant: i64) -> Self {
+        Self {
+            ty,
+            constant: Some(constant),
+            lvalue: false,
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -57,6 +88,13 @@ struct Parser<'a> {
     budgets: &'a Budgets,
     /// How deep the current recursion is, for the budget.
     nesting: usize,
+    /// What the function being read returns, while its body is being read.
+    function_result: Option<TypeId>,
+    /// How many loops surround the statement being read: `break` and `continue` need one.
+    loops: usize,
+    /// The parameter names of the last function declarator, which a definition declares in its
+    /// body's scope.
+    last_parameters: Vec<(Option<Symbol>, TypeId)>,
 }
 
 impl Parser<'_> {
@@ -185,16 +223,15 @@ impl Parser<'_> {
             return;
         };
         if self.at_punct("{") {
-            // M3.2: statements.
-            if matches!(self.types.kind(declared), Type::Function { .. }) {
-                self.not_implemented(
-                    self.span(),
-                    "function bodies are not implemented yet (M3.2)",
-                );
-                self.skip_balanced_block();
-            } else {
-                self.error_at_current("expected `;`");
-                self.skip_balanced_block();
+            match self.types.kind(declared) {
+                Type::Function { result, .. } => {
+                    let result = *result;
+                    self.function_body(result);
+                }
+                _ => {
+                    self.error_at_current("expected `;`");
+                    self.skip_balanced_block();
+                }
             }
             return;
         }
@@ -237,7 +274,10 @@ impl Parser<'_> {
                         };
                         let _ = self.symbols.declare(name, entry);
                     }
-                    self.skip_until(&[";"], false);
+                    self.skip_until(&[",", ";"], false);
+                    if self.eat(",") {
+                        continue;
+                    }
                     return Some(self.types.error());
                 }
                 None => return last,
@@ -546,6 +586,7 @@ impl Parser<'_> {
     /// an error and why these names are gone afterwards.
     fn parameter_list(&mut self) -> (Vec<TypeId>, bool) {
         let mut params = Vec::new();
+        self.last_parameters.clear();
         let mut variadic = false;
         self.symbols.push();
         if self.eat(")") {
@@ -566,13 +607,20 @@ impl Parser<'_> {
             let specs = self.declaration_specifiers();
             let base = specs.ty.unwrap_or_else(|| self.types.error());
             let ty = match self.declarator(base) {
-                Some(Declarator::Refused(_)) => {
+                Some(Declarator::Refused(recovered)) => {
                     // Skip what is left of this parameter - `[3]` after a refused `(*p)`, say -
                     // so the loop can find its `,` or `)`.
                     self.skip_until(&[",", ")"], false);
-                    base
+                    if let Some(name) = recovered {
+                        // Declared anyway, with the error type: the body's uses of it are then
+                        // quiet instead of one refusal becoming five.
+                        self.declare_parameter(name, self.types.error());
+                    }
+                    self.types.error()
                 }
                 Some(Declarator::Read(name, parameter)) => {
+                    // `int a[][3]` as a parameter is a pointer to `int[3]`, not an array.
+                    let parameter = self.types.decay(parameter);
                     if let Some(name) = name {
                         self.declare_parameter(name, parameter);
                     }
@@ -593,6 +641,7 @@ impl Parser<'_> {
     }
 
     fn declare_parameter(&mut self, name: Symbol, ty: TypeId) {
+        self.last_parameters.push((Some(name), ty));
         let span = self.span();
         let entry = Entry {
             ty,
@@ -605,50 +654,119 @@ impl Parser<'_> {
         }
     }
 
+    // ---- expressions ----------------------------------------------------------
+    //
+    // One parser for every expression, whether a constant is wanted or not: the value it
+    // produces carries its type, its constant when it has one, and whether it can be assigned
+    // to. `constant_expression` is then the same parser plus one question, instead of a second
+    // folding pass that would have to agree with this one (ADR-002: at M4 these values become
+    // `cir` values, and there is still only one parser).
+
     /// The value of a constant expression, or `None` after a diagnostic.
     ///
-    /// This is deliberately *not* the preprocessor's evaluator: that one works on `#if` tokens
-    /// with no types, while this one is typed, knows `sizeof` and enumeration constants, and
-    /// will grow casts. Two evaluators with different knowledge, not one with a flag.
+    /// Deliberately not the preprocessor's evaluator: that one works on `#if` tokens with no
+    /// types and no symbols. This one knows the type of everything it folds.
     fn constant_expression(&mut self) -> Option<i64> {
         if !self.enter_nesting() {
             return None;
         }
         let value = self.conditional_expression();
         self.leave_nesting();
-        value.and_then(|value| match value {
-            Constant::Integer(value) => Some(value),
-            Constant::NotConstant => {
-                let span = self.span();
-                self.error(span, "expected a constant expression");
-                None
-            }
-        })
+        match value {
+            Some(value) => match value.constant {
+                Some(constant) => Some(constant),
+                None => {
+                    let span = self.span();
+                    self.error(span, "expected a constant expression");
+                    None
+                }
+            },
+            None => None,
+        }
     }
 
-    fn conditional_expression(&mut self) -> Option<Constant> {
+    /// A whole expression, comma operators and all.
+    fn expression(&mut self) -> Option<Value> {
+        let mut value = self.assignment_expression()?;
+        while self.eat(",") {
+            value = self.assignment_expression()?;
+        }
+        Some(value)
+    }
+
+    fn assignment_expression(&mut self) -> Option<Value> {
+        let left = self.conditional_expression()?;
+        const COMPOUND: [&str; 10] = ["+=", "-=", "*=", "/=", "%=", "<<=", ">>=", "&=", "^=", "|="];
+        let operator = self.peek().map(|token| self.spell(token).to_owned());
+        match operator.as_deref() {
+            Some("=") => {
+                let span = self.span();
+                self.bump();
+                let right = self.assignment_expression()?;
+                self.assign(left, right, span)
+            }
+            Some(spelling) if COMPOUND.contains(&spelling) => {
+                let span = self.span();
+                let spelling = spelling.to_owned();
+                self.bump();
+                let right = self.assignment_expression()?;
+                let base = spelling.trim_end_matches('=').to_owned();
+                let result = self.binary_result(&base, left, right, span);
+                self.assign(left, result, span)
+            }
+            _ => Some(left),
+        }
+    }
+
+    /// The value of `left = right`, with the conversions C allows.
+    fn assign(&mut self, left: Value, right: Value, span: Span) -> Option<Value> {
+        let right = self.decay(right);
+        if self.types.is_error(left.ty) || self.types.is_error(right.ty) {
+            return Some(Value::temporary(left.ty));
+        }
+        if !left.lvalue {
+            self.error(span, "cannot assign to this expression");
+            return Some(Value::temporary(left.ty));
+        }
+        let null_pointer = self.types.is_pointer(left.ty) && right.constant == Some(0);
+        if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
+            let (to, from) = (self.types.describe(left.ty), self.types.describe(right.ty));
+            self.error(span, format!("cannot assign {from} to {to}"));
+            return Some(Value::temporary(left.ty));
+        }
+        Some(Value::temporary(left.ty))
+    }
+
+    fn conditional_expression(&mut self) -> Option<Value> {
         let condition = self.binary_expression(0)?;
         if !self.eat("?") {
             return Some(condition);
         }
-        let taken = condition.truth();
-        let left = self.conditional_expression();
+        self.require_scalar(&condition, "the condition of `?:`");
+        let when_true = self.expression()?;
         if !self.eat(":") {
             self.error_at_current("expected `:`");
             return None;
         }
-        let right = self.conditional_expression();
-        Some(if taken == Some(true) {
-            left.unwrap_or(Constant::NotConstant)
-        } else if taken == Some(false) {
-            right.unwrap_or(Constant::NotConstant)
-        } else {
-            Constant::NotConstant
+        let when_false = self.conditional_expression()?;
+        let ty = self.types.usual_arithmetic(when_true.ty, when_false.ty);
+        let constant = match (when_true.constant, when_false.constant) {
+            (Some(t), Some(f)) => condition
+                .constant
+                .map(|condition| if condition != 0 { t } else { f }),
+            (Some(t), None) if condition.constant == Some(1) => Some(t),
+            (None, Some(f)) if condition.constant == Some(0) => Some(f),
+            _ => None,
+        };
+        Some(Value {
+            ty,
+            constant,
+            lvalue: false,
         })
     }
 
     /// Binary operators by precedence, left-associative (C99 6.5.5 to 6.5.12).
-    fn binary_expression(&mut self, minimum: usize) -> Option<Constant> {
+    fn binary_expression(&mut self, minimum: usize) -> Option<Value> {
         const LEVELS: [&[&str]; 10] = [
             &["||"],
             &["&&"],
@@ -663,122 +781,661 @@ impl Parser<'_> {
         ];
         let mut left = self.unary_expression()?;
         loop {
-            let Some(operator) = self.peek().copied() else {
+            let Some(operator) = self.peek().map(|token| self.spell(token).to_owned()) else {
                 return Some(left);
             };
-            let spelling = self.spell(&operator).to_owned();
             let Some(level) = LEVELS
                 .iter()
-                .position(|operators| operators.contains(&spelling.as_str()))
+                .position(|operators| operators.contains(&operator.as_str()))
             else {
                 return Some(left);
             };
             if level < minimum {
                 return Some(left);
             }
+            let span = self.span();
             self.bump();
             let right = self.binary_expression(level + 1)?;
-            left = apply(&spelling, left, right).unwrap_or(Constant::NotConstant);
+            left = self.binary_result(&operator, left, right, span);
         }
     }
 
-    fn unary_expression(&mut self) -> Option<Constant> {
-        if self.eat("-") {
-            return Some(self.unary_expression()?.negate());
+    /// The value of `left <operator> right`, typed the way C says and folded when it can be.
+    ///
+    /// A type error is *poisoned*: the result is the error type, which is compatible with
+    /// everything, so `1 + "text" + 2` is one diagnostic rather than three.
+    fn binary_result(&mut self, operator: &str, left: Value, right: Value, span: Span) -> Value {
+        let left = self.decay(left);
+        let right = self.decay(right);
+        if self.types.is_error(left.ty) || self.types.is_error(right.ty) {
+            return Value::temporary(self.types.error());
         }
-        if self.eat("+") {
-            return self.unary_expression();
-        }
-        if self.eat("~") {
-            return Some(self.unary_expression()?.bit_not());
-        }
-        if self.eat("!") {
-            return Some(self.unary_expression()?.logical_not());
-        }
-        if self.at_word("sizeof") {
-            self.bump();
-            if self.at_punct("(") {
-                self.bump();
-                let Some(ty) = self.try_type_name() else {
-                    // `sizeof` an expression: the expression checker arrives at M3.2.
-                    self.not_implemented(
-                        self.span(),
-                        "`sizeof` an expression is not implemented yet (M3.2)",
-                    );
-                    self.skip_until(&[")"], true);
-                    return Some(Constant::NotConstant);
+        let arithmetic = self.types.is_arithmetic(left.ty) && self.types.is_arithmetic(right.ty);
+        let integer = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
+        let integral = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
+        let folded = |left: Value, right: Value| match (left.constant, right.constant) {
+            (Some(a), Some(b)) if integral => fold(operator, a, b),
+            _ => None,
+        };
+        let common = || self.types.usual_arithmetic(left.ty, right.ty);
+
+        match operator {
+            "+" | "-" => {
+                if arithmetic {
+                    return Value {
+                        ty: common(),
+                        constant: folded(left, right),
+                        lvalue: false,
+                    };
+                }
+                // `pointer + integer` and `integer + pointer` are the same expression; adding
+                // two pointers is not (and subtracting them is).
+                let pointer_side = if self.types.is_pointer(left.ty) {
+                    Some((left.ty, self.types.is_integer(right.ty)))
+                } else if self.types.is_pointer(right.ty) {
+                    Some((right.ty, self.types.is_integer(left.ty)))
+                } else {
+                    None
                 };
+                if operator == "+" {
+                    if let Some((pointer_ty, other_is_integer)) = pointer_side {
+                        if other_is_integer {
+                            return Value::temporary(pointer_ty);
+                        }
+                    }
+                }
+                if operator == "-"
+                    && self.types.is_pointer(left.ty)
+                    && self.types.is_integer(right.ty)
+                {
+                    return Value::temporary(left.ty);
+                }
+                if operator == "-"
+                    && self.types.is_pointer(left.ty)
+                    && self.types.is_pointer(right.ty)
+                {
+                    return Value::temporary(self.types.fundamental("long long").unwrap());
+                }
+                self.bad_operands(operator, left.ty, right.ty, span)
+            }
+            "*" | "/" => {
+                if arithmetic {
+                    return Value {
+                        ty: common(),
+                        constant: folded(left, right),
+                        lvalue: false,
+                    };
+                }
+                self.bad_operands(operator, left.ty, right.ty, span)
+            }
+            "%" | "<<" | ">>" | "&" | "^" | "|" => {
+                if integer {
+                    let ty =
+                        if operator == "%" || operator == "&" || operator == "^" || operator == "|"
+                        {
+                            common()
+                        } else {
+                            self.promote(left.ty)
+                        };
+                    return Value {
+                        ty,
+                        constant: folded(left, right),
+                        lvalue: false,
+                    };
+                }
+                self.bad_operands(operator, left.ty, right.ty, span)
+            }
+            "<" | ">" | "<=" | ">=" | "==" | "!=" => {
+                let comparable = (arithmetic
+                    || self.types.is_pointer(left.ty) && self.types.is_pointer(right.ty))
+                    || (self.types.is_pointer(left.ty) && right.constant == Some(0))
+                    || (self.types.is_pointer(right.ty) && left.constant == Some(0));
+                if comparable {
+                    return Value {
+                        ty: self.types.fundamental("int").unwrap(),
+                        constant: folded(left, right),
+                        lvalue: false,
+                    };
+                }
+                self.bad_operands(operator, left.ty, right.ty, span)
+            }
+            "&&" | "||" => {
+                self.require_scalar(&left, "the left side of a logical operator");
+                self.require_scalar(&right, "the right side of a logical operator");
+                let int = self.types.fundamental("int").unwrap();
+                // `0 && anything` is 0 whatever the right side turns out to be at run time.
+                let constant = match (operator, left.constant, right.constant) {
+                    ("&&", Some(0), _) => Some(0),
+                    ("||", Some(c), _) if c != 0 => Some(1),
+                    ("&&", Some(_), Some(b)) => Some(i64::from(b != 0)),
+                    ("||", Some(_), Some(b)) => Some(i64::from(b != 0)),
+                    _ => None,
+                };
+                Value {
+                    ty: int,
+                    constant,
+                    lvalue: false,
+                }
+            }
+            other => {
+                self.error(
+                    span,
+                    format!("`{other}` is not an operator this front end knows"),
+                );
+                Value::temporary(self.types.error())
+            }
+        }
+    }
+
+    fn bad_operands(&mut self, operator: &str, left: TypeId, right: TypeId, span: Span) -> Value {
+        let (left, right) = (self.types.describe(left), self.types.describe(right));
+        self.error(
+            span,
+            format!("`{operator}` cannot be applied to {left} and {right}"),
+        );
+        Value::temporary(self.types.error())
+    }
+
+    /// Integer promotion (C99 6.3.1.1): anything narrower than `int` becomes `int`.
+    fn promote(&self, ty: TypeId) -> TypeId {
+        match self.types.kind(ty) {
+            Type::Int { bits, .. } if *bits < 32 => self.types.fundamental("int").unwrap(),
+            Type::Bool => self.types.fundamental("int").unwrap(),
+            _ => ty,
+        }
+    }
+
+    /// An array or function used as a value is a pointer to it (C99 6.3.2.1). Everything that
+    /// *uses* a value calls this; a place that assigns to one does not.
+    fn decay(&mut self, value: Value) -> Value {
+        let ty = self.types.decay(value.ty);
+        if ty == value.ty {
+            return value;
+        }
+        Value::temporary(ty)
+    }
+
+    fn require_scalar(&mut self, value: &Value, what: &str) {
+        if self.types.is_error(value.ty) {
+            return;
+        }
+        if !(self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty)) {
+            let ty = self.types.describe(value.ty);
+            let span = self.span();
+            self.error(span, format!("{what} must be a scalar, not {ty}"));
+        }
+    }
+
+    fn unary_expression(&mut self) -> Option<Value> {
+        let operator = self.peek().map(|token| self.spell(token).to_owned())?;
+        let span = self.span();
+        match operator.as_str() {
+            "-" | "+" | "~" | "!" => {
+                self.bump();
+                let value = self.unary_expression()?;
+                let ty = value.ty;
+                match operator.as_str() {
+                    "-" => {
+                        if !self.types.is_arithmetic(ty) {
+                            let ty = self.types.describe(ty);
+                            self.error(span, format!("unary `-` needs a number, not {ty}"));
+                            return Some(Value::temporary(self.types.error()));
+                        }
+                        Some(Value {
+                            ty: self.promote(ty),
+                            constant: value.constant.map(|value| value.wrapping_neg()),
+                            lvalue: false,
+                        })
+                    }
+                    "+" => Some(Value {
+                        ty: self.promote(ty),
+                        constant: value.constant,
+                        lvalue: false,
+                    }),
+                    "~" => {
+                        if !self.types.is_integer(ty) {
+                            let ty = self.types.describe(ty);
+                            self.error(span, format!("`~` needs an integer, not {ty}"));
+                            return Some(Value::temporary(self.types.error()));
+                        }
+                        Some(Value {
+                            ty: self.promote(ty),
+                            constant: value.constant.map(|value| !value),
+                            lvalue: false,
+                        })
+                    }
+                    _ => {
+                        self.require_scalar(&value, "`!`");
+                        Some(Value {
+                            ty: self.types.fundamental("int").unwrap(),
+                            constant: value.constant.map(|value| i64::from(value == 0)),
+                            lvalue: false,
+                        })
+                    }
+                }
+            }
+            "&" => {
+                self.bump();
+                let value = self.unary_expression()?;
+                if self.types.is_error(value.ty) {
+                    return Some(Value::temporary(self.types.error()));
+                }
+                if !value.lvalue {
+                    self.error(span, "`&` needs something it can take the address of");
+                    return Some(Value::temporary(self.types.error()));
+                }
+                Some(Value::temporary(self.types.pointer(value.ty)))
+            }
+            "*" => {
+                self.bump();
+                let value = self.unary_expression().map(|value| self.decay(value))?;
+                if self.types.is_error(value.ty) {
+                    return Some(Value::temporary(self.types.error()));
+                }
+                if !self.types.is_pointer(value.ty) {
+                    let ty = self.types.describe(value.ty);
+                    self.error(span, format!("`*` needs a pointer, not {ty}"));
+                    return Some(Value::temporary(self.types.error()));
+                }
+                Some(Value {
+                    ty: self.types.pointee(value.ty),
+                    constant: None,
+                    lvalue: true,
+                })
+            }
+            "++" | "--" => {
+                self.bump();
+                let value = self.unary_expression()?;
+                Some(self.increment(value, span))
+            }
+            "sizeof" => {
+                self.bump();
+                Some(self.sizeof_expression())
+            }
+            _ => self.postfix_expression(),
+        }
+    }
+
+    fn increment(&mut self, value: Value, span: Span) -> Value {
+        if self.types.is_error(value.ty) {
+            return Value::temporary(value.ty);
+        }
+        let scalar = self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty);
+        if !value.lvalue || !scalar {
+            self.error(span, "`++` and `--` need a variable holding a number");
+            return Value::temporary(self.types.error());
+        }
+        Value::temporary(value.ty)
+    }
+
+    /// `sizeof` a type name or an expression, as a constant of type `size_t` (here `unsigned
+    /// long long`, the widest integer this front end has).
+    fn sizeof_expression(&mut self) -> Value {
+        let size_type = self.types.fundamental("unsigned long long").unwrap();
+        if self.at_punct("(") {
+            self.bump();
+            if let Some(ty) = self.try_type_name() {
                 if !self.eat(")") {
                     self.error_at_current("expected `)`");
                 }
-                return Some(match self.types.size_of(ty) {
-                    Some(size) => Constant::Integer(size as i64),
+                if self.types.is_error(ty) {
+                    return Value::temporary(self.types.error());
+                }
+                return match self.types.size_of(ty) {
+                    Some(size) => Value::constant(size_type, size as i64),
                     None => {
+                        let typo = self.types.describe(ty);
                         let span = self.span();
-                        self.error(span, "`sizeof` needs a complete type");
-                        Constant::NotConstant
+                        self.error(span, format!("`sizeof` needs a complete type, not {typo}"));
+                        Value::temporary(self.types.error())
                     }
-                });
+                };
             }
-            // `sizeof` an expression: the expression checker arrives at M3.2.
-            self.not_implemented(
-                self.span(),
-                "`sizeof` an expression is not implemented yet (M3.2)",
-            );
-            if self.at_punct("(") {
-                self.skip_balanced_parens();
-            } else {
-                self.bump();
-            }
-            return Some(Constant::NotConstant);
+            // Not a type name: put the parenthesis back, and read it as an expression.
+            self.at -= 1;
         }
-        self.primary_expression()
+        let Some(value) = self.unary_expression() else {
+            return Value::temporary(self.types.error());
+        };
+        if self.types.is_error(value.ty) {
+            return Value::temporary(self.types.error());
+        }
+        match self.types.size_of(value.ty) {
+            Some(size) => Value::constant(size_type, size as i64),
+            None => {
+                let ty = self.types.describe(value.ty);
+                let span = self.span();
+                self.error(span, format!("`sizeof` needs a complete type, not {ty}"));
+                Value::temporary(self.types.error())
+            }
+        }
     }
 
-    fn primary_expression(&mut self) -> Option<Constant> {
-        let token = self.peek().copied()?;
-        if self.is_punct(&token, "(") {
-            self.bump();
-            let value = self.conditional_expression();
-            if !self.eat(")") {
-                self.error_at_current("expected `)`");
+    fn postfix_expression(&mut self) -> Option<Value> {
+        let mut value = self.primary_expression()?;
+        loop {
+            let span = self.span();
+            if self.eat("[") {
+                let index = self.expression()?;
+                if !self.eat("]") {
+                    self.error_at_current("expected `]`");
+                }
+                value = self.subscript(value, index, span);
+                continue;
             }
-            return value;
+            if self.at_punct("(") {
+                self.bump();
+                value = self.call(value, span);
+                continue;
+            }
+            if self.at_punct(".") || self.at_punct("->") {
+                self.not_implemented(span, "struct members are not implemented yet (M3.3)");
+                self.skip_until(&[";"], false);
+                return Some(Value::temporary(self.types.error()));
+            }
+            if self.at_punct("++") || self.at_punct("--") {
+                self.bump();
+                value = self.increment(value, span);
+                continue;
+            }
+            return Some(value);
         }
-        match token.kind {
-            crate::lex::TokenKind::Number => {
-                self.bump();
-                Some(integer_constant(self.spell(&token)))
+    }
+
+    fn subscript(&mut self, base: Value, index: Value, span: Span) -> Value {
+        let base = self.decay(base);
+        if self.types.is_error(base.ty) || self.types.is_error(index.ty) {
+            return Value::temporary(self.types.error());
+        }
+        if !self.types.is_integer(index.ty) {
+            let ty = self.types.describe(index.ty);
+            self.error(span, format!("a subscript must be an integer, not {ty}"));
+            return Value::temporary(self.types.error());
+        }
+        match self.types.kind(base.ty) {
+            Type::Pointer(element) => {
+                let element = *element;
+                Value {
+                    ty: element,
+                    constant: None,
+                    lvalue: true,
+                }
             }
-            crate::lex::TokenKind::Chr => {
-                self.bump();
-                Some(match character_constant(self.spell(&token)) {
-                    Some(value) => Constant::Integer(value),
-                    None => Constant::NotConstant,
-                })
-            }
-            crate::lex::TokenKind::Ident => {
-                let entry = self.symbols.lookup(token.text);
-                match entry {
-                    Some(Entry {
-                        kind: Kind::EnumConst(value),
-                        ..
-                    }) => {
-                        let value = *value;
-                        self.bump();
-                        Some(Constant::Integer(value))
-                    }
-                    _ => {
-                        self.bump();
-                        Some(Constant::NotConstant)
-                    }
+            Type::Array { element, .. } => {
+                let element = *element;
+                Value {
+                    ty: element,
+                    constant: None,
+                    lvalue: true,
                 }
             }
             _ => {
-                // Not the start of an expression: do not consume it, so the caller reports the
-                // real problem at the token that caused it.
+                let ty = self.types.describe(base.ty);
+                self.error(span, format!("`[]` needs a pointer or an array, not {ty}"));
+                Value::temporary(self.types.error())
+            }
+        }
+    }
+
+    /// A call: the arguments are parsed and checked against the declared parameters.
+    fn call(&mut self, callee: Value, span: Span) -> Value {
+        if self.types.is_error(callee.ty) {
+            self.skip_until(&[")"], true);
+            return Value::temporary(self.types.error());
+        }
+        let function = match self.types.kind(callee.ty) {
+            Type::Function { .. } => callee.ty,
+            Type::Pointer(to) if matches!(self.types.kind(*to), Type::Function { .. }) => *to,
+            _ => {
+                let ty = self.types.describe(callee.ty);
+                self.error(span, format!("cannot call {ty}"));
+                self.skip_until(&[")"], true);
+                return Value::temporary(self.types.error());
+            }
+        };
+        let (result, params, variadic) = match self.types.kind(function) {
+            Type::Function {
+                result,
+                params,
+                variadic,
+            } => (*result, params.clone(), *variadic),
+            _ => unreachable!("checked above"),
+        };
+
+        let mut given = 0usize;
+        if !self.eat(")") {
+            loop {
+                let argument = self.assignment_expression().map(|value| self.decay(value));
+                let Some(argument) = argument else { break };
+                if self.types.is_error(argument.ty) {
+                    given += 1;
+                    if !self.eat(",") {
+                        break;
+                    }
+                    continue;
+                }
+                if given < params.len() {
+                    let expected = params[given];
+                    let null_pointer =
+                        self.types.is_pointer(expected) && argument.constant == Some(0);
+                    if !null_pointer && !self.types.is_assignable(expected, argument.ty) {
+                        let (from, to) = (
+                            self.types.describe(argument.ty),
+                            self.types.describe(expected),
+                        );
+                        self.error(
+                            span,
+                            format!("argument {} is {from}, expected {to}", given + 1),
+                        );
+                    }
+                } else if !variadic {
+                    self.error(
+                        span,
+                        format!(
+                            "this function takes {} arguments, more were given",
+                            params.len()
+                        ),
+                    );
+                }
+                given += 1;
+                if !self.eat(",") {
+                    break;
+                }
+            }
+            if !self.eat(")") {
+                self.error_at_current("expected `)` to end the arguments");
+            }
+        }
+        if given < params.len() {
+            self.error(
+                span,
+                format!(
+                    "this function takes {} arguments, {given} were given",
+                    params.len()
+                ),
+            );
+        }
+        Value::temporary(result)
+    }
+
+    fn primary_expression(&mut self) -> Option<Value> {
+        let token = self.peek().copied()?;
+        let span = token.span;
+        match token.kind {
+            crate::lex::TokenKind::Number => {
+                self.bump();
+                let spelling = self.spell(&token).to_owned();
+                Some(self.number_value(&spelling, span))
+            }
+            crate::lex::TokenKind::Chr => {
+                self.bump();
+                let value = character_constant(self.spell(&token)).map_or(0, |value| value);
+                Some(Value::constant(
+                    self.types.fundamental("int").unwrap(),
+                    value,
+                ))
+            }
+            crate::lex::TokenKind::Str => {
+                self.bump();
+                // Adjacent literals concatenate (C99 6.4.5p5); their bytes are M3.3's problem.
+                while self
+                    .peek()
+                    .is_some_and(|next| next.kind == crate::lex::TokenKind::Str)
+                {
+                    self.bump();
+                }
+                let char = self.types.fundamental("char").unwrap();
+                Some(Value::temporary(self.types.pointer(char)))
+            }
+            crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
+                // `(int)x` is a cast; `(x)` groups. Tried in that order, and the cursor is put
+                // back when the parenthesis turns out to hold an expression.
+                if let Some(ty) = self.cast_type() {
+                    return Some(self.cast(ty, span));
+                }
+                self.bump();
+                let value = self.expression()?;
+                if !self.eat(")") {
+                    self.error_at_current("expected `)`");
+                }
+                Some(value)
+            }
+            crate::lex::TokenKind::Ident => {
+                self.bump();
+                Some(self.named_value(token.text, span))
+            }
+            _ => {
+                self.error(span, "expected an expression");
                 None
             }
+        }
+    }
+
+    /// `(type)` before an expression, or `None` if the parenthesis is not a cast.
+    fn cast_type(&mut self) -> Option<TypeId> {
+        if !self.at_punct("(") {
+            return None;
+        }
+        self.bump();
+        match self.try_type_name() {
+            Some(ty) => {
+                if !self.eat(")") {
+                    self.error_at_current("expected `)` after the type in a cast");
+                }
+                Some(ty)
+            }
+            None => {
+                self.at -= 1; // put the `(` back: it groups an expression
+                None
+            }
+        }
+    }
+
+    fn cast(&mut self, to: TypeId, span: Span) -> Value {
+        if self.at_punct("{") {
+            // A compound literal, `(struct P){1, 2}`: refused with the rest of M3.3.
+            self.not_implemented(span, "compound literals are not implemented yet (M3.3)");
+            self.skip_balanced_block();
+            return Value {
+                ty: self.types.error(),
+                constant: None,
+                lvalue: true,
+            };
+        }
+        let Some(from) = self.unary_expression() else {
+            return Value::temporary(to);
+        };
+        let converts = self.types.is_assignable(to, from.ty)
+            || self.types.is_pointer(to) && self.types.is_integer(from.ty)
+            || self.types.is_integer(to) && self.types.is_pointer(from.ty)
+            || matches!(self.types.kind(to), Type::Void);
+        if !converts {
+            let (from, to) = (self.types.describe(from.ty), self.types.describe(to));
+            self.error(span, format!("cannot convert {from} to {to}"));
+            return Value::temporary(self.types.error());
+        }
+        Value {
+            ty: to,
+            constant: from.constant,
+            lvalue: false,
+        }
+    }
+
+    /// A number literal: an integer is folded and typed by its suffix and magnitude (C99
+    /// 6.4.4.1), a floating constant is only typed - folding floats is the back end's job.
+    fn number_value(&mut self, spelling: &str, span: Span) -> Value {
+        let lower = spelling.to_ascii_lowercase();
+        let floating = lower.contains('.')
+            || (lower.starts_with("0x") && lower.contains('p'))
+            || (!lower.starts_with("0x") && (lower.contains('e') || lower.contains('E')));
+        if floating {
+            let name = if lower.ends_with('f') {
+                "float"
+            } else if lower.ends_with('l') {
+                "long double"
+            } else {
+                "double"
+            };
+            return Value::temporary(self.types.fundamental(name).unwrap());
+        }
+        self.integer_value(spelling, span)
+    }
+
+    /// An integer literal, typed by its suffix and magnitude the way C99 6.4.4.1 says.
+    fn integer_value(&mut self, spelling: &str, span: Span) -> Value {
+        let lower = spelling.to_ascii_lowercase();
+        let unsigned = lower.contains('u');
+        let longs = lower.matches('l').count();
+        let digits = lower.trim_end_matches(['u', 'l']);
+        let parsed = if let Some(hex) = digits.strip_prefix("0x") {
+            u64::from_str_radix(hex, 16).ok()
+        } else if digits.len() > 1 && digits.starts_with('0') {
+            u64::from_str_radix(&digits[1..], 8).ok()
+        } else {
+            digits.parse::<u64>().ok()
+        };
+        let Some(bits) = parsed else {
+            self.error(
+                span,
+                format!("`{spelling}` is not an integer constant this front end reads"),
+            );
+            return Value::temporary(self.types.error());
+        };
+        // A decimal constant too big for `int` becomes unsigned or wider, as C says.
+        let ty = if longs >= 2 {
+            self.types.integer_with(!unsigned && (bits as i64) >= 0, 64)
+        } else if unsigned || bits > i64::from(i32::MAX) as u64 {
+            self.types.integer_with(false, 32)
+        } else {
+            self.types.fundamental("int").unwrap()
+        };
+        Value::constant(ty, bits as i64)
+    }
+
+    /// The value of a name: a variable, a function, or an enumeration constant.
+    fn named_value(&mut self, name: Symbol, span: Span) -> Value {
+        let Some(entry) = self.symbols.lookup(name) else {
+            let spelling = self.spell_of(name).to_owned();
+            self.error(span, format!("`{spelling}` is not declared"));
+            return Value::temporary(self.types.error());
+        };
+        match entry.kind {
+            Kind::EnumConst(value) => Value::constant(entry.ty, value),
+            Kind::Function => Value {
+                ty: entry.ty,
+                constant: None,
+                lvalue: false,
+            },
+            Kind::Typedef => {
+                let spelling = self.spell_of(name).to_owned();
+                self.error(span, format!("`{spelling}` is a type, not a value"));
+                Value::temporary(self.types.error())
+            }
+            Kind::Variable => Value {
+                ty: entry.ty,
+                constant: None,
+                lvalue: true,
+            },
         }
     }
 
@@ -826,6 +1483,339 @@ impl Parser<'_> {
         }
         self.skip_until(&[",", ";"], false);
         let _ = ty;
+    }
+
+    /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),
+    /// so the block is parsed without pushing a scope of its own.
+    fn function_body(&mut self, result: TypeId) {
+        self.function_result = Some(result);
+        self.loops = 0;
+        self.symbols.push();
+        for (name, ty) in std::mem::take(&mut self.last_parameters) {
+            if let Some(name) = name {
+                let span = self.span();
+                let _ = self.symbols.declare(
+                    name,
+                    Entry {
+                        ty,
+                        kind: Kind::Variable,
+                        span,
+                    },
+                );
+            }
+        }
+        self.block_body();
+        self.symbols.pop();
+        self.function_result = None;
+    }
+
+    // ---- statements ------------------------------------------------------------
+    //
+    // A statement is parsed for what it does to the types: `if (p)` needs a scalar, `return`
+    // needs to match the function's result, `break` needs a loop. At M4 each of these becomes
+    // `cir` control flow as well; there is no tree in between (ADR-002).
+
+    /// One statement. The cursor is at its first token.
+    fn statement(&mut self) {
+        if !self.enter_nesting() {
+            self.skip_statement();
+            return;
+        }
+        if self.eat(";") {
+            self.leave_nesting();
+            return;
+        }
+        if self.at_punct("{") {
+            self.block();
+            self.leave_nesting();
+            return;
+        }
+        if self
+            .peek()
+            .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
+            && self.peek_at(1).is_some_and(|next| self.is_punct(next, ":"))
+        {
+            let span = self.span();
+            self.not_implemented(span, "labels and `goto` are not implemented yet (M3.3)");
+            self.bump();
+            self.bump();
+            self.statement();
+            self.leave_nesting();
+            return;
+        }
+        let word = self.peek().map(|token| self.spell(token).to_owned());
+        match word.as_deref() {
+            Some("if") => {
+                self.if_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("while") => {
+                self.while_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("do") => {
+                self.do_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("for") => {
+                self.for_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("return") => {
+                self.return_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("break") | Some("continue") => {
+                self.loop_control(word.as_deref() == Some("break"));
+                self.leave_nesting();
+                return;
+            }
+            Some("switch") | Some("case") | Some("default") | Some("goto") => {
+                let span = self.span();
+                let keyword = word.unwrap_or_default();
+                self.not_implemented(span, format!("`{keyword}` is not implemented yet (M3.3)"));
+                self.skip_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some(_) if self.starts_specifier() => {
+                self.declaration();
+                if !self.eat(";") {
+                    self.skip_until(&[";"], true);
+                }
+                self.leave_nesting();
+                return;
+            }
+            _ => {}
+        }
+        // An expression statement: evaluated for its effect, so its value is discarded.
+        if self.expression().is_some() && !self.eat(";") {
+            self.error_at_current("expected `;` after an expression");
+            self.skip_until(&[";"], true);
+        }
+        self.leave_nesting();
+    }
+
+    fn block(&mut self) {
+        self.symbols.push();
+        self.block_body();
+        self.symbols.pop();
+    }
+
+    /// The braces and statements of a block; the caller owns its scope.
+    fn block_body(&mut self) {
+        if !self.eat("{") {
+            return;
+        }
+        while !self.at_punct("}") && !self.at_eof() {
+            let before = self.at;
+            self.statement();
+            if self.at == before {
+                self.bump(); // never spin: a statement that consumed nothing is a bug
+            }
+        }
+        if !self.eat("}") {
+            self.error_at_current("expected `}`");
+        }
+    }
+
+    fn if_statement(&mut self) {
+        self.bump();
+        let condition = self.parenthesised_condition("`if`");
+        if let Some(condition) = condition {
+            self.require_scalar(&condition, "the condition of `if`");
+        }
+        self.statement();
+        if self.at_word("else") {
+            self.bump();
+            self.statement();
+        }
+    }
+
+    fn while_statement(&mut self) {
+        self.bump();
+        if let Some(condition) = self.parenthesised_condition("`while`") {
+            self.require_scalar(&condition, "the condition of `while`");
+        }
+        self.loops += 1;
+        self.statement();
+        self.loops -= 1;
+    }
+
+    fn do_statement(&mut self) {
+        self.bump();
+        self.loops += 1;
+        self.statement();
+        self.loops -= 1;
+        if !self.at_word("while") {
+            self.error_at_current("expected `while` after the body of `do`");
+            return;
+        }
+        self.bump();
+        if let Some(condition) = self.parenthesised_condition("`do ... while`") {
+            self.require_scalar(&condition, "the condition of `do ... while`");
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after `do ... while`");
+        }
+    }
+
+    fn for_statement(&mut self) {
+        self.bump();
+        if !self.eat("(") {
+            self.error_at_current("expected `(` after `for`");
+            return;
+        }
+        // C99 6.8.5.3: the `for` head has a scope of its own, so `for (int i = ...)` declares
+        // an `i` that is gone after the loop.
+        self.symbols.push();
+        if !self.at_punct(";") {
+            if self.starts_specifier() {
+                self.declaration();
+            } else {
+                self.expression();
+            }
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after the initial part of `for`");
+            self.skip_until(&[";"], true);
+        }
+        if !self.at_punct(";") {
+            if let Some(condition) = self.expression() {
+                self.require_scalar(&condition, "the condition of `for`");
+            }
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after the condition of `for`");
+            self.skip_until(&[")"], true);
+        }
+        if !self.at_punct(")") {
+            self.expression();
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the parts of `for`");
+        }
+        self.loops += 1;
+        self.statement();
+        self.loops -= 1;
+        self.symbols.pop();
+    }
+
+    fn loop_control(&mut self, is_break: bool) {
+        let span = self.span();
+        self.bump();
+        if self.loops == 0 {
+            let word = if is_break { "break" } else { "continue" };
+            self.error(span, format!("`{word}` outside a loop"));
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;`");
+        }
+    }
+
+    fn return_statement(&mut self) {
+        let span = self.span();
+        self.bump();
+        let Some(result) = self.function_result else {
+            self.error(span, "`return` outside a function");
+            self.skip_until(&[";"], true);
+            return;
+        };
+        let void = matches!(self.types.kind(result), Type::Void);
+        if self.eat(";") {
+            if !void {
+                let ty = self.types.describe(result);
+                self.error(
+                    span,
+                    format!("this function returns {ty}, so `return` needs a value"),
+                );
+            }
+            return;
+        }
+        let value = self.expression().map(|value| self.decay(value));
+        if let Some(value) = value {
+            if void {
+                self.error(
+                    span,
+                    "this function returns nothing, so `return` takes no value",
+                );
+            } else {
+                let null_pointer = self.types.is_pointer(result) && value.constant == Some(0);
+                if !null_pointer && !self.types.is_assignable(result, value.ty) {
+                    let (from, to) = (self.types.describe(value.ty), self.types.describe(result));
+                    self.error(span, format!("this function returns {to}, not {from}"));
+                }
+            }
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after `return`");
+            self.skip_until(&[";"], true);
+        }
+    }
+
+    /// `( expression )`, as `if`, `while` and `do` take it.
+    fn parenthesised_condition(&mut self, what: &str) -> Option<Value> {
+        if !self.eat("(") {
+            self.error_at_current(format!("expected `(` after {what}"));
+            return None;
+        }
+        let value = self.expression();
+        if !self.eat(")") {
+            self.error_at_current("expected `)`");
+        }
+        value
+    }
+
+    /// Skip one statement, for the recoveries that cannot parse it.
+    fn skip_statement(&mut self) {
+        if self.at_punct("{") {
+            self.skip_balanced_block();
+            return;
+        }
+        self.skip_until(&[";"], true);
+    }
+
+    /// Whether the tokens at the cursor start a declaration: a specifier word, or a name that
+    /// is a type. One list, shared with `declaration_specifiers`, so `int x;` inside a block is
+    /// a declaration and `x = 1;` is not.
+    fn starts_specifier(&self) -> bool {
+        let Some(token) = self.peek() else {
+            return false;
+        };
+        if token.kind == crate::lex::TokenKind::Ident && self.symbols.typedef(token.text).is_some()
+        {
+            return true;
+        }
+        matches!(
+            self.spell(token),
+            "typedef"
+                | "extern"
+                | "static"
+                | "auto"
+                | "register"
+                | "const"
+                | "volatile"
+                | "restrict"
+                | "inline"
+                | "void"
+                | "_Bool"
+                | "char"
+                | "short"
+                | "int"
+                | "long"
+                | "float"
+                | "double"
+                | "signed"
+                | "unsigned"
+                | "struct"
+                | "union"
+                | "enum"
+        )
     }
 
     // ---- recovery -------------------------------------------------------------
@@ -988,73 +1978,17 @@ enum Declarator {
     Refused(Option<Symbol>),
 }
 
-/// The value of a constant expression, or the knowledge that it is not one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Constant {
-    Integer(i64),
-    /// An expression that would only have a value at run time, or could not be read.
-    NotConstant,
-}
-
-impl Constant {
-    fn truth(self) -> Option<bool> {
-        match self {
-            Constant::Integer(value) => Some(value != 0),
-            Constant::NotConstant => None,
-        }
-    }
-
-    fn integer(self) -> Option<i64> {
-        match self {
-            Constant::Integer(value) => Some(value),
-            Constant::NotConstant => None,
-        }
-    }
-
-    fn negate(self) -> Self {
-        match self.integer() {
-            Some(value) => Constant::Integer(value.wrapping_neg()),
-            None => Constant::NotConstant,
-        }
-    }
-
-    fn bit_not(self) -> Self {
-        match self.integer() {
-            Some(value) => Constant::Integer(!value),
-            None => Constant::NotConstant,
-        }
-    }
-
-    fn logical_not(self) -> Self {
-        match self.truth() {
-            Some(value) => Constant::Integer(i64::from(!value)),
-            None => Constant::NotConstant,
-        }
-    }
-}
-
-fn apply(operator: &str, left: Constant, right: Constant) -> Option<Constant> {
-    let (Some(left), Some(right)) = (left.integer(), right.integer()) else {
-        return Some(Constant::NotConstant);
-    };
-    let value = match operator {
+/// Fold one binary operation on two constants. `None` when it cannot be folded - a division by
+/// zero, or a shift C leaves undefined, is not folded rather than guessed.
+fn fold(operator: &str, left: i64, right: i64) -> Option<i64> {
+    Some(match operator {
         "+" => left.wrapping_add(right),
         "-" => left.wrapping_sub(right),
         "*" => left.wrapping_mul(right),
-        "/" => {
-            if right == 0 {
-                return Some(Constant::NotConstant);
-            }
-            left.wrapping_div(right)
-        }
-        "%" => {
-            if right == 0 {
-                return Some(Constant::NotConstant);
-            }
-            left.wrapping_rem(right)
-        }
-        "<<" => left.wrapping_shl(right as u32),
-        ">>" => left.wrapping_shr(right as u32),
+        "/" if right != 0 => left.wrapping_div(right),
+        "%" if right != 0 => left.wrapping_rem(right),
+        "<<" if (0..64).contains(&right) => left.wrapping_shl(right as u32),
+        ">>" if (0..64).contains(&right) => left.wrapping_shr(right as u32),
         "&" => left & right,
         "|" => left | right,
         "^" => left ^ right,
@@ -1067,26 +2001,7 @@ fn apply(operator: &str, left: Constant, right: Constant) -> Option<Constant> {
         "&&" => i64::from(left != 0 && right != 0),
         "||" => i64::from(left != 0 || right != 0),
         _ => return None,
-    };
-    Some(Constant::Integer(value))
-}
-
-/// An integer constant from its spelling, or `NotConstant` if it is not one this front end
-/// reads yet (floats, suffixes it does not know).
-fn integer_constant(spelling: &str) -> Constant {
-    let lower = spelling.to_ascii_lowercase();
-    let digits = lower.trim_end_matches(['u', 'l']);
-    let value = if let Some(hex) = digits.strip_prefix("0x") {
-        u64::from_str_radix(hex, 16).ok()
-    } else if digits.len() > 1 && digits.starts_with('0') {
-        u64::from_str_radix(&digits[1..], 8).ok()
-    } else {
-        digits.parse::<u64>().ok()
-    };
-    match value {
-        Some(value) => Constant::Integer(value as i64),
-        None => Constant::NotConstant,
-    }
+    })
 }
 
 /// A character constant's value.

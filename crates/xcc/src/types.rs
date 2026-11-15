@@ -413,6 +413,26 @@ impl Types {
         }
     }
 
+    /// Whether this is the error type: a poisoned value, which must never produce a second
+    /// diagnostic of its own.
+    pub fn is_error(&self, id: TypeId) -> bool {
+        matches!(self.kind(id), Type::Error)
+    }
+
+    /// The type an expression of this type has when its value is used rather than assigned to:
+    /// an array becomes a pointer to its first element, a function becomes a pointer to it
+    /// (C99 6.3.2.1). This is what makes `f(a)` with `int a[10]` a pointer argument.
+    pub fn decay(&mut self, id: TypeId) -> TypeId {
+        match self.kind(id) {
+            Type::Array { element, .. } => {
+                let element = *element;
+                self.pointer(element)
+            }
+            Type::Function { .. } => self.pointer(id),
+            _ => id,
+        }
+    }
+
     /// The integer type of these bits and signedness.
     pub fn integer_with(&self, signed: bool, bits: u8) -> TypeId {
         let name = match (signed, bits) {
