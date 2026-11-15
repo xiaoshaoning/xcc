@@ -27,31 +27,58 @@ pub fn character_constant(spelling: &str) -> Option<i64> {
 
 /// The value of an escape sequence, given what follows the backslash.
 fn escape_value(escape: &str) -> Option<i64> {
-    let simple = match escape {
-        "n" => 10,
-        "t" => 9,
-        "r" => 13,
-        "a" => 7,
-        "b" => 8,
-        "f" => 12,
-        "v" => 11,
-        "\\" => 92,
-        "'" => 39,
-        "\"" => 34,
-        "?" => 63,
-        _ => {
-            // `\x41` takes any number of hex digits; octal takes at most three.
-            if let Some(hex) = escape.strip_prefix('x') {
-                return u32::from_str_radix(hex, 16).ok().map(i64::from);
-            }
-            let octal = escape.len() <= 3 && escape.bytes().all(|byte| matches!(byte, b'0'..=b'7'));
-            if !octal {
-                return None;
-            }
-            return u32::from_str_radix(escape, 8).ok().map(i64::from);
-        }
-    };
-    Some(simple)
+    let bytes = escape.as_bytes();
+    let first = *bytes.first()?;
+    if let Some(value) = named_escape(first) {
+        return if bytes.len() == 1 {
+            Some(i64::from(value))
+        } else {
+            None
+        };
+    }
+    // A numeric escape is one or more digits and nothing else; the range rule is the same one
+    // a string literal follows.
+    let radix = if first == b'x' { 16 } else { 8 };
+    let mut at = if radix == 16 { 1 } else { 0 };
+    let value = numeric_escape(bytes, &mut at, radix)?;
+    if at == bytes.len() {
+        Some(i64::from(value))
+    } else {
+        None
+    }
+}
+
+/// The escapes that name one character, by the letter after the backslash. The one table, so a
+/// string and a character constant cannot disagree about what `\n` is.
+fn named_escape(letter: u8) -> Option<u8> {
+    Some(match letter {
+        b'n' => 10,
+        b't' => 9,
+        b'r' => 13,
+        b'a' => 7,
+        b'b' => 8,
+        b'f' => 12,
+        b'v' => 11,
+        b'\\' => 92,
+        b'\'' => 39,
+        b'"' => 34,
+        b'?' => 63,
+        _ => return None,
+    })
+}
+
+/// A numeric escape's value: `\x` takes any number of hex digits, octal at most three. `None`
+/// when the value does not fit a byte, because C requires it to (`\xff` is 255, `\x1ff` is not
+/// a character) and truncating would be a wrong program rather than a refusal.
+fn numeric_escape(bytes: &[u8], at: &mut usize, radix: u32) -> Option<u8> {
+    let start = *at;
+    let limit = if radix == 8 { 3 } else { usize::MAX };
+    while *at < bytes.len() && (*at - start) < limit && (bytes[*at] as char).is_digit(radix) {
+        *at += 1;
+    }
+    let digits = std::str::from_utf8(&bytes[start..*at]).ok()?;
+    let value = u32::from_str_radix(digits, radix).ok()?;
+    u8::try_from(value).ok()
 }
 
 /// What a string literal spells, byte for byte, without its quotes or the NUL.
@@ -76,36 +103,13 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
         let escape = *bytes.get(at)?;
         at += 1;
         match escape {
-            b'n' => out.push(10),
-            b't' => out.push(9),
-            b'r' => out.push(13),
-            b'a' => out.push(7),
-            b'b' => out.push(8),
-            b'f' => out.push(12),
-            b'v' => out.push(11),
-            b'\\' => out.push(92),
-            b'\'' => out.push(39),
-            b'"' => out.push(34),
-            b'?' => out.push(63),
-            b'x' => {
-                let start = at;
-                while at < bytes.len() && bytes[at].is_ascii_hexdigit() {
-                    at += 1;
-                }
-                let digits = std::str::from_utf8(&bytes[start..at]).ok()?;
-                out.push(u32::from_str_radix(digits, 16).ok()? as u8);
-            }
+            b'x' => out.push(numeric_escape(bytes, &mut at, 16)?),
             b'0'..=b'7' => {
-                let start = at - 1;
-                let mut length = 1;
-                while length < 3 && at < bytes.len() && matches!(bytes[at], b'0'..=b'7') {
-                    at += 1;
-                    length += 1;
-                }
-                let digits = std::str::from_utf8(&bytes[start..at]).ok()?;
-                out.push(u32::from_str_radix(digits, 8).ok()? as u8);
+                // The first digit has already been read; `numeric_escape` wants the cursor on it.
+                at -= 1;
+                out.push(numeric_escape(bytes, &mut at, 8)?);
             }
-            _ => return None,
+            other => out.push(named_escape(other)?),
         }
     }
     Some(out)
@@ -204,6 +208,8 @@ mod tests {
         assert_eq!(string_bytes(r#""\\""#), Some(b"\\".to_vec()));
         assert_eq!(string_bytes(r#""\q""#), None, "an escape nobody reads");
         assert_eq!(string_bytes(r#""\x""#), None, "a hex escape with no digits");
+        // C requires an escape to fit a byte; truncating would be a wrong program, not a refusal.
+        assert_eq!(string_bytes(r#""\x1ff""#), None, "a hex escape above 255");
     }
 
     #[test]
