@@ -37,11 +37,24 @@ impl std::fmt::Debug for Jit {
 }
 
 impl Jit {
+    /// A JIT with no host symbols: the common case.
+    pub fn new() -> Result<Self, String> {
+        // No symbols, so no contract to keep: this is the safe way in.
+        #[allow(unsafe_code)]
+        unsafe {
+            Self::with_symbols(&[])
+        }
+    }
+
     /// A JIT that can call the host functions in `symbols`, by name.
     ///
-    /// Symbols are given at construction because Cranelift's builder takes them there and
-    /// nowhere else; a `Jit` that wants more makes a new one.
-    pub fn new(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+    /// # Safety
+    ///
+    /// Every address must stay valid and keep the signature C would give it for as long as this
+    /// `Jit` lives: compiled code calls through them, and C has nothing to check with. Symbols
+    /// are taken here because Cranelift's builder takes them at construction and nowhere else.
+    #[allow(unsafe_code)]
+    pub unsafe fn with_symbols(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
         let mut flags = settings::builder();
         flags
             .set("opt_level", "none")
@@ -66,17 +79,14 @@ impl Jit {
         let file = SourceFile::new("<jit>", source);
         let options = Options::default();
         let preprocessed = preprocess(&file, &options, &());
-        if preprocessed.has_errors() {
-            return Err(describe(&preprocessed.diagnostics));
-        }
+        // Both stages report the same way, and every error is reported: a host fixing one
+        // mistake at a time is a host that recompiles once per mistake.
+        let mut errors: Vec<String> = Vec::new();
+        collect_errors(&preprocessed.diagnostics, &mut errors);
         let parsed = crate::parse::parse(&preprocessed, &options.budgets);
-        let errors: Vec<&crate::diag::Diagnostic> = parsed
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.is_error())
-            .collect();
-        if let Some(first) = errors.first() {
-            return Err(first.message.clone());
+        collect_errors(&parsed.diagnostics, &mut errors);
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
         let module: CirModule = parsed.module;
         let names = preprocessed.names().clone();
@@ -99,12 +109,13 @@ impl Jit {
     }
 }
 
-fn describe(diagnostics: &[crate::diag::Diagnostic]) -> String {
-    diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic.message.clone())
-        .collect::<Vec<_>>()
-        .join("; ")
+/// Every error in `diagnostics`, in order, as one line each.
+fn collect_errors(diagnostics: &[crate::diag::Diagnostic], into: &mut Vec<String>) {
+    for diagnostic in diagnostics {
+        if diagnostic.is_error() {
+            into.push(diagnostic.message.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +127,7 @@ mod tests {
     /// The acceptance test M4 names: compile a function from a string, call it from Rust.
     #[test]
     fn a_function_compiled_from_a_string_runs() {
-        let mut jit = Jit::new(&[]).expect("a JIT");
+        let mut jit = Jit::new().expect("a JIT");
         jit.add_source("int add(int a, int b) { return a + b; }")
             .expect("it compiles");
         let address = jit.function("add").expect("the function is there");
@@ -128,11 +139,11 @@ mod tests {
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {
-        let mut first = Jit::new(&[]).expect("a JIT");
+        let mut first = Jit::new().expect("a JIT");
         first
             .add_source("int add(int a, int b) { return a + b; }")
             .expect("it compiles");
-        let mut second = Jit::new(&[]).expect("a JIT");
+        let mut second = Jit::new().expect("a JIT");
         second
             .add_source("int add(int a, int b) { return a - b; }")
             .expect("it compiles");
@@ -152,7 +163,7 @@ mod tests {
             .map(|worker| {
                 std::thread::spawn(move || {
                     for round in 0..2 {
-                        let mut jit = Jit::new(&[]).expect("a JIT");
+                        let mut jit = Jit::new().expect("a JIT");
                         jit.add_source("int add(int a, int b) { return a + b; }")
                             .expect("it compiles");
                         let address = jit.function("add").expect("the function is there");
@@ -170,7 +181,7 @@ mod tests {
 
     #[test]
     fn a_source_with_a_mistake_says_so_instead_of_running() {
-        let mut jit = Jit::new(&[]).expect("a JIT");
+        let mut jit = Jit::new().expect("a JIT");
         let error = jit
             .add_source("int add(int a) { return a + `; }")
             .expect_err("this does not compile");

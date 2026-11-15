@@ -78,6 +78,23 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M4.4 follow-up - the JIT's public surface
+
+`Jit` is the first thing a host touches, so its interface was read on its own. Two findings:
+
+1. **A safe constructor took raw pointers.** `Jit::new(&[(&str, *const u8)])` accepted addresses
+   compiled code would call, under a contract nothing checked - and the common case (no host
+   symbols) had to write `&[]` to say so. The rule that applies is "make the common case simple,
+   keep rare options out of the way": `Jit::new()` is safe, and `unsafe fn with_symbols` carries
+   the contract in its doc comment where a caller cannot miss it.
+2. **Two error paths with two shapes.** A preprocessor failure returned every diagnostic joined;
+   a parser failure returned only the first. Same kind of failure, different answer, and a host
+   fixing one mistake per compile is a host that compiles once per mistake. One helper collects
+   every error from both stages; `describe` is gone.
+
+Behaviour unchanged: 124 unit (five for the back end and the JIT), 17 parser, 11 CLI, pp gate,
+fuzz - green; fmt and clippy clean.
+
 ### M4.4 - 2026-11-15 - the JIT, and a review that did not look
 
 The JIT is small: `Jit::new(symbols)`, `add_source`, `function(name)`, one lowering shared with
