@@ -26,19 +26,6 @@ impl Parser<'_> {
             self.leave_nesting();
             return;
         }
-        if self
-            .peek()
-            .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
-            && self.peek_at(1).is_some_and(|next| self.is_punct(next, ":"))
-        {
-            let span = self.span();
-            self.not_implemented(span, "labels and `goto` are not implemented yet (M3.3)");
-            self.bump();
-            self.bump();
-            self.statement();
-            self.leave_nesting();
-            return;
-        }
         let word = self.peek().map(|token| self.spell(token).to_owned());
         match word.as_deref() {
             Some("if") => {
@@ -71,11 +58,35 @@ impl Parser<'_> {
                 self.leave_nesting();
                 return;
             }
-            Some("switch") | Some("case") | Some("default") | Some("goto") => {
-                let span = self.span();
-                let keyword = word.unwrap_or_default();
-                self.not_implemented(span, format!("`{keyword}` is not implemented yet (M3.3)"));
-                self.skip_statement();
+            Some("switch") => {
+                self.switch_statement();
+                self.leave_nesting();
+                return;
+            }
+            Some("case") => {
+                self.case_label();
+                self.leave_nesting();
+                return;
+            }
+            Some("default") => {
+                self.default_label();
+                self.leave_nesting();
+                return;
+            }
+            Some("goto") => {
+                self.goto_statement();
+                self.leave_nesting();
+                return;
+            }
+            // `name :` - a label. Checked after the keyword match, because `case` and
+            // `default` also end in a `:` and are not names.
+            Some(_)
+                if self.peek_at(1).is_some_and(|next| self.is_punct(next, ":"))
+                    && self
+                        .peek()
+                        .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident) =>
+            {
+                self.label_statement();
                 self.leave_nesting();
                 return;
             }
@@ -205,9 +216,12 @@ impl Parser<'_> {
     pub(super) fn loop_control(&mut self, is_break: bool) {
         let span = self.span();
         self.bump();
-        if self.loops == 0 {
-            let word = if is_break { "break" } else { "continue" };
-            self.error(span, format!("`{word}` outside a loop"));
+        // `break` leaves a loop or a `switch`; `continue` needs a real loop.
+        if is_break && self.loops == 0 && self.switches.is_empty() {
+            self.error(span, "`break` outside a loop or `switch`");
+        }
+        if !is_break && self.loops == 0 {
+            self.error(span, "`continue` outside a loop");
         }
         if !self.eat(";") {
             self.error_at_current("expected `;`");
@@ -251,6 +265,102 @@ impl Parser<'_> {
         if !self.eat(";") {
             self.error_at_current("expected `;` after `return`");
             self.skip_until(&[";"], true);
+        }
+    }
+
+    /// `switch ( expression ) statement` - the body is read once; `case` and `default` are
+    /// labels inside it, and where each of them lands is a question for the code generator.
+    pub(super) fn switch_statement(&mut self) {
+        let span = self.span();
+        self.bump();
+        if let Some(condition) = self.parenthesised_condition("`switch`") {
+            if !self.types.is_error(condition.ty) && !self.types.is_integer(condition.ty) {
+                let ty = self.types.describe(condition.ty);
+                self.error(span, format!("`switch` needs an integer, not {ty}"));
+            }
+        }
+        self.switches.push(Switch::default());
+        self.statement();
+        self.switches.pop();
+    }
+
+    /// `case constant :` - C99 6.8.4.2p3: inside a `switch`, and no two the same.
+    pub(super) fn case_label(&mut self) {
+        let span = self.span();
+        self.bump();
+        let value = self.constant_expression();
+        if !self.eat(":") {
+            self.error_at_current("expected `:` after the `case` value");
+        }
+        if let Some(value) = value {
+            let message = match self.switches.last_mut() {
+                Some(current) => {
+                    if current.cases.insert(value) {
+                        None
+                    } else {
+                        Some(format!("this `switch` already has a case for {value}"))
+                    }
+                }
+                None => Some("`case` outside a `switch`".to_owned()),
+            };
+            if let Some(message) = message {
+                self.error(span, message);
+            }
+        }
+        self.statement();
+    }
+
+    /// `default :` - at most one per `switch` (C99 6.8.4.2p3).
+    pub(super) fn default_label(&mut self) {
+        let span = self.span();
+        self.bump();
+        if !self.eat(":") {
+            self.error_at_current("expected `:` after `default`");
+        }
+        let message = match self.switches.last_mut() {
+            Some(current) if current.has_default => {
+                Some("this `switch` already has a `default`".to_owned())
+            }
+            Some(current) => {
+                current.has_default = true;
+                None
+            }
+            None => Some("`default` outside a `switch`".to_owned()),
+        };
+        if let Some(message) = message {
+            self.error(span, message);
+        }
+        self.statement();
+    }
+
+    /// `name :` - a label, which a `goto` anywhere in the function may name (C99 6.2.1p4).
+    pub(super) fn label_statement(&mut self) {
+        let Some(token) = self.peek().copied() else {
+            return;
+        };
+        let span = self.span();
+        self.bump(); // the name
+        self.bump(); // the `:`
+        if self.labels.insert(token.text, span).is_some() {
+            let name = self.spell_of(token.text).to_owned();
+            self.error(span, format!("this function already has a label `{name}`"));
+        }
+        self.statement();
+    }
+
+    /// `goto name ;` - resolved when the function ends, because the label may come later.
+    pub(super) fn goto_statement(&mut self) {
+        let span = self.span();
+        self.bump();
+        match self.peek().copied() {
+            Some(token) if token.kind == crate::lex::TokenKind::Ident => {
+                self.bump();
+                self.gotos.push((token.text, span));
+            }
+            _ => self.error_at_current("expected a label name after `goto`"),
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after `goto`");
         }
     }
 

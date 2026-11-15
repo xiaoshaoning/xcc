@@ -62,15 +62,15 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 |---|---|
 | full C99 operator set and precedence, assignment operators, conditional, comma | `sound` (M3.2), with C's usual arithmetic conversions, array-to-pointer decay and constant folding of integer expressions |
 | casts, `sizeof` a type, `sizeof` an expression | `sound` (M3.2) |
-| `sizeof` a VLA, `offsetof` | `planned` (M3.3, with VLAs) |
+| `sizeof` a VLA, `offsetof` | `planned` (with VLAs) |
 | compound literals, brace initialisers with C's brace elision | `sound` (M3.3) |
-| designated initialisers (`.x = 1`, `[2] = ...`) | `planned` (M3.4) - refused with a diagnostic until then |
+| designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |
 | constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1) |
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
-| `switch`, `goto`, labels | `planned` (M3.3) - refused with a diagnostic until then |
-| initialisation of aggregates, static and automatic | `planned` |
+| `switch`, `goto`, labels | `sound` (M3.4): the controlling expression must be an integer, `case` values unique, one `default`, `goto` may jump forward |
+| initialisation of aggregates, static and automatic | `partial` (M3.3, M3.4): brace lists, elision and designators are checked for type and shape; the values themselves are not lowered until M4 |
 | `__func__` | `planned` |
 
 ## Run time and headers

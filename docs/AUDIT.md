@@ -37,6 +37,25 @@ An audit answers three questions:
 | 2026-11-15 | M3.3 | `tests/corpus` | 464 read | 387 parsed completely | 77 refused (`switch`, `goto`, designators) | 0 | n/a | 3 checker bugs, below |
 | - | M3.4 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
 
+### M3.4 - 2026-11-15 - the corpus, read to the end
+
+The parse gate went from 387 to **395 of 464**; the 69 that are not counted are the ones with
+`#include` (this front end has no headers until M8) and the 26 in `EXPECTED_INVALID`, which are
+programs a conforming C99 compiler must refuse. Nothing in the corpus is refused for being
+unbuilt any more.
+
+Two things the corpus found, both about ordering rather than grammar:
+
+1. **`default:` was read as a label.** A label is `name :`, and `default` ends in a colon too,
+   so the label branch ran before the keyword match. The keyword match now comes first.
+2. **A designator followed by a comma was mistaken for a full aggregate.** `{.y = 2, .x = 1}`
+   reached the "too many initialisers" check because the check ran on the comma, before knowing
+   a designator came after it.
+
+Deliberate ceiling: a designator that names a sub-object - `[1].x = `, `.a.b = ` - is refused
+with one diagnostic instead of half-read, because carrying the cursor back out through the chain
+is not written yet. The GNU `[a ... b]` range is refused for the same reason: it is not C99.
+
 ### M3.3 - 2026-11-15 - aggregates and declarators
 
 The parse gate went from 322 to 387 of 464. Three real bugs, all in the parts where C's

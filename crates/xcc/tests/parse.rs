@@ -205,21 +205,72 @@ fn every_word_that_starts_a_declaration_is_read_as_one() {
 #[test]
 fn what_is_not_implemented_is_said_not_guessed() {
     refuses(
-        "int f(int a) { switch (a) { case 1: return 0; } return 1; }",
-        "`switch` is not implemented yet",
+        "int a[2][2] = {[1][0] = 1};",
+        "a designator that goes deeper than one level is not implemented yet",
+    );
+    refuses("int a[2] = {[0 ... 1] = 3};", "not implemented yet");
+    refuses("int f(void) { asm(\"nop\"); }", "`asm` is not declared");
+}
+
+#[test]
+fn switch_and_goto_are_read() {
+    parses("int f(int a) { switch (a) { case 1: return 0; default: return 1; } }");
+    parses("int f(int a) { switch (a) { case 1: case 2: return 3; } return 0; }");
+    parses("int f(int a) { switch (a) { } return a; }");
+    parses("int f(int a) { switch (a) { case 'x': break; } return a; }");
+    parses("int f(int a) { switch (a) { default: break; } return a; }");
+    parses("int f(int a) { while (a) { switch (a) { case 1: break; } break; } }");
+    parses("int f(int a) { switch (a) { case 1: { int b = 2; return b; } } }");
+    parses("int f(void) { goto done; done: return 0; }");
+    parses("int f(void) { done: return 0; }");
+    parses("int f(int a) { if (a) goto out; return 1; out: return 0; }");
+    parses("int f(void) { for (;;) { if (1) goto done; } done: return 0; }");
+    // A designator moves the cursor and the list carries on from there (C99 6.7.8p17).
+    parses("int a[5] = {[2] = 7};");
+    parses("int a[5] = {1, [3] = 4};");
+    parses("struct P { int x; int y; }; struct P p = {.y = 2, .x = 1};");
+    parses("struct P { int x; int y; }; struct P p = {.x = 1, 2};");
+    parses("union U { int i; char c; }; union U u = {.c = 1};");
+    parses("struct P { int x; int y; }; struct P p = {.y = {2}};");
+}
+
+#[test]
+fn switch_and_goto_mistakes_are_caught() {
+    refuses(
+        "int f(int a) { case 1: return a; }",
+        "`case` outside a `switch`",
     );
     refuses(
-        "int f(void) { goto done; }",
-        "`goto` is not implemented yet",
+        "int f(int a) { default: return a; }",
+        "`default` outside a `switch`",
     );
     refuses(
-        "int f(void) { done: return 0; }",
-        "labels and `goto` are not implemented yet",
+        "int f(int a) { switch (a) { case 1: return 1; case 1: return 2; } }",
+        "already has a case for 1",
     );
     refuses(
-        "int a[2] = {[1] = 3};",
-        "designated initialisers are not implemented yet",
+        "int f(int a) { switch (a) { default: return 1; default: return 2; } }",
+        "already has a `default`",
     );
+    refuses(
+        "int f(int *p) { switch (p) { } }",
+        "`switch` needs an integer",
+    );
+    refuses(
+        "int f(void) { break; }",
+        "`break` outside a loop or `switch`",
+    );
+    refuses(
+        "int f(int a) { switch (a) { case 1: continue; } }",
+        "`continue` outside a loop",
+    );
+    refuses("int f(void) { goto nowhere; }", "no label `nowhere`");
+    refuses("int f(void) { d: d: return 0; }", "already has a label `d`");
+    refuses(
+        "struct P { int x; }; struct P p = {.z = 1};",
+        "no member `z`",
+    );
+    refuses("int a[2] = {[5] = 1};", "past the end");
 }
 
 #[test]

@@ -964,7 +964,8 @@ impl Parser<'_> {
     ///
     /// `braced` says whether this list has braces of its own: only then is a surplus value this
     /// aggregate's problem. A flattened one - `int a[2][3] = {1,2,3,4,5,6}` - hands the values
-    /// after its capacity to the list around it (C99 6.7.8p20).
+    /// after its capacity to the list around it (C99 6.7.8p20). A designator (`[3] = `, `.x = `)
+    /// moves the cursor, and the list carries on from after the element it named (6.7.8p17).
     fn initialise_into(&mut self, ty: TypeId, braced: bool) {
         let span = self.span();
         match self.types.kind(ty) {
@@ -973,11 +974,14 @@ impl Parser<'_> {
                 let mut written = 0u64;
                 let mut first = true;
                 loop {
+                    if self.at_punct("}") || self.at_eof() {
+                        break;
+                    }
                     // Capacity first, then the separator: a nested list must leave the comma
-                    // that belongs to the list around it.
-                    if declared.is_some_and(|declared| written >= declared)
-                        || self.at_punct("}")
-                        || self.at_eof()
+                    // that belongs to the list around it. A designator may come after the
+                    // array is full, so it is checked before capacity.
+                    if !self.designator_follows()
+                        && declared.is_some_and(|declared| written >= declared)
                     {
                         break;
                     }
@@ -985,7 +989,42 @@ impl Parser<'_> {
                         break;
                     }
                     first = false;
-                    self.reject_designator();
+                    if self.at_punct("[") {
+                        self.bump();
+                        match (self.constant_expression(), declared) {
+                            (Some(index), _) if index < 0 => {
+                                self.error(span, format!("`[{index}]` is not a valid index"));
+                            }
+                            (Some(index), Some(declared)) if index as u64 >= declared => {
+                                self.error(
+                                    span,
+                                    format!("this array has {declared} elements, so `[{index}]` is past the end"),
+                                );
+                                written = index as u64;
+                            }
+                            (Some(index), _) => written = index as u64,
+                            (None, _) => {}
+                        }
+                        // The GNU range form is not C99; refuse it with one message rather
+                        // than letting `...` cascade through the list.
+                        if self.at_punct("...") {
+                            self.not_implemented(
+                                span,
+                                "the GNU `[a ... b]` initialiser range is not implemented yet",
+                            );
+                            self.skip_until(&[",", "}"], false);
+                            continue;
+                        }
+                        if !self.eat("]") {
+                            self.error_at_current("expected `]` after a designator");
+                        }
+                        if !self.deeper_designator() && !self.eat("=") {
+                            self.error_at_current("expected `=` after a designator");
+                        }
+                    } else if declared.is_some_and(|declared| written >= declared) {
+                        // The list has filled what room there is; a comma means more came.
+                        break;
+                    }
                     if self.at_punct("{") {
                         self.brace_initializer(element);
                     } else {
@@ -995,8 +1034,6 @@ impl Parser<'_> {
                 }
                 match declared {
                     None => self.types.complete_array(ty, written),
-                    // The list stopped at the last element it had room for; a comma here means
-                    // there were more, which is one error and then the rest is skipped.
                     Some(declared) if braced && written >= declared && self.at_punct(",") => {
                         self.error(
                             span,
@@ -1009,11 +1046,11 @@ impl Parser<'_> {
             }
             Type::Record(record) => {
                 let record = *record;
-                let members: Vec<TypeId> = self
+                let members: Vec<(Option<Symbol>, TypeId)> = self
                     .types
                     .members(record)
                     .iter()
-                    .map(|member| member.ty)
+                    .map(|member| (member.name, member.ty))
                     .collect();
                 let mut at = 0;
                 let mut first = true;
@@ -1021,14 +1058,47 @@ impl Parser<'_> {
                     if self.at_punct("}") || self.at_eof() {
                         break;
                     }
+                    if !self.designator_follows() && at >= members.len() {
+                        if braced {
+                            self.error(span, "too many initialisers for this struct or union");
+                            self.skip_until(&["}"], false);
+                        }
+                        break;
+                    }
                     if !first && !self.eat(",") {
                         break;
                     }
                     first = false;
-                    self.reject_designator();
-                    let Some(member) = members.get(at).copied() else {
-                        self.error(span, "too many initialisers for this struct or union");
-                        self.skip_until(&["}"], false);
+                    if self.at_punct(".") {
+                        self.bump();
+                        let name = self.peek().copied();
+                        match name {
+                            Some(token) if token.kind == crate::lex::TokenKind::Ident => {
+                                self.bump();
+                                match members
+                                    .iter()
+                                    .position(|(member, _)| *member == Some(token.text))
+                                {
+                                    Some(position) => at = position,
+                                    None => {
+                                        let name = self.spell_of(token.text).to_owned();
+                                        self.error(span, format!("this has no member `{name}`"));
+                                    }
+                                }
+                            }
+                            _ => self.error_at_current("expected a member name"),
+                        }
+                        if !self.deeper_designator() && !self.eat("=") {
+                            self.error_at_current("expected `=` after a designator");
+                        }
+                    } else if at >= members.len() {
+                        if braced {
+                            self.error(span, "too many initialisers for this struct or union");
+                            self.skip_until(&["}"], false);
+                        }
+                        break;
+                    }
+                    let Some((_, member)) = members.get(at).copied() else {
                         break;
                     };
                     at += 1;
@@ -1063,15 +1133,30 @@ impl Parser<'_> {
         }
     }
 
-    /// `.x = ...` and `[3] = ...` are not read yet; refuse them where they stand.
-    fn reject_designator(&mut self) {
+    /// Whether a designator comes next, now or after the comma - the reason the capacity check
+    /// cannot simply end the list: `{.y = 2, .x = 1}` goes back up to a full aggregate.
+    fn designator_follows(&self) -> bool {
+        let at = |ahead: usize, punctuation: &str| {
+            self.peek_at(ahead)
+                .is_some_and(|token| self.is_punct(token, punctuation))
+        };
+        at(0, ".") || at(0, "[") || (at(0, ",") && (at(1, ".") || at(1, "[")))
+    }
+
+    /// A designator that names a sub-object of the element it just picked: `[1].x`, `.p.y`.
+    /// Refused rather than half-read, because carrying the cursor back out through the chain
+    /// is not written yet.
+    fn deeper_designator(&mut self) -> bool {
         if !(self.at_punct(".") || self.at_punct("[")) {
-            return;
+            return false;
         }
         let span = self.span();
-        self.not_implemented(span, "designated initialisers are not implemented yet");
+        self.not_implemented(
+            span,
+            "a designator that goes deeper than one level is not implemented yet",
+        );
         self.skip_until(&[",", "}"], false);
-        self.eat(",");
+        true
     }
 
     /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),
@@ -1079,6 +1164,9 @@ impl Parser<'_> {
     pub(super) fn function_body(&mut self, result: TypeId) {
         self.function_result = Some(result);
         self.loops = 0;
+        self.switches.clear();
+        self.labels.clear();
+        self.gotos.clear();
         self.symbols.push();
         for (name, ty, span) in std::mem::take(&mut self.last_parameters) {
             if let Some(name) = name {
@@ -1093,6 +1181,13 @@ impl Parser<'_> {
             }
         }
         self.block_body();
+        let gotos = std::mem::take(&mut self.gotos);
+        for (name, span) in gotos {
+            if !self.labels.contains_key(&name) {
+                let name = self.spell_of(name).to_owned();
+                self.error(span, format!("this function has no label `{name}`"));
+            }
+        }
         self.symbols.pop();
         self.function_result = None;
     }

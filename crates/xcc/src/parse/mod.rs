@@ -24,6 +24,8 @@
 mod expr;
 mod stmt;
 
+use std::collections::HashMap;
+
 use crate::diag::{Diagnostic, Span};
 use crate::intern::Symbol;
 use crate::options::Budgets;
@@ -47,6 +49,9 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Vec<Diagn
         nesting: 0,
         function_result: None,
         loops: 0,
+        switches: Vec::new(),
+        labels: HashMap::new(),
+        gotos: Vec::new(),
         last_parameters: Vec::new(),
     };
     parser.translation_unit();
@@ -90,6 +95,14 @@ const SPECIFIERS: &[&str] = &[
     "struct", "union", "enum",
 ];
 
+/// One `switch` being read: the `case` values seen so far, so a duplicate is caught
+/// (C99 6.8.4.2p3), and whether `default` has been seen.
+#[derive(Default)]
+struct Switch {
+    cases: std::collections::HashSet<i64>,
+    has_default: bool,
+}
+
 struct Parser<'a> {
     preprocessed: &'a Preprocessed,
     /// Position in the token stream.
@@ -104,6 +117,12 @@ struct Parser<'a> {
     function_result: Option<TypeId>,
     /// How many loops surround the statement being read: `break` and `continue` need one.
     loops: usize,
+    /// The `switch`es being read, innermost last, each with the `case` values it already has.
+    switches: Vec<Switch>,
+    /// The labels defined in the function being read, function-scoped (C99 6.2.1p4), and the
+    /// `goto`s that are still waiting for one.
+    labels: HashMap<Symbol, Span>,
+    gotos: Vec<(Symbol, Span)>,
     /// The parameter names of the last function declarator, which a definition declares in its
     /// body's scope.
     last_parameters: Vec<(Option<Symbol>, TypeId, Span)>,

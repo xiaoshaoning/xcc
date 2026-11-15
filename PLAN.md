@@ -114,7 +114,7 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [ ] Acceptance: preprocesses every `.c` and header in borland-reborn's port corpus without
       crashing; token stream matches `clang -E` on the same files except Borland's extensions.
 
-## M3 - parser and types  (XL)  **in progress**: M3.1, M3.2 and M3.3 done; `switch`, `goto` and designators left
+## M3 - parser and types  (XL)  **done**: M3.1 to M3.4
 
 - [x] **M3.1**, declarations: types (an arena, structural identity, Win64 sizes), scopes and
       shadowing, declarations and declarators (pointers, arrays, functions, all nesting),
@@ -138,8 +138,13 @@ Everything after this milestone depends on the API being right, so it comes befo
       `int (*a)[3]` and `int (*table[2])(int)` all work; initialiser lists with C's brace
       elision (`int a[2][2] = {1,2,3,4}`), string initialisers that complete an array's size,
       and compound literals. The parse gate went from 322 to **387 of 464** corpus programs.
-- [ ] **M3.4**, the last 77: `switch`/`case`/`default`, `goto` and labels, designated
-      initialisers (`.x = 1`, `[2] = ...`).
+- [x] **M3.4**, control flow and designators: `switch`/`case`/`default` with the constraints
+      C99 6.8.4.2p3 states (integer controlling expression, no duplicate `case`, one `default`,
+      `break` legal inside a `switch`), `goto` and labels resolved at the end of the function so
+      a forward jump works, and designated initialisers (`[3] = ...`, `.x = ...`) that move the
+      cursor and let the list carry on from there (6.7.8p17). The parse gate went from 387 to
+      **395 of 464**; every program the corpus can offer is now read, so nothing in it is
+      refused for being unbuilt.
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
 - [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,
