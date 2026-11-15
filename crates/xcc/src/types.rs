@@ -68,11 +68,10 @@ pub(crate) struct Types {
     error: TypeId,
 }
 
-// `is_pointer`, `pointee`, `align_of`, `usual_arithmetic` and `is_assignable` have no caller
-// *yet*: they are what the expression checker asks of a type at M3.2, written now because
-// their shapes are what M3.2 reasons about (`same` and `describe` already earn their keep in
-// the parser, and their tests are the specification for the rest). The attribute narrows to
-// those five with the first caller.
+// `align_of`, `is_pointer` and `pointee` have no caller *yet*: they belong to the layout work
+// and to M3.3's structs and function pointers. Everything else here earns its keep in the
+// parser now (`same`, `describe`, `usual_arithmetic`, `is_assignable`, `decay`, `is_error`).
+// The attribute narrows to those three with the first caller.
 #[allow(dead_code)]
 impl Types {
     /// An arena holding the fundamental types.

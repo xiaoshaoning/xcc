@@ -6,9 +6,11 @@ use xcc::{Options, SourceFile};
 fn check(source: &str) -> Vec<String> {
     let file = SourceFile::new("t.c", source);
     let preprocessed = xcc::preprocess(&file, &Options::default(), &());
-    if preprocessed.has_errors() {
-        return Vec::new(); // a program that needs a header: not this test's business
-    }
+    assert!(
+        !preprocessed.has_errors(),
+        "the test source does not preprocess: {:?}",
+        preprocessed.diagnostics
+    );
     // The parser is internal; the public entry point runs it.
     let diagnostics = match xcc::Compile::new(Options::default()).compile("t.c", source) {
         Ok(_) => Vec::new(),
@@ -141,7 +143,11 @@ fn type_mistakes_are_caught() {
     refuses("int f(void) { int x; return x(); }", "cannot call int");
     refuses(
         "int g(int a); int f(void) { return g(1, 2); }",
-        "takes 1 arguments, more were given",
+        "this function takes 1 argument, 2 given",
+    );
+    refuses(
+        "int g(int a); int f(void) { return g(); }",
+        "this function takes 1 argument, 0 given",
     );
     refuses("int f(void) { return y; }", "`y` is not declared");
     refuses("int f(void) { return 1.0 % 2; }", "`%` cannot be applied");
@@ -174,6 +180,26 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses("enum e { A, A };", "is already declared in this scope");
     refuses("int f(int a, int a);", "duplicate parameter `a`");
     refuses("int a[sizeof(void)];", "`sizeof` needs a complete type");
+}
+
+#[test]
+fn every_word_that_starts_a_declaration_is_read_as_one() {
+    // `starts_specifier` asks a list, and the specifier reader has its own match: this pins
+    // them together, so a word added to one and not the other fails here rather than in a
+    // puzzling place later.
+    for word in [
+        "typedef", "extern", "static", "auto", "register", "const", "volatile", "restrict",
+        "inline", "void", "_Bool", "char", "short", "int", "long", "float", "double", "signed",
+        "unsigned", "struct", "union", "enum",
+    ] {
+        let complaints = check(&format!("{word} x;"));
+        assert!(
+            !complaints
+                .iter()
+                .any(|message| message.contains("expected a declaration")),
+            "`{word}` should begin a declaration, but: {complaints:?}"
+        );
+    }
 }
 
 #[test]
