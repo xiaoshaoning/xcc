@@ -215,6 +215,12 @@ The first thing worth showing, and the reason the project exists.
       is an anonymous `Global`, and the back end declares data symbols and writes the bytes.
 - [ ] `xcc-cli -c -o out.obj t.c` and `link.exe` against UCRT (the CLI writes objects, the
       linking is still the host linker's job).
+- [ ] `switch`: the emitter writes a comparison chain after the body and links the arms for
+      fall-through. **The test is already written and `#[ignore]`d** -
+      `back::jit::tests::switch_arms_break_default_and_fall_through` pins `pick(1)==10`,
+      `pick(2)==0`, `pick(3)==30`, `fall(1)==3`, `fall(2)==2`, `fall(9)==9`; run
+      `cargo test -- --ignored` to see it red, and delete one attribute line when it goes green.
+      Nothing else tracks an ignored test, so it is listed here as well.
 - [ ] Minimal `crt`: entry point, `GetCommandLineW` to `argc`/`argv`, environment, exit code,
       stack probing.
 - [ ] Acceptance: `hello.exe` builds on a clean `windows-latest` runner with only VS Build
