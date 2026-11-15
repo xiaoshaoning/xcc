@@ -78,6 +78,24 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M5.1 - 2026-11-15 - a design review of the only new code: one test
+
+Everything written since the last review is documentation (ADR-003, ADR-004) and one integration
+test, `tests/exe.rs`, so that is what got read. Two findings, both small and both real:
+
+1. **The test leaked a temp directory per run.** `temp_dir()` created one and nothing removed it:
+   a slow leak in a drive nobody looks at, and the kind of thing that is nobody's job until it
+   fills a CI disk. It cleans up before it asserts now - cleanup first, so a failed assertion
+   still cannot skip it.
+2. **A hand-written loop over three linker names** where `Iterator::find` says it in one line -
+   clippy pointed at it, which is the argument for running clippy on tests and not only on the
+   library.
+
+One thing checked and left alone: the test **passes when no linker is installed**, with a printed
+message. That is masking information, which the principles warn about - but the alternative
+(failing) would blame the compiler for a missing toolchain. The rule it settles on: skip loudly,
+never silently, and the message names the reason.
+
 ### calls - 2026-11-15 - a design review of call lowering
 
 One finding, and one thing checked because the code made it easy to be wrong.

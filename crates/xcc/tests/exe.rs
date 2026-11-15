@@ -15,12 +15,9 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 
 /// Whether a linker is on this machine: without one there is nothing to test.
 fn linker() -> Option<&'static str> {
-    for candidate in ["cc", "gcc", "clang"] {
-        if Command::new(candidate).arg("--version").output().is_ok() {
-            return Some(candidate);
-        }
-    }
-    None
+    ["cc", "gcc", "clang"]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
 }
 
 #[test]
@@ -49,9 +46,9 @@ fn a_program_links_and_exits_with_its_return_value() {
         String::from_utf8_lossy(&link.stderr)
     );
     let run = Command::new(&exe).output().expect("the program runs");
-    assert_eq!(
-        run.status.code(),
-        Some(42),
-        "the exit status is the return value"
-    );
+    let status = run.status.code();
+    // The binary and the object are somebody's temp directory; a test that leaves one behind on
+    // every run is a slow leak, so it cleans up before it asserts.
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(status, Some(42), "the exit status is the return value");
 }
