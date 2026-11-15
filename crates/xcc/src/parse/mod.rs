@@ -64,6 +64,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         last_declared: None,
         bytes: None,
         offset: 0,
+        literals: 0,
         targets: Vec::new(),
     };
     parser.translation_unit();
@@ -206,6 +207,8 @@ struct Parser<'a> {
     bytes: Option<Vec<u8>>,
     /// The offset into `bytes` that the initialiser being read is at.
     offset: usize,
+    /// How many string literals have been given an anonymous global: `.str0`, `.str1`, ...
+    literals: u32,
     /// Where `break` and `continue` go, innermost last: the block after the loop, and the block
     /// the next iteration starts at.
     targets: Vec<(cir::Block, cir::Block)>,
@@ -503,21 +506,39 @@ impl Parser<'_> {
     /// A run of adjacent string literals: the type C gives them - `char[n]`, where `n` counts
     /// the bytes and the NUL - and how many bytes they spell. Adjacent literals concatenate
     /// (C99 6.4.5p5), so `"ab" "cd"` is one array of five.
-    fn string_literal(&mut self) -> (TypeId, u64) {
+    fn string_literal(&mut self) -> (TypeId, u64, String) {
+        let span = self.span();
         let mut bytes = 0u64;
+        let mut spelling = String::new();
         while let Some(token) = self.peek().copied() {
             if token.kind != crate::lex::TokenKind::Str {
                 break;
             }
-            let spelling = self.spell(&token).to_owned();
+            let written = self.spell(&token).to_owned();
             self.bump();
-            bytes += string_length(&spelling);
+            bytes += string_length(&written);
+            spelling.push_str(&written);
         }
         let char = self
             .types
             .fundamental("char")
             .unwrap_or_else(|| self.types.error());
-        (self.types.array(char, Some(bytes + 1)), bytes)
+        let ty = self.types.array(char, Some(bytes + 1));
+        // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
+        // named with a `.` prefix so it can never collide with a C identifier.
+        let name = format!(".str{}", self.literals);
+        self.literals += 1;
+        let mut init = crate::literal::string_bytes(&spelling).unwrap_or_default();
+        init.push(0);
+        self.globals.push(cir::Global {
+            name: name.clone(),
+            ty,
+            defined: true,
+            init: Some(init),
+            external: false,
+            span,
+        });
+        (ty, bytes, name)
     }
 
     /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value

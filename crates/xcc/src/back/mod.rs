@@ -16,7 +16,9 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module, ModuleError};
+use cranelift_module::{
+    default_libcall_names, DataDescription, DataId, FuncId, Linkage, Module, ModuleError,
+};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 pub mod jit;
@@ -63,6 +65,7 @@ pub fn object(
         types: &module.types,
         names,
         functions: HashMap::new(),
+        data: HashMap::new(),
     };
     // Every function is declared before any is lowered, so calls can be forward references.
     lower_all(&mut lowerer, module)?;
@@ -86,6 +89,7 @@ pub fn lower_into<M: Module>(
         types: &module.types,
         names,
         functions: HashMap::new(),
+        data: HashMap::new(),
     };
     lower_all(&mut lowerer, module)?;
     Ok(lowerer
@@ -99,6 +103,10 @@ fn lower_all<M: Module>(
     lowerer: &mut Lowerer<'_, M>,
     module: &CirModule,
 ) -> Result<(), LoweringError> {
+    // Objects first, so a body can take the address of one declared later.
+    for global in &module.globals {
+        lowerer.declare_data(global)?;
+    }
     for func in &module.funcs {
         lowerer.declare(func)?;
     }
@@ -115,6 +123,8 @@ struct Lowerer<'a, M: Module> {
     names: &'a crate::intern::Interner,
     /// The function each declared name means, so lowering a call can name it.
     functions: HashMap<String, FuncId>,
+    /// The objects each declared name means, so lowering an address can name one.
+    data: HashMap<String, DataId>,
 }
 
 impl<M: Module> Lowerer<'_, M> {
@@ -190,6 +200,35 @@ impl<M: Module> Lowerer<'_, M> {
             .object
             .declare_function(&name, Linkage::Export, &signature)?;
         self.functions.insert(self.name(func).to_owned(), id);
+        Ok(())
+    }
+
+    /// Put a global object in the object file: its size and alignment from the C type, its
+    /// bytes from the front end (ADR-004), or zeroes when the source said nothing.
+    fn declare_data(&mut self, global: &crate::cir::Global) -> Result<(), LoweringError> {
+        let size = self
+            .types
+            .size_of(global.ty)
+            .ok_or_else(|| LoweringError(format!("the object `{}` has no size", global.name)))?;
+        let linkage = if global.external {
+            Linkage::Export
+        } else {
+            Linkage::Local
+        };
+        let id = self
+            .object
+            .declare_data(&global.name, linkage, true, false)?;
+        let mut description = DataDescription::new();
+        match &global.init {
+            Some(bytes) => {
+                description.define(bytes.clone().into_boxed_slice());
+            }
+            // A tentative definition holds zeroes: `.bss`, which costs nothing in the file.
+            None => description.define_zeroinit(size as usize),
+        }
+        description.align = Some(self.types.align_of(global.ty).unwrap_or(1).max(1));
+        self.object.define_data(id, &description)?;
+        self.data.insert(global.name.clone(), id);
         Ok(())
     }
 
@@ -489,10 +528,15 @@ impl<M: Module> Lowerer<'_, M> {
                 let function = self.types.pointee(pointer);
                 let (params, returns) = match self.types.kind(function) {
                     Type::Function { result, params, .. } => (params.clone(), *result),
+                    // An object: its address is the symbol value the linker will resolve.
                     _ => {
-                        return Err(LoweringError(
-                            "the address of something that is not a function".to_owned(),
-                        ))
+                        let id = self.data.get(name.as_str()).copied().ok_or_else(|| {
+                            LoweringError(format!("`{name}` is not declared here"))
+                        })?;
+                        let address = self.object.declare_data_in_func(id, builder.func);
+                        let value = builder.ins().symbol_value(ir::types::I64, address);
+                        values.insert(*result, value);
+                        return Ok(());
                     }
                 };
                 // A function of this unit was declared before any body was lowered, so its id
@@ -626,6 +670,16 @@ mod tests {
             !has(b".pdata") && !has(b".xdata"),
             "a Cranelift win64 object now carries unwind data: see ADR-003 and M5"
         );
+    }
+
+    /// Data in the object: a string literal is an anonymous global (ADR-004), so an object for
+    /// a function that returns one has a section beside `.text` and a symbol for the literal.
+    #[test]
+    fn a_string_literal_becomes_data_in_the_object() {
+        let bytes = object_of("char *g(void) { return \"hi\"; }");
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|window| window == needle);
+        assert!(has(b".str0"), "the literal has a link name");
+        assert!(has(b"hi"), "and its bytes are in the file");
     }
 
     #[test]

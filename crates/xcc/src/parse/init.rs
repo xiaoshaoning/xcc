@@ -34,7 +34,7 @@ impl Parser<'_> {
                 }
                 spelling
             };
-            let (literal, bytes) = self.string_literal();
+            let (literal, bytes, _) = self.string_literal();
             if let Type::Array { element, count } = *self.types.kind(ty) {
                 // C99 6.7.8p14: an array of character type, which `int` is not even though a
                 // `char` converts to one.

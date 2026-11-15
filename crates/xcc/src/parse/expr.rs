@@ -785,8 +785,16 @@ impl Parser<'_> {
             crate::lex::TokenKind::Str => {
                 // A string literal has an array type of its own (C99 6.2.5p20), which is what
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
-                let (ty, _) = self.string_literal();
-                Some(Value::new(ty, None, true))
+                let (ty, _, name) = self.string_literal();
+                let pointer = self.types.pointer(ty);
+                let mut value = Value::new(ty, None, true);
+                if let Some(address) =
+                    self.emit(|builder| builder.global_address(name, pointer, span))
+                {
+                    value.cir = Some(address);
+                    value.place = Some(address);
+                }
+                Some(value)
             }
             crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
                 // `(int)x` is a cast; `(x)` groups.
