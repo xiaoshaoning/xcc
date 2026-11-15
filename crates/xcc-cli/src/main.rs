@@ -122,7 +122,7 @@ fn main() -> ExitCode {
             match compiler.preprocess(&name, &text) {
                 Ok(preprocessed) => print_spellings(&preprocessed),
                 Err(diagnostics) => {
-                    eprintln!("{}", xcc::render_all(&diagnostics, &[source], format));
+                    eprintln!("{}", diagnostics.render(format));
                     status = ExitCode::from(1);
                 }
             }
@@ -146,7 +146,7 @@ fn main() -> ExitCode {
                 }
             }
             Err(diagnostics) => {
-                eprintln!("{}", xcc::render_all(&diagnostics, &[source], format));
+                eprintln!("{}", diagnostics.render(format));
                 status = ExitCode::from(1);
             }
         }

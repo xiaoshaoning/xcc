@@ -11,10 +11,7 @@
 //! let mut compiler = Compile::new(Options::default());
 //! match compiler.compile("t.c", "int add(int a, int b) { return a + b; }\n") {
 //!     Ok(artifact) => println!("{} bytes of object", artifact.object().len()),
-//!     Err(diagnostics) => {
-//!         let text = xcc::render_all(&diagnostics, &[], xcc::Format::Human);
-//!         eprintln!("{text}");
-//!     }
+//!     Err(diagnostics) => eprintln!("{}", diagnostics.render(xcc::Format::Human)),
 //! }
 //! ```
 //!
@@ -44,7 +41,7 @@ mod symtab;
 mod types;
 
 pub use compile::{Artifact, Compile};
-pub use diag::{Diagnostic, Severity, Span};
+pub use diag::{Diagnostic, Diagnostics, Severity, Span};
 pub use intern::{Interner, Symbol};
 pub use lex::{lex, Lexed, Prepared, Token, TokenKind};
 pub use options::{Budgets, CStandard, Options, Stamp};

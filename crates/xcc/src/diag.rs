@@ -129,6 +129,50 @@ impl Diagnostic {
     }
 }
 
+/// Diagnostics, with the sources they are about.
+///
+/// A diagnostic carries a file *name*; turning it into a line and a caret needs that file's
+/// text, which a caller may not have - an include was read by the resolver, not by the caller.
+/// So the two travel together, and [`Diagnostics::render`] is the one call that needs nothing
+/// else.
+#[derive(Debug, Default, Clone)]
+pub struct Diagnostics {
+    items: Vec<Diagnostic>,
+    sources: Vec<crate::source::SourceFile>,
+}
+
+impl Diagnostics {
+    /// Diagnostics about `sources`.
+    pub fn new(items: Vec<Diagnostic>, sources: Vec<crate::source::SourceFile>) -> Self {
+        Self { items, sources }
+    }
+
+    /// The diagnostics themselves, for a host that draws its own.
+    pub fn items(&self) -> &[Diagnostic] {
+        &self.items
+    }
+
+    /// The files they point into.
+    pub fn sources(&self) -> &[crate::source::SourceFile] {
+        &self.sources
+    }
+
+    /// Whether any of them is an error.
+    pub fn has_errors(&self) -> bool {
+        self.items.iter().any(Diagnostic::is_error)
+    }
+
+    /// Whether there are none at all.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    /// Render them all, with positions and carets when the file is at hand.
+    pub fn render(&self, format: crate::render::Format) -> String {
+        crate::render::render_all(&self.items, &self.sources, format)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

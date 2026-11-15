@@ -60,8 +60,9 @@ pub struct Preprocessed {
     /// The tokens, ending with [`TokenKind::Eof`].
     pub tokens: Vec<PpToken>,
     /// The files the tokens came from, in the order they were first read: index 0 is the
-    /// source handed to [`preprocess`], the rest are what it included.
-    pub files: Vec<String>,
+    /// source handed to [`preprocess`], the rest are what it included. Their text travels with
+    /// them, so a diagnostic inside an included file can be rendered with a line and a caret.
+    pub files: Vec<SourceFile>,
     /// Errors and warnings, in the order they were found.
     pub diagnostics: Vec<Diagnostic>,
     /// The names the tokens are spelled with: ids are only meaningful with the table that
@@ -131,10 +132,10 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
     }
     preprocessor.run();
     // Take the pieces out one at a time: the preprocessor still borrows the interner.
-    let files: Vec<String> = preprocessor
+    let files: Vec<SourceFile> = preprocessor
         .files
         .iter()
-        .map(|entry| entry.physical.clone())
+        .map(|entry| entry.source.clone())
         .collect();
     let diagnostics = std::mem::take(&mut preprocessor.diagnostics);
     let tokens = std::mem::take(&mut preprocessor.out);
@@ -1996,7 +1997,14 @@ yes
     fn included_tokens_say_which_file_they_came_from() {
         let file = SourceFile::new("t.c", "#include \"b.h\"\nx\n");
         let preprocessed = preprocess(&file, &Options::default(), &Map::new(&[("b.h", "y\n")]));
-        assert_eq!(preprocessed.files, ["t.c", "b.h"]);
+        assert_eq!(
+            preprocessed
+                .files
+                .iter()
+                .map(SourceFile::name)
+                .collect::<Vec<_>>(),
+            ["t.c", "b.h"]
+        );
         let y = preprocessed
             .tokens
             .iter()

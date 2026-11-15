@@ -68,11 +68,11 @@ pub(crate) struct Types {
     error: TypeId,
 }
 
-// The comparison and conversion API (`same`, `is_pointer`, `pointee`, `align_of`,
-// `is_complete`, `describe`, `usual_arithmetic`, `is_assignable`) has no caller *yet*: it is
-// what the expression checker at M3.2 asks of a type. It is written now because the shapes are
-// what M3.2 reasons about, and marked here rather than left to rustc's warning to explain. The
-// attribute comes off with the first caller.
+// `is_pointer`, `pointee`, `align_of`, `usual_arithmetic` and `is_assignable` have no caller
+// *yet*: they are what the expression checker asks of a type at M3.2, written now because
+// their shapes are what M3.2 reasons about (`same` and `describe` already earn their keep in
+// the parser, and their tests are the specification for the rest). The attribute narrows to
+// those five with the first caller.
 #[allow(dead_code)]
 impl Types {
     /// An arena holding the fundamental types.
@@ -404,6 +404,9 @@ impl Types {
                 self.is_arithmetic(from) && self.is_arithmetic(to)
             }
             (Type::Pointer(_), Type::Pointer(_)) => true,
+            // Not yet right: what converts to a pointer is the *null pointer constant*, which
+            // is a property of the value, not of the type. `1: ... => false` until the
+            // expression checker can test the value (M3.2), so this cannot accept `p = 42;`.
             (Type::Pointer(_), Type::Int { bits, .. }) => *bits == 64,
             (Type::Array { element: a, .. }, Type::Pointer(_)) => self.same(*a, self.pointee(from)),
             _ => false,

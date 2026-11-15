@@ -23,7 +23,7 @@
 
 use crate::diag::{Diagnostic, Span};
 use crate::intern::Symbol;
-use crate::options::{Budgets, CStandard};
+use crate::options::Budgets;
 use crate::pp::{PpToken, Preprocessed};
 use crate::symtab::{Entry, Kind, Symbols};
 use crate::types::{Type, TypeId, Types};
@@ -33,11 +33,7 @@ use crate::types::{Type, TypeId, Types};
 /// Returns every diagnostic, in source order. An empty list means the declarations are
 /// well formed and typed; it says nothing about the code an expression would generate, because
 /// there is no code generation yet.
-pub(crate) fn parse(
-    preprocessed: &Preprocessed,
-    budgets: &Budgets,
-    _std: CStandard,
-) -> ParseResult {
+pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Vec<Diagnostic> {
     let mut parser = Parser {
         preprocessed,
         at: 0,
@@ -48,23 +44,7 @@ pub(crate) fn parse(
         nesting: 0,
     };
     parser.translation_unit();
-    ParseResult {
-        diagnostics: parser.diagnostics,
-    }
-}
-
-/// What parsing produced: everything that was wrong with it.
-#[derive(Debug, Default)]
-pub(crate) struct ParseResult {
-    /// Errors and warnings, in source order.
-    pub diagnostics: Vec<Diagnostic>,
-}
-
-impl ParseResult {
-    /// Whether anything went wrong badly enough to stop.
-    pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(Diagnostic::is_error)
-    }
+    parser.diagnostics
 }
 
 struct Parser<'a> {
@@ -169,7 +149,7 @@ impl Parser<'_> {
             .preprocessed
             .files
             .get(file as usize)
-            .cloned()
+            .map(|source| source.name().to_owned())
             .unwrap_or_default();
         self.diagnostics
             .push(diagnostic.with_file(name).with_span(span));
@@ -200,14 +180,13 @@ impl Parser<'_> {
 
     /// A declaration or function definition, ending at `;` or a body.
     fn external_declaration(&mut self) {
-        let declaration = self.declaration();
-        let Some(declaration) = declaration else {
-            self.skip_to_semicolon();
+        let Some(declared) = self.declaration() else {
+            self.skip_until(&[";"], true);
             return;
         };
         if self.at_punct("{") {
             // M3.2: statements.
-            if matches!(self.types.kind(declaration.ty), Type::Function { .. }) {
+            if matches!(self.types.kind(declared), Type::Function { .. }) {
                 self.not_implemented(
                     self.span(),
                     "function bodies are not implemented yet (M3.2)",
@@ -221,13 +200,25 @@ impl Parser<'_> {
         }
         if !self.eat(";") {
             self.error_at_current("expected `;` after a declaration");
-            self.skip_to_semicolon();
+            self.skip_until(&[";"], true);
         }
     }
 
     /// One declaration: specifiers, then one or more declarators.
-    fn declaration(&mut self) -> Option<Declared> {
-        let specs = self.declaration_specifiers()?;
+    /// One declaration: specifiers, then one or more declarators. Returns the last type it
+    /// declared, which is what tells a definition from a declaration.
+    fn declaration(&mut self) -> Option<TypeId> {
+        let specs = self.declaration_specifiers();
+        let Some(base) = specs.ty else {
+            let span = self.span();
+            self.error(span, "expected a type specifier");
+            self.skip_until(&[";"], true);
+            return None;
+        };
+        let specs = Specifiers {
+            ty: Some(base),
+            ..specs
+        };
         let mut last = None;
         loop {
             let base = specs.ty.unwrap_or_else(|| self.types.error());
@@ -246,10 +237,8 @@ impl Parser<'_> {
                         };
                         let _ = self.symbols.declare(name, entry);
                     }
-                    self.skip_before_semicolon();
-                    return Some(Declared {
-                        ty: self.types.error(),
-                    });
+                    self.skip_until(&[";"], false);
+                    return Some(self.types.error());
                 }
                 None => return last,
             };
@@ -267,7 +256,7 @@ impl Parser<'_> {
             if name.is_none() {
                 // `enum E { A, B };` declares a tag and nothing else, which C allows.
                 if specs.declares_tag && last.is_none() {
-                    return Some(Declared { ty });
+                    return Some(ty);
                 }
                 let span = self.span();
                 self.error(span, "declaration does not declare anything");
@@ -275,20 +264,38 @@ impl Parser<'_> {
             }
             if let Some(name) = name {
                 let span = self.span();
-                if let Err(previous) = self.symbols.declare(name, entry) {
+                // C allows a redeclaration with the same type and kind - `extern int x;` twice,
+                // or two tentative definitions of one object - and makes everything else an
+                // error. An enumerator is never redeclarable: two enumerations in one scope
+                // may not share a name.
+                let compatible = match self.symbols.here(name) {
+                    None => true,
+                    Some(previous) => {
+                        !matches!(entry.kind, Kind::EnumConst(_))
+                            && previous.kind == entry.kind
+                            && self.types.same(previous.ty, entry.ty)
+                    }
+                };
+                if compatible {
+                    let _ = self.symbols.declare(name, entry);
+                } else {
                     let spelling = self.spell_of(name).to_owned();
+                    let previous = self
+                        .symbols
+                        .here(name)
+                        .map(|previous| self.types.describe(previous.ty))
+                        .unwrap_or_default();
                     self.error(
                         span,
-                        format!("`{spelling}` is already declared in this scope"),
+                        format!("`{spelling}` is already declared in this scope as {previous}"),
                     );
-                    let _ = previous;
                 }
             }
             // An initialiser: only a constant expression, for now.
             if self.eat("=") {
                 self.initializer(ty);
             }
-            last = Some(Declared { ty });
+            last = Some(ty);
             if !self.eat(",") {
                 return last;
             }
@@ -301,7 +308,7 @@ impl Parser<'_> {
     }
 
     /// Storage class, qualifiers and type specifiers, in any order.
-    fn declaration_specifiers(&mut self) -> Option<Specifiers> {
+    fn declaration_specifiers(&mut self) -> Specifiers {
         let mut specs = Specifiers::default();
         let mut spelled: Vec<String> = Vec::new();
         loop {
@@ -314,8 +321,7 @@ impl Parser<'_> {
                     if word == "typedef" {
                         specs.is_typedef = true;
                     }
-                    spelled.push(word);
-                    self.at += 1;
+                    self.at += 1; // a storage class is not part of the type
                 }
                 "const" | "volatile" | "restrict" | "inline" => {
                     self.at += 1; // qualifiers carry no meaning in M3.1
@@ -368,13 +374,9 @@ impl Parser<'_> {
     /// C's type specifiers are a set, not a sequence: `unsigned long long int` and
     /// `long int unsigned long` mean the same thing. So the words are *counted*, not read in
     /// order, and the counts decide the type.
-    fn finish_specifiers(
-        &mut self,
-        mut specs: Specifiers,
-        spelled: Vec<String>,
-    ) -> Option<Specifiers> {
+    fn finish_specifiers(&mut self, mut specs: Specifiers, spelled: Vec<String>) -> Specifiers {
         if specs.ty.is_some() {
-            return Some(specs);
+            return specs;
         }
         let words: Vec<&str> = spelled
             .iter()
@@ -386,15 +388,15 @@ impl Parser<'_> {
 
         if count("void") > 0 {
             specs.ty = Some(self.types.fundamental("void").unwrap());
-            return Some(specs);
+            return specs;
         }
         if count("_Bool") > 0 {
             specs.ty = Some(self.types.fundamental("_Bool").unwrap());
-            return Some(specs);
+            return specs;
         }
         if count("float") > 0 {
             specs.ty = Some(self.types.fundamental("float").unwrap());
-            return Some(specs);
+            return specs;
         }
         if count("double") > 0 {
             // `long double` is 64 bits in this ABI, and says so in its spelling.
@@ -404,13 +406,12 @@ impl Parser<'_> {
                 "double"
             };
             specs.ty = Some(self.types.fundamental(name).unwrap());
-            return Some(specs);
+            return specs;
         }
         if words.is_empty() {
-            let span = self.span();
-            self.error(span, "expected a type specifier");
-            specs.ty = Some(self.types.error());
-            return Some(specs);
+            // No type specifier at all. Whether that is an error depends on who asked: a
+            // declaration must have one, a `sizeof (` may be the start of an expression.
+            return specs;
         }
         let bits = if count("char") > 0 {
             8
@@ -422,7 +423,7 @@ impl Parser<'_> {
             32 // `int`, and `long`, which is 32 here
         };
         specs.ty = Some(self.types.integer_with(signed, bits));
-        Some(specs)
+        specs
     }
 
     /// `enum E { A, B = 3 }` and `enum E` and `enum { ... }`.
@@ -445,7 +446,7 @@ impl Parser<'_> {
             };
             if token.kind != crate::lex::TokenKind::Ident {
                 self.error(token.span, "expected an enumerator name");
-                self.skip_to_semicolon();
+                self.skip_until(&[";"], true);
                 return int;
             }
             self.bump();
@@ -513,9 +514,12 @@ impl Parser<'_> {
         Some(Declarator::Read(name, ty))
     }
 
+    /// What follows a declarator: `[count]` and `(parameters)`, in any order.
     fn declarator_suffixes(&mut self, mut ty: TypeId) -> TypeId {
         loop {
             if self.eat("[") {
+                // An empty size is an incomplete array (`int a[]`), and its count is filled in
+                // by the initialiser once there is one (M3.3).
                 let count = if self.at_punct("]") {
                     None
                 } else {
@@ -528,68 +532,76 @@ impl Parser<'_> {
                 continue;
             }
             if self.eat("(") {
-                let mut params = Vec::new();
-                let mut variadic = false;
-                if self.eat(")") {
-                    ty = self.types.function(ty, params, variadic);
-                    continue;
-                }
-                // Parameters live in a scope of their own (C99 6.2.1p4), which is why
-                // `int f(int a, int a)` is an error and why these names vanish afterwards.
-                self.symbols.push();
-                if self.at_word("void") && self.peek_at(1).is_some_and(|t| self.is_punct(t, ")")) {
-                    self.bump();
-                    self.eat(")");
-                    self.symbols.pop();
-                    ty = self.types.function(ty, params, variadic);
-                    continue;
-                }
-                loop {
-                    if self.eat("...") {
-                        variadic = true;
-                        break;
-                    }
-                    let Some(specs) = self.declaration_specifiers() else {
-                        break;
-                    };
-                    let base = specs.ty.unwrap_or_else(|| self.types.error());
-                    let ty = match self.declarator(base) {
-                        Some(Declarator::Refused(_)) => {
-                            // Skip what is left of this parameter - `[3]` after a refused
-                            // `(*p)`, say - so the loop can find its `,` or `)`.
-                            self.skip_to_parameter_boundary();
-                            base
-                        }
-                        Some(Declarator::Read(name, parameter)) => {
-                            if let Some(name) = name {
-                                let span = self.span();
-                                let entry = Entry {
-                                    ty: parameter,
-                                    kind: Kind::Variable,
-                                    span,
-                                };
-                                if self.symbols.declare(name, entry).is_err() {
-                                    let spelling = self.spell_of(name).to_owned();
-                                    self.error(span, format!("duplicate parameter `{spelling}`"));
-                                }
-                            }
-                            parameter
-                        }
-                        None => base,
-                    };
-                    params.push(ty);
-                    if !self.eat(",") {
-                        break;
-                    }
-                }
-                if !self.eat(")") {
-                    self.error_at_current("expected `)` after the parameters");
-                }
-                self.symbols.pop();
+                let (params, variadic) = self.parameter_list();
                 ty = self.types.function(ty, params, variadic);
                 continue;
             }
             return ty;
+        }
+    }
+
+    /// The parameters of a function declarator, from inside the parentheses to past the `)`.
+    ///
+    /// They live in a scope of their own (C99 6.2.1p4), which is why `int f(int a, int a)` is
+    /// an error and why these names are gone afterwards.
+    fn parameter_list(&mut self) -> (Vec<TypeId>, bool) {
+        let mut params = Vec::new();
+        let mut variadic = false;
+        self.symbols.push();
+        if self.eat(")") {
+            self.symbols.pop();
+            return (params, variadic);
+        }
+        if self.at_word("void") && self.peek_at(1).is_some_and(|t| self.is_punct(t, ")")) {
+            self.bump();
+            self.eat(")");
+            self.symbols.pop();
+            return (params, variadic);
+        }
+        loop {
+            if self.eat("...") {
+                variadic = true;
+                break;
+            }
+            let specs = self.declaration_specifiers();
+            let base = specs.ty.unwrap_or_else(|| self.types.error());
+            let ty = match self.declarator(base) {
+                Some(Declarator::Refused(_)) => {
+                    // Skip what is left of this parameter - `[3]` after a refused `(*p)`, say -
+                    // so the loop can find its `,` or `)`.
+                    self.skip_until(&[",", ")"], false);
+                    base
+                }
+                Some(Declarator::Read(name, parameter)) => {
+                    if let Some(name) = name {
+                        self.declare_parameter(name, parameter);
+                    }
+                    parameter
+                }
+                None => base,
+            };
+            params.push(ty);
+            if !self.eat(",") {
+                break;
+            }
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the parameters");
+        }
+        self.symbols.pop();
+        (params, variadic)
+    }
+
+    fn declare_parameter(&mut self, name: Symbol, ty: TypeId) {
+        let span = self.span();
+        let entry = Entry {
+            ty,
+            kind: Kind::Variable,
+            span,
+        };
+        if self.symbols.declare(name, entry).is_err() {
+            let spelling = self.spell_of(name).to_owned();
+            self.error(span, format!("duplicate parameter `{spelling}`"));
         }
     }
 
@@ -685,9 +697,17 @@ impl Parser<'_> {
         }
         if self.at_word("sizeof") {
             self.bump();
-            if self.at_punct("(") && self.looks_like_type_name() {
+            if self.at_punct("(") {
                 self.bump();
-                let ty = self.type_name();
+                let Some(ty) = self.try_type_name() else {
+                    // `sizeof` an expression: the expression checker arrives at M3.2.
+                    self.not_implemented(
+                        self.span(),
+                        "`sizeof` an expression is not implemented yet (M3.2)",
+                    );
+                    self.skip_until(&[")"], true);
+                    return Some(Constant::NotConstant);
+                };
                 if !self.eat(")") {
                     self.error_at_current("expected `)`");
                 }
@@ -762,53 +782,22 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether the tokens at the cursor start a type name (`(int)`, `(unsigned char *)`).
-    fn looks_like_type_name(&self) -> bool {
-        let mut ahead = 1; // past the `(`
-        while let Some(token) = self.peek_at(ahead) {
-            let word = self.spell(token);
-            let known = matches!(
-                word,
-                "void"
-                    | "_Bool"
-                    | "char"
-                    | "short"
-                    | "int"
-                    | "long"
-                    | "float"
-                    | "double"
-                    | "signed"
-                    | "unsigned"
-                    | "const"
-                    | "volatile"
-                    | "restrict"
-            ) || self.symbols.typedef(token.text).is_some();
-            if !known {
-                return false;
-            }
-            ahead += 1;
-            if self.peek_at(ahead).is_some_and(|t| self.is_punct(t, "*")) {
-                return true;
-            }
-            if self.peek_at(ahead).is_some_and(|t| self.is_punct(t, ")")) {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// A type name, for `sizeof(...)`: specifiers and an abstract declarator.
-    fn type_name(&mut self) -> TypeId {
-        match self.declaration_specifiers() {
-            Some(specs) => {
-                let base = specs.ty.unwrap_or_else(|| self.types.error());
-                match self.declarator(base) {
-                    Some(Declarator::Read(_, ty)) => ty,
-                    _ => base,
-                }
-            }
-            None => self.types.error(),
-        }
+    /// Read a type name, or put the cursor back and say there was none.
+    ///
+    /// This is how `sizeof (` tells `sizeof (int)` from `sizeof (x)`: by trying. The
+    /// alternative is a lookahead that lists the type keywords again, and a list that has to
+    /// agree with `declaration_specifiers` is a list that will stop agreeing.
+    fn try_type_name(&mut self) -> Option<TypeId> {
+        let before = self.at;
+        let specs = self.declaration_specifiers();
+        let Some(base) = specs.ty else {
+            self.at = before;
+            return None;
+        };
+        Some(match self.declarator(base) {
+            Some(Declarator::Read(_, ty)) => ty,
+            _ => base,
+        })
     }
 
     /// `= <constant>` for a scalar, with a diagnostic for what is not supported yet.
@@ -835,7 +824,7 @@ impl Parser<'_> {
             let span = self.span();
             self.error(span, "expected an initialiser");
         }
-        self.skip_expression_remainder();
+        self.skip_until(&[",", ";"], false);
         let _ = ty;
     }
 
@@ -846,65 +835,40 @@ impl Parser<'_> {
         self.error(span, message);
     }
 
-    fn skip_before_semicolon(&mut self) {
-        while let Some(token) = self.peek() {
-            if self.is_punct(token, ";") || self.is_punct(token, "}") || self.at_eof() {
-                return;
-            }
-            self.bump();
-        }
-    }
-
-    fn skip_to_semicolon(&mut self) {
-        while let Some(token) = self.peek() {
-            if self.is_punct(token, ";") || self.at_eof() {
-                self.bump();
-                return;
-            }
-            if self.is_punct(token, "}") {
-                return;
-            }
-            self.bump();
-        }
-    }
-
-    /// Skip the rest of an expression up to the `,` or `;` that ends it.
-    fn skip_expression_remainder(&mut self) {
+    /// Skip tokens until one of `delimiters` is reached at depth 0, or a `}` that closes the
+    /// enclosing block. `consume` takes the delimiter as well.
+    ///
+    /// Four recoveries are this function with a different list - to the end of a declaration,
+    /// of an initialiser, of a parameter - and they looked different only because each had its
+    /// own copy of the depth arithmetic.
+    fn skip_until(&mut self, delimiters: &[&str], consume: bool) {
         let mut depth = 0usize;
         while let Some(token) = self.peek() {
-            match self.spell(token) {
+            let spelling = self.spell(token).to_owned();
+            match spelling.as_str() {
                 "(" | "[" | "{" => depth += 1,
                 ")" | "]" | "}" => {
                     if depth == 0 {
+                        if spelling == "}" {
+                            return; // never skip past the block enclosing this recovery
+                        }
+                        if consume && delimiters.contains(&spelling.as_str()) {
+                            self.bump();
+                        }
                         return;
                     }
                     depth -= 1;
                 }
-                "," | ";" if depth == 0 => return,
-                _ => {}
+                _ => {
+                    if depth == 0 && delimiters.contains(&spelling.as_str()) {
+                        if consume {
+                            self.bump();
+                        }
+                        return;
+                    }
+                }
             }
             if self.at_eof() {
-                return;
-            }
-            self.bump();
-        }
-    }
-
-    /// Skip to the `,` or `)` that ends a parameter, without consuming it.
-    fn skip_to_parameter_boundary(&mut self) {
-        let mut depth = 0usize;
-        while let Some(token) = self.peek() {
-            if self.is_punct(token, "(") || self.is_punct(token, "[") || self.is_punct(token, "{") {
-                depth += 1;
-            } else if self.is_punct(token, ")")
-                || self.is_punct(token, "]")
-                || self.is_punct(token, "}")
-            {
-                if depth == 0 {
-                    return;
-                }
-                depth -= 1;
-            } else if (self.is_punct(token, ",") && depth == 0) || self.at_eof() {
                 return;
             }
             self.bump();
@@ -976,6 +940,11 @@ impl Parser<'_> {
 
     // ---- nesting budget -------------------------------------------------------
 
+    /// Take one level of the nesting budget.
+    ///
+    /// Every early return between this and `leave_nesting` leaks a level, and a leak *lowers*
+    /// the budget for everything after it in the file, silently. It is one call pair today;
+    /// when the parser grows, replace it with a guard whose `Drop` gives the level back.
     fn enter_nesting(&mut self) -> bool {
         if self.nesting >= self.budgets.max_nesting {
             let span = self.span();
@@ -1004,12 +973,6 @@ struct Specifiers {
     /// when `T` is a typedef, so the loop must not treat a typedef name as a specifier once a
     /// type has been named (C99 6.7.2p2).
     has_type_specifier: bool,
-}
-
-/// What one declarator declared.
-#[derive(Debug)]
-struct Declared {
-    ty: TypeId,
 }
 
 /// What parsing one declarator produced.

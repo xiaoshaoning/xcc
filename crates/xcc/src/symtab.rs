@@ -79,6 +79,12 @@ impl Symbols {
         Ok(())
     }
 
+    /// The declaration of `name` in the innermost scope, if this scope has one: what a
+    /// redeclaration has to be compared with.
+    pub fn here(&self, name: Symbol) -> Option<&Entry> {
+        self.scopes.last().and_then(|scope| scope.get(&name))
+    }
+
     /// The innermost declaration of `name`.
     pub fn lookup(&self, name: Symbol) -> Option<&Entry> {
         self.scopes.iter().rev().find_map(|scope| scope.get(&name))

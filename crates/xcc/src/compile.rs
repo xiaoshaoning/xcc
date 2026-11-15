@@ -1,6 +1,6 @@
 //! One compilation: the front end, the back end and the artefact it leaves behind.
 
-use crate::diag::{Diagnostic, Severity, Span};
+use crate::diag::{Diagnostic, Diagnostics, Severity, Span};
 use crate::options::Options;
 use crate::pp::{self, Includes};
 use crate::source::SourceFile;
@@ -62,11 +62,7 @@ impl Compile {
     ///
     /// This is what `-E` prints and what a depfile lists, and it is the whole front end up to
     /// the parser: a host can run it on its own without asking for an object.
-    pub fn preprocess(
-        &self,
-        name: &str,
-        source: &str,
-    ) -> Result<pp::Preprocessed, Vec<Diagnostic>> {
+    pub fn preprocess(&self, name: &str, source: &str) -> Result<pp::Preprocessed, Diagnostics> {
         let file = SourceFile::new(name, source);
         if file.len() as usize > self.options.budgets.max_source_bytes {
             let error = Diagnostic::error(format!(
@@ -75,12 +71,13 @@ impl Compile {
                 self.options.budgets.max_source_bytes
             ))
             .with_file(name);
-            return Err(truncate_diagnostics(vec![error], &self.options));
+            let items = truncate_diagnostics(vec![error], &self.options);
+            return Err(Diagnostics::new(items, vec![file]));
         }
         let preprocessed = pp::preprocess(&file, &self.options, &*self.includes);
         if preprocessed.has_errors() {
-            let diagnostics = preprocessed.diagnostics.clone();
-            return Err(truncate_diagnostics(diagnostics, &self.options));
+            let items = truncate_diagnostics(preprocessed.diagnostics.clone(), &self.options);
+            return Err(Diagnostics::new(items, preprocessed.files.clone()));
         }
         Ok(preprocessed)
     }
@@ -93,20 +90,21 @@ impl Compile {
     ///
     /// Takes `&mut self` although nothing is kept yet: the preprocessor's arenas and interner
     /// arrive with M2, and callers should not have to change because of it.
-    pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Vec<Diagnostic>> {
+    pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Diagnostics> {
         let mut diagnostics = Vec::new();
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
         let preprocessed = self.preprocess(name, source)?;
+        let sources = preprocessed.files.clone();
         diagnostics.extend(preprocessed.diagnostics.clone());
 
         // Declarations and their types: the first slice of M3.
-        let parsed =
-            crate::parse::parse(&preprocessed, &self.options.budgets, self.options.standard);
-        let failed = parsed.has_errors();
-        diagnostics.extend(parsed.diagnostics);
+        let parsed = crate::parse::parse(&preprocessed, &self.options.budgets);
+        let failed = parsed.iter().any(Diagnostic::is_error);
+        diagnostics.extend(parsed);
         if failed {
-            return Err(truncate_diagnostics(diagnostics, &self.options));
+            let items = truncate_diagnostics(diagnostics, &self.options);
+            return Err(Diagnostics::new(items, sources));
         }
 
         // M3 continues with statements and expressions; M4 generates code.
@@ -116,7 +114,8 @@ impl Compile {
                 .with_span(Span::at(0))
                 .with_note("M3 adds statements and expressions; M4 generates code"),
         );
-        Err(truncate_diagnostics(diagnostics, &self.options))
+        let items = truncate_diagnostics(diagnostics, &self.options);
+        Err(Diagnostics::new(items, sources))
     }
 }
 
@@ -151,7 +150,9 @@ mod tests {
         let mut compiler = Compile::new(options);
         let errors = compiler
             .compile("t.c", "int main(void) { return 0; }")
-            .unwrap_err();
+            .unwrap_err()
+            .items()
+            .to_vec();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].severity, Severity::Error);
         assert!(errors[0].message.contains("more than the 8"));
@@ -166,7 +167,9 @@ mod tests {
                 "t.c", "int x;
 ",
             )
-            .unwrap_err();
+            .unwrap_err()
+            .items()
+            .to_vec();
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
@@ -186,7 +189,9 @@ mod tests {
                 "int main(void) { return 0; }
 ",
             )
-            .unwrap_err();
+            .unwrap_err()
+            .items()
+            .to_vec();
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,
@@ -203,7 +208,9 @@ mod tests {
                 "char *s = \"abc;
 ",
             )
-            .unwrap_err();
+            .unwrap_err()
+            .items()
+            .to_vec();
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors[0].message,

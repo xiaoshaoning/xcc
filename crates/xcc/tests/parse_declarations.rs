@@ -12,7 +12,7 @@ fn check(source: &str) -> Vec<String> {
     // The parser is internal; the public entry point runs it.
     let diagnostics = match xcc::Compile::new(Options::default()).compile("t.c", source) {
         Ok(_) => Vec::new(),
-        Err(diagnostics) => diagnostics,
+        Err(diagnostics) => diagnostics.items().to_vec(),
     };
     diagnostics
         .into_iter()
@@ -59,6 +59,9 @@ fn simple_declarations_parse() {
     parses("int x = 3, y = -2, z = 'a';");
     parses("int *p = 0;");
     parses("char *s = \"text\";");
+    // C allows a compatible redeclaration, and two tentative definitions of one object.
+    parses("int x; int x;");
+    parses("extern int x; extern int x;");
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses("x;", "expected a type specifier");
     refuses("int x", "expected `;` after a declaration");
     refuses("int 3x;", "declaration does not declare anything");
-    refuses("int x; int x;", "is already declared in this scope");
+    refuses("int x; long long x;", "is already declared in this scope");
     refuses("typedef int T; int T;", "is already declared in this scope");
     refuses("enum e { A, A };", "is already declared in this scope");
     refuses("int f(int a, int a);", "duplicate parameter `a`");
@@ -156,6 +159,10 @@ fn every_corpus_program_is_read_without_panicking_or_surprising_itself() {
         }
         // Every refusal must be a *known* one: something M3 has not built yet. Anything else
         // would be a parse that went wrong on real C.
+        //
+        // This leans on the wording of the message: renaming "not implemented yet (M3." would
+        // break this test rather than the compiler. A `Diagnostic` code would be sturdier, and
+        // is worth adding the first time it is needed for anything else.
         for complaint in &complaints {
             let known = complaint.contains("not implemented yet (M3.")
                 || complaint.contains("code generator");
