@@ -1,53 +1,103 @@
 # xcc
 
-A small, embeddable C compiler for Windows x86-64, written in Rust.
+A small, embeddable C compiler for Windows x86-64, written in Rust. MIT.
 
-`xcc` compiles C to native code in-process: to a COFF object you link, or to a JIT module
-you call as a function pointer. It is meant to be embedded in other programs (scripting
-hosts, editors, plugin systems, test harnesses), not to replace clang.
+`xcc` compiles C to native code in-process: to a COFF object you link, or to a JIT module whose
+functions you call as function pointers. It is meant to be embedded in programs that need to run
+C they did not ship with - a game's mod scripts, a plugin host, a teaching tool - so there is no
+global state: every compilation owns everything it touches, and two can run on two threads.
 
-- Fast: no optimisation pass by default, compile-and-call in milliseconds.
-- Safe to embed: no global state, compiles in parallel, limits on untrusted input, no panics.
-- Small: one static binary, one `.dll`, no toolchain needed to compile; the Windows SDK is
-  needed only to link a final `.exe`.
-- C99, the whole standard, plus the C11 pieces a scripting host meets; `long long` included.
+## What works today
 
-It grew out of [borland-reborn](https://github.com/abedegno/borland-reborn), which recovered
-Borland C++ 2.0's source from its binaries, and it takes its method from `tinycc_in_rust`, a
-local, unpublished Rust port of TinyCC. Nothing from either is used here: the first is a
-byte-exact 16-bit DOS compiler derived from Borland's binary, the second is LGPL, and this
-compiler is MIT and owns its code. `xcc` can still drive the 16-bit one, through `libbcc20`,
-as `--target=dos16` - for comparing the two, never for shipping.
+This is M4 of the plan in [PLAN.md](PLAN.md), plus the data and pointer work that M5 needed
+first. The status below is what `cargo test --workspace` proves, not what is intended.
 
-The ambition is to keep what each is good at: TCC's speed, size and habit of being embedded,
-Borland's optimiser, and a licence and an API that a modern host can adopt. See
-[PLAN.md](PLAN.md), "where the quality comes from".
-
-**Status: M2.** The front end up to the parser works: translation phases 1 and 2, the
-preprocessor (macros with `#`/`##`/variadics, conditionals, `#include` through a host-supplied
-`Includes`, `#line`, the standard macros), and a gate that compares its output with `clang -E`
-token for token over the corpus - 426 of 426 agree. There is no parser and so no code
-generation yet: `xcc -c` reports "the parser is not implemented yet" and exits 1, while
-`xcc -E` prints the tokens.
-[PLAN.md](PLAN.md) has the milestones and their acceptance criteria;
-[docs/ADR-001-architecture.md](docs/ADR-001-architecture.md) records the decisions.
-
-```sh
-cargo run -p xcc-cli -- --version
-cargo run -p xcc-cli -- -E -I include -DFLAG t.c   # the preprocessed tokens
-cargo run -p xcc-cli -- -c --format msvc t.c       # diagnostics as MSBuild expects them
-cargo test --workspace                             # includes the clang -E gate, when clang is present
+```
+source -> preprocess -> parse -> cir (verified SSA CFG) -> Cranelift -> COFF object
+                                                        -> cranelift-jit -> callable from Rust
 ```
 
-## Documents
-
-| file | what it is |
+| | |
 |---|---|
-| [PLAN.md](PLAN.md) | the milestones M0-M10, their acceptance tests, and where the quality comes from |
-| [docs/ADR-001-architecture.md](docs/ADR-001-architecture.md) | decisions with the reasoning: why a new compiler, Rust, Cranelift, C99, MIT |
-| [docs/ADR-002-intermediate-form.md](docs/ADR-002-intermediate-form.md) | what `cir` is: blocks with parameters, SSA by construction, and why not a quad list or Cranelift's IR |
-| [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | the rules a change is checked against, and how each one is enforced |
-| [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) | every C99 construct: planned, partial, sound or refused |
-| [docs/AUDIT.md](docs/AUDIT.md) | the real-corpus audits, with counts |
+| preprocessor | trigraphs, splices, object- and function-like macros, `#`/`##`, variadics, conditionals evaluated in `intmax_t`, includes through a host trait, `#pragma once`, `#line`, the standard macros. 426 corpus programs preprocess token-identical to `clang -E`. |
+| C99 front end | scalars, enums, `typedef`, structs/unions with layout and bitfields, declarators including function pointers, all statements including `switch` parsing, initialisers with brace elision and designators, `sizeof`, casts. 394 of 394 corpus programs that are not `#include`d and not deliberately invalid are read completely. |
+| code generation | locals and parameters as stack slots, globals and string literals as data (`.bss` for tentative definitions, anonymous `.strN` for literals), arithmetic, comparisons, conversions, casts, direct calls (unit-internal and into host symbols), pointers, pointer arithmetic, subscripting, `if`/`else`, `while`, `do`/`while`, `for`, `break`, `continue`, `return`. |
+| embedding | `Jit::new()`, `Jit::add_source`, `Jit::function(name) -> Option<*const u8>`, `Jit::with_symbols` for calls back into the host. Eight threads compiling at once is a test. |
+| objects | `Compile::compile` returns an `Artifact` whose bytes are a COFF object with `.text`, data sections and a symbol table; `tests/exe.rs` links one with the host linker and runs it. |
 
-Licence: MIT.
+## What does not work yet
+
+Stated here rather than discovered later.
+
+- **`switch` does not lower.** It parses and type-checks; the emitter's comparison chain is not
+  finished. `back::jit::tests::switch_arms...` is written, `#[ignore]`d, and holds the six
+  run-time assertions it must satisfy.
+- **No `crt` and no `.exe` that prints.** There is no entry point, no `argc`/`argv`, no exit path;
+  linking is the host linker's job today.
+- **No unwind data.** A Cranelift win64 object carries `.text` and no `.pdata`/`.xdata` (measured,
+  and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
+  works; *unwinding* through it - SEH, a debugger walking frames - does not. M5 does not claim it.
+- **Refused with one diagnostic each**: `&&`, `||`, `++`/`--`, member access in code, calls
+  through function pointers, and records or pointers-to-literals in file-scope initialisers.
+- **No optimiser.** `cir` is SSA from the first instruction, so `mem2reg` and friends are passes
+  on this shape rather than a rewrite of it (M10).
+
+## Using it
+
+```rust
+use xcc::Jit;
+
+let mut jit = Jit::new()?;
+jit.add_source("int add(int a, int b) { return a + b; }")?;
+let address = jit.function("add").expect("compiled");
+let add: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(address) };
+assert_eq!(add(2, 3), 5);
+```
+
+For a host function callable from C, register it at construction - the addresses must outlive the
+`Jit`:
+
+```rust
+let mut jit = unsafe { Jit::with_symbols(&[("host_double", host_double as *const u8)]) }?;
+jit.add_source("int host_double(int); int twice(int x) { return host_double(x); }")?;
+```
+
+To produce an object instead:
+
+```rust
+let artifact = xcc::Compile::new(xcc::Options::default()).compile("t.c", source)?;
+std::fs::write("t.obj", artifact.object())?;
+```
+
+## How it is built
+
+The middle end is `cir`: a control-flow graph of blocks with parameters, SSA by construction, with
+an explicit `load`/`store` for every C variable and a span and C type on every value. It is the
+one seam between the front end and every back end; Cranelift is the first lowering, not the
+architecture. [ADR-002](docs/ADR-002-intermediate-form.md) argues that choice against a quad list,
+against Cranelift's IR as the middle end, and against an AST.
+
+Decisions that were expensive to get wrong are recorded as they were made:
+[ADR-001](docs/ADR-001-architecture.md) (architecture, and the MIT boundary),
+[ADR-002](docs/ADR-002-intermediate-form.md) (the intermediate form),
+[ADR-003](docs/ADR-003-win64-unwind.md) (unwind data: absent, and what that costs),
+[ADR-004](docs/ADR-004-data.md) (where data lives, and the naming rule behind `Symbol` vs
+`String`). [docs/AUDIT.md](docs/AUDIT.md) keeps the record of what each milestone's review found.
+
+## Building and testing
+
+```
+cargo build --workspace          # library and the `xcc` binary
+cargo test --workspace           # 135 unit, 17 parser, 11 CLI, preprocessing gate, fuzz, exe
+cargo test -- --ignored          # the tests that state what is not built yet
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+```
+
+Requires Rust 1.82 or newer. `tests/corpus/` holds 464 C programs used as a gate; their
+provenance is in [tests/corpus/README.md](tests/corpus/README.md).
+
+## Licence
+
+MIT. The corpus is the author's own, granted under the same terms. No code, table or message text
+is taken from any other compiler: reference compilers are run as oracles, never linked.

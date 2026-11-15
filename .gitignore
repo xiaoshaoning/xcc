@@ -1,3 +1,23 @@
+# Build output
 /target
-**/*.rs.bk
+
+# Editor and tool scratch
+*.rs.bk
+*.swp
+.idea/
+.vscode/
+.pi-codebase.json
+
+# Artefacts the tests write
 /tests/fixtures/out/
+*.exe
+*.o
+*.obj
+*.lib
+*.pdb
+*.ilk
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
