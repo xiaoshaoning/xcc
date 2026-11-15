@@ -1,0 +1,182 @@
+//! Turning typed expressions into `cir`: the one seam between the parser and the intermediate
+//! form.
+//!
+//! Part of the parser and nothing else: the state is `Parser`'s, which lives in `mod.rs`. The
+//! file is separate because this is the one place that knows both C's conversion rules and
+//! `cir`'s instructions, and having it next to the token helpers hid that.
+
+use super::*;
+
+impl Parser<'_> {
+    /// Run `emit` on the block being filled, if a function body is being read. `None` means
+    /// there is no body: a declaration at file scope, or an expression outside any function.
+    pub(super) fn emit<T>(&mut self, emit: impl FnOnce(&mut cir::Builder<'_>) -> T) -> Option<T> {
+        let body = self.body.as_mut()?;
+        // Code after a `return` or a `break` is unreachable, which C allows: it emits nothing
+        // rather than a second terminator.
+        if body.func.terminated(body.current) {
+            return None;
+        }
+        Some(emit(&mut body.builder()))
+    }
+
+    /// Whether code is being generated: false inside a declaration, true inside a body.
+    pub(super) fn in_body(&self) -> bool {
+        self.body.is_some()
+    }
+
+    /// Say that code is being built but this construct cannot be lowered yet, once, and where.
+    /// A construct the emitter cannot express is refused rather than quietly left out: an
+    /// expression that emits nothing is a program that computes something else.
+    pub(super) fn not_lowered(&mut self, span: Span, what: &str) {
+        if self.in_body() {
+            self.not_implemented(span, format!("{what} is not lowered yet (M4.2b)"));
+        }
+    }
+
+    /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
+    /// signed, decide which conversion C needs.
+    pub(super) fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {
+        if self.types.same(value.ty, wanted) {
+            return value;
+        }
+        if self.types.is_error(wanted) {
+            return Value::new(wanted, value.constant, false);
+        }
+        let Some(source) = value.cir else {
+            return Value::new(wanted, None, false);
+        };
+        let Some(op) = self.conversion(value.ty, wanted) else {
+            let (from, to) = (self.describe(value.ty), self.describe(wanted));
+            self.error(
+                span,
+                format!("this compiler cannot convert {from} to {to} yet"),
+            );
+            return Value::new(self.types.error(), None, false);
+        };
+        let converted = self.emit(|builder| builder.convert(op, source, value.ty, wanted, span));
+        match converted {
+            Some(cir) => Value::code(wanted, cir),
+            None => Value::new(wanted, None, false),
+        }
+    }
+
+    /// `left op right`, with both operands converted to `operands` as C requires.
+    pub(super) fn emit_binary(
+        &mut self,
+        op: cir::BinOp,
+        operands: TypeId,
+        result: TypeId,
+        sides: [Value; 2],
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        let [left, right] = sides;
+        if !self.in_body() {
+            return Value::new(result, folded, false);
+        }
+        let left = self.convert(left, operands, span);
+        let right = self.convert(right, operands, span);
+        match (left.cir, right.cir) {
+            (Some(left), Some(right)) => {
+                match self.emit(|b| b.binary(op, left, right, operands, span)) {
+                    Some(value) => Value::code(result, value),
+                    None => Value::new(result, folded, false),
+                }
+            }
+            // An operand that emitted nothing already has a diagnostic of its own; a second
+            // one here would just repeat it.
+            _ => Value::new(result, folded, false),
+        }
+    }
+
+    /// `op value` on a promoted operand.
+    pub(super) fn emit_unary(
+        &mut self,
+        op: cir::UnOp,
+        value: Value,
+        ty: TypeId,
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        if !self.in_body() {
+            return Value::new(ty, folded, false);
+        }
+        let value = self.convert(value, ty, span);
+        match value.cir {
+            Some(value) => match self.emit(|b| b.unary(op, value, ty, span)) {
+                Some(result) => Value::code(ty, result),
+                None => Value::new(ty, folded, false),
+            },
+            None => Value::new(ty, folded, false),
+        }
+    }
+
+    /// A comparison, whose result is an `int`: 1 or 0, as C has it.
+    pub(super) fn emit_compare(
+        &mut self,
+        op: cir::CmpOp,
+        operands: TypeId,
+        sides: [Value; 2],
+        result: TypeId,
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        let [left, right] = sides;
+        if !self.in_body() {
+            return Value::new(result, folded, false);
+        }
+        let left = self.convert(left, operands, span);
+        let right = self.convert(right, operands, span);
+        match (left.cir, right.cir) {
+            (Some(left), Some(right)) => {
+                match self.emit(|b| b.compare(op, left, right, operands, result, span)) {
+                    Some(value) => Value::code(result, value),
+                    None => Value::new(result, folded, false),
+                }
+            }
+            _ => Value::new(result, folded, false),
+        }
+    }
+
+    /// Which conversion turns `from` into `to`, by C99 6.3.1.
+    pub(super) fn conversion(&self, from: TypeId, to: TypeId) -> Option<cir::ConvertOp> {
+        let width = |ty: TypeId| match self.types.kind(ty) {
+            Type::Int { bits, .. } => Some(*bits),
+            Type::Bool => Some(8),
+            _ => None,
+        };
+        let signed = |ty: TypeId| matches!(self.types.kind(ty), Type::Int { signed: true, .. });
+        if self.types.is_pointer(from) && self.types.is_pointer(to) {
+            return Some(cir::ConvertOp::Bitcast);
+        }
+        if let (Some(from_bits), Some(to_bits)) = (width(from), width(to)) {
+            return Some(if to_bits == from_bits {
+                cir::ConvertOp::Bitcast
+            } else if to_bits < from_bits {
+                cir::ConvertOp::Truncate
+            } else if signed(from) && !matches!(self.types.kind(from), Type::Bool) {
+                cir::ConvertOp::SignExtend
+            } else {
+                cir::ConvertOp::ZeroExtend
+            });
+        }
+        let from_float = self.types.is_float(from);
+        let to_float = self.types.is_float(to);
+        match (from_float, to_float) {
+            (true, true) => Some(if self.types.size_of(to)? >= self.types.size_of(from)? {
+                cir::ConvertOp::FloatExtend
+            } else {
+                cir::ConvertOp::FloatTruncate
+            }),
+            (false, true) => Some(cir::ConvertOp::IntToFloat),
+            (true, false) => Some(cir::ConvertOp::FloatToInt),
+            (false, false) => None,
+        }
+    }
+
+    /// The type a pointer to `ty` has.
+    pub(super) fn pointer_to(&mut self, ty: TypeId) -> TypeId {
+        self.types.pointer(ty)
+    }
+}

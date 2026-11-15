@@ -433,6 +433,23 @@ impl Func {
         &self.blocks[block.0 as usize]
     }
 
+    /// End every block that will never be filled with `unreachable`, leaving `current` alone.
+    ///
+    /// Some functions have them: the join after an `if` whose arms both return, or the block a
+    /// front end made and then found it had nothing to put in. Where the block's emptiness is
+    /// allowed to be known is here, not in the front end, which otherwise reaches for a block
+    /// handle it was told it cannot make (ADR-002 invariant 1).
+    pub fn end_orphans(&mut self, current: Block) {
+        for index in 0..self.blocks.len() {
+            let block = Block(index as u32);
+            if block == current || self.terminated(block) {
+                continue;
+            }
+            let span = self.blocks[index].span;
+            Builder::at(self, block).unreachable(span);
+        }
+    }
+
     /// Whether a block already ends.
     pub fn terminated(&self, block: Block) -> bool {
         self.blocks[block.0 as usize].term.is_some()

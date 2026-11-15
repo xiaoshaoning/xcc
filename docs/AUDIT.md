@@ -78,6 +78,32 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M4.2 - 2026-11-15 - a design review of `cir` and the emitter
+
+The code written for M4.1 and M4.2 had not been read by a review pass. Three findings, all
+fixed in the same commit:
+
+1. **The front end reached into `cir` to keep a `cir` invariant.** `terminate_orphans` walked
+   `Func::blocks` and built block handles by index, which is the one thing ADR-002 invariant 1
+   forbids ("only the builder mints a `Value`") applied one field over. The knowledge - a block
+   that will never be filled ends with `unreachable` - is `cir`'s, so it moved there as
+   `Func::end_orphans(current)`, and the parser stopped fabricating handles.
+2. **The emitter lived in `parse/mod.rs`** next to the token helpers, although it is the one
+   place that knows both C's conversion rules and `cir`'s instructions. It is `parse/emit.rs`
+   now (182 lines), and `mod.rs` is 1333 lines down to 1162. Same reasoning as `parse/init.rs`
+   at M3.3: a grammar or a translation that has its own vocabulary deserves its own file.
+3. **`emit_binary` and `emit_compare` took eight parameters** - enough that clippy's threshold
+   caught them, and the fix had been to bundle the two operands into `[Value; 2]`, which reads
+   as a trick. The parameters that are genuinely one thing (`operands`, `result`, `sides`,
+   `folded`) are still four; the honest repair is to drop `folded` and let the caller keep the
+   constant, which is a change to make when a second caller needs it rather than now. Recorded
+   here as a known wart rather than fixed in a hurry.
+
+What the review did *not* find is as useful: the refusal discipline held. Every construct the
+emitter cannot express is a diagnostic at the construct, the body is dropped rather than
+partially lowered, and the verifier runs on every body kept - which is what caught three real
+bugs during M4.2b rather than after it.
+
 ### M3.4 - 2026-11-15 - the corpus, read to the end
 
 The parse gate went from 387 to **395 of 464**; the 69 that are not counted are the ones with

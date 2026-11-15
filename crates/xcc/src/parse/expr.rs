@@ -1070,7 +1070,10 @@ impl Parser<'_> {
         self.block_body();
         // A block nothing jumps to - the join after an `if` whose arms both return, say - still
         // has to end somehow, and `unreachable` is what it means.
-        self.terminate_orphans();
+        if let Some(body) = self.body.as_mut() {
+            let current = body.current;
+            body.func.end_orphans(current);
+        }
         // A function that falls off its end returns, and C says what that return is.
         let terminated = self
             .body
@@ -1104,23 +1107,6 @@ impl Parser<'_> {
                 "an emitted function must verify"
             );
             self.funcs.push(body.func);
-        }
-    }
-
-    /// Give every block that will never be filled a terminator, so the verifier's "a block ends"
-    /// is a fact rather than a hope.
-    fn terminate_orphans(&mut self) {
-        let Some(body) = self.body.as_mut() else {
-            return;
-        };
-        let count = body.func.blocks.len();
-        for index in 0..count {
-            let block = cir::Block(index as u32);
-            if block == body.current || body.func.terminated(block) {
-                continue;
-            }
-            let span = body.func.block(block).span;
-            cir::Builder::at(&mut body.func, block).unreachable(span);
         }
     }
 
