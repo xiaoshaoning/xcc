@@ -150,6 +150,12 @@ impl Parser<'_> {
         }
     }
 
+    /// The block being filled, which is not always the one a construct opened: a nested `switch`
+    /// leaves the cursor in its exit block, so "jump back from where we are" must ask here.
+    fn current_block(&self) -> Option<cir::Block> {
+        self.body.as_ref().map(|body| body.current)
+    }
+
     /// Whether a block already ends, so it is not given a second terminator.
     fn terminated(&self, block: cir::Block) -> bool {
         self.body
@@ -188,8 +194,11 @@ impl Parser<'_> {
         }
         self.statement();
         if let (Some(then_block), Some(else_block), Some(join)) = (then_block, else_block, join) {
-            if !self.terminated(then_block) {
-                self.switch_to(then_block);
+            let _ = then_block;
+            if self
+                .current_block()
+                .is_some_and(|now| !self.terminated(now))
+            {
                 self.jump(join, span);
             }
             self.switch_to(else_block);
@@ -199,8 +208,11 @@ impl Parser<'_> {
             self.statement();
         }
         if let (Some(else_block), Some(join)) = (else_block, join) {
-            if !self.terminated(else_block) {
-                self.switch_to(else_block);
+            let _ = else_block;
+            if self
+                .current_block()
+                .is_some_and(|now| !self.terminated(now))
+            {
                 self.jump(join, span);
             }
             self.switch_to(join);
@@ -247,8 +259,13 @@ impl Parser<'_> {
         self.loops -= 1;
         self.targets.pop();
         // A body that ends in `break` or `return` already ends; a second terminator would be a
-        // block with two exits.
-        if !self.terminated(body_block) {
+        // block with two exits. "Where we are" is the block the last statement filled, which a
+        // nested `switch` may have moved to its own exit.
+        let _ = body_block;
+        if self
+            .current_block()
+            .is_some_and(|now| !self.terminated(now))
+        {
             self.jump(test, span);
         }
         self.switch_to(exit);
@@ -274,7 +291,11 @@ impl Parser<'_> {
         self.statement();
         self.loops -= 1;
         self.targets.pop();
-        if !self.terminated(body_block) {
+        let _ = body_block;
+        if self
+            .current_block()
+            .is_some_and(|now| !self.terminated(now))
+        {
             self.jump(test, span);
         }
         self.switch_to(test);
@@ -393,7 +414,11 @@ impl Parser<'_> {
         self.statement();
         self.loops -= 1;
         self.targets.pop();
-        if !self.terminated(body_block) {
+        let _ = body_block;
+        if self
+            .current_block()
+            .is_some_and(|now| !self.terminated(now))
+        {
             self.jump(step, span);
         }
         self.switch_to(exit);

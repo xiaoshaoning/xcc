@@ -206,6 +206,31 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("fall", 9), 9);
     }
 
+    /// `continue` inside a `switch` inside a loop goes to the loop, not out of the switch - and
+    /// the code after the switch still returns to the loop, even though the switch left the
+    /// cursor in its own exit block.
+    #[test]
+    fn continue_inside_a_switch_continues_the_loop() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int count(int n) {
+             int r; r = 0;
+             while (n > 0) {
+             switch (n) { case 1: n = n - 1; continue; default: r = r + 1; }
+             n = n - 1;
+             }
+             return r;
+             }",
+        )
+        .expect("it compiles");
+        let address = jit.function("count").expect("the function is there");
+        let count: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+        // 3 and 2 reach the default arm; 1 continues out of the switch but not out of the loop.
+        assert_eq!(count(3), 2);
+        assert_eq!(count(1), 0);
+        assert_eq!(count(0), 0);
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {
