@@ -92,13 +92,21 @@ Three ways out, and the choice is a real one:
    the back end is told which table a symbol belongs to). Every reader of a `Symbol` then has to
    know which table minted it - the "unknown unknowns" the principles warn about most.
 
-Recommendation: **(2)**, on the grounds that a global's name is data, not a token: it is written
+Chosen: **(2)**, and applied to `cir::Global.name` in the same commit that wrote this record. The
+grounds that a global's name is data, not a token: it is written
 once, read by a linker, and never compared with another `Symbol`. (1) trades a clean ownership
 boundary for a convenience; (3) buys a whole class of subtle bugs for nothing.
 
-This is recorded before writing the code because the same question comes back for `static`
-counters, `__func__`, and every compiler-generated label - and because the wrong answer here is
-expensive to reverse, which is exactly what an ADR is for.
+`Inst::GlobalAddress` still carries a `Symbol`, and patch 3 needs that to change too: an anonymous
+global has no symbol. It is deliberately *not* changed in this commit, because the two names
+answer the same question and must answer it the same way - `Func::name` (a `Symbol`, minted while
+reading a declaration) is the third member of that family, and the rule "a name that comes from
+the source is a symbol, a name the compiler generates is a string" needs writing down before the
+third shape arrives. That rule is the next decision, not a patch.
+
+The question is recorded before the code because it comes back for `static` counters, `__func__`,
+and every compiler-generated label - and because the wrong answer here is expensive to reverse,
+which is exactly what an ADR is for.
 
 ## Consequences
 

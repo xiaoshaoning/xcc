@@ -19,11 +19,7 @@ pub fn dump(module: &Module, names: &Interner) -> String {
         let ty = module.types.describe_with(global.ty, names);
         let state = if global.defined { "" } else { " extern" };
         let bytes = global.init.as_ref().map_or(0, Vec::len);
-        let _ = writeln!(
-            out,
-            "global {}: {ty}{state} ({bytes} bytes)",
-            names.resolve(global.name)
-        );
+        let _ = writeln!(out, "global {}: {ty}{state} ({bytes} bytes)", global.name);
     }
     for func in &module.funcs {
         dump_func(&mut out, &module.types, names, func);

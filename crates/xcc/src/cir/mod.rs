@@ -743,8 +743,11 @@ impl<'a> Builder<'a> {
 /// A global object: what a translation unit declares outside every function.
 #[derive(Debug, Clone)]
 pub struct Global {
-    /// The name.
-    pub name: Symbol,
+    /// The name, as the linker will see it. A `String` because a compiler-generated name
+    /// (`.str0`, and later `__func__`) is not a token the source contained: an interner hands
+    /// out symbols, and the front end does not own one (ADR-004, "the front end cannot mint a
+    /// name").
+    pub name: String,
     /// Its type.
     pub ty: TypeId,
     /// Whether it is defined here rather than only declared.

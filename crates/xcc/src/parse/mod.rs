@@ -458,7 +458,7 @@ impl Parser<'_> {
                     } else {
                         let span = self.span();
                         self.globals.push(cir::Global {
-                            name,
+                            name: self.spell_of(name).to_owned(),
                             ty,
                             defined: true,
                             init: None,
@@ -481,7 +481,7 @@ impl Parser<'_> {
                 } else if let Some(bytes) = self.initializer_bytes(ty) {
                     if let Some(name) = name {
                         self.globals.push(cir::Global {
-                            name,
+                            name: self.spell_of(name).to_owned(),
                             ty,
                             defined: true,
                             init: Some(bytes),
