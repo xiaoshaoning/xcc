@@ -221,26 +221,32 @@ impl Parser<'_> {
         false
     }
 
-    /// `condition ? a : b`, right-associative, evaluating only the taken branch.
+    /// `condition ? a : b`, right-associative, evaluating only the branch that is taken.
     fn conditional(&mut self) -> Result<Value, Failure> {
         let condition = self.binary(0)?;
         if !self.eat("?") {
             return Ok(condition);
         }
-        let when_true = self.conditional()?;
+        let taken = condition.is_true();
+        // C99 6.10.1 evaluates only the chosen arm. The other one is still parsed - it has to
+        // be a constant expression - but a value failure in it (division by zero, overflow) is
+        // not this expression's problem, so `#if 1 ? 1 : 1/0` is fine and `#if 1 ? 1/0 : 1` is
+        // not.
+        let when_true = self.arm(taken)?;
         if !self.eat(":") {
             return Err(Failure::at(self.span_here(), "expected `:`"));
         }
-        let when_false = self.conditional()?;
-        // Both arms have been evaluated above, which is what C's syntax allows us to avoid only
-        // by evaluating lazily; for `?:` the standard requires only the chosen arm to be
-        // evaluated, and a wrong-typed or dividing arm is a real error, so evaluating both is
-        // the stricter and simpler reading. Documented in the tests.
-        Ok(if condition.is_true() {
-            when_true
-        } else {
-            when_false
-        })
+        let when_false = self.arm(!taken)?;
+        Ok(if taken { when_true } else { when_false })
+    }
+
+    /// One arm of `?:`: a value failure in an arm that is not evaluated is not reported.
+    fn arm(&mut self, evaluated: bool) -> Result<Value, Failure> {
+        match self.conditional() {
+            Ok(value) => Ok(value),
+            Err(failure) if !evaluated && failure.arithmetic => Ok(Value::signed(0)),
+            Err(failure) => Err(failure),
+        }
     }
 
     /// Binary operators by precedence, left-associative (C99 6.5.5 to 6.5.12), with `&&` and

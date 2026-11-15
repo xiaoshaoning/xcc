@@ -77,7 +77,7 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [x] Acceptance: `xcc --version`, a deliberately broken source gives
       `t.c(1,1): error: <message>` and exit code 1, and random input causes no panic.
 
-## M2 - preprocessor  (L)
+## M2 - preprocessor  (L)  **done**, except `--depfile` (which moved to M3)
 
 - [x] Translation phases 1 and 2, then tokens with byte spans: identifiers, pp-numbers
       (C99 6.4.8 - `1e+5` and `0x1p-3` stay one token), string and character literals with
@@ -283,16 +283,3 @@ docs/                      ADR, this plan
   later milestone with its own acceptance test, and the answer to "make it faster" *this quarter*
   is still "use clang".
 
-## Next slice
-
-M2, in this order, because CONSTRAINTS 4 and 5 demand the decisions before the code:
-
-1. **The stack strategy** (constraint 5): what the recursion budget is, where it is enforced,
-   and the number. Written into CONSTRAINTS.md before the preprocessor exists.
-2. **The interner** (constraint 4): identifiers get ids in first-seen order, never from
-   addresses or hash order, so preprocessing twice gives the same bytes.
-3. **The lexer**, then macros, then conditionals, then includes - each with its tests, and the
-   `clang -E` differential on `tests/corpus` as the gate at the end.
-
-After M2: M3, M4 (the JIT demo), M5 (`hello.exe`), M6, then M7 to M10 in whatever order users
-ask for.

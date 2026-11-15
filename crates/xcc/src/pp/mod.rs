@@ -34,6 +34,9 @@ pub struct PpToken {
     pub file: u16,
 }
 
+/// The name the command line's own text is reported under.
+const COMMAND_LINE: &str = "<command line>";
+
 /// Where included files come from.
 ///
 /// The compiler reads nothing by itself: a host that wants `#include` gives it something that
@@ -73,12 +76,19 @@ impl Preprocessed {
     }
 
     /// The name a symbol stands for.
+    ///
+    /// `symbol` must have been minted while producing *this* value: ids are per compilation,
+    /// and one from another says nothing, so mixing them is a compiler bug, not an input error.
     pub fn spell(&self, symbol: Symbol) -> &str {
         self.names.resolve(symbol)
     }
 
-    /// How `token` is spelled.
+    /// How `token` is spelled. The token must come from this value.
     pub fn text(&self, token: &PpToken) -> &str {
+        debug_assert!(
+            token.file as usize <= self.files.len(),
+            "a token from another compilation"
+        );
         self.names.resolve(token.text)
     }
 
@@ -109,8 +119,8 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         once: HashSet::new(),
         current: 0,
         depth: 0,
-        last_line: 0,
         conditionals: Vec::new(),
+        in_command_line: false,
     };
     preprocessor.read_root();
     for definition in &options.defines {
@@ -243,10 +253,11 @@ struct Preprocessor<'a> {
     current: u16,
     /// How many includes deep we are, for the budget.
     depth: usize,
-    /// The line the previous source token was on, in the current file.
-    last_line: u32,
     /// The conditionals being read, innermost last.
     conditionals: Vec<Conditional>,
+    /// Whether the tokens being read are a `-D` from the command line, whose spans point into
+    /// text the user never wrote.
+    in_command_line: bool,
 }
 
 impl Preprocessor<'_> {
@@ -311,6 +322,7 @@ impl Preprocessor<'_> {
     /// `#define NAME VALUE` from the command line, as if it were the first line.
     fn install_define(&mut self, definition: &str) {
         let text = format!("#define {}", definition.replacen('=', " ", 1));
+        self.in_command_line = true;
         let prepared = Prepared::new(&text);
         let lexed = lex::lex(&prepared, "<command line>", self.interner);
         let words: Vec<Raw> = lexed
@@ -338,6 +350,7 @@ impl Preprocessor<'_> {
                 self.error(span, format!("`-D{definition}` does not name a macro"));
             }
         }
+        self.in_command_line = false;
     }
 
     /// `-U NAME`: forget a macro the command line defined.
@@ -363,7 +376,6 @@ impl Preprocessor<'_> {
                 let line = entry.source.position(raw.token.span.start).line;
                 let at_line_start = line > entry.last_line;
                 entry.last_line = entry.last_line.max(line);
-                self.last_line = line;
                 if at_line_start && self.is_punct(&raw.token, "#") {
                     self.directive(raw);
                     continue;
@@ -1329,19 +1341,22 @@ impl Preprocessor<'_> {
     }
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
-        self.diagnostics.push(
-            Diagnostic::error(message)
-                .with_file(&self.file().physical)
-                .with_span(span),
-        );
+        self.diagnostics
+            .push(self.diagnostic(Diagnostic::error(message), span));
     }
 
     fn warning(&mut self, span: Span, message: impl Into<String>) {
-        self.diagnostics.push(
-            Diagnostic::warning(message)
-                .with_file(&self.file().physical)
-                .with_span(span),
-        );
+        self.diagnostics
+            .push(self.diagnostic(Diagnostic::warning(message), span));
+    }
+
+    /// Attach the place a diagnostic is about: a span in the file being read, or - for a `-D`
+    /// - the command line, where the span would point into text nobody wrote.
+    fn diagnostic(&self, diagnostic: Diagnostic, span: Span) -> Diagnostic {
+        if self.in_command_line {
+            return diagnostic.with_file(COMMAND_LINE);
+        }
+        diagnostic.with_file(&self.file().physical).with_span(span)
     }
 }
 /// The directory part of a path, whichever separator it uses.
@@ -1678,6 +1693,51 @@ mod tests {
             "the right side of && is not evaluated"
         );
         assert_eq!(spelled("#if 1 || 1/0\nyes\n#endif"), ["yes"]);
+    }
+
+    #[test]
+    fn only_the_chosen_arm_of_a_conditional_is_evaluated() {
+        // C99 6.10.1: the arm that is not taken is parsed, not evaluated.
+        assert_eq!(
+            spelled(
+                "#if 1 ? 1 : 1/0
+yes
+#endif"
+            ),
+            ["yes"]
+        );
+        assert_eq!(
+            spelled(
+                "#if 0 ? 1/0 : 2
+yes
+#endif"
+            ),
+            ["yes"]
+        );
+        assert_eq!(
+            diagnostics(
+                "#if 1 ? 1/0 : 2
+#endif"
+            )[0]
+            .message,
+            "division by zero",
+            "the arm that is taken is still checked"
+        );
+    }
+
+    #[test]
+    fn a_command_line_define_is_reported_as_the_command_line() {
+        let options = Options {
+            defines: vec!["1BAD=2".to_owned()],
+            ..Options::default()
+        };
+        let (_, diagnostics) = run_options("int x;", &options, &());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].file.as_deref(), Some("<command line>"));
+        assert_eq!(
+            diagnostics[0].span, None,
+            "no offset into a file nobody wrote"
+        );
     }
 
     #[test]

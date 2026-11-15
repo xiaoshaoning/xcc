@@ -23,15 +23,20 @@ The ambition is to keep what each is good at: TCC's speed, size and habit of bei
 Borland's optimiser, and a licence and an API that a modern host can adopt. See
 [PLAN.md](PLAN.md), "where the quality comes from".
 
-**Status: M1.** The library, the diagnostics and the command line work; there is no code
-generation yet, so `xcc` reports "the C front end is not implemented yet" and exits 1.
+**Status: M2.** The front end up to the parser works: translation phases 1 and 2, the
+preprocessor (macros with `#`/`##`/variadics, conditionals, `#include` through a host-supplied
+`Includes`, `#line`, the standard macros), and a gate that compares its output with `clang -E`
+token for token over the corpus - 426 of 426 agree. There is no parser and so no code
+generation yet: `xcc -c` reports "the parser is not implemented yet" and exits 1, while
+`xcc -E` prints the tokens.
 [PLAN.md](PLAN.md) has the milestones and their acceptance criteria;
 [docs/ADR-001-architecture.md](docs/ADR-001-architecture.md) records the decisions.
 
 ```sh
 cargo run -p xcc-cli -- --version
-cargo run -p xcc-cli -- -c --format msvc t.c     # diagnostics as MSBuild expects them
-cargo test --workspace
+cargo run -p xcc-cli -- -E -I include -DFLAG t.c   # the preprocessed tokens
+cargo run -p xcc-cli -- -c --format msvc t.c       # diagnostics as MSBuild expects them
+cargo test --workspace                             # includes the clang -E gate, when clang is present
 ```
 
 ## Documents

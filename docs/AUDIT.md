@@ -31,7 +31,27 @@ An audit answers three questions:
 
 | date | milestone | corpus | TUs | compiled | refused | crashes | mismatches vs clang | found and fixed |
 |---|---|---|---|---|---|---|---|---|
-| - | M3 (planned) | `c-testsuite` | - | - | - | - | - | - |
+| 2026-11-15 | M2 | `tests/corpus` | 426 | 38 (`#include`, no headers until M8) | 0 | 0 | 0 | 2 bugs, listed below |
+| - | M3 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
+
+### M2 - 2026-11-15 - `tests/corpus`, preprocessing only
+
+Compared with `clang -E`, token for token, the reference's text lexed by our own lexer
+(`crates/xcc/tests/pp_gate.rs`): **426 of 426 agree**, nothing excused, 38 programs skipped
+because they include a header and there are no headers until M8. One disagreement is known and
+documented rather than excused: `__STDC_HOSTED__` is 0 here and 1 for a hosted compiler.
+
+The harness was proved able to fail before it was trusted: a probe file whose
+`#if __STDC_HOSTED__` disagreement made the gate report the file and the first differing tokens.
+
+Findings, worst first:
+
+1. **`#if 1 ? 1 : 1/0` was rejected** and is valid C - the untaken arm of `?:` was being
+   evaluated. Found by asking `clang -E` the same question the corpus does not ask.
+2. **A malformed `-D` was reported in the source file**, at an offset past its end, because the
+   command line had no file of its own. Now: `<command line>: error: ...`.
+
+Neither was reachable from the corpus, which is the point of writing them down.
 
 ## Template for a new audit
 

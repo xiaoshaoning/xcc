@@ -71,11 +71,14 @@ descent, so this is a decision, not an accident.
 
 **Decided (M2)**: **budgets, not a worker thread.** A host owns the thread and the stack, so a
 compiler that spawns its own thread is a compiler that surprises its host, and 1 MB is a normal
-host stack. Every recursion carries a depth counter measured against a constant
-(`MAX_NESTING = 256` for expressions and declarators, `MAX_INCLUDE_DEPTH = 32`,
-`MAX_MACRO_EXPANSION = 64`, `MAX_TOKENS = 1 MiB worth`), and exceeding one is a diagnostic that
-names the limit. Two limits are not one: a doubling macro nests not at all, so a depth counter
-cannot bound it; the token budget is what stops that one. A thread
+host stack. Every limit is a field of `Budgets`, so a host can lower it per compilation, and
+exceeding one is a diagnostic that names the limit: `max_source_bytes` (8 MiB),
+`max_macro_expansion` (64), `max_tokens` (1 MiB worth of tokens), `max_include_depth` (32),
+`max_diagnostics` (100). A nesting limit for expressions and declarators arrives with the
+parser, which is the first thing that recurses on input.
+
+Two limits are not one: a doubling macro nests not at all, so a depth counter cannot bound it;
+the token budget is what stops that one. A thread
 with a big stack is rejected: it turns a diagnosable input into an unobservable resource.
 
 **Check**: the constants live in one module, `Budgets` overrides them per compilation, one test
