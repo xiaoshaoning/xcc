@@ -78,7 +78,7 @@ impl Jit {
         if let Some(first) = errors.first() {
             return Err(first.message.clone());
         }
-        let mut module: CirModule = parsed.module;
+        let module: CirModule = parsed.module;
         let names = preprocessed.names().clone();
         let functions =
             crate::back::lower_into(&mut self.module, &module, &names).map_err(|error| error.0)?;
