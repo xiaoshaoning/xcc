@@ -194,7 +194,7 @@ mod tests {
             .to_vec();
         assert_eq!(
             errors[0].message,
-            "this function body is not lowered yet (M4.2b)"
+            "the code generator is not implemented yet"
         );
     }
 

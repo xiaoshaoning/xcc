@@ -15,7 +15,7 @@
 
 use crate::diag::Span;
 use crate::intern::Symbol;
-mod dump;
+pub mod dump;
 
 use crate::types::{TypeId, Types};
 

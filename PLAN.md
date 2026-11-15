@@ -177,6 +177,14 @@ The first thing worth showing, and the reason the project exists.
       [ADR-002](docs/ADR-002-intermediate-form.md); `cir` names no Cranelift type.
 - [x] `cir::dump`, because the M10 harness compares text, not memory: one line per instruction,
       one block per section, pinned by tests.
+- [x] **M4.2a/b**, the parser mints values as it parses: scalars, locals and parameters as
+      slots, constants, arithmetic, shifts, bitwise operators, comparisons, assignment, casts,
+      `sizeof`, direct calls with C's argument conversions, and the control flow of C -
+      `if`/`else`, `while`, `do`/`while`, `for` (the increment in a block of its own), `break`,
+      `continue`, `return` - as a CFG of blocks. Refused rather than dropped, each with one
+      diagnostic: `&&`, `||` (short-circuit needs block splitting), `++`/`--`, pointer
+      arithmetic, subscripts, members, `switch`, `goto`, and a body that mixes them is dropped
+      whole. Three unit tests pin the IR text of `add`, of a loop, and of a refusal.
 - [ ] `back-cranelift`: one lowering from `cir`; integers `char`..`long long`, pointers, arrays,
       structs, unions, control flow, calls, globals, string literals, `switch`.
 - [ ] JIT: `Jit::new()`, `add_source(&str)`, `add_symbol(name, fn_ptr)`, `get_fn::<F>(name)`,

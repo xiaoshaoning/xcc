@@ -131,6 +131,12 @@ impl Value {
         Self::new(ty, Some(constant), false)
     }
 
+    /// The same value, with the constant C folded out of it kept.
+    fn with_constant(mut self, constant: Option<i64>) -> Self {
+        self.constant = constant;
+        self
+    }
+
     /// A value that code was generated for.
     fn code(ty: TypeId, cir: cir::Value) -> Self {
         Self {
@@ -446,6 +452,11 @@ impl Parser<'_> {
     /// there is no body: a declaration at file scope, or an expression outside any function.
     fn emit<T>(&mut self, emit: impl FnOnce(&mut cir::Builder<'_>) -> T) -> Option<T> {
         let body = self.body.as_mut()?;
+        // Code after a `return` or a `break` is unreachable, which C allows: it emits nothing
+        // rather than a second terminator.
+        if body.func.terminated(body.current) {
+            return None;
+        }
         Some(emit(&mut body.builder()))
     }
 
@@ -466,7 +477,10 @@ impl Parser<'_> {
     /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
     /// signed, decide which conversion C needs.
     fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {
-        if self.types.same(value.ty, wanted) || self.types.is_error(wanted) {
+        if self.types.same(value.ty, wanted) {
+            return value;
+        }
+        if self.types.is_error(wanted) {
             return Value::new(wanted, value.constant, false);
         }
         let Some(source) = value.cir else {
@@ -484,6 +498,84 @@ impl Parser<'_> {
         match converted {
             Some(cir) => Value::code(wanted, cir),
             None => Value::new(wanted, None, false),
+        }
+    }
+
+    /// `left op right`, with both operands converted to `operands` as C requires.
+    fn emit_binary(
+        &mut self,
+        op: cir::BinOp,
+        operands: TypeId,
+        result: TypeId,
+        sides: [Value; 2],
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        let [left, right] = sides;
+        if !self.in_body() {
+            return Value::new(result, folded, false);
+        }
+        let left = self.convert(left, operands, span);
+        let right = self.convert(right, operands, span);
+        match (left.cir, right.cir) {
+            (Some(left), Some(right)) => {
+                match self.emit(|b| b.binary(op, left, right, operands, span)) {
+                    Some(value) => Value::code(result, value),
+                    None => Value::new(result, folded, false),
+                }
+            }
+            // An operand that emitted nothing already has a diagnostic of its own; a second
+            // one here would just repeat it.
+            _ => Value::new(result, folded, false),
+        }
+    }
+
+    /// `op value` on a promoted operand.
+    fn emit_unary(
+        &mut self,
+        op: cir::UnOp,
+        value: Value,
+        ty: TypeId,
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        if !self.in_body() {
+            return Value::new(ty, folded, false);
+        }
+        let value = self.convert(value, ty, span);
+        match value.cir {
+            Some(value) => match self.emit(|b| b.unary(op, value, ty, span)) {
+                Some(result) => Value::code(ty, result),
+                None => Value::new(ty, folded, false),
+            },
+            None => Value::new(ty, folded, false),
+        }
+    }
+
+    /// A comparison, whose result is an `int`: 1 or 0, as C has it.
+    fn emit_compare(
+        &mut self,
+        op: cir::CmpOp,
+        operands: TypeId,
+        sides: [Value; 2],
+        result: TypeId,
+        folded: Option<i64>,
+        span: Span,
+    ) -> Value {
+        let [left, right] = sides;
+        if !self.in_body() {
+            return Value::new(result, folded, false);
+        }
+        let left = self.convert(left, operands, span);
+        let right = self.convert(right, operands, span);
+        match (left.cir, right.cir) {
+            (Some(left), Some(right)) => {
+                match self.emit(|b| b.compare(op, left, right, operands, result, span)) {
+                    Some(value) => Value::code(result, value),
+                    None => Value::new(result, folded, false),
+                }
+            }
+            _ => Value::new(result, folded, false),
         }
     }
 
@@ -1166,4 +1258,76 @@ fn fold(operator: &str, left: i64, right: i64) -> Option<i64> {
         "||" => i64::from(left != 0 || right != 0),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intern::Interner;
+    use crate::pp::preprocess;
+    use crate::source::SourceFile;
+
+    /// Preprocess and parse `source`, giving back the module it produced.
+    fn module(source: &str) -> (cir::Module, Interner, Vec<Diagnostic>) {
+        let file = SourceFile::new("t.c", source);
+        let options = crate::options::Options::default();
+        let preprocessed = preprocess(&file, &options, &());
+        assert!(
+            !preprocessed.has_errors(),
+            "the test source preprocesses: {:?}",
+            preprocessed.diagnostics
+        );
+        let parsed = parse(&preprocessed, &options.budgets);
+        let names = preprocessed.names().clone();
+        (parsed.module, names, parsed.diagnostics)
+    }
+
+    fn ir(source: &str) -> String {
+        let (module, names, diagnostics) = module(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        cir::dump::dump(&module, &names)
+    }
+
+    #[test]
+    fn a_function_body_becomes_cir() {
+        assert_eq!(
+            ir("int add(int a, int b) { return a + b; }"),
+            "func add(v0: int, v1: int) -> int
+block0 (entry)(v0: int, v1: int):
+  v2 = slot int
+  store v0, v2
+  v3 = slot int
+  store v1, v3
+  v4 = load int, v2
+  v5 = load int, v3
+  v6 = add int v4, v5
+  return v6
+"
+        );
+    }
+
+    #[test]
+    fn a_loop_becomes_blocks_and_a_branch() {
+        let text =
+            ir("int f(int n) { int s; s = 0; while (n > 0) { s = s + n; n = n - 1; } return s; }");
+        assert!(text.contains("br "), "{text}");
+        assert!(text.contains("jump block1"), "{text}");
+        assert!(text.contains("cmp gt int"), "{text}");
+    }
+
+    #[test]
+    fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
+        let (module, _, diagnostics) = module("int f(int n) { ++n; return n; }");
+        let messages: Vec<&str> = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("not lowered yet")),
+            "{messages:?}"
+        );
+        assert!(module.funcs.is_empty(), "a body with a gap is not lowered");
+    }
 }

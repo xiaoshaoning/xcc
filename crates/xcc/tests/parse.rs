@@ -27,7 +27,9 @@ fn check(source: &str) -> Vec<String> {
 fn parses(source: &str) -> bool {
     let complaints: Vec<String> = check(source)
         .into_iter()
-        .filter(|message| !message.contains("code generator"))
+        .filter(|message| {
+            !message.contains("code generator") && !message.contains("not lowered yet")
+        })
         .collect();
     assert!(
         complaints.is_empty(),

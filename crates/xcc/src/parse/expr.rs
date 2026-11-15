@@ -87,7 +87,15 @@ impl Parser<'_> {
             self.error(span, format!("cannot assign {from} to {to}"));
             return Some(Value::temporary(left.ty));
         }
-        let converted = self.convert(right, left.ty, span);
+        let converted = if self.types.is_pointer(left.ty) && right.constant == Some(0) {
+            // `p = 0` is the null pointer, whatever `int` the constant was written as.
+            match self.emit(|builder| builder.constant(left.ty, 0, span)) {
+                Some(cir) => Value::code(left.ty, cir).with_constant(Some(0)),
+                None => Value::new(left.ty, Some(0), false),
+            }
+        } else {
+            self.convert(right, left.ty, span)
+        };
         match (left.place, converted.cir) {
             (Some(place), Some(value)) => {
                 self.emit(|builder| builder.store(place, value, span));
@@ -229,7 +237,14 @@ impl Parser<'_> {
         match operator {
             "+" | "-" => {
                 if arithmetic {
-                    return Value::new(common(), folded(left, right), false);
+                    let ty = common();
+                    let op = if operator == "+" {
+                        cir::BinOp::Add
+                    } else {
+                        cir::BinOp::Sub
+                    };
+                    let folded = folded(left, right);
+                    return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
                 // `pointer + integer` and `integer + pointer` are the same expression; adding
                 // two pointers is not (and subtracting them is).
@@ -263,7 +278,14 @@ impl Parser<'_> {
             }
             "*" | "/" => {
                 if arithmetic {
-                    return Value::new(common(), folded(left, right), false);
+                    let ty = common();
+                    let op = if operator == "*" {
+                        cir::BinOp::Mul
+                    } else {
+                        cir::BinOp::Div
+                    };
+                    let folded = folded(left, right);
+                    return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -276,7 +298,21 @@ impl Parser<'_> {
                         } else {
                             self.promote(left.ty)
                         };
-                    return Value::new(ty, folded(left, right), false);
+                    let op = match operator {
+                        "%" => cir::BinOp::Rem,
+                        "<<" => cir::BinOp::Shl,
+                        ">>" => cir::BinOp::Shr,
+                        "&" => cir::BinOp::And,
+                        "^" => cir::BinOp::Xor,
+                        _ => cir::BinOp::Or,
+                    };
+                    let operands = if matches!(op, cir::BinOp::Shl | cir::BinOp::Shr) {
+                        self.promote(left.ty)
+                    } else {
+                        ty
+                    };
+                    let folded = folded(left, right);
+                    return self.emit_binary(op, operands, ty, [left, right], folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -286,15 +322,31 @@ impl Parser<'_> {
                     || (self.types.is_pointer(left.ty) && right.constant == Some(0))
                     || (self.types.is_pointer(right.ty) && left.constant == Some(0));
                 if comparable {
-                    return Value::new(
-                        self.types.fundamental("int").unwrap(),
-                        folded(left, right),
-                        false,
-                    );
+                    let int = self.types.fundamental("int").unwrap();
+                    let op = match operator {
+                        "==" => cir::CmpOp::Eq,
+                        "!=" => cir::CmpOp::Ne,
+                        "<" => cir::CmpOp::Less,
+                        ">" => cir::CmpOp::Greater,
+                        "<=" => cir::CmpOp::LessEqual,
+                        _ => cir::CmpOp::GreaterEqual,
+                    };
+                    let operands = if arithmetic {
+                        common()
+                    } else if self.types.is_pointer(left.ty) {
+                        left.ty
+                    } else {
+                        right.ty
+                    };
+                    let folded = folded(left, right);
+                    return self.emit_compare(op, operands, [left, right], int, folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
             "&&" | "||" => {
+                // Short-circuit needs a block per side, which lands with M4.2b's control flow;
+                // until then an eagerly evaluated `&&` would read memory the program does not.
+                self.not_lowered(span, "`&&` and `||` in code");
                 self.require_scalar(&left, "the left side of a logical operator");
                 self.require_scalar(&right, "the right side of a logical operator");
                 let int = self.types.fundamental("int").unwrap();
@@ -378,11 +430,9 @@ impl Parser<'_> {
                             self.error(span, format!("unary `-` needs a number, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        Some(Value::new(
-                            self.promote(ty),
-                            value.constant.map(|value| value.wrapping_neg()),
-                            false,
-                        ))
+                        let ty = self.promote(ty);
+                        let folded = value.constant.map(|value| value.wrapping_neg());
+                        Some(self.emit_unary(cir::UnOp::Neg, value, ty, folded, span))
                     }
                     "+" => Some(Value::new(self.promote(ty), value.constant, false)),
                     "~" => {
@@ -391,18 +441,30 @@ impl Parser<'_> {
                             self.error(span, format!("`~` needs an integer, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        Some(Value::new(
-                            self.promote(ty),
-                            value.constant.map(|value| !value),
-                            false,
-                        ))
+                        let ty = self.promote(ty);
+                        let folded = value.constant.map(|value| !value);
+                        Some(self.emit_unary(cir::UnOp::Not, value, ty, folded, span))
                     }
                     _ => {
                         self.require_scalar(&value, "`!`");
-                        Some(Value::new(
-                            self.types.fundamental("int").unwrap(),
-                            value.constant.map(|value| i64::from(value == 0)),
-                            false,
+                        let int = self.types.fundamental("int").unwrap();
+                        let folded = value.constant.map(|value| i64::from(value == 0));
+                        let zero = Value::new(value.ty, Some(0), false);
+                        let zero = if self.in_body() {
+                            match self.emit(|builder| builder.constant(value.ty, 0, span)) {
+                                Some(cir) => Value::code(value.ty, cir),
+                                None => zero,
+                            }
+                        } else {
+                            zero
+                        };
+                        Some(self.emit_compare(
+                            cir::CmpOp::Eq,
+                            value.ty,
+                            [value, zero],
+                            int,
+                            folded,
+                            span,
                         ))
                     }
                 }
@@ -413,11 +475,19 @@ impl Parser<'_> {
                 if self.types.is_error(value.ty) {
                     return Some(Value::temporary(self.types.error()));
                 }
-                if !value.lvalue {
-                    self.error(span, "`&` needs something it can take the address of");
+                let Some(place) = value.place else {
+                    if value.lvalue {
+                        self.not_lowered(span, "the address of this kind of place");
+                    } else {
+                        self.error(span, "`&` needs something it can take the address of");
+                    }
                     return Some(Value::temporary(self.types.error()));
-                }
-                Some(Value::temporary(self.types.pointer(value.ty)))
+                };
+                let pointer = self.types.pointer(value.ty);
+                let mut result = Value::new(pointer, None, false);
+                result.cir = Some(place);
+                result.place = Some(place);
+                Some(result)
             }
             "*" => {
                 self.bump();
@@ -449,6 +519,7 @@ impl Parser<'_> {
         if self.types.is_error(value.ty) {
             return Value::temporary(value.ty);
         }
+        self.not_lowered(span, "`++` and `--`");
         let scalar = self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty);
         if !value.lvalue || !scalar {
             self.error(span, "`++` and `--` need a variable holding a number");
@@ -578,12 +649,14 @@ impl Parser<'_> {
 
         let mut given = 0usize;
         let mut surplus = 0usize;
+        let mut values: Vec<Value> = Vec::new();
         if !self.eat(")") {
             loop {
                 let argument = self.assignment_expression().map(|value| self.decay(value));
                 let Some(argument) = argument else { break };
                 if self.types.is_error(argument.ty) {
                     given += 1;
+                    values.push(argument);
                     if !self.eat(",") {
                         break;
                     }
@@ -603,6 +676,7 @@ impl Parser<'_> {
                 } else if !variadic {
                     surplus += 1;
                 }
+                values.push(argument);
                 given += 1;
                 if !self.eat(",") {
                     break;
@@ -626,7 +700,49 @@ impl Parser<'_> {
             };
             self.error(span, format!("this function takes {takes}, {given} given"));
         }
-        Value::temporary(result)
+        self.emit_call(callee, &params, values, result, variadic, span)
+    }
+
+    /// The call itself: arguments converted to the parameter types, and the result value.
+    fn emit_call(
+        &mut self,
+        callee: Value,
+        params: &[TypeId],
+        values: Vec<Value>,
+        result: TypeId,
+        variadic: bool,
+        span: Span,
+    ) -> Value {
+        if !self.in_body() {
+            return Value::new(result, None, false);
+        }
+        let Some(callee) = callee.cir else {
+            return Value::new(result, None, false);
+        };
+        let mut args = Vec::new();
+        for (position, argument) in values.into_iter().enumerate() {
+            // A variadic argument is promoted, not converted: C99 6.5.2.2p6.
+            let wanted = match params.get(position) {
+                Some(wanted) => *wanted,
+                None if variadic => self.promote(argument.ty),
+                None => continue,
+            };
+            let converted = self.convert(argument, wanted, span);
+            match converted.cir {
+                Some(value) => args.push(value),
+                None => return Value::new(result, None, false),
+            }
+        }
+        let returns = if matches!(self.types.kind(result), Type::Void) {
+            None
+        } else {
+            Some(result)
+        };
+        match self.emit(|builder| builder.call(callee, args, returns, span)) {
+            Some(Some(value)) => Value::code(result, value),
+            Some(None) => Value::new(result, None, false),
+            None => Value::new(result, None, false),
+        }
     }
 
     pub(super) fn primary_expression(&mut self) -> Option<Value> {
@@ -643,7 +759,7 @@ impl Parser<'_> {
                         let emitted =
                             self.emit(|builder| builder.constant(value.ty, bits as u64, span));
                         Some(match emitted {
-                            Some(cir) => Value::code(value.ty, cir),
+                            Some(cir) => Value::code(value.ty, cir).with_constant(Some(bits)),
                             None => value,
                         })
                     }
@@ -829,7 +945,22 @@ impl Parser<'_> {
         };
         match entry.kind {
             Kind::EnumConst(value) => Value::constant(entry.ty, value),
-            Kind::Function => Value::new(entry.ty, None, false),
+            Kind::Function => {
+                // A function name is its address (C99 6.3.2.1p4): the callee of a call, and a
+                // value that can be stored in a function pointer.
+                let (function, name) = (entry.ty, name);
+                let pointer = self.types.pointer(function);
+                match self.emit(|builder| builder.global_address(name, pointer, span)) {
+                    Some(address) => Value {
+                        ty: pointer,
+                        constant: None,
+                        lvalue: false,
+                        cir: Some(address),
+                        place: Some(address),
+                    },
+                    None => Value::new(pointer, None, false),
+                }
+            }
             Kind::Typedef => {
                 let spelling = self.spell_of(name).to_owned();
                 self.error(span, format!("`{spelling}` is a type, not a value"));
@@ -937,6 +1068,9 @@ impl Parser<'_> {
             }
         }
         self.block_body();
+        // A block nothing jumps to - the join after an `if` whose arms both return, say - still
+        // has to end somehow, and `unreachable` is what it means.
+        self.terminate_orphans();
         // A function that falls off its end returns, and C says what that return is.
         let terminated = self
             .body
@@ -960,12 +1094,33 @@ impl Parser<'_> {
         self.function_result = None;
         // The body is dropped, not lowered: the emitter does not express C yet. It is taken out
         // of the parser so the next function starts clean.
-        let _body = self.body.take().expect("this function's body");
-        // M4.2's plumbing is here - a module, a body, slots, conversions, a verifier - but the
-        // emitter does not yet express C's expressions and statements, so a body whose code
-        // would be missing pieces is refused rather than half-lowered.
+        let body = self.body.take().expect("this function's body");
         if self.error_count() == errors_before {
-            self.not_implemented(span, "this function body is not lowered yet (M4.2b)");
+            // A body with a mistake in it is thrown away rather than lowered: half a function
+            // is not a function, and the verifier is what says so.
+            debug_assert_eq!(
+                body.func.verify(&self.types),
+                Ok(()),
+                "an emitted function must verify"
+            );
+            self.funcs.push(body.func);
+        }
+    }
+
+    /// Give every block that will never be filled a terminator, so the verifier's "a block ends"
+    /// is a fact rather than a hope.
+    fn terminate_orphans(&mut self) {
+        let Some(body) = self.body.as_mut() else {
+            return;
+        };
+        let count = body.func.blocks.len();
+        for index in 0..count {
+            let block = cir::Block(index as u32);
+            if block == body.current || body.func.terminated(block) {
+                continue;
+            }
+            let span = body.func.block(block).span;
+            cir::Builder::at(&mut body.func, block).unreachable(span);
         }
     }
 

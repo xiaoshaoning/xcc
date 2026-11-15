@@ -29,37 +29,21 @@ impl Parser<'_> {
         let word = self.peek().map(|token| self.spell(token).to_owned());
         match word.as_deref() {
             Some("if") => {
-                if self.in_body() {
-                    let span = self.span();
-                    self.not_lowered(span, "`if`");
-                }
                 self.if_statement();
                 self.leave_nesting();
                 return;
             }
             Some("while") => {
-                if self.in_body() {
-                    let span = self.span();
-                    self.not_lowered(span, "`while`");
-                }
                 self.while_statement();
                 self.leave_nesting();
                 return;
             }
             Some("do") => {
-                if self.in_body() {
-                    let span = self.span();
-                    self.not_lowered(span, "`do`");
-                }
                 self.do_statement();
                 self.leave_nesting();
                 return;
             }
             Some("for") => {
-                if self.in_body() {
-                    let span = self.span();
-                    self.not_lowered(span, "`for`");
-                }
                 self.for_statement();
                 self.leave_nesting();
                 return;
@@ -151,55 +135,196 @@ impl Parser<'_> {
         }
     }
 
+    /// A block to jump to, when code is being built.
+    fn new_block(&mut self, span: Span) -> Option<cir::Block> {
+        self.emit(|builder| builder.append_block(&[], span))
+    }
+
+    /// Leave the current block for `target`.
+    fn jump(&mut self, target: cir::Block, span: Span) {
+        self.emit(|builder| builder.jump(target, Vec::new(), span));
+    }
+
+    /// Start filling `block`.
+    fn switch_to(&mut self, block: cir::Block) {
+        if let Some(body) = self.body.as_mut() {
+            body.current = block;
+        }
+    }
+
+    /// Whether a block already ends, so it is not given a second terminator.
+    fn terminated(&self, block: cir::Block) -> bool {
+        self.body
+            .as_ref()
+            .is_none_or(|body| body.func.terminated(block))
+    }
+
+    /// `if (condition) statement else statement`: three blocks and a join. The join takes no
+    /// parameters because C's `if` has no value.
     pub(super) fn if_statement(&mut self) {
+        let span = self.span();
         self.bump();
         let condition = self.parenthesised_condition("`if`");
         if let Some(condition) = condition {
             self.require_scalar(&condition, "the condition of `if`");
         }
+        let test = condition.and_then(|condition| condition.cir);
+        let (then_block, else_block, join) = match (test, self.in_body()) {
+            (Some(_), true) => (
+                self.new_block(span),
+                self.new_block(span),
+                self.new_block(span),
+            ),
+            _ => (None, None, None),
+        };
+        if let (Some(test), Some(then_block), Some(else_block)) = (test, then_block, else_block) {
+            self.emit(|builder| {
+                builder.branch(
+                    test,
+                    (then_block, Vec::new()),
+                    (else_block, Vec::new()),
+                    span,
+                )
+            });
+            self.switch_to(then_block);
+        }
         self.statement();
+        if let (Some(then_block), Some(else_block), Some(join)) = (then_block, else_block, join) {
+            if !self.terminated(then_block) {
+                self.switch_to(then_block);
+                self.jump(join, span);
+            }
+            self.switch_to(else_block);
+        }
         if self.at_word("else") {
             self.bump();
             self.statement();
         }
+        if let (Some(else_block), Some(join)) = (else_block, join) {
+            if !self.terminated(else_block) {
+                self.switch_to(else_block);
+                self.jump(join, span);
+            }
+            self.switch_to(join);
+        }
     }
 
+    /// `while (condition) statement`: the test is a block of its own, so the body can come back
+    /// to it.
     pub(super) fn while_statement(&mut self) {
+        let span = self.span();
         self.bump();
+        let test = self.new_block(span);
+        let body_block = self.new_block(span);
+        let exit = self.new_block(span);
+        if let Some(test) = test {
+            self.jump(test, span);
+            self.switch_to(test);
+        }
         if let Some(condition) = self.parenthesised_condition("`while`") {
             self.require_scalar(&condition, "the condition of `while`");
+            if let (Some(condition), Some(body_block), Some(exit)) =
+                (condition.cir, body_block, exit)
+            {
+                self.emit(|builder| {
+                    builder.branch(
+                        condition,
+                        (body_block, Vec::new()),
+                        (exit, Vec::new()),
+                        span,
+                    )
+                });
+            }
         }
+        let (Some(body_block), Some(test), Some(exit)) = (body_block, test, exit) else {
+            self.loops += 1;
+            self.statement();
+            self.loops -= 1;
+            return;
+        };
+        self.switch_to(body_block);
+        self.targets.push((exit, test));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
+        self.targets.pop();
+        // A body that ends in `break` or `return` already ends; a second terminator would be a
+        // block with two exits.
+        if !self.terminated(body_block) {
+            self.jump(test, span);
+        }
+        self.switch_to(exit);
     }
 
     pub(super) fn do_statement(&mut self) {
+        let span = self.span();
         self.bump();
+        let body_block = self.new_block(span);
+        let test = self.new_block(span);
+        let exit = self.new_block(span);
+        let (Some(body_block), Some(test), Some(exit)) = (body_block, test, exit) else {
+            self.loops += 1;
+            self.statement();
+            self.loops -= 1;
+            self.do_tail();
+            return;
+        };
+        self.jump(body_block, span);
+        self.switch_to(body_block);
+        self.targets.push((exit, test));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
+        self.targets.pop();
+        if !self.terminated(body_block) {
+            self.jump(test, span);
+        }
+        self.switch_to(test);
+        let condition = self.do_tail();
+        match condition {
+            Some(condition) => {
+                self.emit(|builder| {
+                    builder.branch(
+                        condition,
+                        (body_block, Vec::new()),
+                        (exit, Vec::new()),
+                        span,
+                    )
+                });
+            }
+            // Nothing to test: the test block leaves the loop. A condition that emitted no
+            // value has a diagnostic of its own, and the function is dropped.
+            None => self.jump(exit, span),
+        }
+        self.switch_to(exit);
+    }
+
+    /// The `while (condition);` half of a `do`, read after the body because that is where it is.
+    fn do_tail(&mut self) -> Option<cir::Value> {
         if !self.at_word("while") {
             self.error_at_current("expected `while` after the body of `do`");
-            return;
+            return None;
         }
         self.bump();
-        if let Some(condition) = self.parenthesised_condition("`do ... while`") {
-            self.require_scalar(&condition, "the condition of `do ... while`");
+        let condition = self.parenthesised_condition("`do ... while`");
+        if let Some(condition) = condition.as_ref() {
+            self.require_scalar(condition, "the condition of `do ... while`");
         }
         if !self.eat(";") {
             self.error_at_current("expected `;` after `do ... while`");
         }
+        condition.and_then(|condition| condition.cir)
     }
 
+    /// `for`: the increment lives in a block of its own, which is parsed (and filled) before the
+    /// body because that is the order the source is in. A block may be filled in any order.
     pub(super) fn for_statement(&mut self) {
+        let span = self.span();
         self.bump();
         if !self.eat("(") {
             self.error_at_current("expected `(` after `for`");
             return;
         }
-        // C99 6.8.5.3: the `for` head has a scope of its own, so `for (int i = ...)` declares
-        // an `i` that is gone after the loop.
         self.symbols.push();
         if !self.at_punct(";") {
             if self.starts_specifier() {
@@ -212,14 +337,40 @@ impl Parser<'_> {
             self.error_at_current("expected `;` after the initial part of `for`");
             self.skip_until(&[";"], true);
         }
+        let test = self.new_block(span);
+        let body_block = self.new_block(span);
+        let step = self.new_block(span);
+        let exit = self.new_block(span);
+        if let Some(test) = test {
+            self.jump(test, span);
+            self.switch_to(test);
+        }
         if !self.at_punct(";") {
             if let Some(condition) = self.expression() {
                 self.require_scalar(&condition, "the condition of `for`");
+                if let (Some(condition), Some(body_block), Some(exit)) =
+                    (condition.cir, body_block, exit)
+                {
+                    self.emit(|builder| {
+                        builder.branch(
+                            condition,
+                            (body_block, Vec::new()),
+                            (exit, Vec::new()),
+                            span,
+                        )
+                    });
+                }
             }
+        } else if let Some(body_block) = body_block {
+            // `for (;;)` never tests, so nothing can leave it but `break` or `return`.
+            self.jump(body_block, span);
         }
         if !self.eat(";") {
             self.error_at_current("expected `;` after the condition of `for`");
             self.skip_until(&[")"], true);
+        }
+        if let Some(step) = step {
+            self.switch_to(step);
         }
         if !self.at_punct(")") {
             self.expression();
@@ -227,9 +378,27 @@ impl Parser<'_> {
         if !self.eat(")") {
             self.error_at_current("expected `)` after the parts of `for`");
         }
+        let (Some(body_block), Some(step), Some(test), Some(exit)) = (body_block, step, test, exit)
+        else {
+            self.loops += 1;
+            self.statement();
+            self.loops -= 1;
+            self.symbols.pop();
+            return;
+        };
+        if !self.terminated(step) {
+            self.jump(test, span);
+        }
+        self.switch_to(body_block);
+        self.targets.push((exit, step));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
+        self.targets.pop();
+        if !self.terminated(body_block) {
+            self.jump(step, span);
+        }
+        self.switch_to(exit);
         self.symbols.pop();
     }
 
@@ -242,6 +411,18 @@ impl Parser<'_> {
         }
         if !is_break && self.loops == 0 {
             self.error(span, "`continue` outside a loop");
+        }
+        if self.in_body() {
+            match self.targets.last().copied() {
+                Some((stop, next)) => {
+                    let target = if is_break { stop } else { next };
+                    self.jump(target, span);
+                }
+                None if is_break && !self.switches.is_empty() => {
+                    self.not_lowered(span, "`break` out of a `switch`");
+                }
+                None => {}
+            }
         }
         if !self.eat(";") {
             self.error_at_current("expected `;`");
