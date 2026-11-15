@@ -168,6 +168,45 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(twice(21), 42);
     }
 
+    /// `switch`, as the values it must produce: the arms, `break`, `default`, and C's
+    /// fall-through. Written before the emitter can lower it, and ignored until it can - a red
+    /// test in the suite would hide every other failure, and a deleted one would be forgotten.
+    ///
+    /// The failing case the first attempt left behind is `case 1: r = 5;`: a *store* inside a
+    /// case body, which reported "this kind of assignment is not lowered yet" because the block
+    /// the arm opened was already terminated.
+    #[test]
+    #[ignore = "switch is not lowered yet: a store inside a case body sees a terminated block"]
+    fn switch_arms_break_default_and_fall_through() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int pick(int x) {
+             switch (x) { case 1: return 10; case 2: break; default: return 30; }
+             return 0;
+             }
+             int fall(int x) {
+             int r;
+             r = 0;
+             switch (x) { case 1: r = r + 1; case 2: r = r + 2; break; default: r = 9; }
+             return r;
+             }",
+        )
+        .expect("it compiles");
+        let call = |name: &str, argument: i32| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+            function(argument)
+        };
+        // An arm, `break` out to the code after the switch, and the default.
+        assert_eq!(call("pick", 1), 10);
+        assert_eq!(call("pick", 2), 0);
+        assert_eq!(call("pick", 3), 30);
+        // Fall-through: case 1 runs its own body and case 2's, so r is 3; case 2 alone is 2.
+        assert_eq!(call("fall", 1), 3);
+        assert_eq!(call("fall", 2), 2);
+        assert_eq!(call("fall", 9), 9);
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {
