@@ -46,6 +46,32 @@ it:
 - **`.rdata` as a separate section hint.** One read-only flag is not worth a `cir` field until
   something needs the distinction; `Linkage::Local` plus no writes is what the linker sees.
 
+## What the first attempt taught (recorded after it was reverted)
+
+The list walker was first written as **a second initialiser parser** - its own `{`/`,`/`}` loop,
+its own indexing, its own surplus check - and reverted. Every failing test named the same fault:
+
+    int a[2][2] = {{1,2},{3,4}};   expected an expression, found `{`   (no brace elision)
+    int a[5] = {[2] = 7};          a designator in a file-scope initialiser
+    char s[2] = "abc";             a generic refusal, not "cannot hold this 3-byte string"
+
+`initialize_array` and `initialize_record` already do all of that, and the corpus tests them. A
+second reader cannot match them without becoming them, so the walker is not a parser at all:
+
+    fn initialize_array(&mut self, ty, element, declared, braced, out: &mut Option<Vec<u8>>)
+
+The traversal stays single. A leaf that can write bytes copies them into `out` at
+`member.offset` / `index * size_of(element)`; a leaf that cannot (a non-constant, a pointer to a
+literal) clears `out`, and the existing type checker keeps reporting its existing diagnostics.
+`initializer_bytes(ty)` becomes a wrapper: `out = Some(vec![0; size])`, call the existing
+`brace_initializer`/`initializer`, return `out`. One traversal, one set of messages, bytes as a
+by-product - which is what "the bytes are computed by one function" in the decision above meant
+all along.
+
+This is the sixth appearance in this project of the same red flag (one fact in two places): the
+escape tables, `cir`'s block invariant, the C-to-Cranelift signature, the escape table again, the
+"is there an initialiser?" peek, and this. Look for it first.
+
 ## Consequences
 
 - `cir::Global` gains no fields, which is the test of whether the shape was right at M4.
