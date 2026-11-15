@@ -78,6 +78,24 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the walker - 2026-11-15 - review of the traversal that writes bytes
+
+1. **The leaf-write block appeared twice**: once for a leaf inside a brace list
+   (`initializer_value`) and once for a leaf that is the whole initialiser (`initializer`'s
+   scalar path) - the same "write here, or clear everything" decision, copied. Now one
+   `write_leaf(ty, value)`, which is also where the rule lives that a partly-filled object is a
+   wrong program and not a smaller one.
+2. **Recorded, not fixed: the literal's spelling is collected by a lookahead.** The string branch
+   walks ahead over the adjacent `Str` tokens to build the concatenated spelling before
+   `string_literal()` consumes them, which is the same walk `string_literal` does internally. The
+   repair is for `string_literal` to return the spelling it already assembles - a signature change
+   with two call sites - and it waits for patch 3, which is when the second caller arrives and
+   makes the right shape obvious.
+
+After seven reviews in this project, the count of "one fact in two places" findings is now seven.
+It has never once been a false alarm, and finding it by asking "where else is this true?" has been
+cheaper than reading for style in every case.
+
 ### data patch 1-2 - 2026-11-15 - review of the bytes writers and the globals
 
 Three findings from the first data code; two fixed, one recorded because fixing it needs patch 4.

@@ -105,22 +105,10 @@ impl Parser<'_> {
             let span = self.span();
             self.error(span, "expected an initialiser");
         }
-        // A file-scope object's bytes are written from the same value the type checker sees;
-        // anything that is not a constant clears the buffer rather than leaving zeroes behind.
-        if self.bytes.is_some() {
-            let at = self.offset;
-            let written = value.and_then(|value| {
-                if value.constant.is_none() || value.cir.is_some() {
-                    return None;
-                }
-                crate::parse::bytes::constant_bytes(&self.types, ty, value)
-            });
-            match (self.bytes.as_mut(), written) {
-                (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => {
-                    out[at..at + bytes.len()].copy_from_slice(&bytes);
-                }
-                _ => self.bytes = None,
-            }
+        // A file-scope object's bytes are written from the same value the type checker sees.
+        match value {
+            Some(value) => self.write_leaf(ty, value),
+            None => self.bytes = None,
         }
     }
 
@@ -316,29 +304,37 @@ impl Parser<'_> {
         }
     }
 
+    /// Write one leaf's bytes at the cursor's offset, or clear the buffer when this value is not
+    /// something that can be written.
+    ///
+    /// One place, because a leaf in a brace list and a leaf that is the whole initialiser are the
+    /// same question about the same value. A partly-filled object is a wrong program, not a
+    /// smaller one, so anything unwritable clears everything (ADR-004).
+    fn write_leaf(&mut self, ty: TypeId, value: Value) {
+        if self.bytes.is_none() {
+            return;
+        }
+        let at = self.offset;
+        if value.constant.is_none() || value.cir.is_some() {
+            self.bytes = None;
+            return;
+        }
+        let written = crate::parse::bytes::constant_bytes(&self.types, ty, value);
+        match (self.bytes.as_mut(), written) {
+            (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => {
+                out[at..at + bytes.len()].copy_from_slice(&bytes);
+            }
+            _ => self.bytes = None,
+        }
+    }
+
     /// One value in a brace list, checked against what it initialises.
     fn initializer_value(&mut self, ty: TypeId) {
         let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
             return;
         };
-        // A file-scope object's bytes are written here, at the offset the traversal put the
-        // cursor at. A leaf that cannot be written clears the buffer: a partly-filled object
-        // would be a wrong program, not a smaller one.
-        if self.bytes.is_some() {
-            let at = self.offset;
-            match crate::parse::bytes::constant_bytes(&self.types, ty, value) {
-                Some(bytes) => {
-                    if let Some(out) = self.bytes.as_mut() {
-                        if at + bytes.len() <= out.len() {
-                            out[at..at + bytes.len()].copy_from_slice(&bytes);
-                        } else {
-                            self.bytes = None;
-                        }
-                    }
-                }
-                None => self.bytes = None,
-            }
-        }
+        // A file-scope object's bytes are written from the same value the type checker sees.
+        self.write_leaf(ty, value);
         if self.types.is_error(ty) || self.types.is_error(value.ty) {
             return;
         }
