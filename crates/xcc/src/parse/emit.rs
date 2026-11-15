@@ -61,6 +61,64 @@ impl Parser<'_> {
         }
     }
 
+    /// An integer constant of type `ty`, with code when a body is being built.
+    pub(super) fn constant_of(&mut self, ty: TypeId, value: i64, span: Span) -> Value {
+        match self.emit(|builder| builder.constant(ty, value as u64, span)) {
+            Some(cir) => Value::code(ty, cir).with_constant(Some(value)),
+            None => Value::constant(ty, value),
+        }
+    }
+
+    /// `pointer +/- integer`: the index is scaled by the pointee's size, and the arithmetic
+    /// happens in the address's own width, because `cir` compares and computes like with like.
+    pub(super) fn pointer_walk(
+        &mut self,
+        pointer_ty: TypeId,
+        left: Value,
+        right: Value,
+        add: bool,
+        span: Span,
+    ) -> Value {
+        let result = Value::new(pointer_ty, None, false);
+        if !self.in_body() {
+            return result;
+        }
+        let element = self.types.pointee(pointer_ty);
+        let size = self.types.size_of(element).unwrap_or(1).max(1) as i64;
+        let address = self.types.fundamental("unsigned long long").unwrap();
+        // `p + n` scales `n`; `n + p` is the same expression with the sides swapped.
+        let (pointer, index) = if self.types.is_pointer(left.ty) {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let pointer = self.convert(pointer, address, span);
+        let index = self.convert(index, address, span);
+        let scale = self.constant_of(address, size, span);
+        let (Some(pointer), Some(index), Some(scale)) = (pointer.cir, index.cir, scale.cir) else {
+            return result;
+        };
+        let scaled = self.emit(|b| b.binary(cir::BinOp::Mul, index, scale, address, span));
+        let Some(scaled) = scaled else {
+            return result;
+        };
+        let op = if add {
+            cir::BinOp::Add
+        } else {
+            cir::BinOp::Sub
+        };
+        let walked = self.emit(|b| b.binary(op, pointer, scaled, address, span));
+        let Some(walked) = walked else {
+            return result;
+        };
+        let back =
+            self.emit(|b| b.convert(cir::ConvertOp::Bitcast, walked, address, pointer_ty, span));
+        match back {
+            Some(back) => Value::code(pointer_ty, back),
+            None => result,
+        }
+    }
+
     /// `left op right`, with both operands converted to `operands` as C requires.
     pub(super) fn emit_binary(
         &mut self,
@@ -148,6 +206,12 @@ impl Parser<'_> {
         };
         let signed = |ty: TypeId| matches!(self.types.kind(ty), Type::Int { signed: true, .. });
         if self.types.is_pointer(from) && self.types.is_pointer(to) {
+            return Some(cir::ConvertOp::Bitcast);
+        }
+        // A pointer and an integer of the target's width are the same bits, so C's "a pointer
+        // may be converted to an integer large enough to hold it" is a bitcast (6.3.2.3p6).
+        let wide = |ty: TypeId| matches!(self.types.kind(ty), Type::Int { bits: 64, .. });
+        if (self.types.is_pointer(from) && wide(to)) || (wide(from) && self.types.is_pointer(to)) {
             return Some(cir::ConvertOp::Bitcast);
         }
         if let (Some(from_bits), Some(to_bits)) = (width(from), width(to)) {

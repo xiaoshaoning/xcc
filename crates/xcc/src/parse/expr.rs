@@ -258,7 +258,7 @@ impl Parser<'_> {
                 if operator == "+" {
                     if let Some((pointer_ty, other_is_integer)) = pointer_side {
                         if other_is_integer {
-                            return Value::temporary(pointer_ty);
+                            return self.pointer_walk(pointer_ty, left, right, true, span);
                         }
                     }
                 }
@@ -266,13 +266,49 @@ impl Parser<'_> {
                     && self.types.is_pointer(left.ty)
                     && self.types.is_integer(right.ty)
                 {
-                    return Value::temporary(left.ty);
+                    return self.pointer_walk(left.ty, left, right, false, span);
                 }
                 if operator == "-"
                     && self.types.is_pointer(left.ty)
                     && self.types.is_pointer(right.ty)
                 {
-                    return Value::temporary(self.types.fundamental("long long").unwrap());
+                    // The difference of two addresses is a count of elements, not of bytes.
+                    let long = self.types.fundamental("long long").unwrap();
+                    let element = self.types.pointee(left.ty);
+                    let size = self.types.size_of(element).unwrap_or(1).max(1);
+                    let left = self.convert(left, long, span);
+                    let right = self.convert(right, long, span);
+                    match (left.cir, right.cir) {
+                        (Some(left), Some(right)) => {
+                            let difference =
+                                self.emit(|b| b.binary(cir::BinOp::Sub, left, right, long, span));
+                            match difference {
+                                Some(difference) => {
+                                    let divisor = self.constant_of(long, size as i64, span);
+                                    match (divisor.cir, difference) {
+                                        (Some(divisor), difference) => {
+                                            let quotient = self.emit(|b| {
+                                                b.binary(
+                                                    cir::BinOp::Div,
+                                                    difference,
+                                                    divisor,
+                                                    long,
+                                                    span,
+                                                )
+                                            });
+                                            return match quotient {
+                                                Some(quotient) => Value::code(long, quotient),
+                                                None => Value::new(long, None, false),
+                                            };
+                                        }
+                                        _ => return Value::new(long, None, false),
+                                    }
+                                }
+                                None => return Value::new(long, None, false),
+                            }
+                        }
+                        _ => return Value::new(long, None, false),
+                    }
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
@@ -606,13 +642,20 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         }
         match self.types.kind(base.ty) {
-            Type::Pointer(element) => {
+            Type::Pointer(element) | Type::Array { element, .. } => {
                 let element = *element;
-                Value::new(element, None, true)
-            }
-            Type::Array { element, .. } => {
-                let element = *element;
-                Value::new(element, None, true)
+                // `base[index]` is `*(base + index)`: the address is a place, and reading it is a
+                // load the emitter writes.
+                let pointer = self.types.pointer(element);
+                let mut value = Value::new(element, None, true);
+                let address = self.pointer_walk(pointer, base, index, true, span);
+                if let Some(place) = address.cir {
+                    value.place = Some(place);
+                    if let Some(loaded) = self.emit(|b| b.load(place, element, span)) {
+                        value.cir = Some(loaded);
+                    }
+                }
+                value
             }
             _ => {
                 let ty = self.describe(base.ty);
