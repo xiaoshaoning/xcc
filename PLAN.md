@@ -210,6 +210,9 @@ The first thing worth showing, and the reason the project exists.
       with the host's `cc` (MinGW gcc driving GNU ld here) and runs the result, asserting the
       process exit status is the C `return` value (`int main(void) { return 42; }` -> 42). This
       is the first end-to-end claim of M5 and it is a test, not a paragraph.
+- [ ] Globals and string literals, to the design in [ADR-004](docs/ADR-004-data.md): the front
+      end fills `cir::Global.init` with bytes it computes from `Types`' layout, a string literal
+      is an anonymous `Global`, and the back end declares data symbols and writes the bytes.
 - [ ] `xcc-cli -c -o out.obj t.c` and `link.exe` against UCRT (the CLI writes objects, the
       linking is still the host linker's job).
 - [ ] Minimal `crt`: entry point, `GetCommandLineW` to `argc`/`argv`, environment, exit code,
