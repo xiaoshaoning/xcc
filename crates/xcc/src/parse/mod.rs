@@ -22,6 +22,7 @@
 //!   (CONSTRAINTS 5).
 
 mod expr;
+mod init;
 mod stmt;
 
 use std::collections::HashMap;
@@ -336,7 +337,7 @@ impl Parser<'_> {
                     let previous = self
                         .symbols
                         .here(name)
-                        .map(|previous| self.types.describe(previous.ty))
+                        .map(|previous| self.describe(previous.ty))
                         .unwrap_or_default();
                     self.error(
                         span,
@@ -356,6 +357,12 @@ impl Parser<'_> {
     }
 
     /// How a name from the symbol table is spelled.
+    /// How a type is written in a diagnostic, with its tags: `pointer to struct Point`. The
+    /// parser has the names and the type arena does not, so this is where they meet.
+    fn describe(&self, ty: TypeId) -> String {
+        self.types.describe_with(ty, self.preprocessed.names())
+    }
+
     fn spell_of(&self, name: Symbol) -> &str {
         self.preprocessed.spell(name)
     }

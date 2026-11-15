@@ -239,7 +239,7 @@ impl Parser<'_> {
         let void = matches!(self.types.kind(result), Type::Void);
         if self.eat(";") {
             if !void {
-                let ty = self.types.describe(result);
+                let ty = self.describe(result);
                 self.error(
                     span,
                     format!("this function returns {ty}, so `return` needs a value"),
@@ -257,7 +257,7 @@ impl Parser<'_> {
             } else {
                 let null_pointer = self.types.is_pointer(result) && value.constant == Some(0);
                 if !null_pointer && !self.types.is_assignable(result, value.ty) {
-                    let (from, to) = (self.types.describe(value.ty), self.types.describe(result));
+                    let (from, to) = (self.describe(value.ty), self.describe(result));
                     self.error(span, format!("this function returns {to}, not {from}"));
                 }
             }
@@ -275,7 +275,7 @@ impl Parser<'_> {
         self.bump();
         if let Some(condition) = self.parenthesised_condition("`switch`") {
             if !self.types.is_error(condition.ty) && !self.types.is_integer(condition.ty) {
-                let ty = self.types.describe(condition.ty);
+                let ty = self.describe(condition.ty);
                 self.error(span, format!("`switch` needs an integer, not {ty}"));
             }
         }

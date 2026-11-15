@@ -492,24 +492,17 @@ impl Types {
     }
 
     /// How a type is written, for a diagnostic: `pointer to unsigned int`.
-    pub fn describe_with(&self, id: TypeId, names: &crate::intern::Interner) -> String {
-        match self.kind(id) {
-            Type::Record(record) => {
-                let record = &self.records[record.0 as usize];
-                let word = match record.kind {
-                    RecordKind::Struct => "struct",
-                    RecordKind::Union => "union",
-                };
-                match record.tag {
-                    Some(tag) => format!("{word} {}", names.resolve(tag)),
-                    None => format!("{word} (untagged)"),
-                }
-            }
-            _ => self.describe(id),
-        }
+    pub fn describe(&self, id: TypeId) -> String {
+        self.describe_in(id, None)
     }
 
-    pub fn describe(&self, id: TypeId) -> String {
+    /// The same, with the name table, so a `struct` tag is written by its name. The parser has
+    /// both and calls this; the arena cannot, because it never saw a name.
+    pub fn describe_with(&self, id: TypeId, names: &crate::intern::Interner) -> String {
+        self.describe_in(id, Some(names))
+    }
+
+    fn describe_in(&self, id: TypeId, names: Option<&crate::intern::Interner>) -> String {
         match self.kind(id) {
             Type::Void => "void".to_owned(),
             Type::Bool => "_Bool".to_owned(),
@@ -533,20 +526,22 @@ impl Types {
                     "double".to_owned()
                 }
             }
-            Type::Pointer(to) => format!("pointer to {}", self.describe(*to)),
+            Type::Pointer(to) => format!("pointer to {}", self.describe_in(*to, names)),
             Type::Array { element, count } => match count {
-                Some(count) => format!("array[{count}] of {}", self.describe(*element)),
-                None => format!("array of {}", self.describe(*element)),
+                Some(count) => format!("array[{count}] of {}", self.describe_in(*element, names)),
+                None => format!("array of {}", self.describe_in(*element, names)),
             },
             Type::Function {
                 result,
                 params,
                 variadic,
             } => {
-                let mut text = format!("function returning {}", self.describe(*result));
+                let mut text = format!("function returning {}", self.describe_in(*result, names));
                 if !params.is_empty() || *variadic {
-                    let mut spelled: Vec<String> =
-                        params.iter().map(|param| self.describe(*param)).collect();
+                    let mut spelled: Vec<String> = params
+                        .iter()
+                        .map(|param| self.describe_in(*param, names))
+                        .collect();
                     if *variadic {
                         spelled.push("...".to_owned());
                     }
@@ -560,10 +555,10 @@ impl Types {
                     RecordKind::Struct => "struct",
                     RecordKind::Union => "union",
                 };
-                if record.tag.is_some() {
-                    format!("{word} (see describe_with for its name)")
-                } else {
-                    format!("{word} (untagged)")
+                match (record.tag, names) {
+                    (Some(tag), Some(names)) => format!("{word} {}", names.resolve(tag)),
+                    (Some(_), None) => word.to_owned(),
+                    (None, _) => format!("{word} (untagged)"),
                 }
             }
             Type::Error => "<error>".to_owned(),

@@ -71,6 +71,13 @@ pub struct Preprocessed {
 }
 
 impl Preprocessed {
+    /// The name table the tokens' ids are meaningful in.
+    pub fn names(&self) -> &Interner {
+        &self.names
+    }
+}
+
+impl Preprocessed {
     /// Whether anything went wrong badly enough to stop.
     pub fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(Diagnostic::is_error)

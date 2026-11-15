@@ -83,7 +83,7 @@ impl Parser<'_> {
         }
         let null_pointer = self.types.is_pointer(left.ty) && right.constant == Some(0);
         if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
-            let (to, from) = (self.types.describe(left.ty), self.types.describe(right.ty));
+            let (to, from) = (self.describe(left.ty), self.describe(right.ty));
             self.error(span, format!("cannot assign {from} to {to}"));
             return Some(Value::temporary(left.ty));
         }
@@ -139,7 +139,7 @@ impl Parser<'_> {
             } else if self.types.is_assignable(right.ty, left.ty) {
                 right.ty
             } else {
-                let (a, b) = (self.types.describe(left.ty), self.types.describe(right.ty));
+                let (a, b) = (self.describe(left.ty), self.describe(right.ty));
                 self.error(span, format!("the arms of `?:` are {a} and {b}"));
                 self.types.error()
             };
@@ -153,7 +153,7 @@ impl Parser<'_> {
         if self.types.is_arithmetic(left.ty) && self.types.is_arithmetic(right.ty) {
             return self.types.usual_arithmetic(left.ty, right.ty);
         }
-        let (a, b) = (self.types.describe(left.ty), self.types.describe(right.ty));
+        let (a, b) = (self.describe(left.ty), self.describe(right.ty));
         self.error(span, format!("the arms of `?:` are {a} and {b}"));
         self.types.error()
     }
@@ -333,7 +333,7 @@ impl Parser<'_> {
         right: TypeId,
         span: Span,
     ) -> Value {
-        let (left, right) = (self.types.describe(left), self.types.describe(right));
+        let (left, right) = (self.describe(left), self.describe(right));
         self.error(
             span,
             format!("`{operator}` cannot be applied to {left} and {right}"),
@@ -365,7 +365,7 @@ impl Parser<'_> {
             return;
         }
         if !(self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty)) {
-            let ty = self.types.describe(value.ty);
+            let ty = self.describe(value.ty);
             let span = self.span();
             self.error(span, format!("{what} must be a scalar, not {ty}"));
         }
@@ -382,7 +382,7 @@ impl Parser<'_> {
                 match operator.as_str() {
                     "-" => {
                         if !self.types.is_arithmetic(ty) {
-                            let ty = self.types.describe(ty);
+                            let ty = self.describe(ty);
                             self.error(span, format!("unary `-` needs a number, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
@@ -399,7 +399,7 @@ impl Parser<'_> {
                     }),
                     "~" => {
                         if !self.types.is_integer(ty) {
-                            let ty = self.types.describe(ty);
+                            let ty = self.describe(ty);
                             self.error(span, format!("`~` needs an integer, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
@@ -438,7 +438,7 @@ impl Parser<'_> {
                     return Some(Value::temporary(self.types.error()));
                 }
                 if !self.types.is_pointer(value.ty) {
-                    let ty = self.types.describe(value.ty);
+                    let ty = self.describe(value.ty);
                     self.error(span, format!("`*` needs a pointer, not {ty}"));
                     return Some(Value::temporary(self.types.error()));
                 }
@@ -484,7 +484,7 @@ impl Parser<'_> {
             return match self.types.size_of(ty) {
                 Some(size) => Value::constant(size_type, size as i64),
                 None => {
-                    let typo = self.types.describe(ty);
+                    let typo = self.describe(ty);
                     let span = self.span();
                     self.error(span, format!("`sizeof` needs a complete type, not {typo}"));
                     Value::temporary(self.types.error())
@@ -500,7 +500,7 @@ impl Parser<'_> {
         match self.types.size_of(value.ty) {
             Some(size) => Value::constant(size_type, size as i64),
             None => {
-                let ty = self.types.describe(value.ty);
+                let ty = self.describe(value.ty);
                 let span = self.span();
                 self.error(span, format!("`sizeof` needs a complete type, not {ty}"));
                 Value::temporary(self.types.error())
@@ -546,7 +546,7 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         }
         if !self.types.is_integer(index.ty) {
-            let ty = self.types.describe(index.ty);
+            let ty = self.describe(index.ty);
             self.error(span, format!("a subscript must be an integer, not {ty}"));
             return Value::temporary(self.types.error());
         }
@@ -568,7 +568,7 @@ impl Parser<'_> {
                 }
             }
             _ => {
-                let ty = self.types.describe(base.ty);
+                let ty = self.describe(base.ty);
                 self.error(span, format!("`[]` needs a pointer or an array, not {ty}"));
                 Value::temporary(self.types.error())
             }
@@ -585,7 +585,7 @@ impl Parser<'_> {
             Type::Function { .. } => callee.ty,
             Type::Pointer(to) if matches!(self.types.kind(*to), Type::Function { .. }) => *to,
             _ => {
-                let ty = self.types.describe(callee.ty);
+                let ty = self.describe(callee.ty);
                 self.error(span, format!("cannot call {ty}"));
                 self.skip_until(&[")"], true);
                 return Value::temporary(self.types.error());
@@ -618,10 +618,7 @@ impl Parser<'_> {
                     let null_pointer =
                         self.types.is_pointer(expected) && argument.constant == Some(0);
                     if !null_pointer && !self.types.is_assignable(expected, argument.ty) {
-                        let (from, to) = (
-                            self.types.describe(argument.ty),
-                            self.types.describe(expected),
-                        );
+                        let (from, to) = (self.describe(argument.ty), self.describe(expected));
                         self.error(
                             span,
                             format!("argument {} is {from}, expected {to}", given + 1),
@@ -730,7 +727,7 @@ impl Parser<'_> {
         }
         let aggregate = if arrow {
             if !self.types.is_pointer(base.ty) {
-                let ty = self.types.describe(base.ty);
+                let ty = self.describe(base.ty);
                 self.error(
                     span,
                     format!("`->` needs a pointer to a struct or union, not {ty}"),
@@ -742,12 +739,12 @@ impl Parser<'_> {
             base.ty
         };
         let Some(record) = self.types.record_of(aggregate) else {
-            let ty = self.types.describe(aggregate);
+            let ty = self.describe(aggregate);
             self.error(span, format!("`{ty}` has no members"));
             return Value::temporary(self.types.error());
         };
         if !self.types.record_complete(record) {
-            let ty = self.types.describe(aggregate);
+            let ty = self.describe(aggregate);
             self.error(span, format!("`{ty}` is not complete yet"));
             return Value::temporary(self.types.error());
         }
@@ -783,7 +780,7 @@ impl Parser<'_> {
             || self.types.is_integer(to) && self.types.is_pointer(from.ty)
             || matches!(self.types.kind(to), Type::Void);
         if !converts {
-            let (from, to) = (self.types.describe(from.ty), self.types.describe(to));
+            let (from, to) = (self.describe(from.ty), self.describe(to));
             self.error(span, format!("cannot convert {from} to {to}"));
             return Value::temporary(self.types.error());
         }
@@ -910,253 +907,6 @@ impl Parser<'_> {
             Some(tree) => self.apply_declarator(tree, base),
             None => base,
         })
-    }
-
-    /// `= <initialiser>`: one value for a scalar, a brace list for an array or aggregate.
-    pub(super) fn initializer(&mut self, ty: TypeId) {
-        if self.at_punct("{") {
-            self.brace_initializer(ty);
-            return;
-        }
-        let Some(token) = self.peek().copied() else {
-            return;
-        };
-        if token.kind == crate::lex::TokenKind::Str {
-            self.bump();
-            // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
-            let spelling = self.spell(&token).to_owned();
-            let bytes = string_length(&spelling) + 1;
-            if matches!(self.types.kind(ty), Type::Array { count: None, .. }) {
-                self.types.complete_array(ty, bytes);
-            }
-            return;
-        }
-        // A nested aggregate inside a brace list may be initialised without braces of its own
-        // (C99 6.7.8p20): `int a[2][2] = {1,2,3,4}`.
-        if !self.at_punct("{")
-            && (self.types.record_of(ty).is_some()
-                || matches!(self.types.kind(ty), Type::Array { .. }))
-        {
-            self.initialise_into(ty, false);
-            return;
-        }
-        let value = self.conditional_expression();
-        self.skip_until(&[",", ";"], false);
-        if value.is_none() {
-            let span = self.span();
-            self.error(span, "expected an initialiser");
-        }
-    }
-
-    /// A brace list: `{1, 2}`, `{{1,2},{3,4}}`, and `{1,2,3,4}` for a `int[2][2]` - C lets the
-    /// braces of a nested aggregate be left out (C99 6.7.8p20), and so does this.
-    pub(super) fn brace_initializer(&mut self, ty: TypeId) {
-        self.bump(); // the `{`
-        self.initialise_into(ty, true);
-        self.eat(","); // a trailing comma before the closing brace is allowed
-        if !self.eat("}") {
-            self.error_at_current("expected `}` to end the initialiser");
-        }
-    }
-
-    /// Fill an aggregate from the values at the cursor, stopping where its members end or at a
-    /// `}` that closes an enclosing list.
-    ///
-    /// `braced` says whether this list has braces of its own: only then is a surplus value this
-    /// aggregate's problem. A flattened one - `int a[2][3] = {1,2,3,4,5,6}` - hands the values
-    /// after its capacity to the list around it (C99 6.7.8p20). A designator (`[3] = `, `.x = `)
-    /// moves the cursor, and the list carries on from after the element it named (6.7.8p17).
-    fn initialise_into(&mut self, ty: TypeId, braced: bool) {
-        let span = self.span();
-        match self.types.kind(ty) {
-            Type::Array { element, count } => {
-                let (element, declared) = (*element, *count);
-                let mut written = 0u64;
-                let mut first = true;
-                loop {
-                    if self.at_punct("}") || self.at_eof() {
-                        break;
-                    }
-                    // Capacity first, then the separator: a nested list must leave the comma
-                    // that belongs to the list around it. A designator may come after the
-                    // array is full, so it is checked before capacity.
-                    if !self.designator_follows()
-                        && declared.is_some_and(|declared| written >= declared)
-                    {
-                        break;
-                    }
-                    if !first && !self.eat(",") {
-                        break;
-                    }
-                    first = false;
-                    if self.at_punct("[") {
-                        self.bump();
-                        match (self.constant_expression(), declared) {
-                            (Some(index), _) if index < 0 => {
-                                self.error(span, format!("`[{index}]` is not a valid index"));
-                            }
-                            (Some(index), Some(declared)) if index as u64 >= declared => {
-                                self.error(
-                                    span,
-                                    format!("this array has {declared} elements, so `[{index}]` is past the end"),
-                                );
-                                written = index as u64;
-                            }
-                            (Some(index), _) => written = index as u64,
-                            (None, _) => {}
-                        }
-                        // The GNU range form is not C99; refuse it with one message rather
-                        // than letting `...` cascade through the list.
-                        if self.at_punct("...") {
-                            self.not_implemented(
-                                span,
-                                "the GNU `[a ... b]` initialiser range is not implemented yet",
-                            );
-                            self.skip_until(&[",", "}"], false);
-                            continue;
-                        }
-                        if !self.eat("]") {
-                            self.error_at_current("expected `]` after a designator");
-                        }
-                        if !self.deeper_designator() && !self.eat("=") {
-                            self.error_at_current("expected `=` after a designator");
-                        }
-                    } else if declared.is_some_and(|declared| written >= declared) {
-                        // The list has filled what room there is; a comma means more came.
-                        break;
-                    }
-                    if self.at_punct("{") {
-                        self.brace_initializer(element);
-                    } else {
-                        self.initialise_into(element, false);
-                    }
-                    written += 1;
-                }
-                match declared {
-                    None => self.types.complete_array(ty, written),
-                    Some(declared) if braced && written >= declared && self.at_punct(",") => {
-                        self.error(
-                            span,
-                            format!("this array has {declared} elements, more were given"),
-                        );
-                        self.skip_until(&["}"], false);
-                    }
-                    Some(_) => {}
-                }
-            }
-            Type::Record(record) => {
-                let record = *record;
-                let members: Vec<(Option<Symbol>, TypeId)> = self
-                    .types
-                    .members(record)
-                    .iter()
-                    .map(|member| (member.name, member.ty))
-                    .collect();
-                let mut at = 0;
-                let mut first = true;
-                loop {
-                    if self.at_punct("}") || self.at_eof() {
-                        break;
-                    }
-                    if !self.designator_follows() && at >= members.len() {
-                        if braced {
-                            self.error(span, "too many initialisers for this struct or union");
-                            self.skip_until(&["}"], false);
-                        }
-                        break;
-                    }
-                    if !first && !self.eat(",") {
-                        break;
-                    }
-                    first = false;
-                    if self.at_punct(".") {
-                        self.bump();
-                        let name = self.peek().copied();
-                        match name {
-                            Some(token) if token.kind == crate::lex::TokenKind::Ident => {
-                                self.bump();
-                                match members
-                                    .iter()
-                                    .position(|(member, _)| *member == Some(token.text))
-                                {
-                                    Some(position) => at = position,
-                                    None => {
-                                        let name = self.spell_of(token.text).to_owned();
-                                        self.error(span, format!("this has no member `{name}`"));
-                                    }
-                                }
-                            }
-                            _ => self.error_at_current("expected a member name"),
-                        }
-                        if !self.deeper_designator() && !self.eat("=") {
-                            self.error_at_current("expected `=` after a designator");
-                        }
-                    } else if at >= members.len() {
-                        if braced {
-                            self.error(span, "too many initialisers for this struct or union");
-                            self.skip_until(&["}"], false);
-                        }
-                        break;
-                    }
-                    let Some((_, member)) = members.get(at).copied() else {
-                        break;
-                    };
-                    at += 1;
-                    if self.at_punct("{") {
-                        self.brace_initializer(member);
-                    } else {
-                        self.initialise_into(member, false);
-                    }
-                }
-            }
-            _ => {
-                // A scalar is one value. It does not take the comma after it: the list around
-                // it owns the separators.
-                self.initialiser_value(ty);
-            }
-        }
-    }
-
-    /// One value in a brace list, checked against what it initialises.
-    fn initialiser_value(&mut self, ty: TypeId) {
-        let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
-            return;
-        };
-        if self.types.is_error(ty) || self.types.is_error(value.ty) {
-            return;
-        }
-        let null_pointer = self.types.is_pointer(ty) && value.constant == Some(0);
-        if !null_pointer && !self.types.is_assignable(ty, value.ty) {
-            let (from, to) = (self.types.describe(value.ty), self.types.describe(ty));
-            let span = self.span();
-            self.error(span, format!("cannot initialise {to} with {from}"));
-        }
-    }
-
-    /// Whether a designator comes next, now or after the comma - the reason the capacity check
-    /// cannot simply end the list: `{.y = 2, .x = 1}` goes back up to a full aggregate.
-    fn designator_follows(&self) -> bool {
-        let at = |ahead: usize, punctuation: &str| {
-            self.peek_at(ahead)
-                .is_some_and(|token| self.is_punct(token, punctuation))
-        };
-        at(0, ".") || at(0, "[") || (at(0, ",") && (at(1, ".") || at(1, "[")))
-    }
-
-    /// A designator that names a sub-object of the element it just picked: `[1].x`, `.p.y`.
-    /// Refused rather than half-read, because carrying the cursor back out through the chain
-    /// is not written yet.
-    fn deeper_designator(&mut self) -> bool {
-        if !(self.at_punct(".") || self.at_punct("[")) {
-            return false;
-        }
-        let span = self.span();
-        self.not_implemented(
-            span,
-            "a designator that goes deeper than one level is not implemented yet",
-        );
-        self.skip_until(&[",", "}"], false);
-        true
     }
 
     /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),
