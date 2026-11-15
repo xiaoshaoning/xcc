@@ -101,8 +101,13 @@ Everything after this milestone depends on the API being right, so it comes befo
       depth budget, `__FILE__`/`__LINE__`/`__DATE__`/`__TIME__`/`__STDC__`/`__STDC_VERSION__`/
       `__STDC_HOSTED__` (date and time from `Options::stamp`, never a clock), `#line` for
       `__LINE__`/`__FILE__`, and `-I`/`-D`/`-U` in the CLI.
-- [ ] The M2 gate: token streams identical to `clang -E` over the freestanding corpus, and a
-      `--depfile` that lists what was read.
+- [x] The M2 gate (`crates/xcc/tests/pp_gate.rs`): every freestanding corpus program is
+      preprocessed and compared **token for token** with `clang -E`, the reference's output
+      being lexed by our own lexer so whitespace and line markers cannot hide a difference.
+      426 of 426 agree; none needed to be excused. The test proves it can fail (one probe
+      file that seeds a known disagreement makes it report a named failure and exit non-zero).
+- [ ] `--depfile`, which needs `Artifact` to carry the files that were read - so it lands with
+      the parser, when a compile has dependencies worth listing.
 - [ ] `-I`, `-D`, `-U`, `--depfile`, `<...>` search that never escapes the configured roots
       (embedding hosts compile untrusted scripts).
 - [ ] Limits: include depth, macro expansion depth, total source and output size.

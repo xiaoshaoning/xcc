@@ -19,6 +19,10 @@ struct Args {
     #[arg(short = 'c')]
     compile_only: bool,
 
+    /// Preprocess only: print the token stream, one token after another.
+    #[arg(short = 'E')]
+    preprocess_only: bool,
+
     /// Write the object here instead of next to the source.
     #[arg(short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
@@ -82,7 +86,7 @@ fn main() -> ExitCode {
     }
     let args = Args::parse_from(full);
 
-    if !args.compile_only {
+    if !args.compile_only && !args.preprocess_only {
         eprintln!("xcc: linking is not implemented yet (PLAN.md, M5); pass -c to compile only");
         return ExitCode::from(2);
     }
@@ -114,6 +118,16 @@ fn main() -> ExitCode {
             roots: args.include_paths.clone(),
         });
         let mut compiler = Compile::with_includes(options, includes);
+        if args.preprocess_only {
+            match compiler.preprocess(&name, &text) {
+                Ok(preprocessed) => print_spellings(&preprocessed),
+                Err(diagnostics) => {
+                    eprintln!("{}", xcc::render_all(&diagnostics, &[source], format));
+                    status = ExitCode::from(1);
+                }
+            }
+            continue;
+        }
         match compiler.compile(&name, &text) {
             Ok(artifact) => {
                 let path = args
@@ -139,6 +153,28 @@ fn main() -> ExitCode {
     }
 
     status
+}
+
+/// `-E`: the tokens, whitespace between them, wrapped so a person can read it.
+fn print_spellings(preprocessed: &xcc::Preprocessed) {
+    let mut line = String::new();
+    for token in &preprocessed.tokens {
+        if token.kind == xcc::TokenKind::Eof {
+            continue;
+        }
+        let spelling = preprocessed.text(token);
+        if line.len() + spelling.len() + 1 > 96 {
+            println!("{line}");
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(spelling);
+    }
+    if !line.is_empty() {
+        println!("{line}");
+    }
 }
 
 /// The files `#include` may read: the path as written, then under each `-I` directory.

@@ -61,6 +61,9 @@ pub struct Preprocessed {
     pub files: Vec<String>,
     /// Errors and warnings, in the order they were found.
     pub diagnostics: Vec<Diagnostic>,
+    /// The names the tokens are spelled with: ids are only meaningful with the table that
+    /// minted them, so it travels with them rather than being left behind.
+    names: Interner,
 }
 
 impl Preprocessed {
@@ -68,21 +71,36 @@ impl Preprocessed {
     pub fn has_errors(&self) -> bool {
         self.diagnostics.iter().any(Diagnostic::is_error)
     }
+
+    /// The name a symbol stands for.
+    pub fn spell(&self, symbol: Symbol) -> &str {
+        self.names.resolve(symbol)
+    }
+
+    /// How `token` is spelled.
+    pub fn text(&self, token: &PpToken) -> &str {
+        self.names.resolve(token.text)
+    }
+
+    /// The spellings of the tokens, in order, leaving out the end of the file.
+    pub fn spellings(&self) -> Vec<String> {
+        self.tokens
+            .iter()
+            .filter(|token| token.kind != TokenKind::Eof)
+            .map(|token| self.names.resolve(token.text).to_owned())
+            .collect()
+    }
 }
 
 /// Preprocess `source`, reading includes from `includes` and interning what it keeps.
-pub fn preprocess(
-    source: &SourceFile,
-    options: &Options,
-    includes: &dyn Includes,
-    interner: &mut Interner,
-) -> Preprocessed {
+pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Includes) -> Preprocessed {
+    let mut interner = Interner::new();
     let mut preprocessor = Preprocessor {
         files: vec![FileEntry::new(source)],
         includes,
         budgets: &options.budgets,
         stamp: options.stamp.as_ref(),
-        interner,
+        interner: &mut interner,
         pending: VecDeque::new(),
         out: Vec::new(),
         macros: HashMap::new(),
@@ -102,14 +120,20 @@ pub fn preprocess(
         preprocessor.install_undefine(name);
     }
     preprocessor.run();
+    // Take the pieces out one at a time: the preprocessor still borrows the interner.
+    let files: Vec<String> = preprocessor
+        .files
+        .iter()
+        .map(|entry| entry.physical.clone())
+        .collect();
+    let diagnostics = std::mem::take(&mut preprocessor.diagnostics);
+    let tokens = std::mem::take(&mut preprocessor.out);
+    drop(preprocessor);
     Preprocessed {
-        tokens: preprocessor.out,
-        files: preprocessor
-            .files
-            .iter()
-            .map(|entry| entry.physical.clone())
-            .collect(),
-        diagnostics: preprocessor.diagnostics,
+        tokens,
+        files,
+        diagnostics,
+        names: interner,
     }
 }
 
@@ -1349,21 +1373,14 @@ mod tests {
         includes: &dyn Includes,
     ) -> (Vec<String>, Vec<Diagnostic>) {
         let file = SourceFile::new("t.c", source);
-        let mut interner = Interner::new();
-        let preprocessed = preprocess(&file, options, includes, &mut interner);
-        let spells = preprocessed
-            .tokens
-            .iter()
-            .map(|token| interner.resolve(token.text).to_owned())
-            .collect();
-        (spells, preprocessed.diagnostics)
+        let preprocessed = preprocess(&file, options, includes);
+        (preprocessed.spellings(), preprocessed.diagnostics)
     }
 
-    /// The spellings, without the `Eof`, asserting nothing went wrong.
+    /// The spellings, asserting nothing went wrong.
     fn spelled(source: &str) -> Vec<String> {
-        let (mut spells, diagnostics) = run(source);
+        let (spells, diagnostics) = run(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        spells.pop();
         spells
     }
 
@@ -1803,12 +1820,11 @@ mod tests {
     fn spans_survive_expansion() {
         let source = "#define N 3\nint x = N;\n";
         let file = SourceFile::new("t.c", source);
-        let mut interner = Interner::new();
-        let preprocessed = preprocess(&file, &Options::default(), &(), &mut interner);
+        let preprocessed = preprocess(&file, &Options::default(), &());
         let three = preprocessed
             .tokens
             .iter()
-            .find(|token| interner.resolve(token.text) == "3")
+            .find(|token| preprocessed.text(token) == "3")
             .expect("the expansion is in the output");
         assert_eq!(
             &source[three.span.start as usize..][..1],
@@ -1847,14 +1863,14 @@ mod tests {
     fn a_quoted_include_is_read() {
         let (spells, diagnostics) = with_includes("#include \"b.h\"\nhere", &[("b.h", "there\n")]);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["there", "here", ""]);
+        assert_eq!(spells, ["there", "here"]);
     }
 
     #[test]
     fn an_angled_include_is_read() {
         let (spells, diagnostics) = with_includes("#include <b.h>\nhere", &[("b.h", "there\n")]);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["there", "here", ""]);
+        assert_eq!(spells, ["there", "here"]);
     }
 
     #[test]
@@ -1873,7 +1889,7 @@ mod tests {
             &[("sub/a.h", "#include \"b.h\"\n"), files[0], files[1]],
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["beside", ""]);
+        assert_eq!(spells, ["beside"]);
     }
 
     #[test]
@@ -1882,7 +1898,7 @@ mod tests {
         let files = [("a.h", "#include \"b.h\"\n"), ("b.h", "deep\n")];
         let (spells, diagnostics) = with_includes(source, &files);
         assert!(diagnostics.is_empty());
-        assert_eq!(spells, ["deep", ""]);
+        assert_eq!(spells, ["deep"]);
 
         let options = Options {
             budgets: Budgets {
@@ -1904,7 +1920,7 @@ mod tests {
         let files = [("a.h", "#pragma once\nonce\n")];
         let (spells, diagnostics) = with_includes(source, &files);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["once", ""]);
+        assert_eq!(spells, ["once"]);
     }
 
     #[test]
@@ -1913,24 +1929,18 @@ mod tests {
         let files = [("a.h", guard)];
         let (spells, diagnostics) = with_includes("#include \"a.h\"\n#include \"a.h\"\n", &files);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["guarded", ""]);
+        assert_eq!(spells, ["guarded"]);
     }
 
     #[test]
     fn included_tokens_say_which_file_they_came_from() {
         let file = SourceFile::new("t.c", "#include \"b.h\"\nx\n");
-        let mut interner = Interner::new();
-        let preprocessed = preprocess(
-            &file,
-            &Options::default(),
-            &Map::new(&[("b.h", "y\n")]),
-            &mut interner,
-        );
+        let preprocessed = preprocess(&file, &Options::default(), &Map::new(&[("b.h", "y\n")]));
         assert_eq!(preprocessed.files, ["t.c", "b.h"]);
         let y = preprocessed
             .tokens
             .iter()
-            .find(|token| interner.resolve(token.text) == "y")
+            .find(|token| preprocessed.text(token) == "y")
             .expect("the included token");
         assert_eq!(y.file, 1);
     }
@@ -1950,7 +1960,7 @@ mod tests {
             &(),
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["int", "n", "=", "3", ";", ""]);
+        assert_eq!(spells, ["int", "n", "=", "3", ";"]);
     }
 
     // ---- the macros the language defines itself ---------------------------------
@@ -1959,17 +1969,11 @@ mod tests {
     fn file_and_line_say_where_they_are() {
         let (spells, diagnostics) = run_options("__LINE__\n__LINE__", &Options::default(), &());
         assert!(diagnostics.is_empty());
-        assert_eq!(spells, ["1", "2", ""]);
+        assert_eq!(spells, ["1", "2"]);
 
         let source = SourceFile::new("dir/t.c", "__FILE__\n");
-        let mut interner = Interner::new();
-        let preprocessed = preprocess(source_ref(&source), &Options::default(), &(), &mut interner);
-        let first = &preprocessed.tokens[0];
-        assert_eq!(interner.resolve(first.text), "\"dir/t.c\"");
-    }
-
-    fn source_ref(source: &SourceFile) -> &SourceFile {
-        source
+        let preprocessed = preprocess(&source, &Options::default(), &());
+        assert_eq!(preprocessed.text(&preprocessed.tokens[0]), "\"dir/t.c\"");
     }
 
     #[test]
@@ -1980,10 +1984,10 @@ mod tests {
         };
         let (spells, diagnostics) = run_options("__DATE__ __TIME__", &options, &());
         assert!(diagnostics.is_empty());
-        assert_eq!(spells, ["\"Nov 15 2026\"", "\"12:34:56\"", ""]);
+        assert_eq!(spells, ["\"Nov 15 2026\"", "\"12:34:56\""]);
 
         let (spells, _) = run_options("__DATE__", &Options::default(), &());
-        assert_eq!(spells, ["\"Jan  1 1970\"", ""], "no clock is ever read");
+        assert_eq!(spells, ["\"Jan  1 1970\""], "no clock is ever read");
     }
 
     #[test]
@@ -1993,7 +1997,7 @@ mod tests {
             &Options::default(),
             &(),
         );
-        assert_eq!(spells, ["1", "199901L", "0", ""]);
+        assert_eq!(spells, ["1", "199901L", "0"]);
     }
 
     // ---- #line ------------------------------------------------------------------
@@ -2006,6 +2010,6 @@ mod tests {
             &(),
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(spells, ["100", "101", "7", "\"other.c\"", ""]);
+        assert_eq!(spells, ["100", "101", "7", "\"other.c\""]);
     }
 }

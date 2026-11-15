@@ -1,7 +1,6 @@
 //! One compilation: the front end, the back end and the artefact it leaves behind.
 
 use crate::diag::{Diagnostic, Severity, Span};
-use crate::intern::Interner;
 use crate::options::Options;
 use crate::pp::{self, Includes};
 use crate::source::SourceFile;
@@ -59,6 +58,33 @@ impl Compile {
         &self.options
     }
 
+    /// Preprocess `source` without parsing it: the tokens, the files read, and what was wrong.
+    ///
+    /// This is what `-E` prints and what a depfile lists, and it is the whole front end up to
+    /// the parser: a host can run it on its own without asking for an object.
+    pub fn preprocess(
+        &self,
+        name: &str,
+        source: &str,
+    ) -> Result<pp::Preprocessed, Vec<Diagnostic>> {
+        let file = SourceFile::new(name, source);
+        if file.len() as usize > self.options.budgets.max_source_bytes {
+            let error = Diagnostic::error(format!(
+                "`{name}` is {} bytes, more than the {} a single source may be",
+                file.len(),
+                self.options.budgets.max_source_bytes
+            ))
+            .with_file(name);
+            return Err(truncate_diagnostics(vec![error], &self.options));
+        }
+        let preprocessed = pp::preprocess(&file, &self.options, &*self.includes);
+        if preprocessed.has_errors() {
+            let diagnostics = preprocessed.diagnostics.clone();
+            return Err(truncate_diagnostics(diagnostics, &self.options));
+        }
+        Ok(preprocessed)
+    }
+
     /// Compile `source`, which the caller calls `name`.
     ///
     /// Returns the object and any warnings, or every error the front end found. The source is
@@ -68,28 +94,10 @@ impl Compile {
     /// Takes `&mut self` although nothing is kept yet: the preprocessor's arenas and interner
     /// arrive with M2, and callers should not have to change because of it.
     pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Vec<Diagnostic>> {
-        let file = SourceFile::new(name, source);
         let mut diagnostics = Vec::new();
 
-        if file.len() as usize > self.options.budgets.max_source_bytes {
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "`{name}` is {} bytes, more than the {} a single source may be",
-                    file.len(),
-                    self.options.budgets.max_source_bytes
-                ))
-                .with_file(name),
-            );
-            return Err(truncate_diagnostics(diagnostics, &self.options));
-        }
-
         // Phases 1 and 2, tokens, and the directives that exist so far.
-        let mut interner = Interner::new();
-        let preprocessed = pp::preprocess(&file, &self.options, &*self.includes, &mut interner);
-        if preprocessed.has_errors() {
-            diagnostics.extend(preprocessed.diagnostics);
-            return Err(truncate_diagnostics(diagnostics, &self.options));
-        }
+        let preprocessed = self.preprocess(name, source)?;
         diagnostics.extend(preprocessed.diagnostics);
 
         // M2 continues with function-like macros, conditionals and includes; M3 is the parser.

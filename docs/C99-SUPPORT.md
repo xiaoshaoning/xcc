@@ -37,7 +37,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `#error`, `#warning` | `sound` - the rest of the line is the message |
 | `#line` | `partial` (M2.4) - it renumbers `__LINE__` and `__FILE__`; diagnostics still report physical lines, deliberately |
 | `#pragma once`, unknown `#pragma` ignored with a warning | `sound` for the directive itself; `once` matters at M2.4 |
-| `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__` | `sound` (M2.4) - the date and time come from `Options::stamp`, never from a clock, so the same source gives the same tokens |
+| `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__` | `sound` (M2.4) - the date and time come from `Options::stamp`, never from a clock, so the same source gives the same tokens. `__STDC_HOSTED__` is **0** until M8 ships headers, which is a real difference from a hosted compiler and the one disagreement the gate's probe file demonstrates |
 | `#pragma pack`, `#pragma comment` | `refused` - a diagnostic, not a silent misparse |
 
 ## Types
