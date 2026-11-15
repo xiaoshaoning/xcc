@@ -78,6 +78,19 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the crt - 2026-11-15 - review of the runtime file and the probing setting
+
+1. **The crt had no caller.** `crates/xcc-crt/src/main.c` was written and nothing compiled it:
+   a file that cannot fail, cannot pass, and will drift away from the subset the compiler
+   supports - the exact shape of the `#[ignore]` hazard the switch test had. It has a caller now
+   (`tests/crt.rs`), and the test states the claim ADR-005 makes: xcc compiles its own runtime,
+   so a program that runs proves something about the compiler. **It passes** - `exit`, `main` and
+   a call are inside the supported subset today.
+2. **The probing setting is unverified by measurement.** `enable_probestack`/`probestack_strategy`
+   are string settings, accepted at construction; a frame larger than a page is the only thing
+   that would prove them, and no test builds one. Recorded rather than guessed: a function with a
+   large local array is the test, and it needs arrays as locals, which the emitter still refuses.
+
 ### the cursor fix - 2026-11-15 - review of "jump back from where we are"
 
 1. **One question, written five times.** `if`, `while`, `do` and `for` each spelled out
