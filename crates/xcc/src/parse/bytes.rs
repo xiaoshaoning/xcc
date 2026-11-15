@@ -66,7 +66,7 @@ mod tests {
     use super::*;
 
     fn types() -> (Types, TypeId) {
-        let mut types = Types::new();
+        let types = Types::new();
         let int = types.fundamental("int").unwrap();
         (types, int)
     }
