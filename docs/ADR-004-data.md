@@ -108,6 +108,29 @@ The question is recorded before the code because it comes back for `static` coun
 and every compiler-generated label - and because the wrong answer here is expensive to reverse,
 which is exactly what an ADR is for.
 
+## Array locals: what type their address has
+
+An array local needs no load - its value is its address (C99 6.3.2.1p3) - and four failed patches
+showed that saying that is not enough. The missing sentence is about *which* type the address has.
+
+**Decision: the slot's address is `pointer to array[N]`, and decay is the one conversion point.**
+
+- `slot(ty, pointer)` is given `pointer to array[N]`, because that is what the storage is and the
+  only type that can express `&a` (C99 6.5.3.2: `&a` is `pointer to array[N]`, and `&a + 1` steps
+  by the whole array, not by an element).
+- A variable of array type therefore yields `Value { ty: array[N], cir: slot, place: slot }` - no
+  load, and a place, because `a` can be addressed.
+- **`decay` is where the array becomes a pointer**, and it emits a `cir` `Bitcast` from
+  `pointer to array[N]` to `pointer to element`. Everything that uses an array as a value -
+  `a[i]`, `a + 1`, passing `a` - consumes the decayed value and never sees the array pointer.
+- Corollary, found by the same attempt: `cir`'s verifier compared `TypeId`s with `==` in its
+  `Convert` check while the type arena has *structural* identity. It compares with `Types::same`
+  now, so a correct conversion cannot be rejected for having a different id.
+
+Why this rather than "arrays are pointers from the start": a `Value` whose type disagrees with the
+type of its `cir` value is the thing `cir`'s verifier exists to catch, and the four failed patches
+each produced one. Relabelling is cheap to write and impossible to verify.
+
 ## Consequences
 
 - `cir::Global` gains no fields, which is the test of whether the shape was right at M4.
