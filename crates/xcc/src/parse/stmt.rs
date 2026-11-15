@@ -156,6 +156,14 @@ impl Parser<'_> {
         self.body.as_ref().map(|body| body.current)
     }
 
+    /// Whether the block being filled can still take instructions: a construct jumps back to
+    /// its test or forward to its join only from an open block, and after a nested `switch` the
+    /// cursor sits in that switch's exit, not in the block the construct opened.
+    fn current_is_open(&self) -> bool {
+        self.current_block()
+            .is_some_and(|now| !self.terminated(now))
+    }
+
     /// Whether a block already ends, so it is not given a second terminator.
     fn terminated(&self, block: cir::Block) -> bool {
         self.body
@@ -193,12 +201,8 @@ impl Parser<'_> {
             self.switch_to(then_block);
         }
         self.statement();
-        if let (Some(then_block), Some(else_block), Some(join)) = (then_block, else_block, join) {
-            let _ = then_block;
-            if self
-                .current_block()
-                .is_some_and(|now| !self.terminated(now))
-            {
+        if let (Some(_then), Some(else_block), Some(join)) = (then_block, else_block, join) {
+            if self.current_is_open() {
                 self.jump(join, span);
             }
             self.switch_to(else_block);
@@ -207,12 +211,8 @@ impl Parser<'_> {
             self.bump();
             self.statement();
         }
-        if let (Some(else_block), Some(join)) = (else_block, join) {
-            let _ = else_block;
-            if self
-                .current_block()
-                .is_some_and(|now| !self.terminated(now))
-            {
+        if let (Some(_else), Some(join)) = (else_block, join) {
+            if self.current_is_open() {
                 self.jump(join, span);
             }
             self.switch_to(join);
@@ -261,11 +261,7 @@ impl Parser<'_> {
         // A body that ends in `break` or `return` already ends; a second terminator would be a
         // block with two exits. "Where we are" is the block the last statement filled, which a
         // nested `switch` may have moved to its own exit.
-        let _ = body_block;
-        if self
-            .current_block()
-            .is_some_and(|now| !self.terminated(now))
-        {
+        if self.current_is_open() {
             self.jump(test, span);
         }
         self.switch_to(exit);
@@ -291,11 +287,7 @@ impl Parser<'_> {
         self.statement();
         self.loops -= 1;
         self.targets.pop();
-        let _ = body_block;
-        if self
-            .current_block()
-            .is_some_and(|now| !self.terminated(now))
-        {
+        if self.current_is_open() {
             self.jump(test, span);
         }
         self.switch_to(test);
@@ -414,11 +406,7 @@ impl Parser<'_> {
         self.statement();
         self.loops -= 1;
         self.targets.pop();
-        let _ = body_block;
-        if self
-            .current_block()
-            .is_some_and(|now| !self.terminated(now))
-        {
+        if self.current_is_open() {
             self.jump(step, span);
         }
         self.switch_to(exit);

@@ -78,6 +78,20 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the cursor fix - 2026-11-15 - review of "jump back from where we are"
+
+1. **One question, written five times.** `if`, `while`, `do` and `for` each spelled out
+   `self.current_block().is_some_and(|now| !self.terminated(now))` - the rule that a construct
+   jumps back only from an open block - and it is the rule the trap fix is *about*, so it belongs
+   behind a name: `current_is_open()`. Now one definition and four call sites that read as the
+   sentence they are.
+2. **Four `let _ = block;` lines** existed only to keep a destructured binding alive after the
+   block stopped being consulted. Dead bindings that look deliberate are worse than unused
+   parameters: the `_then`/`_else` patterns say "not used" in the language's own words.
+
+The fix itself was right - the failing dump proved it - and this is the cleanup that makes the
+next reader see the rule rather than reconstruct it.
+
 ### switch - 2026-11-15 - review of the switch commit
 
 The test that shipped with it proves arms, `break`, `default`, fall-through and negative case
