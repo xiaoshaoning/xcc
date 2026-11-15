@@ -115,9 +115,15 @@ impl Diagnostic {
     }
 
     /// Where this diagnostic points, as a line and column in `source`, if it points anywhere
-    /// and the host handed the file over.
+    /// and `source` is the file it is about.
+    ///
+    /// The file is checked, not trusted: rendering against another file's text would otherwise
+    /// report a line and column that belong to different code.
     pub fn position(&self, source: Option<&crate::source::SourceFile>) -> Option<Position> {
         let source = source?;
+        if self.file.as_deref() != Some(source.name()) {
+            return None;
+        }
         let span = self.span?;
         Some(source.position(span.start))
     }
@@ -138,6 +144,38 @@ mod tests {
         assert_eq!(diagnostic.span, Some(Span { start: 10, len: 1 }));
         assert_eq!(diagnostic.notes.len(), 1);
         assert!(!diagnostic.is_error());
+    }
+
+    #[test]
+    fn a_position_needs_the_file_the_diagnostic_is_about() {
+        use crate::source::SourceFile;
+        let diagnostic = Diagnostic::error("bad")
+            .with_file("t.c")
+            .with_span(Span::at(4));
+        let t = SourceFile::new(
+            "t.c", "int x;
+",
+        );
+        let u = SourceFile::new(
+            "u.c", "int y;
+",
+        );
+        assert_eq!(
+            diagnostic.position(Some(&t)),
+            Some(Position { line: 1, column: 5 })
+        );
+        assert_eq!(
+            diagnostic.position(Some(&u)),
+            None,
+            "another file's text is not a place"
+        );
+        assert_eq!(diagnostic.position(None), None);
+        assert_eq!(
+            Diagnostic::error("bad")
+                .with_span(Span::at(0))
+                .position(Some(&t)),
+            None
+        );
     }
 
     #[test]

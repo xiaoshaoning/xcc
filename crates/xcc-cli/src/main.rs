@@ -33,6 +33,9 @@ struct Args {
 }
 
 /// The diagnostic shapes the command line offers.
+///
+/// `xcc::Format` is the source of truth; this exists only to keep `clap` out of the library,
+/// and the `From` impl below is the one place the two are mapped.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum FormatArg {
     /// The line of source, with a caret under what is wrong.
@@ -58,7 +61,13 @@ fn main() -> ExitCode {
     let mut argv: Vec<OsString> = std::env::args_os().collect();
     let program = argv.remove(0);
     let mut full = vec![program];
-    full.extend(expand_response_files(argv.into_iter()));
+    match expand_response_files(argv.into_iter()) {
+        Ok(expanded) => full.extend(expanded),
+        Err(message) => {
+            eprintln!("xcc: {message}");
+            return ExitCode::from(2);
+        }
+    }
     let args = Args::parse_from(full);
 
     if !args.compile_only {
@@ -114,8 +123,10 @@ fn main() -> ExitCode {
 
 /// Replace `@file` arguments with the words in that file, as a response file.
 ///
-/// One level only, split on ASCII whitespace, which is what a build system writes.
-fn expand_response_files(args: impl Iterator<Item = OsString>) -> Vec<OsString> {
+/// One level only, split on ASCII whitespace, which is what a build system writes. Fails with
+/// a message for the caller to print: a helper that ends the process cannot be tested on its
+/// own, and hides the exit from whoever reads the call.
+fn expand_response_files(args: impl Iterator<Item = OsString>) -> Result<Vec<OsString>, String> {
     let mut out = Vec::new();
     for arg in args {
         let text = arg.to_string_lossy().into_owned();
@@ -125,11 +136,8 @@ fn expand_response_files(args: impl Iterator<Item = OsString>) -> Vec<OsString> 
         };
         match std::fs::read_to_string(path) {
             Ok(contents) => out.extend(contents.split_whitespace().map(OsString::from)),
-            Err(error) => {
-                eprintln!("xcc: cannot read response file {path}: {error}");
-                std::process::exit(2);
-            }
+            Err(error) => return Err(format!("cannot read response file {path}: {error}")),
         }
     }
-    out
+    Ok(out)
 }

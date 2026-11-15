@@ -16,6 +16,13 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: The front end names no back end
+        shell: bash
+        run: |
+          if grep -rnE 'cranelift|iced_x86' crates/xcc/src --include='*.rs'                | grep -vE 'crates/xcc/src/(back|jit|capi)/'; then
+            echo 'a front end module mentioned a back end (CONSTRAINTS 1)'
+            exit 1
+          fi
       - name: Test
         run: cargo test --workspace
       - name: Release build

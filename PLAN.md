@@ -259,12 +259,16 @@ docs/                      ADR, this plan
   later milestone with its own acceptance test, and the answer to "make it faster" *this quarter*
   is still "use clang".
 
-## First slice, ready to start
+## Next slice
 
-M1, as one pull request: workspace, library skeleton with `Options`/`Diagnostic`/`Compile`, CLI
-with `--version`/`--help`/`--format`, hand-written rendering, exact-string tests for each
-format, one fuzz smoke test, CI job on `windows-latest`, `README` polish. Acceptance is M1's,
-and it does not touch a line of parsing, so it can be reviewed quickly.
+M2, in this order, because CONSTRAINTS 4 and 5 demand the decisions before the code:
 
-After that, in order: M2, M3, M4 (JIT demo), M5 (hello.exe), M6, then M7 to M9 in whatever
-order users ask for.
+1. **The stack strategy** (constraint 5): what the recursion budget is, where it is enforced,
+   and the number. Written into CONSTRAINTS.md before the preprocessor exists.
+2. **The interner** (constraint 4): identifiers get ids in first-seen order, never from
+   addresses or hash order, so preprocessing twice gives the same bytes.
+3. **The lexer**, then macros, then conditionals, then includes - each with its tests, and the
+   `clang -E` differential on `tests/corpus` as the gate at the end.
+
+After M2: M3, M4 (the JIT demo), M5 (`hello.exe`), M6, then M7 to M10 in whatever order users
+ask for.

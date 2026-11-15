@@ -60,8 +60,8 @@ treats every file the same way except for `cc_bad_*`.
 | `cc2_*` .. `cc18_*` | one program per feature of the tutorial the source project followed, in its order: constants, unary and binary operators, comparisons, arithmetic, locals, control flow, functions, `char`/globals/compound assignment, pointers/arrays/strings, structs, `switch`/`sizeof`/typedef/enum, function pointers/`goto`/casts |
 | `cc19_*` .. `cc60_*` | extensions beyond that tutorial: dialect corners, regressions, double printing, aggregate initialisers |
 | `cc_bad_*` | inputs a compiler must refuse |
-| `p3_*` | small programs from an earlier pass at the same tutorial |
-| `pp_*` | aggregates, `sizeof`, initialisers, multi-dimensional arrays |
+| `p3_*` | small expression and statement programs (`return 10-4-3;`), from an earlier pass at the tutorial |
+| `pp_*` | array and pointer address-of paths, brace and string initialisers, `sizeof`, multi-dimensional arrays - the code-generation corner cases, not the preprocessor (none of the 55 uses `#define`) |
 | `dreg*`, `dmore*` | doubles: formatting, dense literals, globals |
 | `stress*` | longer programs meant to be run, not read |
 

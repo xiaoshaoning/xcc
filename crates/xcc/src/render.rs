@@ -44,15 +44,15 @@ pub fn render(diagnostic: &Diagnostic, source: Option<&SourceFile>, format: Form
 pub fn render_all(diagnostics: &[Diagnostic], sources: &[SourceFile], format: Format) -> String {
     let rendered: Vec<String> = diagnostics
         .iter()
-        .map(|diagnostic| {
-            let source = diagnostic
-                .file
-                .as_deref()
-                .and_then(|name| sources.iter().find(|file| file.name() == name));
-            render(diagnostic, source, format)
-        })
+        .map(|diagnostic| render(diagnostic, source_for(diagnostic, sources), format))
         .collect();
     rendered.join("\n")
+}
+
+/// The file a diagnostic is about, out of the ones the host handed over.
+fn source_for<'a>(diagnostic: &Diagnostic, sources: &'a [SourceFile]) -> Option<&'a SourceFile> {
+    let name = diagnostic.file.as_deref()?;
+    sources.iter().find(|file| file.name() == name)
 }
 
 /// Where the diagnostic points, as the formats write it: `t.c(3,7)`, `t.c:3:7`, or the file

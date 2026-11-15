@@ -39,6 +39,6 @@ mod source;
 
 pub use compile::{Artifact, Compile};
 pub use diag::{Diagnostic, Severity, Span};
-pub use options::{Budgets, CStandard, LongDouble, Options, Target};
+pub use options::{Budgets, CStandard, Options};
 pub use render::{render, render_all, Format};
 pub use source::{Position, SourceFile};

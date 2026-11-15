@@ -43,7 +43,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 |---|---|
 | `char`, `short`, `int`, `long`, `long long` and unsigned forms; `_Bool` | `planned` |
 | `float`, `double` | `planned` |
-| `long double` | `partial` by design: the same type as `double` (8 bytes), as MSVC has it on x86-64. 80-bit arithmetic is `refused` |
+| `long double` | `planned`, and 64-bit by design: the same type as `double`, as MSVC has it on x86-64. 80-bit arithmetic is in the refusals below |
 | `_Complex`, `_Imaginary`, `_Decimal*` | `refused` |
 | pointers, arrays, functions, mixed declarators to any depth | `planned` |
 | `struct`, `union`, `enum`, bitfields, anonymous members (C11) | `planned` |
@@ -80,7 +80,6 @@ These are decisions, not gaps: each one is a diagnostic with a note saying why.
 | refused | because |
 |---|---|
 | 80-bit `long double`, `_Complex`, `_Decimal` | the back end is SSE; 80-bit arithmetic would mean x87 and a second float model (ADR-001, decision 3) |
-| trigraphs as a silent no-op | C99 requires the mapping; a warning keeps it honest |
 | `#include_next`, `#pragma pack`, `#pragma comment` | host and toolchain concerns; guessing is worse than saying no |
 | C++, GNU statement expressions, nested functions, `typeof`, `__attribute__` beyond a named few | the language is C99 (ADR-001, decision 4) |
 | any construct the front end cannot translate faithfully | miscompiling is not an option (CONSTRAINTS 3) |

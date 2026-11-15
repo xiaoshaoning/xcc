@@ -1,7 +1,7 @@
 //! One compilation: the front end, the back end and the artefact it leaves behind.
 
 use crate::diag::{Diagnostic, Severity, Span};
-use crate::options::{Options, Target};
+use crate::options::Options;
 use crate::source::SourceFile;
 
 /// What a successful compilation produced.
@@ -15,11 +15,6 @@ impl Artifact {
     /// The object file, as bytes.
     pub fn object(&self) -> &[u8] {
         &self.object
-    }
-
-    /// The take the object with it.
-    pub fn into_object(self) -> Vec<u8> {
-        self.object
     }
 
     /// The warnings and notes produced along the way.
@@ -55,6 +50,9 @@ impl Compile {
     /// Returns the object and any warnings, or every error the front end found. The source is
     /// read as UTF-8: hosts hold their sources as strings, and a file that is not UTF-8 is a
     /// host problem, not a compiler one.
+    ///
+    /// Takes `&mut self` although nothing is kept yet: the preprocessor's arenas and interner
+    /// arrive with M2, and callers should not have to change because of it.
     pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Vec<Diagnostic>> {
         let file = SourceFile::new(name, source);
         let mut diagnostics = Vec::new();
@@ -68,18 +66,7 @@ impl Compile {
                 ))
                 .with_file(name),
             );
-            return Err(limit(diagnostics, &self.options));
-        }
-
-        if self.options.target != Target::Win64 {
-            diagnostics.push(
-                Diagnostic::error(
-                    "`--target=dos16` needs libbcc20 and is not part of this crate: it exists to \
-                     compile the same source with the 1991 compiler and compare",
-                )
-                .with_file(name),
-            );
-            return Err(limit(diagnostics, &self.options));
+            return Err(truncate_diagnostics(diagnostics, &self.options));
         }
 
         // M1: the pipeline behind this line is M2 (preprocessor) and M3 (parser). Until then,
@@ -90,12 +77,12 @@ impl Compile {
                 .with_span(Span::at(0))
                 .with_note("M2 adds the preprocessor, M3 the parser and types; see PLAN.md"),
         );
-        Err(limit(diagnostics, &self.options))
+        Err(truncate_diagnostics(diagnostics, &self.options))
     }
 }
 
 /// Cut a diagnostic list down to the budget, saying how many were dropped.
-fn limit(mut diagnostics: Vec<Diagnostic>, options: &Options) -> Vec<Diagnostic> {
+fn truncate_diagnostics(mut diagnostics: Vec<Diagnostic>, options: &Options) -> Vec<Diagnostic> {
     let budget = options.budgets.max_diagnostics;
     if diagnostics.len() > budget {
         let dropped = diagnostics.len() - budget;
@@ -146,17 +133,6 @@ mod tests {
     }
 
     #[test]
-    fn the_dos_target_says_so() {
-        let options = Options {
-            target: Target::Dos16,
-            ..Options::default()
-        };
-        let mut compiler = Compile::new(options);
-        let errors = compiler.compile("t.c", "").unwrap_err();
-        assert!(errors[0].message.contains("libbcc20"));
-    }
-
-    #[test]
     fn too_many_diagnostics_are_cut_and_counted() {
         let options = Options {
             budgets: Budgets {
@@ -170,7 +146,7 @@ mod tests {
             Diagnostic::error("two"),
             Diagnostic::error("three"),
         ];
-        list = limit(list, &options);
+        list = truncate_diagnostics(list, &options);
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].message, "one");
         assert_eq!(list[1].severity, Severity::Note);
