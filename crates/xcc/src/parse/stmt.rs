@@ -414,6 +414,12 @@ impl Parser<'_> {
             if let Some((stop, next)) = self.targets.last().copied() {
                 let target = if is_break { stop } else { next };
                 self.jump(target, span);
+            } else if is_break {
+                // No loop around it, so `break` belongs to the innermost `switch` - and
+                // `continue` does not, which is why a switch pushes no loop target.
+                if let Some(exit) = self.switches.last().and_then(|switch| switch.exit) {
+                    self.jump(exit, span);
+                }
             }
         }
         if !self.eat(";") {
@@ -510,20 +516,18 @@ impl Parser<'_> {
             test,
             ..Switch::default()
         });
-        let (Some(exit), Some(test)) = (exit, test) else {
+        let (Some(_exit), Some(test)) = (exit, test) else {
             self.statement();
             self.switches.pop();
             return;
         };
         self.jump(test, span);
-        self.targets.push((exit, exit));
         // Statements before the first `case` are unreachable in C, and get a block to be
         // unreachable in rather than the comparison block.
         if let Some(stray) = self.new_block(span) {
             self.switch_to(stray);
         }
         self.statement();
-        self.targets.pop();
         let switch = self.switches.pop().expect("the switch being read");
         self.emit_switch_chain(&switch, span);
         // Whatever comes after the switch belongs to the exit block: without this, trailing
