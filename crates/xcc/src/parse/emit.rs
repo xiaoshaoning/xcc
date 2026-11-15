@@ -138,7 +138,7 @@ impl Parser<'_> {
         match (left.cir, right.cir) {
             (Some(left), Some(right)) => {
                 match self.emit(|b| b.binary(op, left, right, operands, span)) {
-                    Some(value) => Value::code(result, value),
+                    Some(value) => Value::code(result, value).with_constant(folded),
                     None => Value::new(result, folded, false),
                 }
             }
@@ -163,7 +163,7 @@ impl Parser<'_> {
         let value = self.convert(value, ty, span);
         match value.cir {
             Some(value) => match self.emit(|b| b.unary(op, value, ty, span)) {
-                Some(result) => Value::code(ty, result),
+                Some(result) => Value::code(ty, result).with_constant(folded),
                 None => Value::new(ty, folded, false),
             },
             None => Value::new(ty, folded, false),
@@ -189,7 +189,7 @@ impl Parser<'_> {
         match (left.cir, right.cir) {
             (Some(left), Some(right)) => {
                 match self.emit(|b| b.compare(op, left, right, operands, result, span)) {
-                    Some(value) => Value::code(result, value),
+                    Some(value) => Value::code(result, value).with_constant(folded),
                     None => Value::new(result, folded, false),
                 }
             }

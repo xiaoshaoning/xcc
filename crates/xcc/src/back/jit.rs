@@ -176,7 +176,6 @@ int twice(int x) { return host_double(x); }",
     /// case body, which reported "this kind of assignment is not lowered yet" because the block
     /// the arm opened was already terminated.
     #[test]
-    #[ignore = "switch is not lowered yet: a store inside a case body sees a terminated block"]
     fn switch_arms_break_default_and_fall_through() {
         let mut jit = Jit::new().expect("a JIT");
         jit.add_source(

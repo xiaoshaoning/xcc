@@ -454,6 +454,19 @@ impl Func {
         }
     }
 
+    /// Append an empty block. Opening one does not need a block to be current, which is how
+    /// `switch` opens every arm body after an earlier arm has already ended.
+    pub fn append_empty(&mut self, span: Span) -> Block {
+        let block = Block(self.blocks.len() as u32);
+        self.blocks.push(BlockData {
+            params: Vec::new(),
+            insts: Vec::new(),
+            term: None,
+            span,
+        });
+        block
+    }
+
     /// Whether a block already ends.
     pub fn terminated(&self, block: Block) -> bool {
         self.blocks[block.0 as usize].term.is_some()

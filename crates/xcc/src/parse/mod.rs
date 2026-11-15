@@ -168,6 +168,13 @@ const SPECIFIERS: &[&str] = &[
 struct Switch {
     cases: std::collections::HashSet<i64>,
     has_default: bool,
+    /// The value tested, and the type the comparisons happen in, when a body is being built.
+    condition: Option<cir::Value>,
+    condition_type: Option<TypeId>,
+    /// Where `break` goes, where the comparison chain is written, and the arms in source order.
+    exit: Option<cir::Block>,
+    test: Option<cir::Block>,
+    arms: Vec<(Option<i64>, cir::Block)>,
 }
 
 struct Parser<'a> {

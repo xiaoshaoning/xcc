@@ -59,8 +59,6 @@ impl Parser<'_> {
                 return;
             }
             Some("switch") => {
-                let span = self.span();
-                self.not_lowered(span, "`switch`");
                 self.switch_statement();
                 self.leave_nesting();
                 return;
@@ -137,7 +135,7 @@ impl Parser<'_> {
 
     /// A block to jump to, when code is being built.
     fn new_block(&mut self, span: Span) -> Option<cir::Block> {
-        self.emit(|builder| builder.append_block(&[], span))
+        Some(self.body.as_mut()?.func.append_empty(span))
     }
 
     /// Leave the current block for `target`.
@@ -413,15 +411,9 @@ impl Parser<'_> {
             self.error(span, "`continue` outside a loop");
         }
         if self.in_body() {
-            match self.targets.last().copied() {
-                Some((stop, next)) => {
-                    let target = if is_break { stop } else { next };
-                    self.jump(target, span);
-                }
-                None if is_break && !self.switches.is_empty() => {
-                    self.not_lowered(span, "`break` out of a `switch`");
-                }
-                None => {}
+            if let Some((stop, next)) = self.targets.last().copied() {
+                let target = if is_break { stop } else { next };
+                self.jump(target, span);
             }
         }
         if !self.eat(";") {
@@ -492,18 +484,117 @@ impl Parser<'_> {
 
     /// `switch ( expression ) statement` - the body is read once; `case` and `default` are
     /// labels inside it, and where each of them lands is a question for the code generator.
+    /// `switch (e) body`: one comparison chain, written *after* the body is read, because the
+    /// `case` values appear inside it. Each arm gets a block of its own, and the bodies are
+    /// linked to each other in source order so C's fall-through falls through.
     pub(super) fn switch_statement(&mut self) {
         let span = self.span();
         self.bump();
-        if let Some(condition) = self.parenthesised_condition("`switch`") {
+        let condition = self.parenthesised_condition("`switch`");
+        if let Some(condition) = condition.as_ref() {
             if !self.types.is_error(condition.ty) && !self.types.is_integer(condition.ty) {
                 let ty = self.describe(condition.ty);
                 self.error(span, format!("`switch` needs an integer, not {ty}"));
             }
         }
-        self.switches.push(Switch::default());
+        let value = condition.and_then(|condition| condition.cir);
+        let condition_type = condition.map(|condition| self.promote(condition.ty));
+        let (exit, test) = match (value, self.in_body()) {
+            (Some(_), true) => (self.new_block(span), self.new_block(span)),
+            _ => (None, None),
+        };
+        self.switches.push(Switch {
+            condition: value,
+            condition_type,
+            exit,
+            test,
+            ..Switch::default()
+        });
+        let (Some(exit), Some(test)) = (exit, test) else {
+            self.statement();
+            self.switches.pop();
+            return;
+        };
+        self.jump(test, span);
+        self.targets.push((exit, exit));
+        // Statements before the first `case` are unreachable in C, and get a block to be
+        // unreachable in rather than the comparison block.
+        if let Some(stray) = self.new_block(span) {
+            self.switch_to(stray);
+        }
         self.statement();
-        self.switches.pop();
+        self.targets.pop();
+        let switch = self.switches.pop().expect("the switch being read");
+        self.emit_switch_chain(&switch, span);
+        // Whatever comes after the switch belongs to the exit block: without this, trailing
+        // statements land in the last arm's body, `exit` is never filled, and a `break` jumps
+        // into a block the orphan pass turns into a trap.
+        self.switch_to(switch.exit.expect("the switch's exit block"));
+    }
+
+    /// The comparison chain, then the fall-through links. Both are written after the body,
+    /// which is why blocks are filled in an order of their own choosing (`for` does the same).
+    fn emit_switch_chain(&mut self, switch: &Switch, span: Span) {
+        let (Some(condition), Some(condition_type), Some(test), Some(exit)) = (
+            switch.condition,
+            switch.condition_type,
+            switch.test,
+            switch.exit,
+        ) else {
+            return;
+        };
+        self.switch_to(test);
+        let mut default = None;
+        for (value, body) in &switch.arms {
+            let Some(value) = value else {
+                default = Some(*body);
+                continue;
+            };
+            let next = match self.new_block(span) {
+                Some(next) => next,
+                None => continue,
+            };
+            let literal = self.constant_of(condition_type, *value, span);
+            if let Some(literal) = literal.cir {
+                if let Some(flag) = self.emit(|builder| {
+                    builder.compare(
+                        cir::CmpOp::Eq,
+                        condition,
+                        literal,
+                        condition_type,
+                        condition_type,
+                        span,
+                    )
+                }) {
+                    self.emit(|builder| {
+                        builder.branch(flag, (*body, Vec::new()), (next, Vec::new()), span)
+                    });
+                }
+            }
+            self.switch_to(next);
+        }
+        let last = default.unwrap_or(exit);
+        self.jump(last, span);
+        for (position, (_, body)) in switch.arms.iter().enumerate() {
+            let next = switch
+                .arms
+                .get(position + 1)
+                .map_or(exit, |(_, next)| *next);
+            if !self.terminated(*body) {
+                self.switch_to(*body);
+                self.jump(next, span);
+            }
+        }
+    }
+
+    /// Start a `case` or `default` body and remember it for the chain.
+    fn open_arm(&mut self, value: Option<i64>, span: Span) -> Option<cir::Block> {
+        let body = self.new_block(span)?;
+        if let Some(switch) = self.switches.last_mut() {
+            switch.arms.push((value, body));
+        }
+        self.switch_to(body);
+        Some(body)
     }
 
     /// `case constant :` - C99 6.8.4.2p3: inside a `switch`, and no two the same.
@@ -514,6 +605,9 @@ impl Parser<'_> {
         if !self.eat(":") {
             self.error_at_current("expected `:` after the `case` value");
         }
+        // The body is opened before the duplicate check: a duplicate `case` still has one.
+        let body = self.open_arm(value, span);
+        let _ = body;
         if let Some(value) = value {
             let message = match self.switches.last_mut() {
                 Some(current) => {
@@ -539,6 +633,8 @@ impl Parser<'_> {
         if !self.eat(":") {
             self.error_at_current("expected `:` after `default`");
         }
+        let arm = self.open_arm(None, span);
+        let _ = arm;
         let message = match self.switches.last_mut() {
             Some(current) if current.has_default => {
                 Some("this `switch` already has a `default`".to_owned())
