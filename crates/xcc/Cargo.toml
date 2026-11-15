@@ -7,3 +7,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cranelift-frontend = "0.117"
+cranelift-codegen = "0.117.2"
+cranelift-module = "0.117.2"
+cranelift-native = "0.117.2"
+cranelift-object = "0.117.2"

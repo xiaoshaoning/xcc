@@ -719,6 +719,7 @@ impl Parser<'_> {
         let Some(callee) = callee.cir else {
             return Value::new(result, None, false);
         };
+        self.not_lowered(span, "calls");
         let mut args = Vec::new();
         for (position, argument) in values.into_iter().enumerate() {
             // A variadic argument is promoted, not converted: C99 6.5.2.2p6.
@@ -820,6 +821,9 @@ impl Parser<'_> {
 
     /// `a.b` and `p->b`: the member's type, and whether it can be assigned to.
     pub(super) fn member_access(&mut self, base: Value, arrow: bool, span: Span) -> Value {
+        // The layout exists, but lowering a field needs address arithmetic on the aggregate,
+        // which the emitter does not do yet.
+        self.not_lowered(span, "a member access in code");
         let Some(token) = self.peek().copied() else {
             return Value::temporary(self.types.error());
         };
@@ -943,13 +947,19 @@ impl Parser<'_> {
             self.error(span, format!("`{spelling}` is not declared"));
             return Value::temporary(self.types.error());
         };
+        let lowerable = self.lowerable(entry.ty);
+        let _ = lowerable;
         match entry.kind {
             Kind::EnumConst(value) => Value::constant(entry.ty, value),
             Kind::Function => {
                 // A function name is its address (C99 6.3.2.1p4): the callee of a call, and a
                 // value that can be stored in a function pointer.
-                let (function, name) = (entry.ty, name);
+                let (function, name, ty) = (entry.ty, name, entry.ty);
                 let pointer = self.types.pointer(function);
+                // `cir` has the instruction, but the back end lowers a function address with
+                // the JIT's symbol table (M4.4); until then an address is refused, not lost.
+                let _ = ty;
+                self.not_lowered(span, "a function address");
                 match self.emit(|builder| builder.global_address(name, pointer, span)) {
                     Some(address) => Value {
                         ty: pointer,
@@ -1035,6 +1045,9 @@ impl Parser<'_> {
             return;
         };
         let func = cir::Func::new(name, result, span);
+        if !params.iter().all(|(_, ty, _)| self.lowerable(*ty)) || !self.lowerable(result) {
+            self.not_lowered(span, "a function whose parameters or result are aggregates");
+        }
         let param_types: Vec<TypeId> = params.iter().map(|(_, ty, _)| *ty).collect();
         let mut body = Body {
             current: func.entry,

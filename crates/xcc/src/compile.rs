@@ -13,6 +13,13 @@ pub struct Artifact {
 }
 
 impl Artifact {
+    fn new(object: Vec<u8>, diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            object,
+            diagnostics,
+        }
+    }
+
     /// The object file, as bytes.
     pub fn object(&self) -> &[u8] {
         &self.object
@@ -107,15 +114,28 @@ impl Compile {
             return Err(Diagnostics::new(items, sources));
         }
 
-        // M3 continues with statements and expressions; M4 generates code.
-        diagnostics.push(
-            Diagnostic::error("the code generator is not implemented yet")
-                .with_file(name)
-                .with_span(Span::at(0))
-                .with_note("M3 adds statements and expressions; M4 generates code"),
-        );
+        // A module with no function is a translation unit of declarations only: nothing to
+        // lower, and an object is still what the caller asked for.
+        let object = if parsed.module.funcs.is_empty() {
+            Vec::new()
+        } else {
+            match crate::back::object(&parsed.module, preprocessed.names()) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // A lowering failure is a compiler bug, so it says so rather than blaming
+                    // the source (CONSTRAINTS 6).
+                    diagnostics.push(
+                        Diagnostic::error(format!("internal: {error}"))
+                            .with_file(name)
+                            .with_span(Span::at(0)),
+                    );
+                    let items = truncate_diagnostics(diagnostics, &self.options);
+                    return Err(Diagnostics::new(items, sources));
+                }
+            }
+        };
         let items = truncate_diagnostics(diagnostics, &self.options);
-        Err(Diagnostics::new(items, sources))
+        Ok(Artifact::new(object, items))
     }
 }
 
@@ -160,42 +180,29 @@ mod tests {
     }
 
     #[test]
-    fn declarations_are_read_and_the_code_generator_is_missing() {
+    fn a_translation_unit_of_declarations_gives_an_empty_object() {
         let mut compiler = Compile::new(Options::default());
-        let errors = compiler
+        let artifact = compiler
             .compile(
                 "t.c", "int x;
 ",
             )
-            .unwrap_err()
-            .items()
-            .to_vec();
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0].message,
-            "the code generator is not implemented yet"
-        );
-        assert_eq!(errors[0].file.as_deref(), Some("t.c"));
-        assert_eq!(errors[0].span, Some(Span::at(0)));
-        assert_eq!(errors[0].notes.len(), 1);
+            .expect("no error");
+        assert!(artifact.object().is_empty(), "nothing to lower");
     }
 
     #[test]
-    fn a_body_is_read_and_then_the_code_generator_is_missing() {
+    fn a_body_is_read_and_lowered() {
         let mut compiler = Compile::new(Options::default());
-        let errors = compiler
+        let artifact = compiler
             .compile(
                 "t.c",
                 "int main(void) { return 0; }
 ",
             )
-            .unwrap_err()
-            .items()
-            .to_vec();
-        assert_eq!(
-            errors[0].message,
-            "the code generator is not implemented yet"
-        );
+            .expect("a function lowers");
+        assert!(!artifact.object().is_empty(), "an object came out");
+        assert_eq!(&artifact.object()[0..2], &[0x64, 0x86], "x86-64 COFF");
     }
 
     #[test]

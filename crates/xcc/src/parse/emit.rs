@@ -179,4 +179,13 @@ impl Parser<'_> {
     pub(super) fn pointer_to(&mut self, ty: TypeId) -> TypeId {
         self.types.pointer(ty)
     }
+
+    /// Whether a type has a machine representation yet: scalars and pointers do, aggregates wait
+    /// until their layout is lowered.
+    pub(super) fn lowerable(&self, ty: TypeId) -> bool {
+        matches!(
+            self.types.kind(ty),
+            Type::Void | Type::Bool | Type::Int { .. } | Type::Float { .. } | Type::Pointer(_)
+        )
+    }
 }

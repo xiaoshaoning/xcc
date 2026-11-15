@@ -13,6 +13,8 @@
 //! - Nothing here names a register, a calling convention or a Cranelift type. Those live in
 //!   `back/` (ADR-002, "What `cir` may not contain").
 
+#![allow(dead_code)] // the dump reads some of these, the back end the rest
+
 use crate::diag::Span;
 use crate::intern::Symbol;
 pub mod dump;
@@ -21,7 +23,7 @@ use crate::types::{TypeId, Types};
 
 /// A value: an SSA name minted by [`Builder`], defined in exactly one block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Value(u32);
+pub struct Value(pub(crate) u32);
 
 /// Which block defines a value, so a dump and a verifier can find it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

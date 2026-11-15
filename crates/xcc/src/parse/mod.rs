@@ -78,7 +78,6 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
 /// whatever was wrong with the source.
 pub(crate) struct Parsed {
     /// The translation unit as `cir`: `Module::dump` writes it, a back end lowers it.
-    #[allow(dead_code)] // no back end reads it yet: M4.3
     pub module: cir::Module,
     /// Errors and warnings, in source order.
     pub diagnostics: Vec<Diagnostic>,
@@ -420,6 +419,10 @@ impl Parser<'_> {
                         format!("`{spelling}` is already declared in this scope as {previous}"),
                     );
                 }
+            }
+            if self.in_body() && !self.lowerable(ty) && !specs.is_typedef {
+                let span = self.span();
+                self.not_lowered(span, "a variable whose type is an aggregate or a function");
             }
             if self.in_body()
                 && !specs.is_typedef

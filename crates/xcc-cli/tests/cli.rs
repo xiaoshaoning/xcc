@@ -121,12 +121,8 @@ fn a_response_file_is_expanded() {
     let output = run(xcc()
         .current_dir(temp.path())
         .arg(format!("@{}", response.display())));
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(
-        stderr(&output).contains("t.c:1:1: error:"),
-        "{}",
-        stderr(&output)
-    );
+    // A translation unit of declarations lowers to an empty object, so this succeeds now.
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
 #[test]
@@ -149,12 +145,8 @@ int from_source;
         .args(["-c", "-I"])
         .arg(temp.path().join("include"))
         .arg(&source));
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr(&output).contains("the code generator is not implemented yet"),
-        "preprocessing and parsing should have succeeded: {}",
-        stderr(&output)
-    );
+    // Preprocessing and parsing succeeded; a declaration-only unit lowers to an empty object.
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
 #[test]
@@ -189,8 +181,8 @@ fn defines_come_from_the_command_line() {
 
     let with = run(xcc().args(["-c", "-DFLAG"]).arg(&source));
     assert!(
-        stderr(&with).contains("the code generator is not implemented yet"),
-        "{}",
+        !stderr(&with).contains("no flag"),
+        "the define reached the preprocessor: {}",
         stderr(&with)
     );
 }
