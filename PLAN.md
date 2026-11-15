@@ -107,7 +107,8 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [ ] Semantic analysis: scopes and shadowing, type compatibility, implicit conversions,
       lvalue rules, function prototypes against definitions, constant folding, `sizeof` and
       alignment, static initialisers, tentative definitions.
-- [ ] Acceptance: the `c-testsuite` (MIT) corpus parses and type-checks with the same
+- [ ] Acceptance: the `c-testsuite` (MIT) corpus and the in-tree corpus
+      ([tests/corpus](tests/corpus/README.md), 464 programs) parse and type-check with the same
       accept/reject verdict as clang for every file (diagnostic text may differ); no false
       accepts, which is the test that matters.
 
@@ -152,8 +153,9 @@ The first thing worth showing, and the reason the project exists.
 - [ ] `long long` arithmetic including division and shifts at the edges (`LLONG_MIN / -1`,
       shifts >= width): defined behaviour, no trap, matching clang's results.
 - [ ] Acceptance: differential testing in CI - compile and run a corpus with `xcc` and with
-      `clang -O0`, compare stdout and exit codes; the corpus includes the usual suspects
-      (fizzbuzz, struct/union/bitfield spray, varargs, recursion, `long long` corners).
+      `clang -O0`, compare stdout and exit codes. The corpus is [tests/corpus](tests/corpus/README.md)
+      (which already covers structs, function pointers, doubles, aggregates and `long long`)
+      plus cases written for the constructs it does not: varargs, bitfields, unions.
 
 ## M7 - embedding polish  (M)
 

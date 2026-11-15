@@ -92,6 +92,11 @@ Borland's binary) or from TinyCC / `tinycc_in_rust` (LGPL). Reference compilers 
 `libbcc20`) may be **run** as oracles - comparing output is not derivation - and never linked
 into a shipped artefact except the optional `--target=dos16` path, which is test-only.
 
+One corpus is an exception, on the record: [tests/corpus](../tests/corpus/README.md) came from
+another project by the same author (`Writing-a-C-Compiler-in-Matlab`), who is its sole author and
+has released those files under MIT for this use. Anything taken from it in future keeps that
+provenance note, and its GPL-2 parts (`xc.m`, `hello.c`) stay behind.
+
 **Why**: MIT is a promise to whoever embeds xcc, and it is easy to break once and impossible to
 un-break.
 

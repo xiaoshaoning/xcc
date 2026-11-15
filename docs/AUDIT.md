@@ -16,8 +16,9 @@ An audit answers three questions:
 ## Rules
 
 - **Corpora must be permissive**: public domain (sqlite amalgamation), MIT/BSD (zlib, lua),
-  Apache-2.0 (curl), or our own. Nothing from TinyCC's or Borland's test suites, and nothing
-  derived from a decompiled compiler (CONSTRAINTS 7).
+  Apache-2.0 (curl), or our own - which includes [tests/corpus](../tests/corpus/README.md), taken
+  from another project by this repository's author under MIT. Nothing from TinyCC's or Borland's
+  test suites, and nothing derived from a decompiled compiler (CONSTRAINTS 7).
 - **Reference compilers are oracles, never dependencies**: `clang` for verdicts and behaviour,
   `tcc` for a second opinion on C99 corners, `libbcc20` for the 16-bit comparison. Compare
   outputs; never link.
