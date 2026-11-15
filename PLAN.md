@@ -169,11 +169,14 @@ Everything after this milestone depends on the API being right, so it comes befo
 
 The first thing worth showing, and the reason the project exists.
 
-- [ ] `cir`'s shape is fixed and its verifier passes on hand-built functions before any lowering
+- [x] `cir`'s shape is fixed and its verifier passes on hand-built functions before any lowering
       exists: CFG of blocks with parameters, SSA values minted by the builder, explicit
-      `load`/`store`, a span and a C type on every value. Decided in
-      [ADR-002](docs/ADR-002-intermediate-form.md); `cir` may name no Cranelift type.
-- [ ] `cir::dump`, because the M10 harness compares text, not memory.
+      `load`/`store`/`slot`, a span and a C type on every value, constants, calls with the callee
+      as a value, globals by name. The verifier checks block termination, dominance, branch
+      arguments against block parameters, and the types an instruction claims. Decided in
+      [ADR-002](docs/ADR-002-intermediate-form.md); `cir` names no Cranelift type.
+- [x] `cir::dump`, because the M10 harness compares text, not memory: one line per instruction,
+      one block per section, pinned by tests.
 - [ ] `back-cranelift`: one lowering from `cir`; integers `char`..`long long`, pointers, arrays,
       structs, unions, control flow, calls, globals, string literals, `switch`.
 - [ ] JIT: `Jit::new()`, `add_source(&str)`, `add_symbol(name, fn_ptr)`, `get_fn::<F>(name)`,
