@@ -78,6 +78,33 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### array locals - 2026-11-15 - an attempt, reverted, and the question it exposed
+
+Nothing was committed: the attempt failed `cir`'s verifier and was reverted rather than shipped
+half-working. Recorded because the failure is a *design question*, and four patches in a row
+failed it identically:
+
+    int f(void) { int a[3]; a[0] = 1; return a[0]; }
+    Broken { message: "block 0 converts other types than it says" }
+
+What the attempt established, which is worth keeping:
+
+1. **An array local needs no load.** Its value is its address (C99 6.3.2.1p3), so `named_value`
+   returns the slot as both `cir` and `place`, and `lowerable` must accept a sized array.
+2. **`decay` cannot relabel a value.** Turning `array[N] of int` into `pointer to int` changes the
+   *type of the address*, and `cir` types its values, so the change is a `Bitcast` - and the
+   verifier is right to refuse a relabelled value.
+3. **`cir`'s verifier compared `TypeId`s with `==` in the `Convert` check** while the type arena
+   has structural identity: two pointers of the same meaning may be different ids. That is a real
+   weakness, found by this attempt, and it belongs in the commit that makes arrays work - with the
+   array as its test, not before it.
+
+The open question, which the next attempt should answer before writing code: **which type does an
+array local's address have in `cir`** - `pointer to array[N]` (what the slot is) or
+`pointer to element` (what C's decay means) - and where that conversion happens once, so that
+`a[i]`, `&a`, `a + 1` and passing `a` to a function all agree. Four patches each answered it
+differently in a different place; that is the definition of the fact having no home.
+
 ### `&&` and `||` - 2026-11-15 - review of the short-circuit commit
 
 1. **The old `&&`/`||` arm in `binary_result` was unreachable and wrong.** `binary_expression`
