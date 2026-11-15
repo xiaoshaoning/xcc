@@ -72,6 +72,34 @@ This is the sixth appearance in this project of the same red flag (one fact in t
 escape tables, `cir`'s block invariant, the C-to-Cranelift signature, the escape table again, the
 "is there an initialiser?" peek, and this. Look for it first.
 
+## Blocker found starting patch 3: the front end cannot mint a name
+
+The decision above says a string literal is an anonymous `Global` with a generated name and
+`external: false`. Writing that hit a wall in the first hour: `cir::Global.name` is a `Symbol`,
+symbols only come from an `Interner`, and the parser's interner is `&'a Preprocessed` - owned by
+the preprocessor and **immutable once preprocessing has finished**. The parser can read
+`spell_of(name)`; it cannot make `.str0`.
+
+Three ways out, and the choice is a real one:
+
+1. **Own the interner in the parser.** `Preprocessed` hands its table over once preprocessing
+   ends, and the parser keeps it mutable. Cheap, and it changes who owns a fact that currently
+   has exactly one owner - the reason the parser is a pure function of the tokens.
+2. **`cir::Global.name` becomes a `String`.** Then a synthetic name needs no interning, and a C
+   name costs one allocation at the point the global is pushed. The dump stops needing the name
+   table for globals, which is also true of nothing else in `cir`.
+3. **A second interner for synthetic names, with a marker** (`Symbol` gains a namespace bit, or
+   the back end is told which table a symbol belongs to). Every reader of a `Symbol` then has to
+   know which table minted it - the "unknown unknowns" the principles warn about most.
+
+Recommendation: **(2)**, on the grounds that a global's name is data, not a token: it is written
+once, read by a linker, and never compared with another `Symbol`. (1) trades a clean ownership
+boundary for a convenience; (3) buys a whole class of subtle bugs for nothing.
+
+This is recorded before writing the code because the same question comes back for `static`
+counters, `__func__`, and every compiler-generated label - and because the wrong answer here is
+expensive to reverse, which is exactly what an ADR is for.
+
 ## Consequences
 
 - `cir::Global` gains no fields, which is the test of whether the shape was right at M4.
