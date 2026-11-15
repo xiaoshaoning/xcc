@@ -49,5 +49,9 @@ fn a_program_links_and_exits_with_its_return_value() {
         String::from_utf8_lossy(&link.stderr)
     );
     let run = Command::new(&exe).output().expect("the program runs");
-    assert_eq!(run.status.code(), Some(42), "the exit status is the return value");
+    assert_eq!(
+        run.status.code(),
+        Some(42),
+        "the exit status is the return value"
+    );
 }
