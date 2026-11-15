@@ -21,6 +21,7 @@
 //!   the limit is a diagnostic, not a stack overflow, because the host owns the stack
 //!   (CONSTRAINTS 5).
 
+mod bytes;
 mod emit;
 mod expr;
 mod init;
