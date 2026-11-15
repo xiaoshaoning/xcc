@@ -141,6 +141,12 @@ impl Value {
         self
     }
 
+    /// The same value carrying `cir`, for the places that build one by hand.
+    fn with_cir(mut self, cir: Option<cir::Value>) -> Self {
+        self.cir = cir;
+        self
+    }
+
     /// A value that code was generated for.
     fn code(ty: TypeId, cir: cir::Value) -> Self {
         Self {
@@ -1286,7 +1292,8 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        let (module, _, diagnostics) = module("int f(int n) { ++n; return n; }");
+        let (module, _, diagnostics) =
+            module("struct P { int a; }; int f(struct P p) { return p.a; }");
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())

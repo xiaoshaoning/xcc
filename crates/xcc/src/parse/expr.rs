@@ -539,9 +539,10 @@ impl Parser<'_> {
                 Some(Value::new(self.types.pointee(value.ty), None, true))
             }
             "++" | "--" => {
+                let down = self.spell(self.peek().expect("checked")) == "--";
                 self.bump();
                 let value = self.unary_expression()?;
-                Some(self.increment(value, span))
+                Some(self.step(value, down, false, span))
             }
             "sizeof" => {
                 self.bump();
@@ -551,17 +552,54 @@ impl Parser<'_> {
         }
     }
 
-    pub(super) fn increment(&mut self, value: Value, span: Span) -> Value {
+    /// `++x` and `x++` (and their `--` forms): read the place, add or subtract one, write it
+    /// back, and yield the new value for the prefix form or the old one for the postfix.
+    pub(super) fn step(&mut self, value: Value, down: bool, postfix: bool, span: Span) -> Value {
         if self.types.is_error(value.ty) {
             return Value::temporary(value.ty);
         }
-        self.not_lowered(span, "`++` and `--`");
         let scalar = self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty);
         if !value.lvalue || !scalar {
             self.error(span, "`++` and `--` need a variable holding a number");
             return Value::temporary(self.types.error());
         }
-        Value::temporary(value.ty)
+        let ty = value.ty;
+        let written = if self.types.is_pointer(ty) {
+            // `p++` walks one element, which is the same "scale by the pointee" the `+` operator
+            // does; a pointer is not "plus one byte".
+            let one = Value::constant(ty, 1);
+            self.pointer_walk(ty, value, one, !down, span)
+        } else {
+            let one = self.constant_of(ty, 1, span);
+            let op = if down {
+                cir::BinOp::Sub
+            } else {
+                cir::BinOp::Add
+            };
+            let stepped = self.emit_binary(op, ty, ty, [value, one], None, span);
+            stepped
+        };
+        // Store the new value back where it came from; the result is that value for a prefix
+        // form and the previous one for a postfix form.
+        let Some(place) = value.place else {
+            self.not_lowered(span, "the address of this kind of place");
+            return Value::temporary(ty);
+        };
+        let stored = match written.cir {
+            Some(cir) => {
+                self.emit(|builder| builder.store(place, cir, span));
+                written
+            }
+            None => {
+                let stepped = self.convert(written, ty, span);
+                if let Some(cir) = stepped.cir {
+                    self.emit(|builder| builder.store(place, cir, span));
+                }
+                stepped
+            }
+        };
+        let result = if postfix { value } else { stored };
+        Value::new(ty, result.constant, false).with_cir(result.cir)
     }
 
     /// `sizeof` a type name or an expression, as a constant of type `size_t` (here `unsigned
@@ -623,8 +661,9 @@ impl Parser<'_> {
                 continue;
             }
             if self.at_punct("++") || self.at_punct("--") {
+                let down = self.spell(self.peek().expect("checked")) == "--";
                 self.bump();
-                value = self.increment(value, span);
+                value = self.step(value, down, true, span);
                 continue;
             }
             return Some(value);

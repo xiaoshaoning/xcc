@@ -231,6 +231,27 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(count(0), 0);
     }
 
+    /// `++`/`--`: the prefix form yields the new value, the postfix form the old one, and both
+    /// write back.
+    #[test]
+    fn increment_and_decrement_write_back_and_differ_by_which_value_they_yield() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int post(int n) { int i; i = n; return i++; }
+             int pre(int n) { int i; i = n; return ++i; }
+             int down(int n) { int i; i = n; return i--; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str, argument: i32| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+            function(argument)
+        };
+        assert_eq!(call("post", 7), 7, "postfix yields the old value");
+        assert_eq!(call("pre", 7), 8, "prefix yields the new one");
+        assert_eq!(call("down", 7), 7);
+    }
+
     /// `&&` and `||` short-circuit, which is observable: the arm that is not taken must not
     /// divide by zero. A plain `and`/`or` of two eager operands traps here.
     ///
