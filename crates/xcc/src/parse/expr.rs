@@ -576,8 +576,7 @@ impl Parser<'_> {
             } else {
                 cir::BinOp::Add
             };
-            let stepped = self.emit_binary(op, ty, ty, [value, one], None, span);
-            stepped
+            self.emit_binary(op, ty, ty, [value, one], None, span)
         };
         // Store the new value back where it came from; the result is that value for a prefix
         // form and the previous one for a postfix form.
