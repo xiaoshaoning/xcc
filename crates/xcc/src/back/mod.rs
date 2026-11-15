@@ -53,6 +53,14 @@ pub fn object(
     flags
         .set("opt_level", "none")
         .map_err(|error| LoweringError(error.to_string()))?;
+    // A frame larger than a page must touch its guard pages as it allocates them, or a stack
+    // overflow silently overwrites whatever is below. Inline, so no `__chkstk` import (ADR-005).
+    flags
+        .set("enable_probestack", "true")
+        .map_err(|error| LoweringError(error.to_string()))?;
+    flags
+        .set("probestack_strategy", "inline")
+        .map_err(|error| LoweringError(error.to_string()))?;
     let flags = settings::Flags::new(flags);
     let isa = cranelift_native::builder()
         .map_err(|error| LoweringError(error.to_string()))?
