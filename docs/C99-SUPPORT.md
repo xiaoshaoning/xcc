@@ -32,7 +32,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `#include` quoted and angled | `planned` (M2.4) - refused with a diagnostic until then |
 | `#include_next` | `refused` - a host concern (see the refusals below) |
 | `#define` object-like, `#undef`, redefinition checking | `sound` (M2.1) |
-| `#define` function-like, `#`/`##`, variadic `...`/`__VA_ARGS__` | `planned` (M2.2) - refused with a diagnostic until then |
+| `#define` function-like, `#`/`##`, variadic `...`/`__VA_ARGS__`, argument prescan and rescan | `sound` (M2.2), with the C rules that have observable consequences: an argument is expanded unless it is stringified or pasted, `##` produces one token or a diagnostic, and a macro never expands inside its own expansion |
 | `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, full constant expressions | `planned` |
 | `#error`, `#warning` | `sound` - the rest of the line is the message |
 | `#line` | `planned` (M2.3) |

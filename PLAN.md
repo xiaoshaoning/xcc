@@ -87,7 +87,10 @@ Everything after this milestone depends on the API being right, so it comes befo
       parser knows what context a number is in).
 - [x] `#define` object-like and `#undef`, with redefinition checking; `#error`/`#warning`;
       `#pragma once`; and a diagnostic, not silence, for every directive not built yet.
-- [ ] `#define` with parameters, `#`/`##`, variadic macros (M2.2).
+- [x] `#define` with parameters, `#`/`##`, variadic `...`/`__VA_ARGS__`, argument prescan,
+      rescanning after substitution, and the blue-paint rule that stops a macro expanding
+      inside itself. Both budgets it needs are enforced and tested: nesting depth, and total
+      tokens produced (a doubling macro nests not at all, so depth cannot bound it).
 - [ ] `#if`/`#ifdef`/`#elif`/`#else`/`#endif` with a real constant-expression evaluator,
       `defined`, `#line` (M2.3).
 - [ ] `#include` (quoted and angled, in-memory includes for embedding), `__FILE__`, `__LINE__`,

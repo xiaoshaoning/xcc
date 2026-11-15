@@ -20,6 +20,8 @@ pub struct Budgets {
     pub max_diagnostics: usize,
     /// How deeply macros may expand inside one another (CONSTRAINTS 5).
     pub max_macro_expansion: usize,
+    /// The most tokens preprocessing may produce, macro expansion included.
+    pub max_tokens: usize,
 }
 
 impl Default for Budgets {
@@ -28,6 +30,7 @@ impl Default for Budgets {
             max_source_bytes: 8 << 20,
             max_diagnostics: 100,
             max_macro_expansion: 64,
+            max_tokens: 1 << 20,
         }
     }
 }
@@ -56,5 +59,6 @@ mod tests {
         assert_eq!(options.budgets.max_source_bytes, 8 << 20);
         assert_eq!(options.budgets.max_diagnostics, 100);
         assert_eq!(options.budgets.max_macro_expansion, 64);
+        assert_eq!(options.budgets.max_tokens, 1 << 20);
     }
 }
