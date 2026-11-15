@@ -54,6 +54,63 @@ fn escape_value(escape: &str) -> Option<i64> {
     Some(simple)
 }
 
+/// What a string literal spells, byte for byte, without its quotes or the NUL.
+///
+/// `None` when an escape is one this compiler does not read: a data object filled with a guess
+/// would be a program that reads the wrong bytes, which is the failure CONSTRAINTS 3 forbids.
+#[allow(dead_code)] // the global initialiser reader is the caller: ADR-004, patch 2
+pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
+    let body = spelling.strip_prefix('L').unwrap_or(spelling);
+    let body = body.strip_prefix('"')?.strip_suffix('"')?;
+    let bytes = body.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'\\' {
+            // A character outside ASCII travels as the bytes it is written in.
+            out.push(bytes[at]);
+            at += 1;
+            continue;
+        }
+        at += 1;
+        let escape = *bytes.get(at)?;
+        at += 1;
+        match escape {
+            b'n' => out.push(10),
+            b't' => out.push(9),
+            b'r' => out.push(13),
+            b'a' => out.push(7),
+            b'b' => out.push(8),
+            b'f' => out.push(12),
+            b'v' => out.push(11),
+            b'\\' => out.push(92),
+            b'\'' => out.push(39),
+            b'"' => out.push(34),
+            b'?' => out.push(63),
+            b'x' => {
+                let start = at;
+                while at < bytes.len() && bytes[at].is_ascii_hexdigit() {
+                    at += 1;
+                }
+                let digits = std::str::from_utf8(&bytes[start..at]).ok()?;
+                out.push(u32::from_str_radix(digits, 16).ok()? as u8);
+            }
+            b'0'..=b'7' => {
+                let start = at - 1;
+                let mut length = 1;
+                while length < 3 && at < bytes.len() && matches!(bytes[at], b'0'..=b'7') {
+                    at += 1;
+                    length += 1;
+                }
+                let digits = std::str::from_utf8(&bytes[start..at]).ok()?;
+                out.push(u32::from_str_radix(digits, 8).ok()? as u8);
+            }
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
 /// How many bytes a string literal spells, not counting its quotes or the NUL.
 ///
 /// An escape is one byte however it is written, so `"\x41"`, `"\101"` and `"A"` are one
@@ -135,6 +192,28 @@ mod tests {
     fn what_is_not_a_character_constant_is_not_zero() {
         for spelling in ["'ab'", "'\\q'", "'\\x'", "'\\8'", "''", "'a", "a'"] {
             assert_eq!(character_constant(spelling), None, "{spelling}");
+        }
+    }
+
+    #[test]
+    fn a_string_literal_decodes_to_its_bytes() {
+        assert_eq!(string_bytes(r#""""#), Some(Vec::new()));
+        assert_eq!(string_bytes(r#""hi""#), Some(b"hi".to_vec()));
+        assert_eq!(string_bytes(r#""a\nb""#), Some(b"a\nb".to_vec()));
+        assert_eq!(string_bytes(r#""\x41\101""#), Some(b"AA".to_vec()));
+        assert_eq!(string_bytes(r#""\\""#), Some(b"\\".to_vec()));
+        assert_eq!(string_bytes(r#""\q""#), None, "an escape nobody reads");
+        assert_eq!(string_bytes(r#""\x""#), None, "a hex escape with no digits");
+    }
+
+    #[test]
+    fn the_length_and_the_bytes_agree() {
+        for spelling in [r#""""#, r#""hi""#, r#""a\nb""#, r#""\x41\101""#, r#""\0""#] {
+            assert_eq!(
+                string_length(spelling) as usize,
+                string_bytes(spelling).expect("it decodes").len(),
+                "{spelling}"
+            );
         }
     }
 
