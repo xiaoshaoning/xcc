@@ -440,9 +440,38 @@ impl Parser<'_> {
                     }
                 }
             }
+            // At file scope an object is data, not a slot: ADR-004. A tentative definition
+            // (`int x;`) is defined and zero-filled; an initialiser is the list walker's work
+            // and is still refused, because a global with no bytes would be a wrong program.
+            if !self.in_body() && !specs.is_typedef && !self.at_punct("=") {
+                if let Some(name) = name {
+                    if matches!(self.types.kind(ty), Type::Function { .. }) {
+                        // A function declaration is a signature, not data.
+                    } else {
+                        let span = self.span();
+                        self.globals.push(cir::Global {
+                            name,
+                            ty,
+                            defined: true,
+                            init: None,
+                            external: true,
+                            span,
+                        });
+                    }
+                }
+            }
             // An initialiser: only a constant expression, for now.
             if self.eat("=") {
-                self.initializer(ty);
+                let span = self.span();
+                if self.in_body() {
+                    self.initializer(ty);
+                } else {
+                    self.not_implemented(
+                        span,
+                        "a file-scope initialiser is not lowered yet (the bytes walker)",
+                    );
+                    self.initializer(ty);
+                }
             }
             last = Some(ty);
             self.last_declared = name;
@@ -1136,6 +1165,30 @@ block0 (entry)(v0: int, v1: int):
   v6 = add int v4, v5
   return v6
 "
+        );
+    }
+
+    #[test]
+    fn a_file_scope_object_becomes_a_global() {
+        let (unit, names, diagnostics) =
+            module("int x; static long long y; int f(void) { return x; }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let text = cir::dump::dump(&unit, &names);
+        assert!(text.contains("global x: int"), "{text}");
+        assert!(text.contains("global y: long long"), "{text}");
+        // A tentative definition is defined, and a file-scope initialiser is still refused
+        // because writing its bytes is the list walker's job.
+        assert_eq!(unit.globals.len(), 2);
+        let (unit, _, diagnostics) = module("int x = 5;");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("not lowered yet")),
+            "an initialiser says it is not lowered yet"
+        );
+        assert!(
+            unit.globals.is_empty(),
+            "and no global claims to have bytes"
         );
     }
 
