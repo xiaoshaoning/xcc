@@ -120,9 +120,11 @@ Everything after this milestone depends on the API being right, so it comes befo
 
 The first thing worth showing, and the reason the project exists.
 
-- [ ] Typed middle end (`cir`): expressions lowered to a small, target-independent IR that
-      keeps source spans, so bad code paths can be reported later. `cir` may name no Cranelift
-      type: the back end is behind it, not inside it.
+- [ ] `cir`'s shape is fixed and its verifier passes on hand-built functions before any lowering
+      exists: CFG of blocks with parameters, SSA values minted by the builder, explicit
+      `load`/`store`, a span and a C type on every value. Decided in
+      [ADR-002](docs/ADR-002-intermediate-form.md); `cir` may name no Cranelift type.
+- [ ] `cir::dump`, because the M10 harness compares text, not memory.
 - [ ] `back-cranelift`: one lowering from `cir`; integers `char`..`long long`, pointers, arrays,
       structs, unions, control flow, calls, globals, string literals, `switch`.
 - [ ] JIT: `Jit::new()`, `add_source(&str)`, `add_symbol(name, fn_ptr)`, `get_fn::<F>(name)`,
@@ -228,7 +230,7 @@ Cargo.toml                 workspace
 crates/xcc/             the library: no CLI, no globals
   src/lex.rs  pp.rs        M2
   src/parse/  ast.rs  sem/ M3 (types.rs, scope.rs, consts.rs, check.rs)
-  src/cir/                 M4 (lower.rs, ir.rs, layout.rs)
+  src/cir/                 M4 (ir.rs blocks and values, build.rs the builder, dump.rs, verify.rs)
   src/back/                M4/M5 (cranelift.rs, coff.rs, abi/win64.rs)
   src/jit/                 M4, the only unsafe of the code path
   src/diag.rs              M1

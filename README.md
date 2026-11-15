@@ -40,6 +40,7 @@ cargo test --workspace
 |---|---|
 | [PLAN.md](PLAN.md) | the milestones M0-M10, their acceptance tests, and where the quality comes from |
 | [docs/ADR-001-architecture.md](docs/ADR-001-architecture.md) | decisions with the reasoning: why a new compiler, Rust, Cranelift, C99, MIT |
+| [docs/ADR-002-intermediate-form.md](docs/ADR-002-intermediate-form.md) | what `cir` is: blocks with parameters, SSA by construction, and why not a quad list or Cranelift's IR |
 | [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | the rules a change is checked against, and how each one is enforced |
 | [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) | every C99 construct: planned, partial, sound or refused |
 | [docs/AUDIT.md](docs/AUDIT.md) | the real-corpus audits, with counts |
