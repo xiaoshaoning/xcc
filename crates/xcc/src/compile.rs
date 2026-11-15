@@ -1,6 +1,7 @@
 //! One compilation: the front end, the back end and the artefact it leaves behind.
 
 use crate::diag::{Diagnostic, Severity, Span};
+use crate::lex::{self, Prepared};
 use crate::options::Options;
 use crate::source::SourceFile;
 
@@ -69,13 +70,24 @@ impl Compile {
             return Err(truncate_diagnostics(diagnostics, &self.options));
         }
 
-        // M1: the pipeline behind this line is M2 (preprocessor) and M3 (parser). Until then,
-        // say so, at the start of the file, rather than pretending.
+        // Phases 1 and 2, then tokens: the part of the front end that exists.
+        let prepared = Prepared::new(source);
+        let lexed = lex::lex(&prepared, name);
+        if lexed.has_errors() {
+            diagnostics.extend(lexed.diagnostics);
+            return Err(truncate_diagnostics(diagnostics, &self.options));
+        }
+        diagnostics.extend(lexed.diagnostics);
+
+        // M2 continues with macros, conditionals and includes; M3 is the parser. Until then,
+        // say so, rather than pretending.
         diagnostics.push(
-            Diagnostic::error("the C front end is not implemented yet")
+            Diagnostic::error("the preprocessor is not implemented yet")
                 .with_file(name)
                 .with_span(Span::at(0))
-                .with_note("M2 adds the preprocessor, M3 the parser and types; see PLAN.md"),
+                .with_note(
+                    "the lexer ran and found no errors; M2 adds the preprocessor, M3 the parser",
+                ),
         );
         Err(truncate_diagnostics(diagnostics, &self.options))
     }
@@ -120,16 +132,34 @@ mod tests {
     }
 
     #[test]
-    fn the_front_end_is_not_implemented_yet() {
+    fn a_source_that_lexes_asks_for_the_preprocessor() {
         let mut compiler = Compile::new(Options::default());
         let errors = compiler
             .compile("t.c", "int main(void) { return 0; }\n")
             .unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].message, "the C front end is not implemented yet");
+        assert_eq!(errors[0].message, "the preprocessor is not implemented yet");
         assert_eq!(errors[0].file.as_deref(), Some("t.c"));
         assert_eq!(errors[0].span, Some(Span::at(0)));
         assert_eq!(errors[0].notes.len(), 1);
+    }
+
+    #[test]
+    fn a_lexical_error_stops_before_the_missing_stages() {
+        let mut compiler = Compile::new(Options::default());
+        let errors = compiler
+            .compile(
+                "t.c",
+                "char *s = \"abc;
+",
+            )
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].message,
+            "string is not terminated before the end of its line"
+        );
+        assert_eq!(errors[0].span, Some(Span::new(10, 1)));
     }
 
     #[test]

@@ -69,10 +69,15 @@ never a stack overflow, a hang or a process death.
 the host did not write. `((((((...` must not take the host down. The parser is recursive
 descent, so this is a decision, not an accident.
 
-**Check**: `Budgets` in `Options` carries every limit; one test per limit asserts the
-diagnostic; the fuzz smoke test feeds deeply nested and very large inputs. M2 fixes the stack
-strategy (a depth budget, or a worker thread with a stated stack size) and writes it down here
-before the parser exists.
+**Decided (M2)**: **budgets, not a worker thread.** A host owns the thread and the stack, so a
+compiler that spawns its own thread is a compiler that surprises its host, and 1 MB is a normal
+host stack. Every recursion carries a depth counter measured against a constant
+(`MAX_NESTING = 256` for expressions and declarators, `MAX_INCLUDE_DEPTH = 32`,
+`MAX_MACRO_EXPANSION = 64`), and exceeding one is a diagnostic that names the limit. A thread
+with a big stack is rejected: it turns a diagnosable input into an unobservable resource.
+
+**Check**: the constants live in one module, `Budgets` overrides them per compilation, one test
+per limit asserts the diagnostic, and the fuzz smoke test feeds deeply nested input.
 
 ## 6. No panics on user input, no `unwrap` on foreign data
 

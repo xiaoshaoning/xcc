@@ -70,11 +70,11 @@ fn diagnostics_go_to_stderr_in_the_asked_for_format() {
     for (format, expected) in [
         (
             "msvc",
-            "t.c(1,1): error: the C front end is not implemented yet",
+            "t.c(1,1): error: the preprocessor is not implemented yet",
         ),
         (
             "gcc",
-            "t.c:1:1: error: the C front end is not implemented yet",
+            "t.c:1:1: error: the preprocessor is not implemented yet",
         ),
     ] {
         let output = run(xcc()

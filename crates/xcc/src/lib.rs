@@ -23,9 +23,9 @@
 //!
 //! # Status
 //!
-//! Milestone M1 of [PLAN.md]: the options, the diagnostic plumbing, rendering and the CLI.
-//! [`Compile::compile`] answers with a "not implemented" diagnostic until the front end lands
-//! (M2 and M3).
+//! Milestone M2 of [PLAN.md]: the lexer runs (translation phases 1 and 2, then tokens), and the
+//! preprocessor and parser are still to come. [`Compile::compile`] therefore answers with a
+//! "not implemented" diagnostic once a source lexes cleanly.
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
@@ -33,12 +33,14 @@
 
 mod compile;
 mod diag;
+mod lex;
 mod options;
 mod render;
 mod source;
 
 pub use compile::{Artifact, Compile};
 pub use diag::{Diagnostic, Severity, Span};
+pub use lex::{lex, Lexed, Prepared, Token, TokenKind};
 pub use options::{Budgets, CStandard, Options};
 pub use render::{render, render_all, Format};
 pub use source::{Position, SourceFile};

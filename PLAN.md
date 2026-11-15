@@ -79,8 +79,12 @@ Everything after this milestone depends on the API being right, so it comes befo
 
 ## M2 - preprocessor  (L)
 
-- [ ] Lexer with byte spans; identifiers, string and char literals with escapes, numbers as
-      C99 has them plus `ll`/`ull` suffixes.
+- [x] Translation phases 1 and 2, then tokens with byte spans: identifiers, pp-numbers
+      (C99 6.4.8 - `1e+5` and `0x1p-3` stay one token), string and character literals with
+      escapes and `L` prefixes, all 55 punctuators longest-first, digraphs, comments,
+      trigraphs, escaped newlines, CRLF. Errors: unterminated comment or literal, stray byte.
+- [ ] Numbers become integer and floating constants with `u`/`l`/`ll` suffixes (M3: only the
+      parser knows what context a number is in).
 - [ ] `#include` (quoted and angled, in-memory includes for embedding), `#define` with
       parameters, `#`/`##`, variadic macros, `#undef`, `#if`/`#ifdef`/`#elif`/`#else`/`#endif`
       with a real constant-expression evaluator, `defined`, `#line`, `#error`,

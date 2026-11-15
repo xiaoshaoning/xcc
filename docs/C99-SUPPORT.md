@@ -22,13 +22,13 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 
 | construct | status |
 |---|---|
-| translation phases 1-3, line splicing, trigraphs | `planned` - trigraphs accepted with a warning (`-Wtrigraphs`), not silently ignored |
-| comments, `//` and `/* */` | `planned` |
+| translation phases 1-2: trigraphs, line splicing, CRLF | `sound` - in `lex.rs`, which is where a later trigraph warning would come from |
+| comments, `//` and `/* */` | `sound` |
 | identifiers, keywords, punctuators, universal character names | `planned` |
-| integer constants (decimal, octal, hex, suffixes `u`/`l`/`ll` in any order) | `planned` |
+| integer constants (decimal, octal, hex, suffixes `u`/`l`/`ll` in any order) | `partial` - lexed as pp-numbers; classifying and evaluating them is M3 |
 | character constants, escapes, wide `L'x'` | `planned` - wide characters are `unsigned short`, as the target has no `wchar_t` of its own |
-| string literals, adjacent concatenation, `L"x"` | `planned` |
-| floating constants, all three forms | `planned` |
+| string literals and `L"x"` | `partial` - the lexer finds their ends; concatenation and escape decoding are M3 |
+| floating constants, all three forms | `partial` - lexed as pp-numbers; the value is M3 |
 | `#include` quoted and angled, `#include_next` | `planned` - `#include_next` refused (a host concern) |
 | `#define` object and function-like, `#`/`##`, variadic `...`/`__VA_ARGS__` | `planned` |
 | `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, full constant expressions | `planned` |
