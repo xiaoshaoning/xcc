@@ -19,6 +19,39 @@ is the C front end - lexing, preprocessing, declarators, types, and the parts of
 everyone forgets (bitfields, aggregates by value, varargs, initialisers, shadowing). Plan
 accordingly: milestones 2 to 4 are 70% of the effort of a usable compiler.
 
+## Where the quality comes from
+
+xcc is meant to take the merits of both projects it grew up next to, and to keep its own
+licence while doing it. Which merit lands where:
+
+| merit | from | lands in |
+|---|---|---|
+| compile speed in microseconds a line, a small binary, no dependency beyond the standard library | TCC | the whole design: nothing has to be optimised for the compiler to be usable |
+| embedding: compile and call in process, host symbols callable from C, no filesystem unless asked | TCC (`libtcc`) | M4, M7 - with what xcc adds: no global state, so compiles run on any thread |
+| a real optimiser: peephole, jump optimisation, cross-jumping (tail merging), register allocation, flow blocks, jump shortening, jump tables | Borland C++ 2.0's back end, as recovered in borland-reborn | M10: our own SSA, passes and x64 emitter |
+| verification by reference: the compiler's output is checked against a compiler that shipped, not against hope | borland-reborn's byte-exactness, tinycc_in_rust's oracle loops | M2, M3, M6 differential harnesses |
+| C99, the whole standard | both | M3 |
+
+What is not borrowed: code. xcc is MIT and owns every line it ships (see ADR-001, decision 8).
+
+### Cranelift is not the optimiser, and this is the pivot that makes that all right
+
+Cranelift is a code generator built for compile speed. It gives a working compiler, a JIT and
+adequate code; it does not give gcc-class output, and no amount of configuration will change
+that. The ambition of one day standing in for gcc/clang therefore rests on two things that are
+cheap to design in now and expensive to retrofit:
+
+1. **`cir` is ours and is the boundary.** Front end produces `cir`; back ends lower `cir`. No
+   Cranelift type may appear in the front end. A back end is a crate plus one match arm.
+2. **The optimiser is ours, over `cir`.** SSA construction, mem2reg, folding, DCE, GVN, inlining,
+   loop rotation, strength reduction (M10). Cranelift's own passes are not the plan and are not
+   relied on; `--opt-level` chooses which lowering runs.
+
+So the first back end is `back-cranelift`: fast, correct, JIT-capable. The second is `back-x64`:
+our own register allocator and emitter, fed by our own optimiser, for when code quality is the
+thing being asked for. Swapping either in or out must never touch `cparse`, `cir` or the API.
+
+
 ## M0 - decisions  (S)
 
 - [x] Target `win-x64`; Cranelift as the back end; `long double` is `f64`; no C++.
@@ -83,9 +116,10 @@ Everything after this milestone depends on the API being right, so it comes befo
 The first thing worth showing, and the reason the project exists.
 
 - [ ] Typed middle end (`cir`): expressions lowered to a small, target-independent IR that
-      keeps source spans, so bad code paths can be reported later.
-- [ ] Cranelift lowering: integers `char`..`long long`, pointers, arrays, structs, unions,
-      control flow, calls, globals, string literals, `switch`.
+      keeps source spans, so bad code paths can be reported later. `cir` may name no Cranelift
+      type: the back end is behind it, not inside it.
+- [ ] `back-cranelift`: one lowering from `cir`; integers `char`..`long long`, pointers, arrays,
+      structs, unions, control flow, calls, globals, string literals, `switch`.
 - [ ] JIT: `Jit::new()`, `add_source(&str)`, `add_symbol(name, fn_ptr)`, `get_fn::<F>(name)`,
       `remove`, and redefinition of a function by rebuilding the module.
 - [ ] `extern "C"` ABI on x86-64 Windows: shadow space, stack alignment, varargs, `__chkstk`.
@@ -93,6 +127,9 @@ The first thing worth showing, and the reason the project exists.
       called as `extern "C" fn(i32, i32) -> i32` returning 5 for (2,3); a script calling back
       into a host function through `add_symbol` works; 100 compiles from 8 threads pass (no
       global state).
+- [ ] Gate before promising a `.exe` (M5): a Cranelift object for win64 carries `.pdata`/unwind
+      information, or is proven not to need it for C. This is the one assumption borrowed from
+      nothing, and it is checked before it is built on.
 
 ## M5 - objects and a real .exe  (M)
 
@@ -156,6 +193,28 @@ The reason `--target=dos16` stays. It is a measuring stick, not a product.
       cross-checked against a 1991 implementation.
 - [ ] Acceptance: the comparison runs on the six-file corpus and reports a table.
 
+## M10 - the quality path: our optimiser and our emitter  (XXL, the long arc)
+
+The milestone that makes "one day stand in for gcc/clang" a statement about code rather than
+ambition. Nothing here starts before M6 is solid, and nothing here may change the front end:
+
+- [ ] SSA construction over `cir` and `mem2reg`; a verifier and per-pass fixtures.
+- [ ] Passes, in the order Borland's own back end had them and this project can measure them:
+      constant folding and propagation, DCE, GVN/CSE, jump and branch threading, cross-jumping
+      (tail merging, the one borland-reborn documents in detail), loop rotation, strength
+      reduction, inlining.
+- [ ] `back-x64`: our own instruction selection, register allocation (start linear scan, the
+      Borland-style score-based allocator later), jump shortening, jump tables for `switch`.
+- [ ] A differential harness that compiles with both lowerings and compares behaviour, so moving
+      work between them is safe.
+- [ ] `--opt-level` picks the lowering: `0`/`1` Cranelift (compile speed), `2`/`3` ours (code
+      quality), with numbers in `docs/COMPARISON.md` style rather than claims.
+- [ ] Acceptance: on a named benchmark set, `--opt-level=2` beats `back-cranelift` on runtime and
+      stays within a stated factor of `clang -O2`, with every result checked against the same
+      program built by clang.
+
+Once `back-x64` is real, Cranelift becomes what it is best at: the fast path and the JIT.
+
 ## Layout
 
 ```
@@ -185,10 +244,18 @@ docs/                      ADR, this plan
   not at the end.
 - **Cranelift's fluid API**: pin the version, keep lowering behind one module, and keep
   `--emit=asm` as an escape hatch so a back end swap is possible.
+- **Mistaking Cranelift for an optimiser.** It is a code generator tuned for compile speed. Any
+  plan that reaches gcc-class output by configuring Cranelift is wrong; hence M10 owns the
+  optimiser, and `cir` keeps Cranelift behind a seam.
+- **Licence creep from the neighbours.** borland-reborn's translations are Borland-derived and
+  tinycc_in_rust is LGPL: neither contributes code here. Oracles may be *run* (comparing
+  against a binary is not deriving from it); corpora must be MIT or public domain. See ADR-001,
+  decision 8.
 - **Embedding expectations**: hosts want sub-millisecond compiles and no surprises. Mitigation:
   benchmark from M4 (`criterion`), and treat every `panic` path as a bug with a fuzz test.
-- **Scope creep into optimisation.** Cranelift's default is fine. An optimiser is a different
-  project; the answer to "make it faster" is "use clang".
+- **Scope creep into optimisation.** Until M10, Cranelift's default is fine: an optimiser is a
+  later milestone with its own acceptance test, and the answer to "make it faster" *this quarter*
+  is still "use clang".
 
 ## First slice, ready to start
 

@@ -102,12 +102,49 @@ compiler and with this one, and print time, code size and diagnostics side by si
 a supported output target; it is how the new front end gets cross-checked against an
 implementation that shipped, and how progress gets measured.
 
+## Decision 8: MIT, independent, and where the copying stops
+
+xcc is MIT and owns every line it ships. It grew up next to two code bases whose licences are
+not MIT, so the line is drawn once and here:
+
+- **borland-reborn's port** is a translation of Borland's binary (see that repository's
+  NOTICE). No code, no tables, no message texts. The `--target=dos16` FFI path is opt-in and
+  for testing only, never part of a shipped artefact.
+- **tinycc_in_rust** is LGPL-2.1, being a structure-preserving port of TinyCC. It may be read
+  for method - its phased plan, its oracle-driven testing, its IR-as-parser-value-layer
+  decision - and its *binary* may be run as an oracle. No code, and no corpora from TinyCC's
+  test suites.
+- **Corpora and oracles**: sources we write, `chibicc` (MIT), `c-testsuite` (MIT), sqlite's
+  amalgamation (public domain). Comparing our output against `clang`, `tcc` or `libbcc20` is
+  testing, not derivation.
+- **Dependencies** must be permissive: `cranelift-*` (Apache-2.0 WITH LLVM-exception),
+  `object` (Apache-2.0/MIT), `iced-x86` (MIT), `clap` (MIT/Apache-2.0).
+
+## Decision 9: our IR is the pivot; Cranelift is one lowering
+
+Cranelift is a code generator built for compile speed, not an optimiser. It buys a working
+compiler, a JIT and adequate code; it does not buy gcc-class output. So the architecture is
+fixed in the one place that makes a later swap cheap:
+
+- The front end produces `cir`, ours, which may name no Cranelift type.
+- `back-cranelift` lowers `cir` to Cranelift IR: the first back end, the one the JIT uses.
+- `back-x64`, ours, with `opt/` over `cir` (M10), is the road to code quality; `--opt-level`
+  chooses between lowerings.
+- Adding or removing a back end is a crate plus a match arm. It may not touch `cparse`, `cir`
+  or the public API.
+
+Rejected: letting Cranelift's IR *be* the middle end. Cheap at M4, and then every optimisation
+we might want is Cranelift's to grant, and "replace the back end" means "rewrite the front
+end's output". The seam costs a `cir` crate now and pays back the first time a lowering is
+compared or replaced.
+
 ## Consequences
 
 - A usable C compiler is 3 to 6 months of work, mostly front end; the JIT demo at M4 is the
   first honest checkpoint.
 - `long double` is 8 bytes. Code that needs 80-bit precision is out of scope.
-- No optimisation pass: `-O` selects Cranelift's level and nothing more. An optimiser is a
-  separate project.
+- Until M10 there is no optimiser of our own: `--opt-level` selects Cranelift's effort and
+  nothing more, and code quality will not be gcc-class before `back-x64` exists. That is
+  recorded here so that nobody mistakes a milestone for the ambition.
 - Signatures on target: x86-64 Windows and nothing else, so no `#ifdef _WIN64` variants, no
   second ABI in the tests.
