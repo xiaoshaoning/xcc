@@ -46,6 +46,7 @@ mod source;
 mod symtab;
 mod types;
 
+pub use back::jit::Jit;
 pub use compile::{Artifact, Compile};
 pub use diag::{Diagnostic, Diagnostics, Severity, Span};
 pub use intern::{Interner, Symbol};

@@ -19,6 +19,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module, ModuleError};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
+pub mod jit;
+
 use crate::cir::{self, BinOp, Block, CmpOp, ConvertOp, Func, Inst, Module as CirModule, Term};
 use crate::types::{Type, TypeId, Types};
 
@@ -63,16 +65,47 @@ pub fn object(
         functions: HashMap::new(),
     };
     // Every function is declared before any is lowered, so calls can be forward references.
+    lower_all(&mut lowerer, module)?;
+    object
+        .finish()
+        .emit()
+        .map_err(|error| LoweringError(error.to_string()))
+}
+
+/// Declare every function, then lower every body, giving back the ids by name.
+///
+/// Declaring first is what makes a call to a function defined later resolvable, and it is why a
+/// JIT can hand out the address of anything in the unit after one pass.
+pub fn lower_into<M: Module>(
+    object: &mut M,
+    module: &CirModule,
+    names: &crate::intern::Interner,
+) -> Result<Vec<(String, FuncId)>, LoweringError> {
+    let mut lowerer = Lowerer {
+        object,
+        types: &module.types,
+        names,
+        functions: HashMap::new(),
+    };
+    lower_all(&mut lowerer, module)?;
+    Ok(lowerer
+        .functions
+        .iter()
+        .map(|(symbol, id)| (names.resolve(*symbol).to_owned(), *id))
+        .collect())
+}
+
+fn lower_all<M: Module>(
+    lowerer: &mut Lowerer<'_, M>,
+    module: &CirModule,
+) -> Result<(), LoweringError> {
     for func in &module.funcs {
         lowerer.declare(func)?;
     }
     for func in &module.funcs {
         lowerer.lower(func)?;
     }
-    object
-        .finish()
-        .emit()
-        .map_err(|error| LoweringError(error.to_string()))
+    Ok(())
 }
 
 /// Holds the object being built and the type table the values name.
@@ -143,7 +176,7 @@ impl<M: Module> Lowerer<'_, M> {
         let id = self
             .object
             .declare_function(&name, Linkage::Export, &signature)?;
-        let _ = id;
+        self.functions.insert(func.name, id);
         Ok(())
     }
 

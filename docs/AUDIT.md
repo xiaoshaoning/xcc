@@ -78,7 +78,21 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
-### M4.3 - 2026-11-15 - a design review of the back end
+### M4.4 - 2026-11-15 - the JIT, and a review that did not look
+
+The JIT is small: `Jit::new(symbols)`, `add_source`, `function(name)`, one lowering shared with
+the object writer. Four tests: `add(2,3) == 5`, two JITs not seeing each other's code, eight
+threads compiling two each, and a bad source returning its diagnostic.
+
+The review that preceded this commit teaches the more useful lesson. It claimed to fix
+`declare` throwing away the function id, and it did not: the patch was written against the text
+as I remembered it, rustfmt had reformatted that call onto three lines, the replacement matched
+nothing, and the "fix" committed an unchanged `let _ = id`. The JIT then found it immediately -
+`function("add")` returned `None` because nothing was ever recorded - which is the argument for
+an acceptance test over a review comment, and for checking that a patch applied instead of
+assuming a silent `str.replace` did its job.
+
+
 
 `back/mod.rs` was written in one sitting to get an object out, and three things in it showed.
 
