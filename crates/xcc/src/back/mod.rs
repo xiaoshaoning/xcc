@@ -60,7 +60,7 @@ pub fn object(
         object: &mut object,
         types: &module.types,
         names,
-        funcs: HashMap::new(),
+        functions: HashMap::new(),
     };
     // Every function is declared before any is lowered, so calls can be forward references.
     for func in &module.funcs {
@@ -80,8 +80,8 @@ struct Lowerer<'a, M: Module> {
     object: &'a mut M,
     types: &'a Types,
     names: &'a crate::intern::Interner,
-    /// The function each `cir` name means, for a call.
-    funcs: HashMap<cir::Value, FuncId>,
+    /// The function each declared name means, so lowering a call can name it.
+    functions: HashMap<crate::intern::Symbol, FuncId>,
 }
 
 impl<M: Module> Lowerer<'_, M> {
@@ -201,10 +201,10 @@ impl<M: Module> Lowerer<'_, M> {
                 builder.switch_to_block(blocks[&handle]);
             }
             for inst in &block.insts {
-                self.lower_inst(&mut builder, func, inst, &mut values, &blocks)?;
+                self.lower_inst(&mut builder, inst, &mut values)?;
             }
             if let Some(term) = &block.term {
-                self.lower_term(&mut builder, func, term, &values, &blocks)?;
+                self.lower_term(&mut builder, term, &values, &blocks)?;
             }
         }
         // Every block is filled by now, so every block is sealed: nothing will add a
@@ -226,12 +226,9 @@ impl<M: Module> Lowerer<'_, M> {
     fn lower_inst(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
-        _func: &Func,
         inst: &Inst,
         values: &mut HashMap<cir::Value, ClValue>,
-        blocks: &HashMap<Block, ir::Block>,
     ) -> Result<(), LoweringError> {
-        let _ = blocks;
         let value = |values: &HashMap<cir::Value, ClValue>, v: cir::Value| {
             values
                 .get(&v)
@@ -364,11 +361,12 @@ impl<M: Module> Lowerer<'_, M> {
                             CmpOp::GreaterEqual => ir::condcodes::FloatCC::GreaterThanOrEqual,
                         };
                         let flag = builder.ins().fcmp(code, left, right);
-                        return self.widen_flag(builder, values, *result, flag);
+                        Self::widen_flag(builder, values, *result, flag);
+                        return Ok(());
                     }
                 };
                 let flag = builder.ins().icmp(comparison, left, right);
-                self.widen_flag(builder, values, *result, flag)?;
+                Self::widen_flag(builder, values, *result, flag);
             }
             Inst::Unary {
                 result,
@@ -436,27 +434,24 @@ impl<M: Module> Lowerer<'_, M> {
     }
 
     /// A comparison produces a C `int`, so the flag becomes 1 or 0 in the result's width.
+    /// A comparison produces a C `int`, so the flag becomes 0 or 1 in `int`'s width.
     fn widen_flag(
-        &mut self,
         builder: &mut FunctionBuilder<'_>,
         values: &mut HashMap<cir::Value, ClValue>,
         result: cir::Value,
         flag: ClValue,
-    ) -> Result<(), LoweringError> {
+    ) {
         let widened = builder.ins().uextend(ir::types::I32, flag);
         values.insert(result, widened);
-        Ok(())
     }
 
     fn lower_term(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
-        func: &Func,
         term: &Term,
         values: &HashMap<cir::Value, ClValue>,
         blocks: &HashMap<Block, ir::Block>,
     ) -> Result<(), LoweringError> {
-        let _ = func;
         let value = |v: cir::Value| {
             values
                 .get(&v)

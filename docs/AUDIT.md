@@ -78,6 +78,31 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M4.3 - 2026-11-15 - a design review of the back end
+
+`back/mod.rs` was written in one sitting to get an object out, and three things in it showed.
+
+1. **The declaration pass threw away what it was for.** `declare` called `declare_function` and
+   then discarded the id (`let _ = id`), `lower` declared the function a *second* time, and the
+   `funcs` map that was supposed to hold the ids was never written to. The pass exists so a call
+   can name a function declared later, so it now fills `functions`, `lower` looks the id up, and
+   the duplicate declaration is gone. The `let _` was the tell: a value nobody wanted means the
+   step has no purpose.
+2. **`widen_flag` returned `Result` and could not fail.** `?` on an infallible call, and a
+   function that answers `Ok(())` in every path, is error handling for an error that does not
+   exist; it is a plain function now.
+3. **Two parameters nobody read**, threaded through `lower_inst` and `lower_term` because the
+   signature looked symmetric: a pass-through variable in function-argument form. Dropped.
+
+Kept, deliberately: `LoweringError` is a newtype over a string, which is a thin interface - but
+it names an outcome that must not be confused with a C diagnostic ("a compiler bug" versus "your
+source is wrong"), and the `From<ModuleError>` keeps Cranelift's error type from leaking into
+`compile.rs`. That one earns its keep; the review argues with itself in the comment.
+
+Known ceiling, recorded rather than fixed: `signature()` builds every parameter as a plain
+argument and ignores C's `...`. Varargs work only because the emitter refuses calls until M4.4,
+and the parameter has to be honoured when they land.
+
 ### M4.2 - 2026-11-15 - a design review of `cir` and the emitter
 
 The code written for M4.1 and M4.2 had not been read by a review pass. Three findings, all
