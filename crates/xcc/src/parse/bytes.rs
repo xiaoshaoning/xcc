@@ -19,7 +19,7 @@ use super::*;
 /// null, an aggregate, or an error - which the caller turns into one diagnostic rather than a
 /// guess.
 pub(super) fn constant_bytes(types: &Types, ty: TypeId, value: Value) -> Option<Vec<u8>> {
-    if types.is_error(ty) || types.is_error(value.ty) || value.constant.is_none() {
+    if types.is_error(ty) || types.is_error(value.ty) {
         return None;
     }
     let size = types.size_of(ty)? as usize;

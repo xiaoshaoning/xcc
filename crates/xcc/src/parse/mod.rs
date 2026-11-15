@@ -454,6 +454,11 @@ impl Parser<'_> {
                             ty,
                             defined: true,
                             init: None,
+                            // `static` is not distinguished yet: the storage class lives in
+                            // `Specifiers`, and patch 4 (which makes visibility matter) is the
+                            // place to read it. Until then every object claims to be external,
+                            // which is wrong for a `static` and harmless only because nothing
+                            // reads the flag.
                             external: true,
                             span,
                         });

@@ -78,6 +78,28 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### data patch 1-2 - 2026-11-15 - review of the bytes writers and the globals
+
+Three findings from the first data code; two fixed, one recorded because fixing it needs patch 4.
+
+1. **A check that could never fire.** `constant_bytes` refused a value with no constant up front
+   and then asked `value.constant?` two lines later - the same question twice, with the second
+   one making the first redundant. Deleted; the `?` is the one that reads the value.
+2. **`static` objects claim to be external.** `patch 2` pushes every file-scope object with
+   `external: true`, because the storage class lives in `Specifiers` and nothing reads the flag
+   yet. Left as a comment on the field rather than guessed at: a `static` marked exported is a
+   bug the linker would find at patch 4, and guessing the flag now would be a second guess to
+   undo. Recorded here so patch 4 removes the comment instead of inheriting the lie.
+3. **One decision asked twice.** `declaration` decides "is there an initialiser?" by peeking at
+   `=` before pushing the global, and then eats the `=` further down. Two readings of one fact:
+   the day an initialiser form arrives that is not `=`, the peek and the eat disagree. Not fixed
+   in this commit because the repair is the walker's arrival (patch 1's other half turns both
+   readings into one `initializer_bytes` call), and a half-repair would move the duplication
+   rather than remove it.
+
+The pattern the last four reviews keep finding - one fact in two places - is now the first thing
+to look for in this codebase, and these are two more instances of it.
+
 ### M5.1 - 2026-11-15 - a design review of the only new code: one test
 
 Everything written since the last review is documentation (ADR-003, ADR-004) and one integration
