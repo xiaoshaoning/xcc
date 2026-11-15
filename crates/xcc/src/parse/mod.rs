@@ -29,7 +29,7 @@ use crate::intern::Symbol;
 use crate::options::Budgets;
 use crate::pp::{PpToken, Preprocessed};
 use crate::symtab::{Entry, Kind, Symbols};
-use crate::types::{Type, TypeId, Types};
+use crate::types::{Member, RecordKind, Type, TypeId, Types};
 
 /// Parse a preprocessed translation unit.
 ///
@@ -271,29 +271,11 @@ impl Parser<'_> {
         let mut last = None;
         loop {
             let base = specs.ty.unwrap_or_else(|| self.types.error());
-            let (name, ty) = match self.declarator(base) {
-                Some(Declarator::Read(name, ty)) => (name, ty),
-                Some(Declarator::Refused(recovered)) => {
-                    if let Some(name) = recovered {
-                        let entry = Entry {
-                            ty: self.types.error(),
-                            kind: if specs.is_typedef {
-                                Kind::Typedef
-                            } else {
-                                Kind::Variable
-                            },
-                            span: self.span(),
-                        };
-                        let _ = self.symbols.declare(name, entry);
-                    }
-                    self.skip_until(&[",", ";"], false);
-                    if self.eat(",") {
-                        continue;
-                    }
-                    return Some(self.types.error());
-                }
-                None => return last,
+            let Some(tree) = self.declarator(true) else {
+                return last;
             };
+            let name = tree.name;
+            let ty = self.apply_declarator(tree, base);
             let entry = Entry {
                 ty,
                 kind: if specs.is_typedef {
@@ -395,14 +377,18 @@ impl Parser<'_> {
                     return self.finish_specifiers(specs, spelled);
                 }
                 "struct" | "union" => {
-                    let span = token.span;
-                    self.not_implemented(
-                        span,
-                        "`struct` and `union` are not implemented yet (M3.3)",
-                    );
-                    self.skip_struct_specifier();
-                    specs.ty = Some(self.types.error());
+                    if specs.ty.is_some() {
+                        break;
+                    }
+                    let kind = if word == "struct" {
+                        RecordKind::Struct
+                    } else {
+                        RecordKind::Union
+                    };
+                    self.at += 1;
+                    specs.ty = Some(self.record_specifier(kind, token.span));
                     specs.declares_tag = true;
+                    specs.has_type_specifier = true;
                     return self.finish_specifiers(specs, spelled);
                 }
                 _ => {
@@ -527,33 +513,12 @@ impl Parser<'_> {
         }
     }
 
-    /// A declarator: leading `*`s, a name, then suffixes.
+    /// `struct S`, `struct S { ... }`, `struct { ... }` - and the same for `union`.
     ///
-    /// Grouped declarators - `int (*fp)(int)`, `int (*a)[3]` - are not read yet (M3.3), and
-    /// are diagnosed rather than mis-parsed: the type they declare depends on which side of the
-    /// parentheses each suffix binds to, and getting that wrong silently is worse than saying
-    /// "not yet".
-    fn declarator(&mut self, base: TypeId) -> Option<Declarator> {
-        if !self.enter_nesting() {
-            return None;
-        }
-        let mut ty = base;
-        while self.eat("*") {
-            ty = self.types.pointer(ty);
-            while self
-                .peek()
-                .is_some_and(|token| matches!(self.spell(token), "const" | "volatile" | "restrict"))
-            {
-                self.bump();
-            }
-        }
-        let name = if self.at_punct("(") {
-            let span = self.span();
-            self.not_implemented(span, "grouped declarators are not implemented yet (M3.3)");
-            let recovered = self.skip_balanced_parens();
-            self.leave_nesting();
-            return Some(Declarator::Refused(recovered));
-        } else if self
+    /// A tag with no body is a forward declaration, which is how two structs can point at each
+    /// other; a tag that already has a body is completed rather than redeclared.
+    fn record_specifier(&mut self, kind: RecordKind, span: Span) -> TypeId {
+        let tag = if self
             .peek()
             .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
         {
@@ -561,17 +526,156 @@ impl Parser<'_> {
         } else {
             None
         };
-        let ty = self.declarator_suffixes(ty);
-        self.leave_nesting();
-        Some(Declarator::Read(name, ty))
+        let has_body = self.at_punct("{");
+        if !has_body {
+            let Some(tag) = tag else {
+                self.error(span, "expected a tag or a body after `struct`");
+                return self.types.error();
+            };
+            if let Some(ty) = self.symbols.tag(tag) {
+                return ty;
+            }
+            let (ty, _) = self.types.record(kind, Some(tag));
+            self.symbols.declare_tag(tag, ty);
+            return ty;
+        }
+
+        // `struct S { ... }` completes `S` if this scope already has an incomplete `S`, and
+        // redeclares it otherwise - which for a complete one is the error.
+        let existing = tag.and_then(|tag| self.symbols.tag_here(tag));
+        if let Some(ty) = existing {
+            if let Some(record) = self.types.record_of(ty) {
+                if self.types.record_complete(record) {
+                    self.error(span, "this struct or union is already complete");
+                    self.member_list();
+                    return ty;
+                }
+                let members = self.member_list();
+                self.types.complete_record(record, members);
+                return ty;
+            }
+        }
+        let (ty, record) = self.types.record(kind, tag);
+        if let Some(tag) = tag {
+            self.symbols.declare_tag(tag, ty);
+        }
+        let members = self.member_list();
+        self.types.complete_record(record, members);
+        ty
     }
 
-    /// What follows a declarator: `[count]` and `(parameters)`, in any order.
-    fn declarator_suffixes(&mut self, mut ty: TypeId) -> TypeId {
+    /// The members of a struct or union, between its braces.
+    fn member_list(&mut self) -> Vec<Member> {
+        let mut members = Vec::new();
+        if !self.eat("{") {
+            return members;
+        }
+        while !self.at_punct("}") && !self.at_eof() {
+            let specs = self.declaration_specifiers();
+            let Some(base) = specs.ty else {
+                let span = self.span();
+                self.error(span, "expected a member type");
+                self.skip_until(&[";"], true);
+                continue;
+            };
+            loop {
+                // `int : 3;` - an anonymous bitfield, used only to pad.
+                if self.at_punct(":") {
+                    let width = self.bit_width();
+                    members.push(Member {
+                        name: None,
+                        ty: base,
+                        offset: 0,
+                        bits: Some((0, width)),
+                    });
+                } else {
+                    let Some(tree) = self.declarator(false) else {
+                        break;
+                    };
+                    let name = tree.name;
+                    let ty = self.apply_declarator(tree, base);
+                    // `bit_width` takes the `:` itself, so it is not eaten here.
+                    let bits = if self.at_punct(":") {
+                        Some((0, self.bit_width()))
+                    } else {
+                        None
+                    };
+                    members.push(Member {
+                        name,
+                        ty,
+                        offset: 0,
+                        bits,
+                    });
+                }
+                if !self.eat(",") {
+                    break;
+                }
+            }
+            if !self.eat(";") {
+                self.error_at_current("expected `;` after a member");
+                self.skip_until(&[";"], true);
+            }
+        }
+        if !self.eat("}") {
+            self.error_at_current("expected `}` to end the members");
+        }
+        members
+    }
+
+    fn bit_width(&mut self) -> u8 {
+        self.bump(); // the `:`
+        match self.constant_expression() {
+            Some(width) if (0..=64).contains(&width) => width as u8,
+            Some(_) => {
+                let span = self.span();
+                self.error(span, "a bitfield must be between 0 and 64 bits wide");
+                0
+            }
+            None => 0,
+        }
+    }
+
+    /// A declarator: `*`s, a name or a group, then suffixes - parsed into a tree, because
+    /// `int *a[3]` and `int (*a)[3]` differ only in where the parentheses are.
+    fn declarator(&mut self, capture_parameters: bool) -> Option<DeclaratorTree> {
+        if !self.enter_nesting() {
+            return None;
+        }
+        let mut wrappers = Vec::new();
+        while self.eat("*") {
+            wrappers.push(Wrapper::Pointer);
+            while self
+                .peek()
+                .is_some_and(|token| matches!(self.spell(token), "const" | "volatile" | "restrict"))
+            {
+                self.bump();
+            }
+        }
+        let inner = if self.eat("(") {
+            let inner = self.declarator(false)?;
+            if !self.eat(")") {
+                self.error_at_current("expected `)`");
+            }
+            inner
+        } else {
+            DeclaratorTree {
+                name: if self
+                    .peek()
+                    .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
+                {
+                    Some(self.bump().expect("peeked").text)
+                } else {
+                    None
+                },
+                wrappers: Vec::new(),
+            }
+        };
+
+        // Suffixes bind tighter than the `*`s before them, and the *last* suffix is the
+        // innermost: `int a[1][2]` is one array of two, so `[2]` is applied to the base first.
+        let mut suffixes = Vec::new();
         loop {
             if self.eat("[") {
-                // An empty size is an incomplete array (`int a[]`), and its count is filled in
-                // by the initialiser once there is one (M3.3).
                 let count = if self.at_punct("]") {
                     None
                 } else {
@@ -580,25 +684,48 @@ impl Parser<'_> {
                 if !self.eat("]") {
                     self.error_at_current("expected `]`");
                 }
-                ty = self.types.array(ty, count);
+                suffixes.push(Wrapper::Array(count));
                 continue;
             }
             if self.eat("(") {
-                let (params, variadic) = self.parameter_list();
-                ty = self.types.function(ty, params, variadic);
+                let (params, variadic) = self.parameter_list(capture_parameters);
+                suffixes.push(Wrapper::Function { params, variadic });
                 continue;
             }
-            return ty;
+            break;
         }
+        suffixes.reverse();
+        wrappers.extend(suffixes);
+        wrappers.extend(inner.wrappers);
+        self.leave_nesting();
+        Some(DeclaratorTree {
+            name: inner.name,
+            wrappers,
+        })
+    }
+
+    /// The type a declarator declares, given the base its specifiers named.
+    fn apply_declarator(&mut self, tree: DeclaratorTree, base: TypeId) -> TypeId {
+        let mut ty = base;
+        for wrapper in tree.wrappers {
+            ty = match wrapper {
+                Wrapper::Pointer => self.types.pointer(ty),
+                Wrapper::Array(count) => self.types.array(ty, count),
+                Wrapper::Function { params, variadic } => self.types.function(ty, params, variadic),
+            };
+        }
+        ty
     }
 
     /// The parameters of a function declarator, from inside the parentheses to past the `)`.
     ///
     /// They live in a scope of their own (C99 6.2.1p4), which is why `int f(int a, int a)` is
     /// an error and why these names are gone afterwards.
-    fn parameter_list(&mut self) -> (Vec<TypeId>, bool) {
+    fn parameter_list(&mut self, capture_names: bool) -> (Vec<TypeId>, bool) {
         let mut params = Vec::new();
-        self.last_parameters.clear();
+        if capture_names {
+            self.last_parameters.clear();
+        }
         let mut variadic = false;
         self.symbols.push();
         if self.eat(")") {
@@ -618,21 +745,12 @@ impl Parser<'_> {
             }
             let specs = self.declaration_specifiers();
             let base = specs.ty.unwrap_or_else(|| self.types.error());
-            let ty = match self.declarator(base) {
-                Some(Declarator::Refused(recovered)) => {
-                    // Skip what is left of this parameter - `[3]` after a refused `(*p)`, say -
-                    // so the loop can find its `,` or `)`.
-                    self.skip_until(&[",", ")"], false);
-                    if let Some(name) = recovered {
-                        // Declared anyway, with the error type: the body's uses of it are then
-                        // quiet instead of one refusal becoming five.
-                        self.declare_parameter(name, self.types.error());
-                    }
-                    self.types.error()
-                }
-                Some(Declarator::Read(name, parameter)) => {
+            let ty = match self.declarator(false) {
+                Some(tree) => {
                     // `int a[][3]` as a parameter is a pointer to `int[3]`, not an array.
-                    let parameter = self.types.decay(parameter);
+                    let name = tree.name;
+                    let declared = self.apply_declarator(tree, base);
+                    let parameter = self.types.decay(declared);
                     if let Some(name) = name {
                         self.declare_parameter(name, parameter);
                     }
@@ -713,33 +831,6 @@ impl Parser<'_> {
         }
     }
 
-    /// Skip a balanced `( ... )` group, and return the one name inside it, if there is one:
-    /// `(*FP)` names `FP`, which the caller can then declare so later uses stay quiet.
-    fn skip_balanced_parens(&mut self) -> Option<Symbol> {
-        let mut depth = 0usize;
-        let mut name = None;
-        let mut names = 0;
-        while let Some(token) = self.peek().copied() {
-            if self.is_punct(&token, "(") {
-                depth += 1;
-            } else if self.is_punct(&token, ")") {
-                depth = depth.saturating_sub(1);
-                self.bump();
-                if depth == 0 {
-                    return if names == 1 { name } else { None };
-                }
-                continue;
-            } else if self.at_eof() {
-                return None;
-            } else if token.kind == crate::lex::TokenKind::Ident {
-                names += 1;
-                name = Some(token.text);
-            }
-            self.bump();
-        }
-        None
-    }
-
     fn skip_balanced_block(&mut self) {
         if !self.at_punct("{") {
             return;
@@ -759,20 +850,6 @@ impl Parser<'_> {
                 return;
             }
             self.bump();
-        }
-    }
-
-    fn skip_struct_specifier(&mut self) {
-        // `struct` `union` then a tag or a body: skip to the semicolon if there is a body.
-        self.bump();
-        if self
-            .peek()
-            .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
-        {
-            self.bump();
-        }
-        if self.at_punct("{") {
-            self.skip_balanced_block();
         }
     }
 
@@ -813,17 +890,50 @@ struct Specifiers {
     has_type_specifier: bool,
 }
 
-/// What parsing one declarator produced.
+/// One step of a declarator: what it does to the type of what it encloses.
+#[derive(Debug, Clone)]
+enum Wrapper {
+    /// `*`: a pointer to the type enclosed.
+    Pointer,
+    /// `[n]`: an array of the type enclosed.
+    Array(Option<u64>),
+    /// `(params)`: a function returning the type enclosed.
+    Function { params: Vec<TypeId>, variadic: bool },
+}
+
+/// A declarator, unapplied: its name and the wrappers to put around a base type, in order.
+///
+/// `int *a[3]` is `[Pointer, Array(3)]` - a pointer first, then an array *of* that pointer -
+/// while `int (*a)[3]` is `[Array(3), Pointer]`, which is why grouping has to be parsed into a
+/// tree rather than read left to right (C99 6.7.5).
 #[derive(Debug)]
-enum Declarator {
-    /// A declarator was read: maybe with a name (an abstract declarator has none).
-    Read(Option<Symbol>, TypeId),
-    /// The declarator used a construct M3 has not built, and was refused.
-    ///
-    /// The name is recovered when it can be, and declared with the error type: a later
-    /// `FP gp;` that uses an alias we could not read is then quiet, instead of one refusal
-    /// becoming a cascade down the file.
-    Refused(Option<Symbol>),
+struct DeclaratorTree {
+    /// The name, if the declarator has one (an abstract declarator does not).
+    name: Option<Symbol>,
+    /// What to wrap around the base type, outermost first.
+    wrappers: Vec<Wrapper>,
+}
+
+/// How many bytes a string literal spells, not counting its quotes or the NUL.
+fn string_length(spelling: &str) -> u64 {
+    let body = spelling.strip_prefix('L').unwrap_or(spelling);
+    let body = body
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(body);
+    let mut bytes = 0u64;
+    let mut escaped = false;
+    for character in body.chars() {
+        if escaped {
+            escaped = false;
+            bytes += 1;
+        } else if character == '\\' {
+            escaped = true;
+        } else {
+            bytes += 1;
+        }
+    }
+    bytes
 }
 
 /// "1 argument", "2 arguments": the message reads as a sentence.

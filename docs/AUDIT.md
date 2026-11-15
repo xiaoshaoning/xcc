@@ -34,7 +34,22 @@ An audit answers three questions:
 | 2026-11-15 | M2 | `tests/corpus` | 426 | 38 (`#include`, no headers until M8) | 0 | 0 | 0 | 2 bugs, listed below |
 | 2026-11-15 | M3.1 | `tests/corpus` | 426 read | 0 parsed completely (every program has a body) | 426 refused with "not built yet" | 0 | n/a (no expressions yet) | 0 |
 | 2026-11-15 | M3.2 | `tests/corpus` | 464 read | 322 parsed completely | 142 refused (structs, `switch`, function pointers, initialiser lists: M3.3) + 25 correctly rejected as not-C99 | 0 | n/a | 9 checker bugs, below |
-| - | M3 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
+| 2026-11-15 | M3.3 | `tests/corpus` | 464 read | 387 parsed completely | 77 refused (`switch`, `goto`, designators) | 0 | n/a | 3 checker bugs, below |
+| - | M3.4 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
+
+### M3.3 - 2026-11-15 - aggregates and declarators
+
+The parse gate went from 322 to 387 of 464. Three real bugs, all in the parts where C's
+grammar and C's layout rules disagree with the obvious reading:
+
+1. **Suffix order was backwards.** `int a[1][2]` was typed as an array of two arrays of one:
+   the suffixes have to be applied innermost-last, so the *last* one touches the base first.
+   It took `char s[4] = "abc"` and a nested initialiser to expose it.
+2. **Commas in initialiser lists belonged to the wrong list.** A nested list consumed the
+   separator that belonged to the list around it, so `{{1,2,3},{4,5,6}}` failed on the second
+   row. Each level now takes a separator only when it is going to continue.
+3. **Bitfield widths were swallowed twice**: `bit_width` takes the `:` itself, and its caller
+   did too, so `unsigned a : 3` read the `;` as the width expression.
 
 ### M3.2 - 2026-11-15 - the corpus, parsed for meaning
 

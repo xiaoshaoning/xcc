@@ -42,6 +42,9 @@ pub(crate) struct Entry {
 #[derive(Debug)]
 pub(crate) struct Symbols {
     scopes: Vec<HashMap<Symbol, Entry>>,
+    /// Struct and union tags, in their own namespace: C lets a tag and a variable share a
+    /// name, so they cannot share a table.
+    tags: Vec<HashMap<Symbol, TypeId>>,
 }
 
 impl Symbols {
@@ -49,19 +52,42 @@ impl Symbols {
     pub fn new() -> Self {
         Self {
             scopes: vec![HashMap::new()],
+            tags: vec![HashMap::new()],
         }
     }
 
     /// Enter a block.
     pub fn push(&mut self) {
         self.scopes.push(HashMap::new());
+        self.tags.push(HashMap::new());
     }
 
-    /// Leave a block, dropping its names.
+    /// Leave a block, dropping its names and tags.
     pub fn pop(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
+            self.tags.pop();
         }
+    }
+
+    /// Declare a struct or union tag in the innermost scope.
+    pub fn declare_tag(&mut self, name: Symbol, ty: TypeId) {
+        if let Some(tags) = self.tags.last_mut() {
+            tags.insert(name, ty);
+        }
+    }
+
+    /// The type a tag names, if this scope or an enclosing one has it.
+    pub fn tag(&self, name: Symbol) -> Option<TypeId> {
+        self.tags
+            .iter()
+            .rev()
+            .find_map(|tags| tags.get(&name).copied())
+    }
+
+    /// The tag declared in the innermost scope only.
+    pub fn tag_here(&self, name: Symbol) -> Option<TypeId> {
+        self.tags.last().and_then(|tags| tags.get(&name).copied())
     }
 
     /// Declare `name` in the innermost scope.

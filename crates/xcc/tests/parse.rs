@@ -205,32 +205,72 @@ fn every_word_that_starts_a_declaration_is_read_as_one() {
 #[test]
 fn what_is_not_implemented_is_said_not_guessed() {
     refuses(
-        "struct S { int a; };",
-        "`struct` and `union` are not implemented yet (M3.3)",
-    );
-    refuses(
-        "int (*fp)(int);",
-        "grouped declarators are not implemented yet (M3.3)",
-    );
-    refuses(
-        "int a[2] = {1, 2};",
-        "initialiser lists are not implemented yet (M3.3)",
-    );
-    refuses(
-        "int f(int a) { switch (a) { } return 0; }",
-        "`switch` is not implemented yet (M3.3)",
+        "int f(int a) { switch (a) { case 1: return 0; } return 1; }",
+        "`switch` is not implemented yet",
     );
     refuses(
         "int f(void) { goto done; }",
-        "`goto` is not implemented yet (M3.3)",
+        "`goto` is not implemented yet",
     );
     refuses(
-        "struct P { int x; };",
-        "`struct` and `union` are not implemented yet (M3.3)",
+        "int f(void) { done: return 0; }",
+        "labels and `goto` are not implemented yet",
     );
     refuses(
-        "int f(struct P *p) { return p->x; }",
-        "`struct` and `union` are not implemented yet",
+        "int a[2] = {[1] = 3};",
+        "designated initialisers are not implemented yet",
+    );
+}
+
+#[test]
+fn aggregates_and_function_pointers_are_read() {
+    parses("struct S { int a; int b; };");
+    parses("struct S { int a; }; struct S s;");
+    parses("struct S { int a; }; struct S *p; int f(void) { return p->a; }");
+    parses("struct S { int a; }; int f(struct S s) { return s.a; }");
+    parses("struct S; struct S *p; struct S { int a; };");
+    parses("struct S { struct S *next; int v; };");
+    parses("union U { int i; char c[4]; }; union U u;");
+    parses("struct S { int a; }; struct S s = {1};");
+    parses("struct S { int a; int b; }; struct S s = {1, 2};");
+    parses("int a[3] = {1, 2, 3};");
+    parses("int a[2][2] = {{1, 2}, {3, 4}};");
+    parses("int a[2][2] = {1, 2, 3, 4};");
+    parses("char s[] = \"abcd\";");
+    parses("int a[] = {1, 2, 3};");
+    parses("int (*fp)(int);");
+    parses("int f(int a) { return a; } int (*fp)(int) = f;");
+    parses("int (*fp)(int); int f(int a) { return (*fp)(a); }");
+    parses("int (*table[2])(int);");
+    parses("struct P { int x; int y; }; int f(void) { struct P p = {1, 2}; return p.x + p.y; }");
+    parses("struct P { int x; }; int f(void) { return ((struct P){5}).x; }");
+    parses("struct S { unsigned a : 3; unsigned b : 5; };");
+    parses("struct S { int a; }; int f(void) { return sizeof(struct S); }");
+}
+
+#[test]
+fn aggregate_mistakes_are_caught() {
+    refuses(
+        "struct S { int a; }; int f(void) { return s.a; }",
+        "`s` is not declared",
+    );
+    refuses(
+        "struct S { int a; }; int f(struct S s) { return s.b; }",
+        "`b` is not a member",
+    );
+    refuses("int f(void) { int x; return x.a; }", "has no members");
+    refuses(
+        "struct S { int a; }; int f(struct S *p) { return p.a; }",
+        "has no members",
+    );
+    refuses("int a[2] = {1, 2, 3};", "more were given");
+    refuses(
+        "struct S { int a; }; struct S s = {1, 2};",
+        "too many initialisers",
+    );
+    refuses(
+        "int a[2] = {1, 2}; int f(void) { return a[0.5]; }",
+        "a subscript must be an integer",
     );
 }
 
@@ -283,6 +323,11 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ),
     ("pp_badassign.c", "same"),
     ("cc_bad_dblshift.c", "shifts a `double`"),
+    (
+        "pp_badarrinit.c",
+        "gives a three-element array four initialisers",
+    ),
+    ("pp_badnestedinit.c", "gives a `[2][3]` array three rows"),
     ("pp_dynwidth.c", "calls printf with no declaration"),
     ("pp_npercent.c", "calls printf with no declaration"),
     ("pp_pptr.c", "calls printf with no declaration"),

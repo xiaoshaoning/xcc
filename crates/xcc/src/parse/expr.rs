@@ -526,9 +526,10 @@ impl Parser<'_> {
                 continue;
             }
             if self.at_punct(".") || self.at_punct("->") {
-                self.not_implemented(span, "struct members are not implemented yet (M3.3)");
-                self.skip_until(&[";"], false);
-                return Some(Value::temporary(self.types.error()));
+                let arrow = self.spell(self.peek().expect("checked")) == "->";
+                self.bump();
+                value = self.member_access(value, arrow, span);
+                continue;
             }
             if self.at_punct("++") || self.at_punct("--") {
                 self.bump();
@@ -701,19 +702,75 @@ impl Parser<'_> {
                 Some(self.named_value(token.text, span))
             }
             _ => {
-                self.error(span, "expected an expression");
+                self.error(
+                    span,
+                    format!(
+                        "expected an expression, found {:?} `{}`",
+                        token.kind,
+                        self.spell(&token)
+                    ),
+                );
                 None
+            }
+        }
+    }
+
+    /// `a.b` and `p->b`: the member's type, and whether it can be assigned to.
+    pub(super) fn member_access(&mut self, base: Value, arrow: bool, span: Span) -> Value {
+        let Some(token) = self.peek().copied() else {
+            return Value::temporary(self.types.error());
+        };
+        if token.kind != crate::lex::TokenKind::Ident {
+            self.error(span, "expected a member name");
+            return Value::temporary(self.types.error());
+        }
+        self.bump();
+        if self.types.is_error(base.ty) {
+            return Value::temporary(self.types.error());
+        }
+        let aggregate = if arrow {
+            if !self.types.is_pointer(base.ty) {
+                let ty = self.types.describe(base.ty);
+                self.error(
+                    span,
+                    format!("`->` needs a pointer to a struct or union, not {ty}"),
+                );
+                return Value::temporary(self.types.error());
+            }
+            self.types.pointee(base.ty)
+        } else {
+            base.ty
+        };
+        let Some(record) = self.types.record_of(aggregate) else {
+            let ty = self.types.describe(aggregate);
+            self.error(span, format!("`{ty}` has no members"));
+            return Value::temporary(self.types.error());
+        };
+        if !self.types.record_complete(record) {
+            let ty = self.types.describe(aggregate);
+            self.error(span, format!("`{ty}` is not complete yet"));
+            return Value::temporary(self.types.error());
+        }
+        match self.types.member(record, token.text) {
+            Some(member) => Value {
+                ty: member.ty,
+                constant: None,
+                lvalue: base.lvalue || arrow,
+            },
+            None => {
+                let name = self.spell_of(token.text).to_owned();
+                self.error(span, format!("`{name}` is not a member"));
+                Value::temporary(self.types.error())
             }
         }
     }
 
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {
         if self.at_punct("{") {
-            // A compound literal, `(struct P){1, 2}`: refused with the rest of M3.3.
-            self.not_implemented(span, "compound literals are not implemented yet (M3.3)");
-            self.skip_balanced_block();
+            // `(struct P){1, 2}`: an unnamed object with the type the cast named.
+            self.brace_initializer(to);
             return Value {
-                ty: self.types.error(),
+                ty: to,
                 constant: None,
                 lvalue: true,
             };
@@ -849,38 +906,172 @@ impl Parser<'_> {
             self.at = before;
             return None;
         };
-        Some(match self.declarator(base) {
-            Some(Declarator::Read(_, ty)) => ty,
-            _ => base,
+        Some(match self.declarator(false) {
+            Some(tree) => self.apply_declarator(tree, base),
+            None => base,
         })
     }
 
-    /// `= <constant>` for a scalar, with a diagnostic for what is not supported yet.
+    /// `= <initialiser>`: one value for a scalar, a brace list for an array or aggregate.
     pub(super) fn initializer(&mut self, ty: TypeId) {
         if self.at_punct("{") {
-            self.not_implemented(
-                self.span(),
-                "initialiser lists are not implemented yet (M3.3)",
-            );
-            self.skip_balanced_block();
+            self.brace_initializer(ty);
             return;
         }
-        let token = self.peek().copied();
-        let Some(token) = token else { return };
+        let Some(token) = self.peek().copied() else {
+            return;
+        };
         if token.kind == crate::lex::TokenKind::Str {
             self.bump();
-            return; // a string literal initialising an array or a pointer
+            // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
+            let spelling = self.spell(&token).to_owned();
+            let bytes = string_length(&spelling) + 1;
+            if matches!(self.types.kind(ty), Type::Array { count: None, .. }) {
+                self.types.complete_array(ty, bytes);
+            }
+            return;
         }
-        // Read, not checked: whether a value fits the declared type is a question about the
-        // expression's type, which the expression checker answers at M3.2. Whatever is left of
-        // the expression - a call's arguments, say - is skipped so that the declaration still
-        // ends at its `;`.
-        if self.conditional_expression().is_none() {
+        // A nested aggregate inside a brace list may be initialised without braces of its own
+        // (C99 6.7.8p20): `int a[2][2] = {1,2,3,4}`.
+        if !self.at_punct("{")
+            && (self.types.record_of(ty).is_some()
+                || matches!(self.types.kind(ty), Type::Array { .. }))
+        {
+            self.initialise_into(ty, false);
+            return;
+        }
+        let value = self.conditional_expression();
+        self.skip_until(&[",", ";"], false);
+        if value.is_none() {
             let span = self.span();
             self.error(span, "expected an initialiser");
         }
-        self.skip_until(&[",", ";"], false);
-        let _ = ty;
+    }
+
+    /// A brace list: `{1, 2}`, `{{1,2},{3,4}}`, and `{1,2,3,4}` for a `int[2][2]` - C lets the
+    /// braces of a nested aggregate be left out (C99 6.7.8p20), and so does this.
+    pub(super) fn brace_initializer(&mut self, ty: TypeId) {
+        self.bump(); // the `{`
+        self.initialise_into(ty, true);
+        self.eat(","); // a trailing comma before the closing brace is allowed
+        if !self.eat("}") {
+            self.error_at_current("expected `}` to end the initialiser");
+        }
+    }
+
+    /// Fill an aggregate from the values at the cursor, stopping where its members end or at a
+    /// `}` that closes an enclosing list.
+    ///
+    /// `braced` says whether this list has braces of its own: only then is a surplus value this
+    /// aggregate's problem. A flattened one - `int a[2][3] = {1,2,3,4,5,6}` - hands the values
+    /// after its capacity to the list around it (C99 6.7.8p20).
+    fn initialise_into(&mut self, ty: TypeId, braced: bool) {
+        let span = self.span();
+        match self.types.kind(ty) {
+            Type::Array { element, count } => {
+                let (element, declared) = (*element, *count);
+                let mut written = 0u64;
+                let mut first = true;
+                loop {
+                    // Capacity first, then the separator: a nested list must leave the comma
+                    // that belongs to the list around it.
+                    if declared.is_some_and(|declared| written >= declared)
+                        || self.at_punct("}")
+                        || self.at_eof()
+                    {
+                        break;
+                    }
+                    if !first && !self.eat(",") {
+                        break;
+                    }
+                    first = false;
+                    self.reject_designator();
+                    if self.at_punct("{") {
+                        self.brace_initializer(element);
+                    } else {
+                        self.initialise_into(element, false);
+                    }
+                    written += 1;
+                }
+                match declared {
+                    None => self.types.complete_array(ty, written),
+                    // The list stopped at the last element it had room for; a comma here means
+                    // there were more, which is one error and then the rest is skipped.
+                    Some(declared) if braced && written >= declared && self.at_punct(",") => {
+                        self.error(
+                            span,
+                            format!("this array has {declared} elements, more were given"),
+                        );
+                        self.skip_until(&["}"], false);
+                    }
+                    Some(_) => {}
+                }
+            }
+            Type::Record(record) => {
+                let record = *record;
+                let members: Vec<TypeId> = self
+                    .types
+                    .members(record)
+                    .iter()
+                    .map(|member| member.ty)
+                    .collect();
+                let mut at = 0;
+                let mut first = true;
+                loop {
+                    if self.at_punct("}") || self.at_eof() {
+                        break;
+                    }
+                    if !first && !self.eat(",") {
+                        break;
+                    }
+                    first = false;
+                    self.reject_designator();
+                    let Some(member) = members.get(at).copied() else {
+                        self.error(span, "too many initialisers for this struct or union");
+                        self.skip_until(&["}"], false);
+                        break;
+                    };
+                    at += 1;
+                    if self.at_punct("{") {
+                        self.brace_initializer(member);
+                    } else {
+                        self.initialise_into(member, false);
+                    }
+                }
+            }
+            _ => {
+                // A scalar is one value. It does not take the comma after it: the list around
+                // it owns the separators.
+                self.initialiser_value(ty);
+            }
+        }
+    }
+
+    /// One value in a brace list, checked against what it initialises.
+    fn initialiser_value(&mut self, ty: TypeId) {
+        let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
+            return;
+        };
+        if self.types.is_error(ty) || self.types.is_error(value.ty) {
+            return;
+        }
+        let null_pointer = self.types.is_pointer(ty) && value.constant == Some(0);
+        if !null_pointer && !self.types.is_assignable(ty, value.ty) {
+            let (from, to) = (self.types.describe(value.ty), self.types.describe(ty));
+            let span = self.span();
+            self.error(span, format!("cannot initialise {to} with {from}"));
+        }
+    }
+
+    /// `.x = ...` and `[3] = ...` are not read yet; refuse them where they stand.
+    fn reject_designator(&mut self) {
+        if !(self.at_punct(".") || self.at_punct("[")) {
+            return;
+        }
+        let span = self.span();
+        self.not_implemented(span, "designated initialisers are not implemented yet");
+        self.skip_until(&[",", "}"], false);
+        self.eat(",");
     }
 
     /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),

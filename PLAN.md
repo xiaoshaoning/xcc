@@ -114,7 +114,7 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [ ] Acceptance: preprocesses every `.c` and header in borland-reborn's port corpus without
       crashing; token stream matches `clang -E` on the same files except Borland's extensions.
 
-## M3 - parser and types  (XL)  **in progress**: M3.1 declarations, M3.2 statements and expressions done
+## M3 - parser and types  (XL)  **in progress**: M3.1, M3.2 and M3.3 done; `switch`, `goto` and designators left
 
 - [x] **M3.1**, declarations: types (an arena, structural identity, Win64 sizes), scopes and
       shadowing, declarations and declarators (pointers, arrays, functions, all nesting),
@@ -132,9 +132,14 @@ Everything after this milestone depends on the API being right, so it comes befo
       and the errors that follow: assignment to a non-lvalue, mismatched return, argument count
       and type, `break` outside a loop, calling a non-function. The parse gate went from 0 to
       **322 of 464** corpus programs read completely.
-- [ ] **M3.3**, `struct`/`union`, members, bitfields, grouped declarators (function pointers),
-      initialiser lists and compound literals, `switch`, `goto` and labels - the 142 programs
-      the gate still refuses.
+- [x] **M3.3**, aggregates and declarators in full: `struct`/`union` with tags, forward
+      declarations, anonymous records, members with layout (sizes, alignment, bitfields),
+      `.` and `->`; declarators parsed as a tree, so grouping rebinds and `int (*fp)(int)`,
+      `int (*a)[3]` and `int (*table[2])(int)` all work; initialiser lists with C's brace
+      elision (`int a[2][2] = {1,2,3,4}`), string initialisers that complete an array's size,
+      and compound literals. The parse gate went from 322 to **387 of 464** corpus programs.
+- [ ] **M3.4**, the last 77: `switch`/`case`/`default`, `goto` and labels, designated
+      initialisers (`.x = 1`, `[2] = ...`).
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
 - [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,

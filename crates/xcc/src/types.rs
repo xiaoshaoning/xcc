@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use crate::intern::Symbol;
+
 /// A type, by index into [`Types`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct TypeId(u32);
@@ -53,9 +55,48 @@ pub(crate) enum Type {
         /// Whether the parameter list ended in `...`.
         variadic: bool,
     },
+    /// A struct or a union, by index into [`Types`]'s records.
+    Record(RecordId),
     /// A type that could not be determined. Everything it touches is this, so one mistake in a
     /// declaration is one diagnostic rather than a cascade of follow-on errors.
     Error,
+}
+
+/// A struct or union, by index into the records the arena holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct RecordId(u32);
+
+/// Which of the two an aggregate is: members side by side, or members on top of each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RecordKind {
+    /// `struct`: members are laid out one after another.
+    Struct,
+    /// `union`: members are laid out at offset zero, and the size is the largest.
+    Union,
+}
+
+/// One member of a struct or union.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Member {
+    /// Its name, absent for an anonymous bitfield used only as padding.
+    pub name: Option<Symbol>,
+    /// Its type.
+    pub ty: TypeId,
+    /// Where it starts, in bytes from the start of the aggregate.
+    pub offset: u64,
+    /// For a bitfield: the bit it starts at within its unit, and how many bits it has.
+    pub bits: Option<(u8, u8)>,
+}
+
+/// A struct or union: its members once it is complete, and its layout.
+#[derive(Debug, Clone)]
+struct Record {
+    kind: RecordKind,
+    tag: Option<Symbol>,
+    members: Vec<Member>,
+    size: u64,
+    align: u64,
+    complete: bool,
 }
 
 /// The type arena.
@@ -66,6 +107,8 @@ pub(crate) struct Types {
     fundamentals: HashMap<&'static str, TypeId>,
     /// The one error type, shared by every malformed declaration.
     error: TypeId,
+    /// The structs and unions, complete or not.
+    records: Vec<Record>,
 }
 
 // `align_of`, `is_pointer` and `pointee` have no caller *yet*: they belong to the layout work
@@ -80,6 +123,7 @@ impl Types {
             nodes: Vec::new(),
             fundamentals: HashMap::new(),
             error: TypeId(0),
+            records: Vec::new(),
         };
         types.error = types.push(Type::Error);
         for (name, ty) in [
@@ -177,6 +221,130 @@ impl Types {
         TypeId(self.nodes.len() as u32 - 1)
     }
 
+    /// A struct or union type, incomplete until [`Types::complete_record`] is given its
+    /// members. Declaring one twice with the same tag gets the same record, which is what makes
+    /// a forward declaration work.
+    pub fn record(&mut self, kind: RecordKind, tag: Option<Symbol>) -> (TypeId, RecordId) {
+        let id = RecordId(self.records.len() as u32);
+        self.records.push(Record {
+            kind,
+            tag,
+            members: Vec::new(),
+            size: 0,
+            align: 1,
+            complete: false,
+        });
+        (self.push(Type::Record(id)), id)
+    }
+
+    /// The record a type is, if it is one.
+    pub fn record_of(&self, id: TypeId) -> Option<RecordId> {
+        match self.kind(id) {
+            Type::Record(record) => Some(*record),
+            _ => None,
+        }
+    }
+
+    /// Whether a record has its members yet.
+    pub fn record_complete(&self, record: RecordId) -> bool {
+        self.records[record.0 as usize].complete
+    }
+
+    /// The members of a record, once it has them.
+    pub fn members(&self, record: RecordId) -> &[Member] {
+        &self.records[record.0 as usize].members
+    }
+
+    /// The tag a record was declared with.
+    pub fn record_tag(&self, record: RecordId) -> Option<Symbol> {
+        self.records[record.0 as usize].tag
+    }
+
+    /// The kind of aggregate: struct or union.
+    pub fn record_kind(&self, record: RecordId) -> RecordKind {
+        self.records[record.0 as usize].kind
+    }
+
+    /// Where a member starts, and what it is.
+    pub fn member(&self, record: RecordId, name: Symbol) -> Option<&Member> {
+        self.records[record.0 as usize]
+            .members
+            .iter()
+            .find(|member| member.name == Some(name))
+    }
+
+    /// Give a record its members and lay it out.
+    ///
+    /// The layout is the target's own: each member starts at the next offset that satisfies its
+    /// alignment, a bitfield is packed into its unit, and a union's members all start at zero.
+    pub fn complete_record(&mut self, record: RecordId, members: Vec<Member>) {
+        let kind = self.records[record.0 as usize].kind;
+        let mut offset = 0u64; // end of what has been laid out
+        let mut size = 0u64; // the largest end, which is the size for a union
+        let mut align = 1u64;
+        // The bitfield unit being filled: where it starts, how many bits are left, how big it is.
+        let mut unit_start = 0u64;
+        let mut unit_left = 0u16;
+        let mut unit_size = 0u64;
+
+        let mut laid_out: Vec<Member> = Vec::with_capacity(members.len());
+        for mut member in members {
+            let member_align = self.align_of(member.ty).unwrap_or(1);
+            align = align.max(member_align);
+            match member.bits {
+                Some((_, width)) => {
+                    let member_size = self.size_of(member.ty).unwrap_or(1);
+                    let unit_bits = (member_size * 8) as u16;
+                    if kind == RecordKind::Union {
+                        // Every member of a union starts at zero, and a bitfield is the same.
+                        member.offset = 0;
+                        member.bits = Some((0, width));
+                        size = size.max(member_size);
+                        laid_out.push(member);
+                        continue;
+                    }
+                    let fits = unit_left >= u16::from(width) && unit_size == member_size;
+                    if !fits {
+                        // a new unit, aligned for the member's own type
+                        offset = align_up(offset, member_align);
+                        unit_start = offset;
+                        unit_left = unit_bits;
+                        unit_size = member_size;
+                    }
+                    let start_bit = unit_left.saturating_sub(u16::from(width)) as u8;
+                    member.offset = unit_start;
+                    // Bits are numbered from the least significant, as the target stores them.
+                    member.bits = Some((start_bit, width));
+                    unit_left -= u16::from(width);
+                    if unit_left == 0 {
+                        offset = unit_start + unit_size;
+                        unit_size = 0;
+                    }
+                    size = size.max(offset.max(unit_start + member_size));
+                }
+                None => {
+                    let start = if kind == RecordKind::Union {
+                        0
+                    } else {
+                        align_up(offset, member_align)
+                    };
+                    member.offset = start;
+                    let end = start + self.size_of(member.ty).unwrap_or(0);
+                    offset = end;
+                    unit_size = 0;
+                    size = size.max(end);
+                }
+            }
+            laid_out.push(member);
+        }
+
+        let record = &mut self.records[record.0 as usize];
+        record.size = align_up(size, align.max(1));
+        record.align = align.max(1);
+        record.members = laid_out;
+        record.complete = true;
+    }
+
     /// The fundamental type with this spelling, if there is one.
     pub fn fundamental(&self, name: &str) -> Option<TypeId> {
         self.fundamentals.get(name).copied()
@@ -185,6 +353,13 @@ impl Types {
     /// What a type is.
     pub fn kind(&self, id: TypeId) -> &Type {
         &self.nodes[id.0 as usize]
+    }
+
+    /// Give an incomplete array its count, once an initialiser says how many elements it has.
+    pub fn complete_array(&mut self, id: TypeId, count: u64) {
+        if let Type::Array { count: slot, .. } = &mut self.nodes[id.0 as usize] {
+            *slot = Some(count);
+        }
     }
 
     /// A pointer to `to`.
@@ -279,6 +454,13 @@ impl Types {
             Type::Int { bits, .. } => u64::from(*bits) / 8,
             Type::Float { bits } => u64::from(*bits) / 8,
             Type::Pointer(_) => 8,
+            Type::Record(record) => {
+                let record = &self.records[record.0 as usize];
+                if !record.complete {
+                    return None;
+                }
+                record.size
+            }
             Type::Array {
                 element,
                 count: Some(count),
@@ -291,18 +473,42 @@ impl Types {
 
     /// The alignment of a value of this type, in bytes.
     pub fn align_of(&self, id: TypeId) -> Option<u64> {
-        self.size_of(id).map(|size| size.clamp(1, 8))
+        match self.kind(id) {
+            Type::Record(record) => Some(self.records[record.0 as usize].align.max(1)),
+            Type::Array { element, .. } => self.align_of(*element),
+            _ => self.size_of(id).map(|size| size.clamp(1, 8)),
+        }
     }
 
     /// Whether the type is complete enough to hold a value.
     pub fn is_complete(&self, id: TypeId) -> bool {
-        !matches!(
-            self.kind(id),
-            Type::Void | Type::Function { .. } | Type::Array { count: None, .. } | Type::Error
-        )
+        match self.kind(id) {
+            Type::Void | Type::Function { .. } | Type::Array { count: None, .. } | Type::Error => {
+                false
+            }
+            Type::Record(record) => self.records[record.0 as usize].complete,
+            _ => true,
+        }
     }
 
     /// How a type is written, for a diagnostic: `pointer to unsigned int`.
+    pub fn describe_with(&self, id: TypeId, names: &crate::intern::Interner) -> String {
+        match self.kind(id) {
+            Type::Record(record) => {
+                let record = &self.records[record.0 as usize];
+                let word = match record.kind {
+                    RecordKind::Struct => "struct",
+                    RecordKind::Union => "union",
+                };
+                match record.tag {
+                    Some(tag) => format!("{word} {}", names.resolve(tag)),
+                    None => format!("{word} (untagged)"),
+                }
+            }
+            _ => self.describe(id),
+        }
+    }
+
     pub fn describe(&self, id: TypeId) -> String {
         match self.kind(id) {
             Type::Void => "void".to_owned(),
@@ -347,6 +553,18 @@ impl Types {
                     text.push_str(&format!("({})", spelled.join(", ")));
                 }
                 text
+            }
+            Type::Record(record) => {
+                let record = &self.records[record.0 as usize];
+                let word = match record.kind {
+                    RecordKind::Struct => "struct",
+                    RecordKind::Union => "union",
+                };
+                if record.tag.is_some() {
+                    format!("{word} (see describe_with for its name)")
+                } else {
+                    format!("{word} (untagged)")
+                }
             }
             Type::Error => "<error>".to_owned(),
         }
@@ -454,6 +672,14 @@ impl Types {
             _ => (32, true),
         }
     }
+}
+
+/// Round `value` up to the next multiple of `alignment`.
+fn align_up(value: u64, alignment: u64) -> u64 {
+    if alignment <= 1 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
 }
 
 #[cfg(test)]
