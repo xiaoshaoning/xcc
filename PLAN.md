@@ -223,8 +223,11 @@ The first thing worth showing, and the reason the project exists.
       test: opening a block cannot go through `emit` (which refuses when the current block
       ended), and the code after a `switch` belongs to the exit block or `break` jumps into an
       orphan that the orphan pass turns into a trap.
-- [ ] Minimal `crt`: entry point, `GetCommandLineW` to `argc`/`argv`, environment, exit code,
-      stack probing.
+- [ ] Minimal `crt`, as decided in [ADR-005](docs/ADR-005-crt.md): `mainCRTStartup` written in C
+      and compiled by xcc itself, ending the process with UCRT's `exit` (not `ExitProcess`, which
+      skips the stdio flush), stack probing by Cranelift's inline strategy so no `__chkstk`
+      import is needed, and `int main(void)` only - `argc`/`argv` move to M6 with their three
+      imports and Windows' quoting rule recorded there.
 - [ ] Acceptance: `hello.exe` builds on a clean `windows-latest` runner with only VS Build
       Tools installed, prints, and returns its exit code.
 
