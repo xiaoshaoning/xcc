@@ -153,17 +153,30 @@ impl<M: Module> Lowerer<'_, M> {
     }
 
     /// The signature a C function type has, as the platform's C ABI states it.
-    fn signature(&self, func: &Func) -> Result<Signature, LoweringError> {
+    ///
+    /// One place, because a body's own signature and the signature of a function it calls are
+    /// the same question about the same C type.
+    fn signature_of(&self, params: &[TypeId], result: TypeId) -> Result<Signature, LoweringError> {
         let mut signature = self.object.make_signature();
-        for param in func.params() {
-            let ty = self.machine_type(func.value(*param).ty)?;
+        for param in params {
+            let ty = self.machine_type(*param)?;
             signature.params.push(AbiParam::new(ty));
         }
-        if !matches!(self.types.kind(func.result), Type::Void) {
-            let ty = self.machine_type(func.result)?;
+        if !matches!(self.types.kind(result), Type::Void) {
+            let ty = self.machine_type(result)?;
             signature.returns.push(AbiParam::new(ty));
         }
         Ok(signature)
+    }
+
+    /// The signature of a function this module defines.
+    fn signature(&self, func: &Func) -> Result<Signature, LoweringError> {
+        let params: Vec<TypeId> = func
+            .params()
+            .iter()
+            .map(|param| func.value(*param).ty)
+            .collect();
+        self.signature_of(&params, func.result)
     }
 
     fn name(&self, func: &Func) -> &str {
@@ -482,19 +495,17 @@ impl<M: Module> Lowerer<'_, M> {
                         ))
                     }
                 };
-                let mut signature = self.object.make_signature();
-                for param in &params {
-                    let ty = self.machine_type(*param)?;
-                    signature.params.push(AbiParam::new(ty));
-                }
-                if !matches!(self.types.kind(returns), Type::Void) {
-                    let ty = self.machine_type(returns)?;
-                    signature.returns.push(AbiParam::new(ty));
-                }
-                let name = self.names.resolve(*name).to_owned();
-                let id = self
-                    .object
-                    .declare_function(&name, Linkage::Import, &signature)?;
+                // A function of this unit was declared before any body was lowered, so its id
+                // is already known; only something outside the unit is an import.
+                let id = match self.functions.get(name) {
+                    Some(id) => *id,
+                    None => {
+                        let name = self.names.resolve(*name).to_owned();
+                        let signature = self.signature_of(&params, returns)?;
+                        self.object
+                            .declare_function(&name, Linkage::Import, &signature)?
+                    }
+                };
                 let target = self.object.declare_func_in_func(id, builder.func);
                 let address = builder.ins().func_addr(ir::types::I64, target);
                 values.insert(*result, address);

@@ -78,6 +78,22 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### calls - 2026-11-15 - a design review of call lowering
+
+One finding, and one thing checked because the code made it easy to be wrong.
+
+1. **Two builds of one signature.** Lowering a body asked `signature()`; lowering a function
+   *address* built a `Signature` inline from the C type - the same question about the same C
+   type answered in two places, which is how the two drift. One `signature_of(&[TypeId], result)`
+   serves both, and `signature()` is now three lines that gather a body's parameter types.
+2. **A call to a function of this unit declared itself an `Import`.** It happened to work -
+   Cranelift kept the earlier declaration - but the code said something false about a function
+   the module defines, and "happens to work" is what a test stops catching. The id is looked up
+   in `functions` first, and only a name from outside the unit is imported.
+
+The rest held up: `GlobalAddress` reads the signature from the function *type* rather than
+carrying it twice, and a call through a function pointer is refused where it is seen.
+
 ### M4.4 follow-up - the JIT's public surface
 
 `Jit` is the first thing a host touches, so its interface was read on its own. Two findings:
