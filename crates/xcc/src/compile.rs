@@ -1,8 +1,9 @@
 //! One compilation: the front end, the back end and the artefact it leaves behind.
 
 use crate::diag::{Diagnostic, Severity, Span};
-use crate::lex::{self, Prepared};
+use crate::intern::Interner;
 use crate::options::Options;
+use crate::pp;
 use crate::source::SourceFile;
 
 /// What a successful compilation produced.
@@ -70,23 +71,22 @@ impl Compile {
             return Err(truncate_diagnostics(diagnostics, &self.options));
         }
 
-        // Phases 1 and 2, then tokens: the part of the front end that exists.
-        let prepared = Prepared::new(source);
-        let lexed = lex::lex(&prepared, name);
-        if lexed.has_errors() {
-            diagnostics.extend(lexed.diagnostics);
+        // Phases 1 and 2, tokens, and the directives that exist so far.
+        let mut interner = Interner::new();
+        let preprocessed = pp::preprocess(&file, &self.options.budgets, &mut interner);
+        if preprocessed.has_errors() {
+            diagnostics.extend(preprocessed.diagnostics);
             return Err(truncate_diagnostics(diagnostics, &self.options));
         }
-        diagnostics.extend(lexed.diagnostics);
+        diagnostics.extend(preprocessed.diagnostics);
 
-        // M2 continues with macros, conditionals and includes; M3 is the parser. Until then,
-        // say so, rather than pretending.
+        // M2 continues with function-like macros, conditionals and includes; M3 is the parser.
         diagnostics.push(
-            Diagnostic::error("the preprocessor is not implemented yet")
+            Diagnostic::error("the parser is not implemented yet")
                 .with_file(name)
                 .with_span(Span::at(0))
                 .with_note(
-                    "the lexer ran and found no errors; M2 adds the preprocessor, M3 the parser",
+                    "the preprocessor ran and found no errors; M3 adds the parser and types",
                 ),
         );
         Err(truncate_diagnostics(diagnostics, &self.options))
@@ -138,7 +138,7 @@ mod tests {
             .compile("t.c", "int main(void) { return 0; }\n")
             .unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].message, "the preprocessor is not implemented yet");
+        assert_eq!(errors[0].message, "the parser is not implemented yet");
         assert_eq!(errors[0].file.as_deref(), Some("t.c"));
         assert_eq!(errors[0].span, Some(Span::at(0)));
         assert_eq!(errors[0].notes.len(), 1);

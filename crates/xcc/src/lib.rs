@@ -33,14 +33,18 @@
 
 mod compile;
 mod diag;
+mod intern;
 mod lex;
 mod options;
+pub mod pp;
 mod render;
 mod source;
 
 pub use compile::{Artifact, Compile};
 pub use diag::{Diagnostic, Severity, Span};
+pub use intern::{Interner, Symbol};
 pub use lex::{lex, Lexed, Prepared, Token, TokenKind};
 pub use options::{Budgets, CStandard, Options};
+pub use pp::{preprocess, PpToken, Preprocessed};
 pub use render::{render, render_all, Format};
 pub use source::{Position, SourceFile};

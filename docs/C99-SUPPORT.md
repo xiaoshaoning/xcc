@@ -29,11 +29,14 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | character constants, escapes, wide `L'x'` | `planned` - wide characters are `unsigned short`, as the target has no `wchar_t` of its own |
 | string literals and `L"x"` | `partial` - the lexer finds their ends; concatenation and escape decoding are M3 |
 | floating constants, all three forms | `partial` - lexed as pp-numbers; the value is M3 |
-| `#include` quoted and angled, `#include_next` | `planned` - `#include_next` refused (a host concern) |
-| `#define` object and function-like, `#`/`##`, variadic `...`/`__VA_ARGS__` | `planned` |
+| `#include` quoted and angled | `planned` (M2.4) - refused with a diagnostic until then |
+| `#include_next` | `refused` - a host concern (see the refusals below) |
+| `#define` object-like, `#undef`, redefinition checking | `sound` (M2.1) |
+| `#define` function-like, `#`/`##`, variadic `...`/`__VA_ARGS__` | `planned` (M2.2) - refused with a diagnostic until then |
 | `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, full constant expressions | `planned` |
-| `#line`, `#error`, `#warning` (C23, but every host writes it) | `planned` |
-| `#pragma once`, unknown `#pragma` ignored with a warning | `planned` |
+| `#error`, `#warning` | `sound` - the rest of the line is the message |
+| `#line` | `planned` (M2.3) |
+| `#pragma once`, unknown `#pragma` ignored with a warning | `sound` for the directive itself; `once` matters at M2.4 |
 | `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__` | `planned` - the clock comes from `Options`, so output stays reproducible |
 | `#pragma pack`, `#pragma comment` | `refused` - a diagnostic, not a silent misparse |
 

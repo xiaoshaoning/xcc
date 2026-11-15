@@ -18,6 +18,8 @@ pub struct Budgets {
     pub max_source_bytes: usize,
     /// The most diagnostics reported before the rest are dropped.
     pub max_diagnostics: usize,
+    /// How deeply macros may expand inside one another (CONSTRAINTS 5).
+    pub max_macro_expansion: usize,
 }
 
 impl Default for Budgets {
@@ -25,6 +27,7 @@ impl Default for Budgets {
         Self {
             max_source_bytes: 8 << 20,
             max_diagnostics: 100,
+            max_macro_expansion: 64,
         }
     }
 }
@@ -52,5 +55,6 @@ mod tests {
         assert_eq!(options.standard, CStandard::C99);
         assert_eq!(options.budgets.max_source_bytes, 8 << 20);
         assert_eq!(options.budgets.max_diagnostics, 100);
+        assert_eq!(options.budgets.max_macro_expansion, 64);
     }
 }

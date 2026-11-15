@@ -68,14 +68,8 @@ fn diagnostics_go_to_stderr_in_the_asked_for_format() {
     let temp = Temp::new("format");
     let source = temp.write("t.c", "int x = ;\n");
     for (format, expected) in [
-        (
-            "msvc",
-            "t.c(1,1): error: the preprocessor is not implemented yet",
-        ),
-        (
-            "gcc",
-            "t.c:1:1: error: the preprocessor is not implemented yet",
-        ),
+        ("msvc", "t.c(1,1): error: the parser is not implemented yet"),
+        ("gcc", "t.c:1:1: error: the parser is not implemented yet"),
     ] {
         let output = run(xcc()
             .current_dir(temp.path())

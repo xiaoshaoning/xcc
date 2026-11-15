@@ -12,6 +12,7 @@
 //! which is the only stage that knows what context a number appears in.
 
 use crate::diag::{Diagnostic, Span};
+use crate::intern::{Interner, Symbol};
 
 /// C99 6.4.4.4: the two-character sequences, and the character each stands for.
 const TRIGRAPHS: [(u8, u8); 9] = [
@@ -129,17 +130,23 @@ pub enum TokenKind {
     Str,
     /// A character literal, with any `L` prefix.
     Chr,
-    /// A punctuator, spelled as C writes it; digraphs are given their primary spelling.
-    Punct(&'static str),
+    /// A punctuator; digraphs are spelled as their primary form.
+    Punct,
     /// The end of the file.
     Eof,
 }
 
-/// One token: what it is, and where it came from.
+/// One token: what it is, how it is spelled, and where it came from.
+///
+/// The spelling is a symbol, interned from the *prepared* text, so a digraph says `[` and a
+/// spliced identifier says what it spells rather than how it was broken across lines. Every
+/// later stage wants the spelling, and none of them should have to know about phases 1 and 2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token {
     /// What it is.
     pub kind: TokenKind,
+    /// How it is spelled.
+    pub text: Symbol,
     /// Its bytes in the original source.
     pub span: Span,
 }
@@ -168,13 +175,14 @@ const PUNCTUATORS: [&str; 55] = [
     ":", ";", "=", ",", "#",
 ];
 
-/// Lex a prepared source, which the caller calls `file`.
-pub fn lex(prepared: &Prepared, file: &str) -> Lexed {
+/// Lex a prepared source, which the caller calls `file`, interning every spelling it meets.
+pub fn lex(prepared: &Prepared, file: &str, interner: &mut Interner) -> Lexed {
     let mut lexer = Lexer {
         bytes: prepared.text.as_bytes(),
         prepared,
         file,
         at: 0,
+        interner,
         lexed: Lexed::default(),
     };
     lexer.run();
@@ -186,6 +194,7 @@ struct Lexer<'a> {
     prepared: &'a Prepared,
     file: &'a str,
     at: usize,
+    interner: &'a mut Interner,
     lexed: Lexed,
 }
 
@@ -195,33 +204,33 @@ impl Lexer<'_> {
             self.skip_blank();
             let start = self.at;
             let Some(&byte) = self.bytes.get(self.at) else {
-                self.push(TokenKind::Eof, start, start);
+                self.push(TokenKind::Eof, "", start, start);
                 return;
             };
-            let kind = if byte == b'"' || (byte == b'L' && self.peek(1) == Some(b'"')) {
-                self.string_literal()
+            if byte == b'"' || (byte == b'L' && self.peek(1) == Some(b'"')) {
+                let kind = self.string_literal();
+                self.push_scanned(kind, start);
             } else if byte == b'\'' || (byte == b'L' && self.peek(1) == Some(b'\'')) {
-                self.char_literal()
+                let kind = self.char_literal();
+                self.push_scanned(kind, start);
             } else if is_ident_start(byte) {
-                self.identifier()
+                self.identifier();
+                self.push_scanned(TokenKind::Ident, start);
             } else if byte.is_ascii_digit() || (byte == b'.' && self.digits_follow()) {
-                self.number()
+                self.number();
+                self.push_scanned(TokenKind::Number, start);
+            } else if let Some(spelling) = self.punctuator() {
+                let end = self.at;
+                self.push(TokenKind::Punct, spelling, start, end);
             } else {
-                match self.punctuator() {
-                    Some(kind) => kind,
-                    None => {
-                        let what = if byte.is_ascii_graphic() {
-                            format!("stray `{}` in program", byte as char)
-                        } else {
-                            format!("stray byte 0x{byte:02x} in program")
-                        };
-                        self.error(start, 1, what);
-                        self.at += 1;
-                        continue;
-                    }
-                }
-            };
-            self.push(kind, start, self.at);
+                let what = if byte.is_ascii_graphic() {
+                    format!("stray `{}` in program", byte as char)
+                } else {
+                    format!("stray byte 0x{byte:02x} in program")
+                };
+                self.error(start, 1, what);
+                self.at += 1;
+            }
         }
     }
 
@@ -342,12 +351,12 @@ impl Lexer<'_> {
     }
 
     /// The longest punctuator at the cursor, with digraphs spelled as their primary forms.
-    fn punctuator(&mut self) -> Option<TokenKind> {
+    fn punctuator(&mut self) -> Option<&'static str> {
         let rest = &self.prepared.text[self.at..];
         for spelling in PUNCTUATORS {
             if rest.starts_with(spelling) {
                 self.at += spelling.len();
-                return Some(TokenKind::Punct(primary(spelling)));
+                return Some(primary(spelling));
             }
         }
         None
@@ -361,9 +370,16 @@ impl Lexer<'_> {
         self.bytes.get(self.at + ahead).copied()
     }
 
-    fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
+    fn push(&mut self, kind: TokenKind, text: &str, start: usize, end: usize) {
         let span = self.span(start, end);
-        self.lexed.tokens.push(Token { kind, span });
+        let text = self.interner.intern(text);
+        self.lexed.tokens.push(Token { kind, text, span });
+    }
+
+    /// Push the token that scanning has just passed, spelled as it is written.
+    fn push_scanned(&mut self, kind: TokenKind, start: usize) {
+        let text = self.prepared.text[start..self.at].to_owned();
+        self.push(kind, &text, start, self.at);
     }
 
     /// A span in the original source: a spliced token covers from its first byte to its last.
@@ -412,110 +428,86 @@ fn is_ident_continue(byte: u8) -> bool {
 mod tests {
     use super::*;
 
-    fn tokens(source: &str) -> (Vec<TokenKind>, Vec<Diagnostic>) {
+    fn lexed(source: &str) -> (Lexed, Interner) {
         let prepared = Prepared::new(source);
-        let lexed = lex(&prepared, "t.c");
-        (
-            lexed.tokens.iter().map(|t| t.kind).collect(),
-            lexed.diagnostics,
-        )
+        let mut interner = Interner::new();
+        let lexed = lex(&prepared, "t.c", &mut interner);
+        (lexed, interner)
     }
 
-    fn kinds(source: &str) -> Vec<TokenKind> {
-        let (mut kinds, diagnostics) = tokens(source);
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        kinds.pop(); // Eof
-        kinds
+    /// The spellings of the tokens, without the `Eof`, asserting nothing went wrong.
+    fn spelled(source: &str) -> Vec<String> {
+        let (lexed, interner) = lexed(source);
+        assert!(lexed.diagnostics.is_empty(), "{:?}", lexed.diagnostics);
+        assert_eq!(lexed.tokens.last().unwrap().kind, TokenKind::Eof);
+        let mut spells: Vec<String> = lexed
+            .tokens
+            .iter()
+            .map(|token| interner.resolve(token.text).to_owned())
+            .collect();
+        spells.pop();
+        spells
     }
 
     #[test]
     fn identifiers_and_keywords_are_the_same_token() {
+        let (lexed, _) = lexed("int x; _y9");
+        let kinds: Vec<TokenKind> = lexed.tokens.iter().map(|t| t.kind).collect();
         assert_eq!(
-            kinds("int x; _y9"),
+            kinds,
             [
                 TokenKind::Ident,
                 TokenKind::Ident,
-                TokenKind::Punct(";"),
+                TokenKind::Punct,
                 TokenKind::Ident,
+                TokenKind::Eof
             ]
         );
+        assert_eq!(spelled("int x; _y9"), ["int", "x", ";", "_y9"]);
     }
 
     #[test]
     fn numbers_are_pp_numbers() {
         for text in ["0", "42u", "0x1f", "1e+5", "0x1p-3", "1.5f", ".5", "1e"] {
-            assert_eq!(kinds(text), [TokenKind::Number], "{text}");
+            assert_eq!(spelled(text), [text], "{text}");
         }
-        // a pp-number swallows what follows an exponent sign, and stops at the next token
-        assert_eq!(
-            kinds("1e+5+2"),
-            [TokenKind::Number, TokenKind::Punct("+"), TokenKind::Number]
-        );
+        // a pp-number takes what follows an exponent sign, and stops at the next operator
+        assert_eq!(spelled("1e+5+2"), ["1e+5", "+", "2"]);
     }
 
     #[test]
     fn a_dot_alone_is_a_punctuator() {
-        assert_eq!(
-            kinds("s.x"),
-            [TokenKind::Ident, TokenKind::Punct("."), TokenKind::Ident]
-        );
+        assert_eq!(spelled("s.x"), ["s", ".", "x"]);
     }
 
     #[test]
     fn literals_keep_their_escapes_intact() {
         assert_eq!(
-            kinds(r#""a\"b" 'x' '\n' L"w" L'w'"#),
-            [
-                TokenKind::Str,
-                TokenKind::Chr,
-                TokenKind::Chr,
-                TokenKind::Str,
-                TokenKind::Chr,
-            ]
+            spelled(r#""a\"b" 'x' '\n' L"w" L'w'"#),
+            [r#""a\"b""#, "'x'", r"'\n'", r#"L"w""#, "L'w'"]
         );
     }
 
     #[test]
     fn punctuators_take_the_longest_match() {
         assert_eq!(
-            kinds("a<<=b>>=c...d->e"),
-            [
-                TokenKind::Ident,
-                TokenKind::Punct("<<="),
-                TokenKind::Ident,
-                TokenKind::Punct(">>="),
-                TokenKind::Ident,
-                TokenKind::Punct("..."),
-                TokenKind::Ident,
-                TokenKind::Punct("->"),
-                TokenKind::Ident,
-            ]
+            spelled("a<<=b>>=c...d->e"),
+            ["a", "<<=", "b", ">>=", "c", "...", "d", "->", "e"]
         );
     }
 
     #[test]
     fn digraphs_become_their_primary_spelling() {
         assert_eq!(
-            kinds("<% %> <: :> %: %:%:"),
-            [
-                TokenKind::Punct("{"),
-                TokenKind::Punct("}"),
-                TokenKind::Punct("["),
-                TokenKind::Punct("]"),
-                TokenKind::Punct("#"),
-                TokenKind::Punct("##"),
-            ]
+            spelled("<% %> <: :> %: %:%:"),
+            ["{", "}", "[", "]", "#", "##"]
         );
     }
 
     #[test]
     fn comments_are_blank() {
-        assert_eq!(
-            kinds("a /* b\nc */ d // e\nf"),
-            [TokenKind::Ident, TokenKind::Ident, TokenKind::Ident]
-        );
-        let prepared = Prepared::new("/* unterminated");
-        let lexed = lex(&prepared, "t.c");
+        assert_eq!(spelled("a /* b\nc */ d // e\nf"), ["a", "d", "f"]);
+        let (lexed, _) = lexed("/* unterminated");
         assert!(lexed.has_errors());
         assert_eq!(lexed.diagnostics[0].message, "comment is not terminated");
     }
@@ -523,56 +515,46 @@ mod tests {
     #[test]
     fn an_escaped_newline_joins_the_next_line() {
         assert_eq!(
-            kinds("ab\\\ncd"),
-            [TokenKind::Ident],
+            spelled("ab\\\ncd"),
+            ["abcd"],
             "one identifier across a splice"
         );
-        assert_eq!(
-            kinds("1 + \\\n2"),
-            [TokenKind::Number, TokenKind::Punct("+"), TokenKind::Number]
-        );
+        assert_eq!(spelled("1 + \\\n2"), ["1", "+", "2"]);
     }
 
     #[test]
     fn trigraphs_are_phase_one() {
-        assert_eq!(
-            kinds("??=define"),
-            [TokenKind::Punct("#"), TokenKind::Ident]
-        );
-        assert_eq!(kinds("??("), [TokenKind::Punct("[")]);
+        assert_eq!(spelled("??=define"), ["#", "define"]);
+        assert_eq!(spelled("??("), ["["]);
     }
 
     #[test]
     fn crlf_is_a_newline() {
-        assert_eq!(kinds("a\r\nb\r\n"), [TokenKind::Ident, TokenKind::Ident]);
+        assert_eq!(spelled("a\r\nb\r\n"), ["a", "b"]);
     }
 
     #[test]
     fn spans_point_at_the_original_bytes() {
         let source = "a ??=b\nx\\\ny";
-        let prepared = Prepared::new(source);
-        let lexed = lex(&prepared, "t.c");
-        let kinds: Vec<_> = lexed.tokens.iter().map(|t| t.kind).collect();
+        let (lexed, interner) = lexed(source);
+        let spells: Vec<&str> = lexed
+            .tokens
+            .iter()
+            .map(|token| interner.resolve(token.text))
+            .collect();
         assert_eq!(
-            kinds,
-            [
-                TokenKind::Ident,
-                TokenKind::Punct("#"),
-                TokenKind::Ident,
-                TokenKind::Ident,
-                TokenKind::Eof,
-            ]
+            spells,
+            ["a", "#", "b", "xy", ""],
+            "the spelling is what it spells, with the splice gone"
         );
         // `x\<newline>y` is one identifier covering both letters, splice included
-        let last = lexed.tokens[3];
-        assert_eq!(last.span, Span::new(7, 4));
+        assert_eq!(lexed.tokens[3].span, Span::new(7, 4));
         assert_eq!(&source[7..11], "x\\\ny");
     }
 
     #[test]
     fn unterminated_literals_say_so() {
-        let prepared = Prepared::new("char *s = \"abc;\n");
-        let lexed = lex(&prepared, "t.c");
+        let (lexed, _) = lexed("char *s = \"abc;\n");
         assert!(lexed.has_errors());
         assert_eq!(
             lexed.diagnostics[0].message,
@@ -583,10 +565,9 @@ mod tests {
 
     #[test]
     fn a_stray_byte_is_reported_and_skipped() {
-        let prepared = Prepared::new("a \u{7f} b");
-        let lexed = lex(&prepared, "t.c");
+        let (lexed, _) = lexed("a \u{7f} b");
         assert!(lexed.has_errors());
-        assert_eq!(&lexed.diagnostics[0].message, "stray byte 0x7f in program");
+        assert_eq!(lexed.diagnostics[0].message, "stray byte 0x7f in program");
         assert_eq!(lexed.tokens.len(), 3, "the tokens either side survive");
     }
 
@@ -600,7 +581,8 @@ mod tests {
                 continue;
             }
             let source = std::fs::read_to_string(&path).expect("a UTF-8 source");
-            let lexed = lex(&Prepared::new(&source), "corpus.c");
+            let mut interner = Interner::new();
+            let lexed = lex(&Prepared::new(&source), "corpus.c", &mut interner);
             assert!(
                 lexed.tokens.len() > 1,
                 "{} lexed to nothing",

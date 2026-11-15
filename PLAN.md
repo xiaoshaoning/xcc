@@ -85,11 +85,13 @@ Everything after this milestone depends on the API being right, so it comes befo
       trigraphs, escaped newlines, CRLF. Errors: unterminated comment or literal, stray byte.
 - [ ] Numbers become integer and floating constants with `u`/`l`/`ll` suffixes (M3: only the
       parser knows what context a number is in).
-- [ ] `#include` (quoted and angled, in-memory includes for embedding), `#define` with
-      parameters, `#`/`##`, variadic macros, `#undef`, `#if`/`#ifdef`/`#elif`/`#else`/`#endif`
-      with a real constant-expression evaluator, `defined`, `#line`, `#error`,
-      `#pragma once`, `__FILE__`, `__LINE__`, `__DATE__`/`__TIME__` (deterministic, from
-      `Options`), `#pragma` ignored with a warning.
+- [x] `#define` object-like and `#undef`, with redefinition checking; `#error`/`#warning`;
+      `#pragma once`; and a diagnostic, not silence, for every directive not built yet.
+- [ ] `#define` with parameters, `#`/`##`, variadic macros (M2.2).
+- [ ] `#if`/`#ifdef`/`#elif`/`#else`/`#endif` with a real constant-expression evaluator,
+      `defined`, `#line` (M2.3).
+- [ ] `#include` (quoted and angled, in-memory includes for embedding), `__FILE__`, `__LINE__`,
+      `__DATE__`/`__TIME__` (deterministic, from `Options`) (M2.4).
 - [ ] `-I`, `-D`, `-U`, `--depfile`, `<...>` search that never escapes the configured roots
       (embedding hosts compile untrusted scripts).
 - [ ] Limits: include depth, macro expansion depth, total source and output size.
