@@ -78,6 +78,24 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### switch - 2026-11-15 - review of the switch commit
+
+The test that shipped with it proves arms, `break`, `default`, fall-through and negative case
+labels. The review found what the test could not reach, because it needs a switch inside a loop:
+
+    int f(int n) { int r = 0; while (n > 0) { switch (n) { case 1: continue; default: r = r + 1; } n = n - 1; } return r; }
+
+1. **`continue` was sent to the switch's exit.** `switch` pushed `(exit, exit)` onto the
+   loop-target stack, so `continue` left the loop by the wrong door and skipped the loop's step.
+   A switch pushes no loop target now; `break` consults its own exit when no loop target exists,
+   and `continue` keeps seeing the loop around it. The `(exit, exit)` pair was a loop target that
+   was not a loop - one fact in a place it did not belong, the tenth of these.
+2. **Still open: that program ends in a trap** (`STATUS_ILLEGAL_INSTRUCTION`), so a block in this
+   shape reaches `unreachable`. The first suspect is `emit_switch_chain`'s fall-through loop,
+   which pairs arm *i* with arm *i+1* while `default` may sit anywhere in `arms`. Not fixed here:
+   a guess at the pairing would be a second wrong shape rather than one, and the reproduce line
+   above is short enough to keep.
+
 ### pointer arithmetic - 2026-11-15 - review of the subscript commit
 
 1. **"A constant keeps its folded value when it gains code" was written twice.** The `Number`
