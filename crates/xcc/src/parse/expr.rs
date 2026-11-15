@@ -386,23 +386,6 @@ impl Parser<'_> {
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
             }
-            "&&" | "||" => {
-                // Short-circuit needs a block per side, which lands with M4.2b's control flow;
-                // until then an eagerly evaluated `&&` would read memory the program does not.
-                self.not_lowered(span, "`&&` and `||` in code");
-                self.require_scalar(&left, "the left side of a logical operator");
-                self.require_scalar(&right, "the right side of a logical operator");
-                let int = self.types.fundamental("int").unwrap();
-                // `0 && anything` is 0 whatever the right side turns out to be at run time.
-                let constant = match (operator, left.constant, right.constant) {
-                    ("&&", Some(0), _) => Some(0),
-                    ("||", Some(c), _) if c != 0 => Some(1),
-                    ("&&", Some(_), Some(b)) => Some(i64::from(b != 0)),
-                    ("||", Some(_), Some(b)) => Some(i64::from(b != 0)),
-                    _ => None,
-                };
-                Value::new(int, constant, false)
-            }
             other => {
                 self.error(
                     span,
@@ -437,9 +420,9 @@ impl Parser<'_> {
         let Some(zero_cir) = zero.cir else {
             return Some(Value::new(int, None, false));
         };
-        let Some(left_cir) = left_int.cir.or(Some(left_cir)) else {
-            return Some(Value::new(int, None, false));
-        };
+        // One left side: the converted one when the conversion emitted an instruction, else the
+        // original. `convert` of a same-typed value returns it unchanged.
+        let left_cir = left_int.cir.unwrap_or(left_cir);
         let flag = self
             .emit(|builder| builder.compare(cir::CmpOp::Ne, left_cir, zero_cir, int, int, span))?;
         let take_right = self.new_block(span)?;

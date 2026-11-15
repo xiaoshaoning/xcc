@@ -78,6 +78,22 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `&&` and `||` - 2026-11-15 - review of the short-circuit commit
+
+1. **The old `&&`/`||` arm in `binary_result` was unreachable and wrong.** `binary_expression`
+   now intercepts those operators before `binary_result` is ever called, so the arm that remained
+   there - complete with a `not_lowered` refusal from the previous milestone - was dead code that
+   said the opposite of what the compiler now does. Deleted. A dead branch that describes the old
+   behaviour is worse than a comment: the next reader cannot tell which is true.
+2. **`left_int.cir.or(Some(left_cir))` was always `Some`** - a pattern that reads as a fallible
+   choice and cannot fail. It says what it means now: the converted left side when the conversion
+   emitted something, else the original.
+
+The interesting part of this commit was not the lowering but where the lowering had to go: parse
+order, not type rules, is what makes short-circuit possible. That is why the operator is handled
+in `binary_expression` and why the arm above had to die - `binary_result` sees both operands
+already evaluated, and that is precisely what short-circuit forbids.
+
 ### the crt - 2026-11-15 - review of the runtime file and the probing setting
 
 1. **The crt had no caller.** `crates/xcc-crt/src/main.c` was written and nothing compiled it:
