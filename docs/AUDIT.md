@@ -78,6 +78,24 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### pointer arithmetic - 2026-11-15 - review of the subscript commit
+
+1. **"A constant keeps its folded value when it gains code" was written twice.** The `Number`
+   branch of `primary_expression` emitted a `cir` constant and rebuilt the `Value` with
+   `.with_constant(..)`, while `constant_of` - added in the same commit for pointer scaling - did
+   exactly that. One now calls the other; the rule lives in `constant_of`, where a pointer's
+   scale factor also needs it.
+2. **Recorded, not fixed: pointer *difference* is not part of `pointer_walk`.** `p - q` (a count
+   of elements) is twenty lines inline in `binary_result`, beside a `pointer_walk` that owns
+   `p +/- n`. Two halves of one subject in two places. It wants folding into one function that
+   answers "what is the address arithmetic here?", and it is left as it is because the inline
+   block is tested and the shape of the merged function is not yet obvious - the third time a
+   finding has been recorded rather than guessed at.
+
+After the review, the ninth instance of "one fact in two places" in this project. Two of the nine
+produced wrong programs (`'A'` as 0, a one-byte object for a two-byte array); the rest were
+duplication that would have drifted.
+
 ### data patches 3-4 - 2026-11-15 - review of the string literals and the data section
 
 1. **A literal whose escape nobody reads produced a one-byte object for a two-byte array.**

@@ -796,18 +796,13 @@ impl Parser<'_> {
                 self.bump();
                 let spelling = self.spell(&token).to_owned();
                 let value = self.number_value(&spelling, span);
-                // A constant is a value like any other: `int x = 5;` stores one.
-                match (value.constant, self.types.is_integer(value.ty)) {
-                    (Some(bits), true) => {
-                        let emitted =
-                            self.emit(|builder| builder.constant(value.ty, bits as u64, span));
-                        Some(match emitted {
-                            Some(cir) => Value::code(value.ty, cir).with_constant(Some(bits)),
-                            None => value,
-                        })
-                    }
-                    _ => Some(value),
-                }
+                // A constant is a value like any other: `int x = 5;` stores one. `constant_of`
+                // is the one place that knows a constant keeps its folded value when it gains
+                // code, so this branch asks it rather than repeating the rule.
+                Some(match (value.constant, self.types.is_integer(value.ty)) {
+                    (Some(bits), true) => self.constant_of(value.ty, bits, span),
+                    _ => value,
+                })
             }
             crate::lex::TokenKind::Chr => {
                 self.bump();
