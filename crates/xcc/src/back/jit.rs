@@ -231,6 +231,32 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(count(0), 0);
     }
 
+    /// `&&` and `||` short-circuit, which is observable: the arm that is not taken must not
+    /// divide by zero. A plain `and`/`or` of two eager operands traps here.
+    ///
+    /// Written before the emitter can lower them (M6's first item) and ignored until it can.
+    #[test]
+    #[ignore = "`&&` and `||` are not lowered yet: they need a block per side"]
+    fn logical_operators_do_not_evaluate_what_they_do_not_need() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int and_guard(int n) { return n && (10 / n); }
+             int or_guard(int n) { return n || (10 / n); }",
+        )
+        .expect("it compiles");
+        let call = |name: &str, argument: i32| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+            function(argument)
+        };
+        // 0 && (10 / 0) is 0 without dividing; 5 && (10 / 5) is 1 but the *value* of && is 0/1.
+        assert_eq!(call("and_guard", 0), 0);
+        assert_eq!(call("and_guard", 5), 1);
+        // 0 || (10 / 0) must divide and answer 1; 5 || ... short-circuits to 1.
+        assert_eq!(call("or_guard", 0), 1);
+        assert_eq!(call("or_guard", 5), 1);
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {
