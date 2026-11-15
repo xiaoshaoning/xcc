@@ -78,6 +78,22 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### data patches 3-4 - 2026-11-15 - review of the string literals and the data section
+
+1. **A literal whose escape nobody reads produced a one-byte object for a two-byte array.**
+   `string_literal` computed the array's size from the *spelling* and its bytes from
+   `string_bytes`, and on `None` fell back to `unwrap_or_default()` - an empty vector, then a NUL
+   pushed onto it. `char *s = "\q";` therefore returned a pointer to an array of one byte whose
+   type said two: a wrong program, and the third time this project's own rule ("a guess is worse
+   than a refusal") has been broken by a convenience call. The bytes are now checked against the
+   count the type promised, refused with a diagnostic, and zero-filled to the promised length so
+   the type and the data cannot disagree even in the broken case.
+2. **Recorded, not fixed: the back end spells "link name" two ways.** `functions` is keyed by
+   `String` (from `GlobalAddress`, per the naming rule), while `Lowerer::name(func)` resolves
+   `Func::name` through the name table. Two spellings of one concept, one conversion apart. The
+   repair is `Func` carrying its link name as well - the third shape the ADR deferred - and it
+   waits for a caller that needs it, which M5's `crt` will be.
+
 ### the walker - 2026-11-15 - review of the traversal that writes bytes
 
 1. **The leaf-write block appeared twice**: once for a leaf inside a brace list

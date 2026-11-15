@@ -508,7 +508,7 @@ impl Parser<'_> {
     /// (C99 6.4.5p5), so `"ab" "cd"` is one array of five.
     fn string_literal(&mut self) -> (TypeId, u64, String) {
         let span = self.span();
-        let mut bytes = 0u64;
+        let mut bytes_count = 0u64;
         let mut spelling = String::new();
         while let Some(token) = self.peek().copied() {
             if token.kind != crate::lex::TokenKind::Str {
@@ -516,19 +516,31 @@ impl Parser<'_> {
             }
             let written = self.spell(&token).to_owned();
             self.bump();
-            bytes += string_length(&written);
+            bytes_count += string_length(&written);
             spelling.push_str(&written);
         }
         let char = self
             .types
             .fundamental("char")
             .unwrap_or_else(|| self.types.error());
-        let ty = self.types.array(char, Some(bytes + 1));
+        let ty = self.types.array(char, Some(bytes_count + 1));
         // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
         // named with a `.` prefix so it can never collide with a C identifier.
         let name = format!(".str{}", self.literals);
         self.literals += 1;
-        let mut init = crate::literal::string_bytes(&spelling).unwrap_or_default();
+        // The bytes must be exactly as long as the array the type promised. An escape this
+        // compiler does not read is reported and filled with zeroes rather than silently making
+        // a one-byte object for a two-byte array.
+        let mut init = match crate::literal::string_bytes(&spelling) {
+            Some(bytes) if bytes.len() as u64 == bytes_count => bytes,
+            _ => {
+                self.error(
+                    span,
+                    "this string literal has an escape this compiler does not read",
+                );
+                vec![0u8; bytes_count as usize]
+            }
+        };
         init.push(0);
         self.globals.push(cir::Global {
             name: name.clone(),
@@ -538,7 +550,7 @@ impl Parser<'_> {
             external: false,
             span,
         });
-        (ty, bytes, name)
+        (ty, bytes_count, name)
     }
 
     /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value
