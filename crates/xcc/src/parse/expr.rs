@@ -955,7 +955,8 @@ impl Parser<'_> {
                 // value that can be stored in a function pointer.
                 let (function, name) = (entry.ty, name);
                 let pointer = self.types.pointer(function);
-                match self.emit(|builder| builder.global_address(name, pointer, span)) {
+                let link_name = self.spell_of(name).to_owned();
+                match self.emit(|builder| builder.global_address(link_name, pointer, span)) {
                     Some(address) => Value {
                         ty: pointer,
                         constant: None,

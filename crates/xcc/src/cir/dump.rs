@@ -176,7 +176,7 @@ fn instruction(types: &crate::types::Types, names: &Interner, func: &Func, inst:
             }
         }
         Inst::GlobalAddress { result, name, .. } => {
-            format!("{} = addr {}", v(*result), names.resolve(*name))
+            format!("{} = addr {}", v(*result), name)
         }
     }
 }

@@ -295,12 +295,14 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
-    /// The address of a global object or a function, by name.
+    /// The address of a global object or a function, by the name its object file gives it.
     GlobalAddress {
         /// The pointer produced.
         result: Value,
-        /// The name of the global.
-        name: Symbol,
+        /// The name of the global: the link name, which for an anonymous object the compiler
+        /// generated and the source never spelled (ADR-004: a name from the source is a
+        /// `Symbol`, a name the compiler makes is a `String`).
+        name: String,
         /// Where in the source.
         span: Span,
     },
@@ -702,7 +704,7 @@ impl<'a> Builder<'a> {
     }
 
     /// The address of a global object or function.
-    pub fn global_address(&mut self, name: Symbol, ty: TypeId, span: Span) -> Value {
+    pub fn global_address(&mut self, name: String, ty: TypeId, span: Span) -> Value {
         let result = self.func.mint(ty, self.current);
         self.push(Inst::GlobalAddress { result, name, span });
         result

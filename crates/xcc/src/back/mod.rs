@@ -91,7 +91,7 @@ pub fn lower_into<M: Module>(
     Ok(lowerer
         .functions
         .iter()
-        .map(|(symbol, id)| (names.resolve(*symbol).to_owned(), *id))
+        .map(|(name, id)| (name.clone(), *id))
         .collect())
 }
 
@@ -114,7 +114,7 @@ struct Lowerer<'a, M: Module> {
     types: &'a Types,
     names: &'a crate::intern::Interner,
     /// The function each declared name means, so lowering a call can name it.
-    functions: HashMap<crate::intern::Symbol, FuncId>,
+    functions: HashMap<String, FuncId>,
 }
 
 impl<M: Module> Lowerer<'_, M> {
@@ -189,7 +189,7 @@ impl<M: Module> Lowerer<'_, M> {
         let id = self
             .object
             .declare_function(&name, Linkage::Export, &signature)?;
-        self.functions.insert(func.name, id);
+        self.functions.insert(self.name(func).to_owned(), id);
         Ok(())
     }
 
@@ -497,13 +497,12 @@ impl<M: Module> Lowerer<'_, M> {
                 };
                 // A function of this unit was declared before any body was lowered, so its id
                 // is already known; only something outside the unit is an import.
-                let id = match self.functions.get(name) {
+                let id = match self.functions.get(name.as_str()) {
                     Some(id) => *id,
                     None => {
-                        let name = self.names.resolve(*name).to_owned();
                         let signature = self.signature_of(&params, returns)?;
                         self.object
-                            .declare_function(&name, Linkage::Import, &signature)?
+                            .declare_function(name.as_str(), Linkage::Import, &signature)?
                     }
                 };
                 let target = self.object.declare_func_in_func(id, builder.func);
