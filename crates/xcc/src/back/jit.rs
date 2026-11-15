@@ -257,7 +257,6 @@ int twice(int x) { return host_double(x); }",
     ///
     /// Written before the emitter can lower them (M6's first item) and ignored until it can.
     #[test]
-    #[ignore = "`&&` and `||` are not lowered yet: they need a block per side"]
     fn logical_operators_do_not_evaluate_what_they_do_not_need() {
         let mut jit = Jit::new().expect("a JIT");
         jit.add_source(
@@ -270,11 +269,11 @@ int twice(int x) { return host_double(x); }",
             let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
             function(argument)
         };
-        // 0 && (10 / 0) is 0 without dividing; 5 && (10 / 5) is 1 but the *value* of && is 0/1.
+        // `0 && (10 / 0)` is 0 without dividing: an eager `and` traps here.
         assert_eq!(call("and_guard", 0), 0);
         assert_eq!(call("and_guard", 5), 1);
-        // 0 || (10 / 0) must divide and answer 1; 5 || ... short-circuits to 1.
-        assert_eq!(call("or_guard", 0), 1);
+        // `5 || (10 / 5)` short-circuits to 1. The other side of `||` is *not* asserted: seeing
+        // `0 || (10 / 0)` return 1 means the division ran, and C calls that undefined.
         assert_eq!(call("or_guard", 5), 1);
     }
 

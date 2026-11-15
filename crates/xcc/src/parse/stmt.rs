@@ -134,17 +134,17 @@ impl Parser<'_> {
     }
 
     /// A block to jump to, when code is being built.
-    fn new_block(&mut self, span: Span) -> Option<cir::Block> {
+    pub(super) fn new_block(&mut self, span: Span) -> Option<cir::Block> {
         Some(self.body.as_mut()?.func.append_empty(span))
     }
 
     /// Leave the current block for `target`.
-    fn jump(&mut self, target: cir::Block, span: Span) {
+    pub(super) fn jump(&mut self, target: cir::Block, span: Span) {
         self.emit(|builder| builder.jump(target, Vec::new(), span));
     }
 
     /// Start filling `block`.
-    fn switch_to(&mut self, block: cir::Block) {
+    pub(super) fn switch_to(&mut self, block: cir::Block) {
         if let Some(body) = self.body.as_mut() {
             body.current = block;
         }

@@ -204,6 +204,13 @@ impl Parser<'_> {
             }
             let span = self.span();
             self.bump();
+            if operator == "&&" || operator == "||" {
+                // Handled here, not in `binary_result`: short-circuiting means the right operand
+                // must be *parsed* somewhere else, and this is the only place the parse order is
+                // still ours to choose.
+                left = self.logical(&operator, left, level, span)?;
+                continue;
+            }
             let right = self.binary_expression(level + 1)?;
             left = self.binary_result(&operator, left, right, span);
         }
@@ -404,6 +411,72 @@ impl Parser<'_> {
                 Value::temporary(self.types.error())
             }
         }
+    }
+
+    /// `left && right` and `left || right`, short-circuiting: the right side is parsed into its
+    /// own block and only reached when the left side does not decide the answer.
+    ///
+    /// The result is an `int`, 0 or 1, carried out of the join block as its parameter.
+    fn logical(&mut self, operator: &str, left: Value, level: usize, span: Span) -> Option<Value> {
+        self.require_scalar(&left, "the left side of a logical operator");
+        let int = self.types.fundamental("int").unwrap();
+        let short_circuits_on = operator == "||";
+        // Without code to emit, the parse still has to happen: diagnostics and folding.
+        let Some(left_cir) = left.cir.filter(|_| self.in_body()) else {
+            let right = self.binary_expression(level + 1)?;
+            let constant = match (short_circuits_on, left.constant, right.constant) {
+                (true, Some(c), _) if c != 0 => Some(1),
+                (false, Some(0), _) => Some(0),
+                (_, Some(_), Some(b)) => Some(i64::from(b != 0)),
+                _ => None,
+            };
+            return Some(Value::new(int, constant, false));
+        };
+        let zero = self.constant_of(int, 0, span);
+        let left_int = self.convert(left, int, span);
+        let Some(zero_cir) = zero.cir else {
+            return Some(Value::new(int, None, false));
+        };
+        let Some(left_cir) = left_int.cir.or(Some(left_cir)) else {
+            return Some(Value::new(int, None, false));
+        };
+        let flag = self
+            .emit(|builder| builder.compare(cir::CmpOp::Ne, left_cir, zero_cir, int, int, span))?;
+        let take_right = self.new_block(span)?;
+        let join = self.emit(|builder| builder.append_block(&[int], span))?;
+        // The answer the left side alone settles: 1 for `||`, 0 for `&&`.
+        let decided_value = if short_circuits_on { 1 } else { 0 };
+        let decided = self.constant_of(int, decided_value, span);
+        let Some(decided) = decided.cir else {
+            return Some(Value::new(int, None, false));
+        };
+        if short_circuits_on {
+            // `||`: a true left side answers 1 without looking right.
+            self.emit(|builder| {
+                builder.branch(flag, (join, vec![decided]), (take_right, Vec::new()), span)
+            });
+        } else {
+            // `&&`: a false left side answers 0 without looking right.
+            self.emit(|builder| {
+                builder.branch(flag, (take_right, Vec::new()), (join, vec![decided]), span)
+            });
+        }
+        self.switch_to(take_right);
+        let right = self.binary_expression(level + 1)?;
+        let right_int = self.convert(right, int, span);
+        let right_flag = match right_int.cir {
+            Some(right_cir) => self.emit(|builder| {
+                builder.compare(cir::CmpOp::Ne, right_cir, zero_cir, int, int, span)
+            })?,
+            None => return Some(Value::new(int, None, false)),
+        };
+        self.emit(|builder| builder.jump(join, vec![right_flag], span));
+        self.switch_to(join);
+        let value = self
+            .body
+            .as_ref()
+            .map(|body| body.func.block(join).params[0])?;
+        Some(Value::new(int, None, false).with_cir(Some(value)))
     }
 
     pub(super) fn bad_operands(
