@@ -613,6 +613,22 @@ mod tests {
         object(&parsed.module, preprocessed.names()).expect("lowering works")
     }
 
+    /// The gate PLAN.md puts before M5: does a win64 object from Cranelift carry the unwind
+    /// information Windows expects, or must M5 supply it?
+    #[test]
+    fn a_win64_object_says_which_unwind_data_it_has() {
+        let bytes = object_of("int add(int a, int b) { return a + b; }");
+        let has = |section: &[u8]| bytes.windows(section.len()).any(|window| window == section);
+        // COFF keeps a section name of eight bytes or fewer in its header, so a plain scan sees
+        // it. The assertions *are* the verdict ADR-003 records: if Cranelift starts emitting
+        // unwind data, this test fails and the ADR is revisited rather than left to rot.
+        assert!(has(b".text"), "there is code");
+        assert!(
+            !has(b".pdata") && !has(b".xdata"),
+            "a Cranelift win64 object now carries unwind data: see ADR-003 and M5"
+        );
+    }
+
     #[test]
     fn a_function_becomes_a_coff_object() {
         let bytes = object_of("int add(int a, int b) { return a + b; }");

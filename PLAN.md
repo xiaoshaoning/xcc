@@ -196,9 +196,10 @@ The first thing worth showing, and the reason the project exists.
       called as `extern "C" fn(i32, i32) -> i32` returning 5 for (2,3); a script calling back
       into a host function through `add_symbol` works; 100 compiles from 8 threads pass (no
       global state).
-- [ ] Gate before promising a `.exe` (M5): a Cranelift object for win64 carries `.pdata`/unwind
-      information, or is proven not to need it for C. This is the one assumption borrowed from
-      nothing, and it is checked before it is built on.
+- [x] Gate before promising a `.exe` (M5): **answered - it does not carry it.** A Cranelift win64
+      object has `.text` and no `.pdata`/`.xdata` (measured, and now asserted, in
+      `back::tests`). M5 therefore promises "a `.exe` that runs and calls C functions", not
+      exception throughput; see [ADR-003](docs/ADR-003-win64-unwind.md).
 
 ## M5 - objects and a real .exe  (M)
 
