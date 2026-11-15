@@ -36,9 +36,12 @@ mod diag;
 mod intern;
 mod lex;
 mod options;
+mod parse;
 pub mod pp;
 mod render;
 mod source;
+mod symtab;
+mod types;
 
 pub use compile::{Artifact, Compile};
 pub use diag::{Diagnostic, Severity, Span};

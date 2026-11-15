@@ -68,8 +68,8 @@ fn diagnostics_go_to_stderr_in_the_asked_for_format() {
     let temp = Temp::new("format");
     let source = temp.write("t.c", "int x = ;\n");
     for (format, expected) in [
-        ("msvc", "t.c(1,1): error: the parser is not implemented yet"),
-        ("gcc", "t.c:1:1: error: the parser is not implemented yet"),
+        ("msvc", "t.c(1,9): error: expected an initialiser"),
+        ("gcc", "t.c:1:9: error: expected an initialiser"),
     ] {
         let output = run(xcc()
             .current_dir(temp.path())
@@ -91,8 +91,9 @@ fn the_human_format_shows_the_line() {
     let output = run(xcc().args(["-c"]).arg(&source));
     assert_eq!(output.status.code(), Some(1));
     let text = stderr(&output);
+    assert!(text.contains("error: expected an initialiser"), "{text}");
     assert!(text.contains("1 | int x = ;"), "{text}");
-    assert!(text.contains("  | ^"), "{text}");
+    assert!(text.contains("  |         ^"), "{text}");
 }
 
 #[test]
@@ -150,8 +151,8 @@ int from_source;
         .arg(&source));
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        stderr(&output).contains("the parser is not implemented yet"),
-        "preprocessing should have succeeded: {}",
+        stderr(&output).contains("the code generator is not implemented yet"),
+        "preprocessing and parsing should have succeeded: {}",
         stderr(&output)
     );
 }
@@ -188,7 +189,7 @@ fn defines_come_from_the_command_line() {
 
     let with = run(xcc().args(["-c", "-DFLAG"]).arg(&source));
     assert!(
-        stderr(&with).contains("the parser is not implemented yet"),
+        stderr(&with).contains("the code generator is not implemented yet"),
         "{}",
         stderr(&with)
     );

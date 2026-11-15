@@ -98,16 +98,23 @@ impl Compile {
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
         let preprocessed = self.preprocess(name, source)?;
-        diagnostics.extend(preprocessed.diagnostics);
+        diagnostics.extend(preprocessed.diagnostics.clone());
 
-        // M2 continues with function-like macros, conditionals and includes; M3 is the parser.
+        // Declarations and their types: the first slice of M3.
+        let parsed =
+            crate::parse::parse(&preprocessed, &self.options.budgets, self.options.standard);
+        let failed = parsed.has_errors();
+        diagnostics.extend(parsed.diagnostics);
+        if failed {
+            return Err(truncate_diagnostics(diagnostics, &self.options));
+        }
+
+        // M3 continues with statements and expressions; M4 generates code.
         diagnostics.push(
-            Diagnostic::error("the parser is not implemented yet")
+            Diagnostic::error("the code generator is not implemented yet")
                 .with_file(name)
                 .with_span(Span::at(0))
-                .with_note(
-                    "the preprocessor ran and found no errors; M3 adds the parser and types",
-                ),
+                .with_note("M3 adds statements and expressions; M4 generates code"),
         );
         Err(truncate_diagnostics(diagnostics, &self.options))
     }
@@ -152,16 +159,39 @@ mod tests {
     }
 
     #[test]
-    fn a_source_that_lexes_asks_for_the_preprocessor() {
+    fn declarations_are_read_and_the_code_generator_is_missing() {
         let mut compiler = Compile::new(Options::default());
         let errors = compiler
-            .compile("t.c", "int main(void) { return 0; }\n")
+            .compile(
+                "t.c", "int x;
+",
+            )
             .unwrap_err();
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].message, "the parser is not implemented yet");
+        assert_eq!(
+            errors[0].message,
+            "the code generator is not implemented yet"
+        );
         assert_eq!(errors[0].file.as_deref(), Some("t.c"));
         assert_eq!(errors[0].span, Some(Span::at(0)));
         assert_eq!(errors[0].notes.len(), 1);
+    }
+
+    #[test]
+    fn a_body_is_reported_before_the_missing_code_generator() {
+        let mut compiler = Compile::new(Options::default());
+        let errors = compiler
+            .compile(
+                "t.c",
+                "int main(void) { return 0; }
+",
+            )
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].message,
+            "function bodies are not implemented yet (M3.2)"
+        );
     }
 
     #[test]

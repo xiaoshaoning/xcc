@@ -74,8 +74,8 @@ compiler that spawns its own thread is a compiler that surprises its host, and 1
 host stack. Every limit is a field of `Budgets`, so a host can lower it per compilation, and
 exceeding one is a diagnostic that names the limit: `max_source_bytes` (8 MiB),
 `max_macro_expansion` (64), `max_tokens` (1 MiB worth of tokens), `max_include_depth` (32),
-`max_diagnostics` (100). A nesting limit for expressions and declarators arrives with the
-parser, which is the first thing that recurses on input.
+`max_diagnostics` (100), `max_nesting` (256) for declarators and expressions - the parser is the
+first thing that recurses on input, and the counter is in `parse.rs`.
 
 Two limits are not one: a doubling macro nests not at all, so a depth counter cannot bound it;
 the token budget is what stops that one. A thread

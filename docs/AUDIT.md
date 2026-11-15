@@ -32,6 +32,7 @@ An audit answers three questions:
 | date | milestone | corpus | TUs | compiled | refused | crashes | mismatches vs clang | found and fixed |
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-15 | M2 | `tests/corpus` | 426 | 38 (`#include`, no headers until M8) | 0 | 0 | 0 | 2 bugs, listed below |
+| 2026-11-15 | M3.1 | `tests/corpus` | 426 read | 0 parsed completely (every program has a body) | 426 refused with "not built yet" | 0 | n/a (no expressions yet) | 0 |
 | - | M3 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
 
 ### M2 - 2026-11-15 - `tests/corpus`, preprocessing only

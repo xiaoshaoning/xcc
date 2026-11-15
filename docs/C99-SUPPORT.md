@@ -48,9 +48,11 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `float`, `double` | `planned` |
 | `long double` | `planned`, and 64-bit by design: the same type as `double`, as MSVC has it on x86-64. 80-bit arithmetic is in the refusals below |
 | `_Complex`, `_Imaginary`, `_Decimal*` | `refused` |
-| pointers, arrays, functions, mixed declarators to any depth | `planned` |
-| `struct`, `union`, `enum`, bitfields, anonymous members (C11) | `planned` |
-| `typedef`, qualifiers (`const`, `volatile`, `restrict`), `inline` | `planned` - `restrict` is accepted and has no code-generation effect, which is conforming |
+| pointers, arrays, functions, declarations nested to any depth | `partial` (M3.1) - grouped declarators (`int (*fp)(int)`, `int (*a)[3]`) are refused until M3.3 |
+| `enum`, with constant enumerators | `sound` (M3.1) |
+| `struct`, `union`, bitfields, anonymous members (C11) | `planned` (M3.3) - refused with a diagnostic until then |
+| `typedef` | `sound` (M3.1) |
+| qualifiers (`const`, `volatile`, `restrict`), `inline` | `partial` - accepted and ignored, which is conforming for `restrict` and wrong for `const`; enforcing `const` arrives with the expression checker (M3.2) |
 | variably modified types, VLAs as parameters | `planned` - VLA objects are accepted, with a stack-growth check |
 | `_Alignas`, `_Alignof`, `_Static_assert`, `_Generic`, `_Atomic` (without `<stdatomic.h>`) | `planned` behind `--std=c11` |
 
@@ -61,7 +63,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | full C99 operator set and precedence, assignment operators, conditional, comma | `planned` |
 | casts, `sizeof`, `sizeof` a VLA, `offsetof` | `planned` |
 | compound literals, designated initialisers (nested, and the GNU `[a ... b]` form) | `planned` - the GNU range form accepted with a warning |
-| implicit conversions, usual arithmetic conversions, constant folding | `planned` |
+| constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1) |
+| implicit conversions, usual arithmetic conversions, folding of non-constant expressions | `planned` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | all statement forms, `goto`, labels, `break`/`continue` | `planned` |
 | initialisation of aggregates, static and automatic | `planned` |

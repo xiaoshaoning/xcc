@@ -114,11 +114,18 @@ Everything after this milestone depends on the API being right, so it comes befo
 - [ ] Acceptance: preprocesses every `.c` and header in borland-reborn's port corpus without
       crashing; token stream matches `clang -E` on the same files except Borland's extensions.
 
-## M3 - parser and types  (XL)
+## M3 - parser and types  (XL)  **in progress**: M3.1 declarations done
 
-- [ ] Declarations and declarators in full C order (pointers, arrays, functions, mixed to
-      arbitrary depth), `typedef`, `struct`/`union`/`enum`, bitfields, qualifiers, storage
-      classes, old-style parameter declarations.
+- [x] **M3.1**, declarations: types (an arena, structural identity, Win64 sizes), scopes and
+      shadowing, declarations and declarators (pointers, arrays, functions, all nesting),
+      `typedef`, `enum` with constant enumerators, constant expressions (arithmetic, `sizeof` a
+      type, enumeration constants, character constants), parameter scopes, and the nesting
+      budget. `struct`/`union`, grouped declarators and initialiser lists are refused with
+      "not implemented yet (M3.3)" - and a refused `typedef` still declares its name, with the
+      error type, so one refusal is one diagnostic and not a cascade down the file.
+- [ ] **M3.2**, statements and expressions: function bodies, the expression checker over
+      `cir`-shaped values, `sizeof` an expression, assignment compatibility.
+- [ ] **M3.3**, `struct`/`union`, bitfields, grouped declarators, initialiser lists.
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
 - [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,

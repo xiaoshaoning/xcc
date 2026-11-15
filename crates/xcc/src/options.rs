@@ -52,6 +52,9 @@ pub struct Budgets {
     pub max_tokens: usize,
     /// How deep `#include` may nest (CONSTRAINTS 5).
     pub max_include_depth: usize,
+    /// How deep declarators and expressions may nest: the parser is recursive descent, so a
+    /// limit on the input is a limit on the stack (CONSTRAINTS 5).
+    pub max_nesting: usize,
 }
 
 impl Default for Budgets {
@@ -62,6 +65,7 @@ impl Default for Budgets {
             max_macro_expansion: 64,
             max_tokens: 1 << 20,
             max_include_depth: 32,
+            max_nesting: 256,
         }
     }
 }
@@ -98,6 +102,7 @@ mod tests {
         assert_eq!(options.budgets.max_macro_expansion, 64);
         assert_eq!(options.budgets.max_tokens, 1 << 20);
         assert_eq!(options.budgets.max_include_depth, 32);
+        assert_eq!(options.budgets.max_nesting, 256);
         assert!(options.defines.is_empty() && options.undefines.is_empty());
         assert_eq!(options.stamp, None);
     }
