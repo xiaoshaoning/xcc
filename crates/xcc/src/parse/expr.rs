@@ -719,7 +719,6 @@ impl Parser<'_> {
         let Some(callee) = callee.cir else {
             return Value::new(result, None, false);
         };
-        self.not_lowered(span, "calls");
         let mut args = Vec::new();
         for (position, argument) in values.into_iter().enumerate() {
             // A variadic argument is promoted, not converted: C99 6.5.2.2p6.
@@ -954,12 +953,8 @@ impl Parser<'_> {
             Kind::Function => {
                 // A function name is its address (C99 6.3.2.1p4): the callee of a call, and a
                 // value that can be stored in a function pointer.
-                let (function, name, ty) = (entry.ty, name, entry.ty);
+                let (function, name) = (entry.ty, name);
                 let pointer = self.types.pointer(function);
-                // `cir` has the instruction, but the back end lowers a function address with
-                // the JIT's symbol table (M4.4); until then an address is refused, not lost.
-                let _ = ty;
-                self.not_lowered(span, "a function address");
                 match self.emit(|builder| builder.global_address(name, pointer, span)) {
                     Some(address) => Value {
                         ty: pointer,

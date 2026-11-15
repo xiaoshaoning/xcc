@@ -136,6 +136,38 @@ mod tests {
         assert_eq!(add(-7, 7), 0);
     }
 
+    /// A function calling another one in the same unit, through the address the emitter mints.
+    #[test]
+    fn one_function_calls_another() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int add(int a, int b) { return a + b; }
+int twice(int a) { return add(a, a); }",
+        )
+        .expect("it compiles");
+        let address = jit.function("twice").expect("the function is there");
+        let twice: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+        assert_eq!(twice(21), 42);
+    }
+
+    /// C code calling back into Rust: the point of `add_symbol`.
+    #[test]
+    fn compiled_code_calls_a_host_function() {
+        extern "C" fn host_double(value: i32) -> i32 {
+            value * 2
+        }
+        let mut jit = unsafe { Jit::with_symbols(&[("host_double", host_double as *const u8)]) }
+            .expect("a JIT");
+        jit.add_source(
+            "int host_double(int x);
+int twice(int x) { return host_double(x); }",
+        )
+        .expect("it compiles");
+        let address = jit.function("twice").expect("the function is there");
+        let twice: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+        assert_eq!(twice(21), 42);
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {

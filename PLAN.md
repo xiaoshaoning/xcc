@@ -187,8 +187,10 @@ The first thing worth showing, and the reason the project exists.
       whole. Three unit tests pin the IR text of `add`, of a loop, and of a refusal.
 - [ ] `back-cranelift`: one lowering from `cir`; integers `char`..`long long`, pointers, arrays,
       structs, unions, control flow, calls, globals, string literals, `switch`.
-- [ ] JIT: `Jit::new()`, `add_source(&str)`, `add_symbol(name, fn_ptr)`, `get_fn::<F>(name)`,
-      `remove`, and redefinition of a function by rebuilding the module.
+- [x] JIT: `Jit::new()`, `Jit::with_symbols` (unsafe: the addresses outlive the JIT),
+      `add_source(&str)`, `function(name) -> Option<*const u8>`. Calling one compiled function
+      from another works, and so does a C function calling back into Rust.
+- [ ] JIT: `remove`, and redefinition of a function by rebuilding the module.
 - [ ] `extern "C"` ABI on x86-64 Windows: shadow space, stack alignment, varargs, `__chkstk`.
 - [ ] Acceptance: from a string, `int add(int a, int b) { return a + b; }` is compiled and
       called as `extern "C" fn(i32, i32) -> i32` returning 5 for (2,3); a script calling back

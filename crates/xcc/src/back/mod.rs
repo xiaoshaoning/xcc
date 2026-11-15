@@ -211,6 +211,8 @@ impl<M: Module> Lowerer<'_, M> {
         }
 
         let mut values: HashMap<cir::Value, ClValue> = HashMap::new();
+        // The functions this body can call, by the value its address was minted as.
+        let mut callees: HashMap<cir::Value, ir::FuncRef> = HashMap::new();
         builder.switch_to_block(blocks[&func.entry]);
         for (position, param) in func.params().iter().enumerate() {
             let translated = blocks[&func.entry];
@@ -234,7 +236,7 @@ impl<M: Module> Lowerer<'_, M> {
                 builder.switch_to_block(blocks[&handle]);
             }
             for inst in &block.insts {
-                self.lower_inst(&mut builder, inst, &mut values)?;
+                self.lower_inst(&mut builder, func, inst, &mut values, &mut callees)?;
             }
             if let Some(term) = &block.term {
                 self.lower_term(&mut builder, term, &values, &blocks)?;
@@ -259,8 +261,10 @@ impl<M: Module> Lowerer<'_, M> {
     fn lower_inst(
         &mut self,
         builder: &mut FunctionBuilder<'_>,
+        func: &Func,
         inst: &Inst,
         values: &mut HashMap<cir::Value, ClValue>,
+        callees: &mut HashMap<cir::Value, ir::FuncRef>,
     ) -> Result<(), LoweringError> {
         let value = |values: &HashMap<cir::Value, ClValue>, v: cir::Value| {
             values
@@ -450,17 +454,51 @@ impl<M: Module> Lowerer<'_, M> {
                 args,
                 ..
             } => {
-                let _ = callee;
-                let _ = args;
-                let _ = result;
-                return Err(LoweringError(
-                    "calls are lowered when the JIT needs them (M4.4)".to_owned(),
-                ));
+                // The callee's address was minted by a `GlobalAddress` in this body; a call
+                // through a function *pointer* is M4.5's problem, and says so.
+                let target = callees.get(callee).copied().ok_or_else(|| {
+                    LoweringError("a call through a function pointer is not lowered yet".to_owned())
+                })?;
+                let args: Vec<ClValue> = args
+                    .iter()
+                    .map(|arg| value(values, *arg))
+                    .collect::<Result<_, _>>()?;
+                let call = builder.ins().call(target, &args);
+                if let Some(result) = result {
+                    let produced = builder.inst_results(call)[0];
+                    values.insert(*result, produced);
+                }
             }
-            Inst::GlobalAddress { .. } => {
-                return Err(LoweringError(
-                    "global addresses are lowered with globals (M5)".to_owned(),
-                ));
+            Inst::GlobalAddress { result, name, .. } => {
+                // The C type of the address says what the function's signature is, so the
+                // signature is read from the type rather than carried twice.
+                let pointer = func.value(*result).ty;
+                let function = self.types.pointee(pointer);
+                let (params, returns) = match self.types.kind(function) {
+                    Type::Function { result, params, .. } => (params.clone(), *result),
+                    _ => {
+                        return Err(LoweringError(
+                            "the address of something that is not a function".to_owned(),
+                        ))
+                    }
+                };
+                let mut signature = self.object.make_signature();
+                for param in &params {
+                    let ty = self.machine_type(*param)?;
+                    signature.params.push(AbiParam::new(ty));
+                }
+                if !matches!(self.types.kind(returns), Type::Void) {
+                    let ty = self.machine_type(returns)?;
+                    signature.returns.push(AbiParam::new(ty));
+                }
+                let name = self.names.resolve(*name).to_owned();
+                let id = self
+                    .object
+                    .declare_function(&name, Linkage::Import, &signature)?;
+                let target = self.object.declare_func_in_func(id, builder.func);
+                let address = builder.ins().func_addr(ir::types::I64, target);
+                values.insert(*result, address);
+                callees.insert(*result, target);
             }
         }
         Ok(())
