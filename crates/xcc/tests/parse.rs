@@ -167,6 +167,10 @@ fn constant_expressions_are_evaluated() {
     parses("int a[sizeof(int) * 4];");
     parses("enum { N = 4 };\nint a[N];");
     parses("int a['a' - 'A'];");
+    // Every escape C99 has, and a string literal is an array before it is a pointer.
+    parses(r"int a['\n' + '\x41' + '\101' + '\a'];");
+    parses("char s[] = \"ab\";");
+    parses("int a[sizeof \"abc\"];");
 }
 
 #[test]
@@ -271,6 +275,20 @@ fn switch_and_goto_mistakes_are_caught() {
         "no member `z`",
     );
     refuses("int a[2] = {[5] = 1};", "past the end");
+    refuses(
+        "int a = 'ab';",
+        "not a character constant this compiler reads",
+    );
+    refuses(
+        r"int a = '\q';",
+        "not a character constant this compiler reads",
+    );
+    refuses("char s[2] = \"abc\";", "cannot hold this 3-byte string");
+    refuses("int a[] = \"abc\";", "initialises an array of `char`");
+    refuses(
+        "int a = \"x\";",
+        "cannot initialise int with pointer to char",
+    );
 }
 
 #[test]
@@ -379,6 +397,10 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
         "gives a three-element array four initialisers",
     ),
     ("pp_badnestedinit.c", "gives a `[2][3]` array three rows"),
+    (
+        "pp_badarrinit2.c",
+        "puts a three-byte string in a two-byte array",
+    ),
     ("pp_dynwidth.c", "calls printf with no declaration"),
     ("pp_npercent.c", "calls printf with no declaration"),
     ("pp_pptr.c", "calls printf with no declaration"),

@@ -53,9 +53,10 @@ impl SourceFile {
         &self.text
     }
 
-    /// The length of the file in bytes.
-    pub fn len(&self) -> u32 {
-        self.text.len() as u32
+    /// The length of the file in bytes. `usize`, not the `u32` a span uses: a file long enough
+    /// to overflow that would otherwise pass a byte budget by wrapping round it.
+    pub fn len(&self) -> usize {
+        self.text.len()
     }
 
     /// Whether the file is empty.
@@ -65,7 +66,7 @@ impl SourceFile {
 
     /// The position of a byte offset. An offset past the end gives the end of the file.
     pub fn position(&self, offset: u32) -> Position {
-        let offset = offset.min(self.len());
+        let offset = (offset as usize).min(self.len()) as u32;
         let line = match self.line_starts.binary_search(&offset) {
             Ok(index) => index,
             Err(index) => index - 1,

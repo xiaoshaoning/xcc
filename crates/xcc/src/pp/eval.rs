@@ -143,45 +143,8 @@ fn split_suffix(text: &str) -> Option<(&str, String)> {
 }
 
 /// A character constant's value, for the escapes `#if` can meet.
-pub(super) fn character_constant(text: &str) -> Option<Value> {
-    let body = text.strip_prefix('L').unwrap_or(text);
-    let body = body.strip_prefix('\'')?.strip_suffix('\'')?;
-    let mut characters = body.chars();
-    let first = characters.next()?;
-    if characters.next().is_some() && !body.starts_with('\\') {
-        return None; // multi-character constant: not an integer constant expression we answer
-    }
-    let value = if first != '\\' {
-        first as u32
-    } else {
-        let escape = body.strip_prefix('\\')?;
-        match escape {
-            "n" => 10,
-            "t" => 9,
-            "r" => 13,
-            "0" => 0,
-            "a" => 7,
-            "b" => 8,
-            "f" => 12,
-            "v" => 11,
-            "\\" => 92,
-            "'" => 39,
-            "\"" => 34,
-            "?" => 63,
-            _ => {
-                if let Some(hex) = escape.strip_prefix('x') {
-                    u32::from_str_radix(hex, 16).ok()?
-                } else if escape.chars().all(|character| character.is_digit(8))
-                    && !escape.is_empty()
-                {
-                    u32::from_str_radix(escape, 8).ok()?
-                } else {
-                    return None;
-                }
-            }
-        }
-    };
-    Some(Value::signed(i64::from(value)))
+fn character_constant(text: &str) -> Option<Value> {
+    crate::literal::character_constant(text).map(Value::signed)
 }
 
 struct Parser<'a> {

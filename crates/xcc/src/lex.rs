@@ -167,12 +167,13 @@ impl Lexed {
     }
 }
 
-/// The punctuators, longest first so that `<<=` is not lexed as `<<` then `=`.
-const PUNCTUATORS: [&str; 55] = [
-    "%:%:", "<<=", ">>=", "...", "->*", "<:", ":>", "<%", "%>", "%:", "##", "&&", "||", "++", "--",
-    "->", "<<", ">>", "<=", ">=", "==", "!=", "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=", "[",
-    "]", "(", ")", "{", "}", ".", "&", "*", "+", "-", "~", "!", "/", "%", "<", ">", "^", "|", "?",
-    ":", ";", "=", ",", "#",
+/// The punctuators of C99 6.4.6, longest first so that `<<=` is not lexed as `<<` then `=`.
+/// `->*` is not here: it is C++'s, and a C lexer that invents it makes `p->*q` one token.
+const PUNCTUATORS: [&str; 54] = [
+    "%:%:", "<<=", ">>=", "...", "<:", ":>", "<%", "%>", "%:", "##", "&&", "||", "++", "--", "->",
+    "<<", ">>", "<=", ">=", "==", "!=", "+=", "-=", "*=", "/=", "%=", "&=", "^=", "|=", "[", "]",
+    "(", ")", "{", "}", ".", "&", "*", "+", "-", "~", "!", "/", "%", "<", ">", "^", "|", "?", ":",
+    ";", "=", ",", "#",
 ];
 
 /// Lex a prepared source, which the caller calls `file`, interning every spelling it meets.
@@ -269,7 +270,8 @@ impl Lexer<'_> {
         }
     }
 
-    fn identifier(&mut self) -> TokenKind {
+    /// Scan an identifier: a letter or `_`, then letters, digits and `_`.
+    fn identifier(&mut self) {
         while self
             .bytes
             .get(self.at)
@@ -277,12 +279,11 @@ impl Lexer<'_> {
         {
             self.at += 1;
         }
-        TokenKind::Ident
     }
 
     /// A pp-number: it starts a number and then takes almost anything, which is what lets the
     /// preprocessor carry `1e+5` and `0x1p-3` around without knowing C's arithmetic.
-    fn number(&mut self) -> TokenKind {
+    fn number(&mut self) {
         self.at += 1;
         while let Some(&byte) = self.bytes.get(self.at) {
             let continues = byte.is_ascii_alphanumeric()
@@ -298,7 +299,6 @@ impl Lexer<'_> {
             }
             self.at += 1;
         }
-        TokenKind::Number
     }
 
     fn string_literal(&mut self) -> TokenKind {
@@ -376,10 +376,14 @@ impl Lexer<'_> {
         self.lexed.tokens.push(Token { kind, text, span });
     }
 
-    /// Push the token that scanning has just passed, spelled as it is written.
+    /// Push the token that scanning has just passed, spelled as it is written. The spelling is
+    /// interned straight out of the prepared text: no `String` is made for a token that is
+    /// already in a buffer.
     fn push_scanned(&mut self, kind: TokenKind, start: usize) {
-        let text = self.prepared.text[start..self.at].to_owned();
-        self.push(kind, &text, start, self.at);
+        let prepared = self.prepared;
+        let text = self.interner.intern(&prepared.text[start..self.at]);
+        let span = self.span(start, self.at);
+        self.lexed.tokens.push(Token { kind, text, span });
     }
 
     /// A span in the original source: a spliced token covers from its first byte to its last.

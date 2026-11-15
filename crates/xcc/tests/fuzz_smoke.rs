@@ -39,12 +39,12 @@ fn random_text_positions_renders_and_spans_never_panic() {
 
         // every offset, including past the end, in both directions
         for offset in 0..file.len() + 3 {
-            let position = file.position(offset);
+            let position = file.position(offset as u32);
             assert!(position.line >= 1 && position.column >= 1);
             assert!(file.line(position.line).is_some());
         }
 
-        let start = rng.below(file.len() + 2);
+        let start = rng.below(file.len() as u32 + 2);
         let length = rng.below(64);
         let diagnostic = Diagnostic::error(format!("case {case}"))
             .with_file("fuzz.c")

@@ -117,7 +117,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         files: vec![FileEntry::new(source)],
         includes,
         budgets: &options.budgets,
-        stamp: options.stamp.as_ref(),
+        stamp: &options.stamp,
         interner: &mut interner,
         pending: VecDeque::new(),
         out: Vec::new(),
@@ -246,7 +246,7 @@ struct Preprocessor<'a> {
     files: Vec<FileEntry>,
     includes: &'a dyn Includes,
     budgets: &'a Budgets,
-    stamp: Option<&'a Stamp>,
+    stamp: &'a Stamp,
     interner: &'a mut Interner,
     /// The tokens still to look at, sources and expansions alike.
     pending: VecDeque<Raw>,
@@ -946,17 +946,8 @@ impl Preprocessor<'_> {
                 TokenKind::Number,
                 entry.logical_line(raw.token.span.start).to_string(),
             ),
-            "__DATE__" => (
-                TokenKind::Str,
-                quoted(
-                    self.stamp
-                        .map_or("Jan  1 1970", |stamp| stamp.date.as_str()),
-                ),
-            ),
-            "__TIME__" => (
-                TokenKind::Str,
-                quoted(self.stamp.map_or("00:00:00", |stamp| stamp.time.as_str())),
-            ),
+            "__DATE__" => (TokenKind::Str, quoted(&self.stamp.date)),
+            "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
             "__STDC__" => (TokenKind::Number, "1".to_owned()),
             "__STDC_VERSION__" => (TokenKind::Number, "199901L".to_owned()),
             "__STDC_HOSTED__" => (TokenKind::Number, "0".to_owned()),
@@ -2054,7 +2045,7 @@ yes
     #[test]
     fn date_and_time_come_from_the_options() {
         let options = Options {
-            stamp: Some(Stamp::new("Nov 15 2026", "12:34:56")),
+            stamp: Stamp::new("Nov 15 2026", "12:34:56"),
             ..Options::default()
         };
         let (spells, diagnostics) = run_options("__DATE__ __TIME__", &options, &());

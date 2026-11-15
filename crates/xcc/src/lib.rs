@@ -32,6 +32,7 @@ mod compile;
 mod diag;
 mod intern;
 mod lex;
+mod literal;
 mod options;
 mod parse;
 pub mod pp;

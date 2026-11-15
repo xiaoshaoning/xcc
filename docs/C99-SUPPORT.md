@@ -26,8 +26,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | comments, `//` and `/* */` | `sound` |
 | identifiers, keywords, punctuators, universal character names | `planned` |
 | integer constants (decimal, octal, hex, suffixes `u`/`l`/`ll` in any order) | `partial` - lexed as pp-numbers; classifying and evaluating them is M3 |
-| character constants, escapes, wide `L'x'` | `planned` - wide characters are `unsigned short`, as the target has no `wchar_t` of its own |
-| string literals and `L"x"` | `partial` - the lexer finds their ends; concatenation and escape decoding are M3 |
+| character constants, every escape C99 has (simple, octal, `\x`), wide `L'x'` | `sound` - a multi-character constant is refused rather than given an implementation-defined value; wide characters are `unsigned short`, as the target has no `wchar_t` of its own |
+| string literals and `L"x"` | `partial` - a literal has the `char[n]` type C gives it, adjacent literals concatenate, and its length counts escapes as the bytes they are; the bytes themselves are lowered at M4. A string too long for its array, or for an `int` array, is refused |
 | floating constants, all three forms | `partial` - lexed as pp-numbers; the value is M3 |
 | `#include` quoted and angled, `#pragma once`, include depth budget | `sound` (M2.4) - the host supplies the files through `Includes`; the compiler opens nothing itself |
 | `#include_next` | `refused` - a host concern (see the refusals below) |

@@ -37,6 +37,47 @@ An audit answers three questions:
 | 2026-11-15 | M3.3 | `tests/corpus` | 464 read | 387 parsed completely | 77 refused (`switch`, `goto`, designators) | 0 | n/a | 3 checker bugs, below |
 | - | M3.4 (planned) | `c-testsuite` and `tests/corpus` | - | - | - | - | - | - |
 
+### M3 exit - 2026-11-15 - a design review of the whole front end
+
+Not a corpus audit: a pass over every file the earlier review commits had not opened, against
+the design principles (deep modules, information hiding, red flags). The files were
+`intern.rs`, `lex.rs` and `source.rs` for the first time, `options.rs`, `symtab.rs`,
+`pp/eval.rs` and `render.rs` for the second. Nine findings, worst first, each fixed in the same
+commit as its neighbours:
+
+1. **Two escape tables that disagreed, and one of them lied.** The preprocessor knew the
+   simple, octal and hex forms; the parser knew seven escapes and answered `None` for the
+   rest, which its caller turned into **zero without a diagnostic**. `int x = '\x41'` was
+   therefore 0, not 65. The knowledge is one module now, `literal.rs`, and what it does not
+   read it refuses: `'ab'` and `'\q'` are errors, not zeros. A second bug fell out of writing
+   its test: a naive escape counter said `"\x41"` spells three bytes, so a `char` array was
+   given the wrong length.
+2. **A string literal was a `char *`, not a `char[n]`.** C gives a string literal an array type
+   (6.2.5p20), and the difference shows: `sizeof "abc"` was the size of a pointer, and
+   `char s[] = "ab" "cd"` counted only the first literal because concatenation threw the rest
+   away. It is an array value now, and one `string_literal` helper serves both the expression
+   and the initialiser, so `sizeof` and the array's length come from one place.
+3. **The epoch lived in three places** - `Stamp::epoch()`, and two `map_or` fallbacks in the
+   preprocessor - because `Options::stamp` was an `Option` for a value that has a sensible
+   default. `Stamp` implements `Default` as the epoch, `Options::stamp` is a `Stamp`, and the
+   two fallbacks are gone.
+4. **`Symbols` kept two stacks pushed and popped in lockstep** (`scopes`, `tags`), so the
+   invariant "a scope has both" was maintained by hand in four methods. One `Vec<Scope>`, where
+   `Scope` holds both maps.
+5. **`SourceFile::len` returned `u32`**, which truncates a file above 4 GiB - the number a byte
+   budget exists to compare. It returns `usize`, and the budget check compares like with like.
+6. **`->*` was in the punctuator table**: a C++ token in a C99 lexer, and one more string to
+   compare on every punctuator. Deleted; C99 6.4.6 has 54 punctuators, not 55.
+7. **The lexer made a `String` per token** only to hand it to the interner, which copies it
+   again. The spelling is interned straight out of the prepared text.
+8. **`Interner::len` and `is_empty` had no caller** outside their own tests. Deleted.
+9. **`identifier` and `number` returned a `TokenKind`** that was always the same one, which
+   their caller passed straight back. They return nothing now.
+
+`render.rs` and `pp/eval.rs` came through with no finding beyond (1); their structure holds.
+The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
+nor deliberately invalid.
+
 ### M3.4 - 2026-11-15 - the corpus, read to the end
 
 The parse gate went from 387 to **395 of 464**; the 69 that are not counted are the ones with

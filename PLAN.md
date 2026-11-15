@@ -145,6 +145,11 @@ Everything after this milestone depends on the API being right, so it comes befo
       cursor and let the list carry on from there (6.7.8p17). The parse gate went from 387 to
       **395 of 464**; every program the corpus can offer is now read, so nothing in it is
       refused for being unbuilt.
+- [x] **M3 exit**, a review of every file the earlier passes had not opened (`intern.rs`,
+      `lex.rs`, `source.rs`, and again `options.rs`, `symtab.rs`, `pp/eval.rs`, `render.rs`).
+      The gate reads **394 of the 394** corpus programs that are not `#include`d and not
+      deliberately invalid; the one refusal that changed is `char s[2] = "abc"`, which a
+      conforming compiler must refuse and which the list had not named yet.
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
 - [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,

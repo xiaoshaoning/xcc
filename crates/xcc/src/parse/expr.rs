@@ -664,23 +664,29 @@ impl Parser<'_> {
             }
             crate::lex::TokenKind::Chr => {
                 self.bump();
-                let value = character_constant(self.spell(&token)).map_or(0, |value| value);
-                Some(Value::constant(
-                    self.types.fundamental("int").unwrap(),
-                    value,
-                ))
+                let int = self.types.fundamental("int").unwrap();
+                // A constant this does not read is refused, not turned into zero.
+                match character_constant(self.spell(&token)) {
+                    Some(value) => Some(Value::constant(int, value)),
+                    None => {
+                        let spelling = self.spell(&token).to_owned();
+                        self.error(
+                            span,
+                            format!("`{spelling}` is not a character constant this compiler reads"),
+                        );
+                        Some(Value::temporary(int))
+                    }
+                }
             }
             crate::lex::TokenKind::Str => {
-                self.bump();
-                // Adjacent literals concatenate (C99 6.4.5p5); their bytes are M3.3's problem.
-                while self
-                    .peek()
-                    .is_some_and(|next| next.kind == crate::lex::TokenKind::Str)
-                {
-                    self.bump();
-                }
-                let char = self.types.fundamental("char").unwrap();
-                Some(Value::temporary(self.types.pointer(char)))
+                // A string literal has an array type of its own (C99 6.2.5p20), which is what
+                // makes `sizeof "abc"` four and lets an initialiser take its length.
+                let (ty, _) = self.string_literal();
+                Some(Value {
+                    ty,
+                    constant: None,
+                    lvalue: true,
+                })
             }
             crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
                 // `(int)x` is a cast; `(x)` groups.

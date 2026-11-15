@@ -39,6 +39,12 @@ impl Stamp {
     }
 }
 
+impl Default for Stamp {
+    fn default() -> Self {
+        Self::epoch()
+    }
+}
+
 /// Limits on one compilation, for hosts compiling code they did not write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Budgets {
@@ -85,8 +91,9 @@ pub struct Options {
     pub defines: Vec<String>,
     /// Macros undefined after those defines are installed.
     pub undefines: Vec<String>,
-    /// What `__DATE__` and `__TIME__` say; the epoch when unset.
-    pub stamp: Option<Stamp>,
+    /// What `__DATE__` and `__TIME__` say. The epoch by default, so a compilation that sets no
+    /// stamp is still deterministic - and nothing downstream has to decide what "unset" means.
+    pub stamp: Stamp,
 }
 
 #[cfg(test)]
@@ -104,7 +111,7 @@ mod tests {
         assert_eq!(options.budgets.max_include_depth, 32);
         assert_eq!(options.budgets.max_nesting, 256);
         assert!(options.defines.is_empty() && options.undefines.is_empty());
-        assert_eq!(options.stamp, None);
+        assert_eq!(options.stamp, Stamp::epoch());
     }
 
     #[test]

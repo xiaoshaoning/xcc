@@ -64,7 +64,7 @@ impl Compile {
     /// the parser: a host can run it on its own without asking for an object.
     pub fn preprocess(&self, name: &str, source: &str) -> Result<pp::Preprocessed, Diagnostics> {
         let file = SourceFile::new(name, source);
-        if file.len() as usize > self.options.budgets.max_source_bytes {
+        if file.len() > self.options.budgets.max_source_bytes {
             let error = Diagnostic::error(format!(
                 "`{name}` is {} bytes, more than the {} a single source may be",
                 file.len(),

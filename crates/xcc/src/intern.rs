@@ -53,16 +53,6 @@ impl Interner {
     pub fn resolve(&self, symbol: Symbol) -> &str {
         &self.names[symbol.0 as usize]
     }
-
-    /// How many names are known.
-    pub fn len(&self) -> usize {
-        self.names.len()
-    }
-
-    /// Whether no names are known.
-    pub fn is_empty(&self) -> bool {
-        self.names.is_empty()
-    }
 }
 
 #[cfg(test)]
@@ -79,7 +69,6 @@ mod tests {
             Symbol(0),
             "the same name, the same symbol"
         );
-        assert_eq!(interner.len(), 2);
         assert_eq!(interner.resolve(Symbol(1)), "a");
     }
 
@@ -98,6 +87,5 @@ mod tests {
         interner.intern("x");
         assert_eq!(interner.get("x"), Some(Symbol(0)));
         assert_eq!(interner.get("y"), None);
-        assert_eq!(interner.len(), 1);
     }
 }

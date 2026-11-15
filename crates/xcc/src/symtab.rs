@@ -38,56 +38,62 @@ pub(crate) struct Entry {
     pub span: Span,
 }
 
+/// One scope: the names declared in it, and the `struct`/`union` tags, which live in a
+/// namespace of their own because C lets a tag and a variable share a name.
+#[derive(Debug, Default)]
+struct Scope {
+    names: HashMap<Symbol, Entry>,
+    tags: HashMap<Symbol, TypeId>,
+}
+
 /// The scopes currently open, outermost first.
 #[derive(Debug)]
 pub(crate) struct Symbols {
-    scopes: Vec<HashMap<Symbol, Entry>>,
-    /// Struct and union tags, in their own namespace: C lets a tag and a variable share a
-    /// name, so they cannot share a table.
-    tags: Vec<HashMap<Symbol, TypeId>>,
+    scopes: Vec<Scope>,
 }
 
 impl Symbols {
     /// One file scope, and nothing else.
     pub fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
-            tags: vec![HashMap::new()],
+            scopes: vec![Scope::default()],
         }
     }
 
     /// Enter a block.
     pub fn push(&mut self) {
-        self.scopes.push(HashMap::new());
-        self.tags.push(HashMap::new());
+        self.scopes.push(Scope::default());
     }
 
     /// Leave a block, dropping its names and tags.
     pub fn pop(&mut self) {
         if self.scopes.len() > 1 {
             self.scopes.pop();
-            self.tags.pop();
         }
+    }
+
+    fn innermost(&mut self) -> &mut Scope {
+        self.scopes.last_mut().expect("a file scope always exists")
     }
 
     /// Declare a struct or union tag in the innermost scope.
     pub fn declare_tag(&mut self, name: Symbol, ty: TypeId) {
-        if let Some(tags) = self.tags.last_mut() {
-            tags.insert(name, ty);
-        }
+        self.innermost().tags.insert(name, ty);
     }
 
     /// The type a tag names, if this scope or an enclosing one has it.
     pub fn tag(&self, name: Symbol) -> Option<TypeId> {
-        self.tags
+        self.scopes
             .iter()
             .rev()
-            .find_map(|tags| tags.get(&name).copied())
+            .find_map(|scope| scope.tags.get(&name).copied())
     }
 
     /// The tag declared in the innermost scope only.
     pub fn tag_here(&self, name: Symbol) -> Option<TypeId> {
-        self.tags.last().and_then(|tags| tags.get(&name).copied())
+        self.scopes
+            .last()
+            .and_then(|scope| scope.tags.get(&name).copied())
     }
 
     /// Declare `name` in the innermost scope.
@@ -96,24 +102,27 @@ impl Symbols {
     /// an outer scope is legal C, redeclaring in the same one is not (for the kinds that exist
     /// so far).
     pub fn declare(&mut self, name: Symbol, entry: Entry) -> Result<(), Entry> {
-        let scope = self.scopes.last_mut().expect("a file scope always exists");
-        if let Some(previous) = scope.get(&name) {
+        let scope = self.innermost();
+        if let Some(previous) = scope.names.get(&name) {
             // A `typedef` and a variable of the same name are one mistake, not two.
             return Err(previous.clone());
         }
-        scope.insert(name, entry);
+        scope.names.insert(name, entry);
         Ok(())
     }
 
     /// The declaration of `name` in the innermost scope, if this scope has one: what a
     /// redeclaration has to be compared with.
     pub fn here(&self, name: Symbol) -> Option<&Entry> {
-        self.scopes.last().and_then(|scope| scope.get(&name))
+        self.scopes.last().and_then(|scope| scope.names.get(&name))
     }
 
     /// The innermost declaration of `name`.
     pub fn lookup(&self, name: Symbol) -> Option<&Entry> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(&name))
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.names.get(&name))
     }
 
     /// The type `name` was declared as a `typedef`, if it was.

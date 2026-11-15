@@ -29,6 +29,7 @@ use std::collections::HashMap;
 
 use crate::diag::{Diagnostic, Span};
 use crate::intern::Symbol;
+use crate::literal::{character_constant, string_length};
 use crate::options::Budgets;
 use crate::pp::{PpToken, Preprocessed};
 use crate::symtab::{Entry, Kind, Symbols};
@@ -357,6 +358,26 @@ impl Parser<'_> {
     }
 
     /// How a name from the symbol table is spelled.
+    /// A run of adjacent string literals: the type C gives them - `char[n]`, where `n` counts
+    /// the bytes and the NUL - and how many bytes they spell. Adjacent literals concatenate
+    /// (C99 6.4.5p5), so `"ab" "cd"` is one array of five.
+    fn string_literal(&mut self) -> (TypeId, u64) {
+        let mut bytes = 0u64;
+        while let Some(token) = self.peek().copied() {
+            if token.kind != crate::lex::TokenKind::Str {
+                break;
+            }
+            let spelling = self.spell(&token).to_owned();
+            self.bump();
+            bytes += string_length(&spelling);
+        }
+        let char = self
+            .types
+            .fundamental("char")
+            .unwrap_or_else(|| self.types.error());
+        (self.types.array(char, Some(bytes + 1)), bytes)
+    }
+
     /// How a type is written in a diagnostic, with its tags: `pointer to struct Point`. The
     /// parser has the names and the type arena does not, so this is where they meet.
     fn describe(&self, ty: TypeId) -> String {
@@ -940,28 +961,6 @@ struct DeclaratorTree {
     wrappers: Vec<Wrapper>,
 }
 
-/// How many bytes a string literal spells, not counting its quotes or the NUL.
-fn string_length(spelling: &str) -> u64 {
-    let body = spelling.strip_prefix('L').unwrap_or(spelling);
-    let body = body
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(body);
-    let mut bytes = 0u64;
-    let mut escaped = false;
-    for character in body.chars() {
-        if escaped {
-            escaped = false;
-            bytes += 1;
-        } else if character == '\\' {
-            escaped = true;
-        } else {
-            bytes += 1;
-        }
-    }
-    bytes
-}
-
 /// "1 argument", "2 arguments": the message reads as a sentence.
 fn arguments(count: usize) -> String {
     if count == 1 {
@@ -995,29 +994,4 @@ fn fold(operator: &str, left: i64, right: i64) -> Option<i64> {
         "||" => i64::from(left != 0 || right != 0),
         _ => return None,
     })
-}
-
-/// A character constant's value.
-fn character_constant(spelling: &str) -> Option<i64> {
-    let body = spelling.strip_prefix('L').unwrap_or(spelling);
-    let body = body.strip_prefix('\'')?.strip_suffix('\'')?;
-    let unescaped = match body {
-        "\\n" => 10,
-        "\\t" => 9,
-        "\\r" => 13,
-        "\\0" => 0,
-        "\\\\" => 92,
-        "\\'" => 39,
-        "\\\"" => 34,
-        "\\?" => 63,
-        _ => {
-            let mut characters = body.chars();
-            let first = characters.next()?;
-            if characters.next().is_some() {
-                return None; // multi-character constants are not answered
-            }
-            first as i64
-        }
-    };
-    Some(unescaped)
 }

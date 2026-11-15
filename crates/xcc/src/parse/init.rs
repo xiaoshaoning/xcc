@@ -19,16 +19,45 @@ impl Parser<'_> {
             return;
         };
         if token.kind == crate::lex::TokenKind::Str {
-            self.bump();
             // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
-            let spelling = self.spell(&token).to_owned();
-            let bytes = string_length(&spelling) + 1;
-            if matches!(self.types.kind(ty), Type::Array { count: None, .. }) {
-                self.types.complete_array(ty, bytes);
+            let span = self.span();
+            let (literal, bytes) = self.string_literal();
+            if let Type::Array { element, count } = *self.types.kind(ty) {
+                // C99 6.7.8p14: an array of character type, which `int` is not even though a
+                // `char` converts to one.
+                if !matches!(self.types.kind(element), Type::Int { bits: 8, .. }) {
+                    let element = self.describe(element);
+                    self.error(
+                        span,
+                        format!("a string literal initialises an array of `char`, not {element}"),
+                    );
+                    return;
+                }
+                match count {
+                    None => self.types.complete_array(ty, bytes + 1),
+                    Some(count) if count < bytes + 1 => {
+                        self.error(
+                            span,
+                            format!("a {count}-byte array cannot hold this {bytes}-byte string and its NUL"),
+                        );
+                    }
+                    Some(_) => {}
+                }
+                return;
+            }
+            // Anything else takes the literal as the `char *` it decays to.
+            let value = self.decay(Value {
+                ty: literal,
+                constant: None,
+                lvalue: true,
+            });
+            if !self.types.is_assignable(ty, value.ty) {
+                let (from, to) = (self.describe(value.ty), self.describe(ty));
+                self.error(span, format!("cannot initialise {to} with {from}"));
             }
             return;
         }
-        // A nested aggregate inside a brace list may be initialised without braces of its own
+
         // (C99 6.7.8p20): `int a[2][2] = {1,2,3,4}`.
         if !self.at_punct("{")
             && (self.types.record_of(ty).is_some()
