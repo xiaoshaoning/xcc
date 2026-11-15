@@ -1,0 +1,15 @@
+[package]
+name = "xcc-cli"
+description = "The xcc command line compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "xcc"
+path = "src/main.rs"
+
+[dependencies]
+xcc.workspace = true
+clap.workspace = true

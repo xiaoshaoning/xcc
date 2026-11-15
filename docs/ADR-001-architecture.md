@@ -43,10 +43,12 @@ job:
 | COFF objects, relocations | `object` |
 | instruction encoding, decoding, listings | `iced-x86` (as `--emit=asm`) |
 | code generation | `cranelift-codegen`, `cranelift-jit`, `cranelift-object` |
-| diagnostics with spans and carets | `miette` |
-| tests | `insta` snapshots, `proptest`, `cargo-fuzz`, `criterion` |
+| tests | `proptest`, `cargo-fuzz`, `criterion` |
 
 `unsafe` is confined to `jit/`, `capi/` and `bcc20-sys/`; the rest of the workspace forbids it.
+
+Rendering diagnostics is hand-written rather than delegated to `miette`: the three formats
+(`human`, `msvc`, `gcc`) are ours to print either way, and a caret renderer is forty lines.
 
 ## Decision 3: Cranelift
 
@@ -62,14 +64,24 @@ Chosen: Cranelift. Embedding wants compile-and-call latency, not a code generato
 a scripting host that cares about speed uses clang, not this. `long double` therefore means
 `f64` - which is what MSVC does for x86-64 in any case - and is documented rather than faked.
 
-## Decision 4: Windows x86-64 only
+## Decision 4: the language is C99
+
+C99 is the baseline: `long long`, declarations after statements, `for (int i...)`, `inline`,
+`restrict`, `//`, compound literals, designated initialisers, variably modified types,
+`<stdint.h>`, `__func__`. C11 pieces that hosts meet (`_Static_assert`, `_Generic`, `_Alignas`,
+anonymous members) are accepted behind `--std=c11`. Not C++: ever.
+
+A 16-bit compiler could not afford `long long`; this one gets it from the back end for nothing,
+which is one of the reasons for a new front end rather than a retarget.
+
+## Decision 5: Windows x86-64 only
 
 One target, the ABI made explicit (`abi/win64.rs`: shadow space, 16-byte stack alignment,
 varargs register/stack split, `__chkstk`), and no target abstraction until a second target
 exists. The middle end keeps `Layout` and `CallingConvention` behind traits so that adding a
 target stays a back-end job.
 
-## Decision 5: embedding shapes the API, not just the packaging
+## Decision 6: embedding shapes the API, not just the packaging
 
 Consequences that are cheapest to honour now and expensive later:
 
@@ -83,7 +95,7 @@ Consequences that are cheapest to honour now and expensive later:
   includes resolvable only through a host-provided resolver.
 - **A C API exists** (`libtcc`'s shape) so non-Rust hosts can embed it too.
 
-## Decision 6: `--target=dos16` stays, as a measuring stick
+## Decision 7: `--target=dos16` stays, as a measuring stick
 
 `libbcc20` exposes a clean C API, so a thin FFI crate can compile the same source with a 1991
 compiler and with this one, and print time, code size and diagnostics side by side. It is not

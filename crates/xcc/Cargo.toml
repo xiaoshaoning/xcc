@@ -1,0 +1,9 @@
+[package]
+name = "xcc"
+description = "A small, embeddable C compiler for Windows x86-64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]

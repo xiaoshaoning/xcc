@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/xcc", "crates/xcc-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+xcc = { path = "crates/xcc" }
+clap = { version = "4", features = ["derive"] }

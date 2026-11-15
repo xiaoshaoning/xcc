@@ -27,27 +27,27 @@ accordingly: milestones 2 to 4 are 70% of the effort of a usable compiler.
 - [x] Recorded in [docs/ADR-001-architecture.md](docs/ADR-001-architecture.md).
 - [ ] Name is provisional; rename before the first release.
 
-## M1 - skeleton, diagnostics, API shape  (S)
+## M1 - skeleton, diagnostics, API shape  (S)  **done**
 
 Everything after this milestone depends on the API being right, so it comes before the parser.
 
-- [ ] Cargo workspace: `xcc` (library) and `xcc-cli` (binary); no `unsafe` outside
-      `jit/`, `capi/` and `bcc20-sys/`.
-- [ ] `struct Compile` (per-compilation state, owned, `Send`), `Options`, `Diagnostic`
+- [x] Cargo workspace: `xcc` (library) and `xcc-cli` (binary); `#![deny(unsafe_code)]` in the
+      library, to be relaxed only in `jit/`, `capi/` and `bcc20-sys/`.
+- [x] `struct Compile` (per-compilation state, owned, `Send`), `Options`, `Diagnostic`
       (severity, message, file, span, notes) - text rendering is a separate step from
       producing them.
-- [ ] `miette` rendering with carets; `--format=msvc|gcc|human`.
-- [ ] Snapshot tests (`insta`) for diagnostics; a fuzz smoke test that feeds random bytes and
-      requires no panic.
-- [ ] CI on `windows-latest`: `fmt --check`, `clippy -D warnings`, `test`, `cargo-fuzz` smoke,
-      release build of `xcc-cli`.
-- [ ] Acceptance: `xcc-cli --version`, a deliberately broken source gives
-      `t.c(3,7): error: <message>` and exit code 1, and 10 000 fuzz inputs cause no panic.
+- [x] Rendering with carets, hand-written: `--format=human|msvc|gcc` (`miette` was considered
+      and is not needed - the three formats are ours to print anyway).
+- [x] Exact-string tests for the renderers and the source map; a fuzz smoke test that feeds
+      random bytes and requires no panic (2 000 inputs x every offset).
+- [x] CI on `windows-latest`: `fmt --check`, `clippy -D warnings`, `test`, release build.
+- [x] Acceptance: `xcc --version`, a deliberately broken source gives
+      `t.c(1,1): error: <message>` and exit code 1, and random input causes no panic.
 
 ## M2 - preprocessor  (L)
 
-- [ ] Lexer with byte spans; identifiers, string and char literals with escapes, numbers in
-      C89 forms plus `ll`/`ull` suffixes.
+- [ ] Lexer with byte spans; identifiers, string and char literals with escapes, numbers as
+      C99 has them plus `ll`/`ull` suffixes.
 - [ ] `#include` (quoted and angled, in-memory includes for embedding), `#define` with
       parameters, `#`/`##`, variadic macros, `#undef`, `#if`/`#ifdef`/`#elif`/`#else`/`#endif`
       with a real constant-expression evaluator, `defined`, `#line`, `#error`,
@@ -66,8 +66,11 @@ Everything after this milestone depends on the API being right, so it comes befo
       classes, old-style parameter declarations.
 - [ ] Statements and expressions with correct precedence, assignment operators, comma,
       conditional, casts, `sizeof`/`alignof`, compound literals, designated initialisers.
-- [ ] C99 syntax that costs nothing to accept: declarations after statements, `for (int i...)`,
-      `inline`, `restrict`, `//`, `long long`, `stdint.h`-style typedefs.
+- [ ] C99 as the baseline, not a bonus: declarations after statements, `for (int i...)`,
+      `inline`, `restrict`, `//`, `long long` and `unsigned long long`, compound literals,
+      designated initialisers, variably modified types, `<stdint.h>`-style typedefs, `__func__`.
+- [ ] C11 where a host meets it, behind `--std=c11`: `_Static_assert`, `_Generic`,
+      `_Alignas`/`_Alignof`/`alignas`, anonymous members.
 - [ ] Semantic analysis: scopes and shadowing, type compatibility, implicit conversions,
       lvalue rules, function prototypes against definitions, constant folding, `sizeof` and
       alignment, static initialisers, tentative definitions.
@@ -146,7 +149,7 @@ The reason `--target=dos16` stays. It is a measuring stick, not a product.
 
 - [ ] `crates/bcc20-sys`: bindgen-free hand-written FFI over `libbcc20`'s `bcc20.h`
       (compile a job from memory, get files back).
-- [ ] `xcc-cli --target=dos16 -c -ml -O -G t.c` compiles a C89 source with the ported
+- [ ] `xcc-cli --target=dos16 -c -ml -O -G t.c` compiles a source with the ported
       Borland compiler, when `libbcc20` is present.
 - [ ] A `compare` example that compiles the same files both ways and prints: time, code size,
       diagnostics. This is how PLAN's successor gets its numbers, and how the front end gets
@@ -190,9 +193,9 @@ docs/                      ADR, this plan
 ## First slice, ready to start
 
 M1, as one pull request: workspace, library skeleton with `Options`/`Diagnostic`/`Compile`, CLI
-with `--version`/`--help`/`--format`, `miette` rendering, three snapshot tests, one fuzz smoke
-test, CI job on `windows-latest`, `README` polish. Acceptance is M1's, and it does not touch a
-line of parsing, so it can be reviewed quickly.
+with `--version`/`--help`/`--format`, hand-written rendering, exact-string tests for each
+format, one fuzz smoke test, CI job on `windows-latest`, `README` polish. Acceptance is M1's,
+and it does not touch a line of parsing, so it can be reviewed quickly.
 
 After that, in order: M2, M3, M4 (JIT demo), M5 (hello.exe), M6, then M7 to M9 in whatever
 order users ask for.
