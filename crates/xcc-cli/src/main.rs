@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, ValueEnum};
 use xcc::{Compile, Options, SourceFile};
 
 #[derive(Parser, Debug)]
@@ -26,6 +26,18 @@ struct Args {
     /// How to print diagnostics.
     #[arg(long, value_enum, default_value_t = FormatArg::Human)]
     format: FormatArg,
+
+    /// Look for angled `#include`s here, as well as beside the including file.
+    #[arg(short = 'I', value_name = "DIR", action = ArgAction::Append)]
+    include_paths: Vec<PathBuf>,
+
+    /// Define a macro, as `NAME` or `NAME=VALUE`.
+    #[arg(short = 'D', value_name = "MACRO", action = ArgAction::Append)]
+    defines: Vec<String>,
+
+    /// Undefine a macro, after the `-D`s have been applied.
+    #[arg(short = 'U', value_name = "NAME", action = ArgAction::Append)]
+    undefines: Vec<String>,
 
     /// C source files.
     #[arg(value_name = "FILE", required = true)]
@@ -93,7 +105,15 @@ fn main() -> ExitCode {
         };
 
         let source = SourceFile::new(name.clone(), text.clone());
-        let mut compiler = Compile::new(Options::default());
+        let options = Options {
+            defines: args.defines.clone(),
+            undefines: args.undefines.clone(),
+            ..Options::default()
+        };
+        let includes = Box::new(Directories {
+            roots: args.include_paths.clone(),
+        });
+        let mut compiler = Compile::with_includes(options, includes);
         match compiler.compile(&name, &text) {
             Ok(artifact) => {
                 let path = args
@@ -119,6 +139,26 @@ fn main() -> ExitCode {
     }
 
     status
+}
+
+/// The files `#include` may read: the path as written, then under each `-I` directory.
+#[derive(Debug)]
+struct Directories {
+    roots: Vec<PathBuf>,
+}
+
+impl xcc::Includes for Directories {
+    fn read(&self, path: &str) -> Option<String> {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return Some(text);
+        }
+        for root in &self.roots {
+            if let Ok(text) = std::fs::read_to_string(root.join(path)) {
+                return Some(text);
+            }
+        }
+        None
+    }
 }
 
 /// Replace `@file` arguments with the words in that file, as a response file.

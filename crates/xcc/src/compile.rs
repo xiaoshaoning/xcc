@@ -3,7 +3,7 @@
 use crate::diag::{Diagnostic, Severity, Span};
 use crate::intern::Interner;
 use crate::options::Options;
-use crate::pp;
+use crate::pp::{self, Includes};
 use crate::source::SourceFile;
 
 /// What a successful compilation produced.
@@ -31,15 +31,27 @@ impl Artifact {
 /// may keep one around to compile many sources in turn. Nothing here touches a filesystem of
 /// its own accord: sources arrive as strings, and includes will be resolved through what the
 /// host gives the compiler (M2).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Compile {
     options: Options,
+    includes: Box<dyn Includes>,
 }
 
 impl Compile {
-    /// A compiler that will compile with `options`.
+    /// A compiler that will compile with `options`, and read no files of its own.
     pub fn new(options: Options) -> Self {
-        Self { options }
+        Self {
+            options,
+            includes: Box::new(()),
+        }
+    }
+
+    /// A compiler that reads `#include` through `includes`.
+    ///
+    /// The compiler itself never touches a filesystem: a host that wants includes gives it
+    /// something that can answer, which is also how an embedder keeps includes in memory.
+    pub fn with_includes(options: Options, includes: Box<dyn Includes>) -> Self {
+        Self { options, includes }
     }
 
     /// The options this compiler was made with.
@@ -73,7 +85,7 @@ impl Compile {
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
         let mut interner = Interner::new();
-        let preprocessed = pp::preprocess(&file, &self.options.budgets, &mut interner);
+        let preprocessed = pp::preprocess(&file, &self.options, &*self.includes, &mut interner);
         if preprocessed.has_errors() {
             diagnostics.extend(preprocessed.diagnostics);
             return Err(truncate_diagnostics(diagnostics, &self.options));

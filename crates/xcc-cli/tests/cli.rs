@@ -129,6 +129,72 @@ fn a_response_file_is_expanded() {
 }
 
 #[test]
+fn an_include_is_read_through_the_include_paths() {
+    let temp = Temp::new("include");
+    std::fs::create_dir_all(temp.path().join("include")).expect("a directory");
+    std::fs::write(
+        temp.path().join("include/a.h"),
+        "int from_header;
+",
+    )
+    .expect("a header");
+    let source = temp.write(
+        "t.c",
+        "#include <a.h>
+int from_source;
+",
+    );
+    let output = run(xcc()
+        .args(["-c", "-I"])
+        .arg(temp.path().join("include"))
+        .arg(&source));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("the parser is not implemented yet"),
+        "preprocessing should have succeeded: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_missing_include_says_which_one() {
+    let temp = Temp::new("noinclude");
+    let source = temp.write(
+        "t.c",
+        "#include \"nowhere.h\"
+",
+    );
+    let output = run(xcc().args(["-c"]).arg(&source));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("cannot find `nowhere.h`"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn defines_come_from_the_command_line() {
+    let temp = Temp::new("define");
+    let source = temp.write(
+        "t.c",
+        "#ifndef FLAG
+#error no flag
+#endif
+",
+    );
+    let without = run(xcc().args(["-c"]).arg(&source));
+    assert!(stderr(&without).contains("no flag"), "{}", stderr(&without));
+
+    let with = run(xcc().args(["-c", "-DFLAG"]).arg(&source));
+    assert!(
+        stderr(&with).contains("the parser is not implemented yet"),
+        "{}",
+        stderr(&with)
+    );
+}
+
+#[test]
 fn a_missing_response_file_says_so() {
     let temp = Temp::new("noresponse");
     let output = run(xcc().current_dir(temp.path()).arg("@nope.rsp"));

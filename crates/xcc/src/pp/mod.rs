@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::diag::{Diagnostic, Span};
 use crate::intern::{Interner, Symbol};
 use crate::lex::{self, Prepared, TokenKind};
-use crate::options::Budgets;
+use crate::options::{Budgets, Options, Stamp};
 use crate::source::SourceFile;
 
 /// One token after preprocessing.
@@ -28,8 +28,27 @@ pub struct PpToken {
     pub kind: TokenKind,
     /// How it is spelled.
     pub text: Symbol,
-    /// Its bytes in the original source.
+    /// Its bytes in the file it came from.
     pub span: Span,
+    /// Which file: an index into [`Preprocessed::files`].
+    pub file: u16,
+}
+
+/// Where included files come from.
+///
+/// The compiler reads nothing by itself: a host that wants `#include` gives it something that
+/// can answer, and a host that does not (an embedder compiling an in-memory script) leaves it
+/// out. Paths are the candidates the preprocessor worked out; returning `None` means "not here".
+pub trait Includes: std::fmt::Debug {
+    /// The text of the file at `path`, or `None` if this source does not have it.
+    fn read(&self, path: &str) -> Option<String>;
+}
+
+/// A source with no files of its own: what a compilation gets when the host gives nothing.
+impl Includes for () {
+    fn read(&self, _: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The tokens of a source, and whatever was wrong with it.
@@ -37,7 +56,10 @@ pub struct PpToken {
 pub struct Preprocessed {
     /// The tokens, ending with [`TokenKind::Eof`].
     pub tokens: Vec<PpToken>,
-    /// Errors and warnings, in source order.
+    /// The files the tokens came from, in the order they were first read: index 0 is the
+    /// source handed to [`preprocess`], the rest are what it included.
+    pub files: Vec<String>,
+    /// Errors and warnings, in the order they were found.
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -48,45 +70,79 @@ impl Preprocessed {
     }
 }
 
-/// Preprocess `source`, interning the spellings of everything it keeps.
-pub fn preprocess(source: &SourceFile, budgets: &Budgets, interner: &mut Interner) -> Preprocessed {
-    let prepared = Prepared::new(source.text());
-    let lexed = lex::lex(&prepared, source.name(), interner);
-    if lexed.has_errors() {
-        return Preprocessed {
-            tokens: Vec::new(),
-            diagnostics: lexed.diagnostics,
-        };
-    }
+/// Preprocess `source`, reading includes from `includes` and interning what it keeps.
+pub fn preprocess(
+    source: &SourceFile,
+    options: &Options,
+    includes: &dyn Includes,
+    interner: &mut Interner,
+) -> Preprocessed {
     let mut preprocessor = Preprocessor {
-        source,
-        budgets,
+        files: vec![FileEntry::new(source)],
+        includes,
+        budgets: &options.budgets,
+        stamp: options.stamp.as_ref(),
         interner,
-        pending: lexed
-            .tokens
-            .iter()
-            .map(|token| Raw {
-                token: PpToken {
-                    kind: token.kind,
-                    text: token.text,
-                    span: token.span,
-                },
-                hide: Vec::new(),
-                spliced: false,
-            })
-            .collect(),
+        pending: VecDeque::new(),
         out: Vec::new(),
         macros: HashMap::new(),
-        diagnostics: lexed.diagnostics,
+        diagnostics: Vec::new(),
         reported: HashSet::new(),
+        once: HashSet::new(),
+        current: 0,
+        depth: 0,
         last_line: 0,
         conditionals: Vec::new(),
-        depth: 0,
     };
+    preprocessor.read_root();
+    for definition in &options.defines {
+        preprocessor.install_define(definition);
+    }
+    for name in &options.undefines {
+        preprocessor.install_undefine(name);
+    }
     preprocessor.run();
     Preprocessed {
         tokens: preprocessor.out,
+        files: preprocessor
+            .files
+            .iter()
+            .map(|entry| entry.physical.clone())
+            .collect(),
         diagnostics: preprocessor.diagnostics,
+    }
+}
+
+/// One file being read: where its lines are, and what `#line` has made of them.
+#[derive(Debug)]
+struct FileEntry {
+    /// The path it was found at; index into [`Preprocessed::files`].
+    physical: String,
+    /// The name `__FILE__` reports: the include name as written, or what `#line` said.
+    logical: String,
+    /// The text, for positions.
+    source: SourceFile,
+    /// What `#line` added to the physical line numbers.
+    line_offset: i64,
+    /// The last line a token was seen on, so a `#` can be told from a `#` mid-expression.
+    last_line: u32,
+}
+
+impl FileEntry {
+    fn new(source: &SourceFile) -> Self {
+        Self {
+            physical: source.name().to_owned(),
+            logical: source.name().to_owned(),
+            source: source.clone(),
+            line_offset: 0,
+            last_line: 0,
+        }
+    }
+
+    /// The line number `__LINE__` reports for an offset in this file.
+    fn logical_line(&self, offset: u32) -> u32 {
+        let physical = i64::from(self.source.position(offset).line);
+        (physical + self.line_offset).max(1) as u32
     }
 }
 
@@ -144,8 +200,11 @@ struct Macro {
 }
 
 struct Preprocessor<'a> {
-    source: &'a SourceFile,
+    /// The files read so far: index 0 is the source, the rest are includes.
+    files: Vec<FileEntry>,
+    includes: &'a dyn Includes,
     budgets: &'a Budgets,
+    stamp: Option<&'a Stamp>,
     interner: &'a mut Interner,
     /// The tokens still to look at, sources and expansions alike.
     pending: VecDeque<Raw>,
@@ -154,25 +213,133 @@ struct Preprocessor<'a> {
     diagnostics: Vec<Diagnostic>,
     /// Directives whose "not implemented yet" has already been said, once each.
     reported: HashSet<&'static str>,
+    /// Files that said `#pragma once`.
+    once: HashSet<String>,
+    /// The file the token being read came from.
+    current: u16,
+    /// How many includes deep we are, for the budget.
+    depth: usize,
+    /// The line the previous source token was on, in the current file.
     last_line: u32,
     /// The conditionals being read, innermost last.
     conditionals: Vec<Conditional>,
-    /// How deep expansion is: prescanning an argument nests.
-    depth: usize,
 }
 
 impl Preprocessor<'_> {
+    /// Lex the source the host handed over.
+    fn read_root(&mut self) {
+        self.read_file(None);
+    }
+
+    /// Lex file `physical` (or the root when `None`) and put its tokens in front of the queue.
+    fn read_file(&mut self, include: Option<(String, String, String)>) {
+        let is_include = include.is_some();
+        let (physical, logical, text) = match include {
+            None => {
+                let root = &self.files[0];
+                (
+                    root.physical.clone(),
+                    root.logical.clone(),
+                    root.source.text().to_owned(),
+                )
+            }
+            Some(found) => found,
+        };
+        let source = SourceFile::new(physical.clone(), text);
+        let prepared = Prepared::new(source.text());
+        let lexed = lex::lex(&prepared, &physical, self.interner);
+        if lexed.has_errors() {
+            self.diagnostics.extend(lexed.diagnostics);
+            return;
+        }
+        let file = if is_include {
+            let id = self.files.len() as u16;
+            self.files.push(FileEntry {
+                physical,
+                logical,
+                source,
+                line_offset: 0,
+                last_line: 0,
+            });
+            id
+        } else {
+            0 // the source the host handed over is always file 0
+        };
+        let tokens: Vec<Raw> = lexed
+            .tokens
+            .iter()
+            .map(|token| Raw {
+                token: PpToken {
+                    kind: token.kind,
+                    text: token.text,
+                    span: token.span,
+                    file,
+                },
+                hide: Vec::new(),
+                spliced: false,
+            })
+            .collect();
+        for raw in tokens.into_iter().rev() {
+            self.pending.push_front(raw);
+        }
+    }
+
+    /// `#define NAME VALUE` from the command line, as if it were the first line.
+    fn install_define(&mut self, definition: &str) {
+        let text = format!("#define {}", definition.replacen('=', " ", 1));
+        let prepared = Prepared::new(&text);
+        let lexed = lex::lex(&prepared, "<command line>", self.interner);
+        let words: Vec<Raw> = lexed
+            .tokens
+            .iter()
+            .filter(|token| token.kind != TokenKind::Eof)
+            .map(|token| Raw {
+                token: PpToken {
+                    kind: token.kind,
+                    text: token.text,
+                    span: token.span,
+                    file: 0,
+                },
+                hide: Vec::new(),
+                spliced: false,
+            })
+            .collect();
+        match words.get(2) {
+            Some(name) => {
+                let span = name.token.span;
+                self.define(&words[2..], span);
+            }
+            None => {
+                let span = Span::default();
+                self.error(span, format!("`-D{definition}` does not name a macro"));
+            }
+        }
+    }
+
+    /// `-U NAME`: forget a macro the command line defined.
+    fn install_undefine(&mut self, name: &str) {
+        let symbol = self.interner.intern(name);
+        self.macros.remove(&symbol);
+    }
+
     fn run(&mut self) {
         while let Some(raw) = self.next() {
-            // The end of the file always reaches the parser, whatever group it is "in".
+            // The end of an included file leaves it; the end of the source reaches the parser.
             if raw.token.kind == TokenKind::Eof {
-                self.out.push(raw.token);
+                if raw.token.file == 0 {
+                    self.out.push(raw.token);
+                } else {
+                    self.depth = self.depth.saturating_sub(1);
+                }
                 continue;
             }
+            self.current = raw.token.file;
             if !raw.spliced {
-                let line = self.line(raw.token.span);
-                let at_line_start = line > self.last_line;
-                self.last_line = self.last_line.max(line);
+                let entry = &mut self.files[raw.token.file as usize];
+                let line = entry.source.position(raw.token.span.start).line;
+                let at_line_start = line > entry.last_line;
+                entry.last_line = entry.last_line.max(line);
+                self.last_line = line;
                 if at_line_start && self.is_punct(&raw.token, "#") {
                     self.directive(raw);
                     continue;
@@ -208,7 +375,6 @@ impl Preprocessor<'_> {
         }
     }
 
-    /// Everything the directive on this line does, having consumed the line.
     fn directive(&mut self, hash: Raw) {
         let line = self.line(hash.token.span);
         let mut words = Vec::new();
@@ -256,10 +422,9 @@ impl Preprocessor<'_> {
             "error" => self.message_directive(rest, span, true),
             "warning" => self.message_directive(rest, span, false),
             "pragma" => self.pragma(rest, span),
-            "include" | "include_next" => {
-                self.error(span, "`#include` is not implemented yet (M2.4)")
-            }
-            "line" => self.error(span, "`#line` is not implemented yet (M2.4)"),
+            "include" => self.include(rest, span),
+            "include_next" => self.error(span, "`#include_next` is not supported"),
+            "line" => self.line_directive(rest, span),
             other => self.error(span, format!("unknown directive `#{other}`")),
         }
     }
@@ -469,6 +634,7 @@ impl Preprocessor<'_> {
                     kind: TokenKind::Number,
                     text: zero,
                     span: raw.token.span,
+                    file: raw.token.file,
                 });
             } else {
                 tokens.push(raw.token);
@@ -528,9 +694,102 @@ impl Preprocessor<'_> {
                 kind: TokenKind::Number,
                 text,
                 span: token.span,
+                file: token.file,
             });
         }
         Some(out)
+    }
+
+    /// `#include "name"` and `#include <name>`, from the files the host allows.
+    fn include(&mut self, rest: &[Raw], span: Span) {
+        // A macro may name the file: expand first, then read the name out.
+        let expanded = self.expand_tokens(rest);
+        let Some((name, angled)) = self.include_name(&expanded, span) else {
+            return;
+        };
+        if self.depth + 1 > self.budgets.max_include_depth {
+            let limit = self.budgets.max_include_depth;
+            self.error(span, format!("`#include` is nested more than {limit} deep"));
+            return;
+        }
+
+        // Quoted names look beside the including file first; angled ones only where told.
+        let here = self.file().physical.clone();
+        let mut candidates = Vec::new();
+        if !angled {
+            if let Some(directory) = parent_of(&here) {
+                candidates.push(format!("{directory}/{name}"));
+            }
+        }
+        candidates.push(name.clone());
+
+        for candidate in candidates {
+            if self.once.contains(&candidate) {
+                return; // included before, and that file said `#pragma once`
+            }
+            if let Some(text) = self.includes.read(&candidate) {
+                let logical = name.clone();
+                self.depth += 1;
+                self.read_file(Some((candidate, logical, text)));
+                return;
+            }
+        }
+        self.error(span, format!("cannot find `{name}`"));
+    }
+
+    /// The file name an `#include` asks for, and whether it was written `<>` or `""`.
+    fn include_name(&mut self, expanded: &[Raw], span: Span) -> Option<(String, bool)> {
+        match expanded.first() {
+            Some(first) if first.token.kind == TokenKind::Str => {
+                let spelling = self.spell(first.token.text).to_owned();
+                let name = spelling
+                    .strip_prefix('"')
+                    .and_then(|rest| rest.strip_suffix('"'))
+                    .unwrap_or(&spelling)
+                    .to_owned();
+                Some((name, false))
+            }
+            Some(first) if self.is_punct(&first.token, "<") => {
+                let mut name = String::new();
+                for raw in expanded.iter().skip(1) {
+                    if self.is_punct(&raw.token, ">") {
+                        return Some((name, true));
+                    }
+                    name.push_str(self.spell(raw.token.text));
+                }
+                self.error(span, "expected `>` to end the file name");
+                None
+            }
+            _ => {
+                self.error(span, "expected \"name\" or <name> after `#include`");
+                None
+            }
+        }
+    }
+
+    /// `#line N ["file"]`: renumber what `__LINE__` and `__FILE__` report from here on.
+    fn line_directive(&mut self, rest: &[Raw], span: Span) {
+        let Some(first) = rest.first() else {
+            self.error(span, "expected a line number after `#line`");
+            return;
+        };
+        let spelling = self.spell(first.token.text).to_owned();
+        let Some(number) = eval::integer_literal(&spelling) else {
+            self.error(first.token.span, "expected a line number after `#line`");
+            return;
+        };
+        if let Some(next) = rest.get(1) {
+            if next.token.kind != TokenKind::Str {
+                let span = next.token.span;
+                self.error(span, "expected a file name in quotes after the line number");
+                return;
+            }
+            let spelling = self.spell(next.token.text).to_owned();
+            let name = spelling.trim_matches('"').to_owned();
+            self.files[self.current as usize].logical = name;
+        }
+        let physical = i64::from(self.file().source.position(span.start).line);
+        self.files[self.current as usize].line_offset = number.bits as i64 - (physical + 1);
     }
 
     fn undef(&mut self, rest: &[Raw]) {
@@ -572,7 +831,10 @@ impl Preprocessor<'_> {
 
     fn pragma(&mut self, rest: &[Raw], span: Span) {
         match rest.first() {
-            Some(once) if self.is_spelled(&once.token, "once") => {}
+            Some(once) if self.is_spelled(&once.token, "once") => {
+                let physical = self.file().physical.clone();
+                self.once.insert(physical);
+            }
             Some(known) => {
                 let name = self.spell(known.token.text).to_owned();
                 self.warning(span, format!("unknown `#pragma {name}` ignored"));
@@ -585,6 +847,9 @@ impl Preprocessor<'_> {
     fn expansion_of(&mut self, raw: &Raw) -> Option<Vec<Raw>> {
         if raw.token.kind != TokenKind::Ident || raw.hide.contains(&raw.token.text) {
             return None;
+        }
+        if let Some(predefined) = self.predefined(raw) {
+            return Some(predefined);
         }
         let definition = self.macros.get(&raw.token.text)?.clone();
         if self.depth >= self.budgets.max_macro_expansion {
@@ -623,6 +888,47 @@ impl Preprocessor<'_> {
             return None;
         }
         Some(self.substitute(&definition, params, &arguments, raw))
+    }
+
+    /// The macros the language defines itself: `__FILE__`, `__LINE__`, and the standard's.
+    fn predefined(&mut self, raw: &Raw) -> Option<Vec<Raw>> {
+        let spelling = self.spell(raw.token.text).to_owned();
+        let entry = &self.files[raw.token.file as usize];
+        let quoted =
+            |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+        let (kind, text) = match spelling.as_str() {
+            "__FILE__" => (TokenKind::Str, quoted(&entry.logical)),
+            "__LINE__" => (
+                TokenKind::Number,
+                entry.logical_line(raw.token.span.start).to_string(),
+            ),
+            "__DATE__" => (
+                TokenKind::Str,
+                quoted(
+                    self.stamp
+                        .map_or("Jan  1 1970", |stamp| stamp.date.as_str()),
+                ),
+            ),
+            "__TIME__" => (
+                TokenKind::Str,
+                quoted(self.stamp.map_or("00:00:00", |stamp| stamp.time.as_str())),
+            ),
+            "__STDC__" => (TokenKind::Number, "1".to_owned()),
+            "__STDC_VERSION__" => (TokenKind::Number, "199901L".to_owned()),
+            "__STDC_HOSTED__" => (TokenKind::Number, "0".to_owned()),
+            _ => return None,
+        };
+        let text = self.interner.intern(&text);
+        Some(vec![Raw {
+            token: PpToken {
+                kind,
+                text,
+                span: raw.token.span,
+                file: raw.token.file,
+            },
+            hide: Vec::new(),
+            spliced: true,
+        }])
     }
 
     fn object_like(&self, definition: &Macro, raw: &Raw) -> Vec<Raw> {
@@ -720,6 +1026,7 @@ impl Preprocessor<'_> {
                                 kind: TokenKind::Str,
                                 text,
                                 span: token.span,
+                                file: token.file,
                             },
                             hide: hide.clone(),
                             spliced: true,
@@ -833,13 +1140,14 @@ impl Preprocessor<'_> {
             right.token.span.end().saturating_sub(left.token.span.start),
         );
         let prepared = Prepared::new(&text);
-        let lexed = lex::lex(&prepared, self.source.name(), self.interner);
+        let lexed = lex::lex(&prepared, &self.file().physical.clone(), self.interner);
         match lexed.tokens.as_slice() {
             [token, eof] if !lexed.has_errors() && eof.kind == TokenKind::Eof => Raw {
                 token: PpToken {
                     kind: token.kind,
                     text: token.text,
                     span: spanned,
+                    file: left.token.file,
                 },
                 hide: left.hide.clone(),
                 spliced: true,
@@ -895,6 +1203,7 @@ impl Preprocessor<'_> {
                 kind: TokenKind::Punct,
                 text: self.interner.intern(","),
                 span,
+                file: self.current,
             };
             let mut joined = Vec::new();
             for (position, part) in arguments.iter().enumerate().skip(params.names.len()) {
@@ -975,8 +1284,12 @@ impl Preprocessor<'_> {
         self.pending.pop_front()
     }
 
+    fn file(&self) -> &FileEntry {
+        &self.files[self.current as usize]
+    }
+
     fn line(&self, span: Span) -> u32 {
-        self.source.position(span.start).line
+        self.file().source.position(span.start).line
     }
 
     fn is_punct(&self, token: &PpToken, spelling: &str) -> bool {
@@ -994,7 +1307,7 @@ impl Preprocessor<'_> {
     fn error(&mut self, span: Span, message: impl Into<String>) {
         self.diagnostics.push(
             Diagnostic::error(message)
-                .with_file(self.source.name())
+                .with_file(&self.file().physical)
                 .with_span(span),
         );
     }
@@ -1002,11 +1315,17 @@ impl Preprocessor<'_> {
     fn warning(&mut self, span: Span, message: impl Into<String>) {
         self.diagnostics.push(
             Diagnostic::warning(message)
-                .with_file(self.source.name())
+                .with_file(&self.file().physical)
                 .with_span(span),
         );
     }
 }
+/// The directory part of a path, whichever separator it uses.
+fn parent_of(path: &str) -> Option<&str> {
+    let cut = path.rfind(['/', '\\'])?;
+    Some(&path[..cut])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1017,9 +1336,21 @@ mod tests {
     }
 
     fn run_with(source: &str, budgets: &Budgets) -> (Vec<String>, Vec<Diagnostic>) {
+        let options = Options {
+            budgets: budgets.clone(),
+            ..Options::default()
+        };
+        run_options(source, &options, &())
+    }
+
+    fn run_options(
+        source: &str,
+        options: &Options,
+        includes: &dyn Includes,
+    ) -> (Vec<String>, Vec<Diagnostic>) {
         let file = SourceFile::new("t.c", source);
         let mut interner = Interner::new();
-        let preprocessed = preprocess(&file, budgets, &mut interner);
+        let preprocessed = preprocess(&file, options, includes, &mut interner);
         let spells = preprocessed
             .tokens
             .iter()
@@ -1236,11 +1567,15 @@ mod tests {
     // ---- directives -------------------------------------------------------------
 
     #[test]
-    fn directives_that_are_not_implemented_are_errors() {
-        assert!(diagnostics("#include <stdio.h>")[0]
-            .message
-            .contains("M2.4"));
-        assert!(diagnostics("#line 20\n")[0].message.contains("M2.4"));
+    fn directives_that_are_refused_are_errors() {
+        assert_eq!(
+            diagnostics(
+                "#include_next <stdio.h>
+"
+            )[0]
+            .message,
+            "`#include_next` is not supported"
+        );
     }
 
     // ---- conditionals -----------------------------------------------------------
@@ -1469,7 +1804,7 @@ mod tests {
         let source = "#define N 3\nint x = N;\n";
         let file = SourceFile::new("t.c", source);
         let mut interner = Interner::new();
-        let preprocessed = preprocess(&file, &Budgets::default(), &mut interner);
+        let preprocessed = preprocess(&file, &Options::default(), &(), &mut interner);
         let three = preprocessed
             .tokens
             .iter()
@@ -1480,5 +1815,197 @@ mod tests {
             "3",
             "the span is the body's"
         );
+    }
+    // ---- includes ---------------------------------------------------------------
+
+    /// Files a test lets the preprocessor read.
+    #[derive(Debug, Default)]
+    struct Map(std::collections::HashMap<String, String>);
+
+    impl Map {
+        fn new(files: &[(&str, &str)]) -> Self {
+            Self(
+                files
+                    .iter()
+                    .map(|(name, text)| ((*name).to_owned(), (*text).to_owned()))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Includes for Map {
+        fn read(&self, path: &str) -> Option<String> {
+            self.0.get(path).cloned()
+        }
+    }
+
+    fn with_includes(source: &str, files: &[(&str, &str)]) -> (Vec<String>, Vec<Diagnostic>) {
+        run_options(source, &Options::default(), &Map::new(files))
+    }
+
+    #[test]
+    fn a_quoted_include_is_read() {
+        let (spells, diagnostics) = with_includes("#include \"b.h\"\nhere", &[("b.h", "there\n")]);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["there", "here", ""]);
+    }
+
+    #[test]
+    fn an_angled_include_is_read() {
+        let (spells, diagnostics) = with_includes("#include <b.h>\nhere", &[("b.h", "there\n")]);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["there", "here", ""]);
+    }
+
+    #[test]
+    fn a_missing_include_says_which_one() {
+        let errors = with_includes("#include \"nowhere.h\"\n", &[]).1;
+        assert_eq!(errors[0].message, "cannot find `nowhere.h`");
+    }
+
+    #[test]
+    fn an_include_beside_the_including_file_wins() {
+        // `sub/a.h` includes "b.h": the file next to it is preferred to the bare name
+        let files = [("sub/b.h", "beside\n"), ("b.h", "elsewhere\n")];
+        let source = "#include \"sub/a.h\"\n";
+        let (spells, diagnostics) = with_includes(
+            source,
+            &[("sub/a.h", "#include \"b.h\"\n"), files[0], files[1]],
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["beside", ""]);
+    }
+
+    #[test]
+    fn includes_nest_to_the_budget() {
+        let source = "#include \"a.h\"\n";
+        let files = [("a.h", "#include \"b.h\"\n"), ("b.h", "deep\n")];
+        let (spells, diagnostics) = with_includes(source, &files);
+        assert!(diagnostics.is_empty());
+        assert_eq!(spells, ["deep", ""]);
+
+        let options = Options {
+            budgets: Budgets {
+                max_include_depth: 1,
+                ..Budgets::default()
+            },
+            ..Options::default()
+        };
+        let (_, diagnostics) = run_options(source, &options, &Map::new(&files));
+        assert_eq!(
+            diagnostics[0].message,
+            "`#include` is nested more than 1 deep"
+        );
+    }
+
+    #[test]
+    fn pragma_once_reads_a_file_once() {
+        let source = "#include \"a.h\"\n#include \"a.h\"\n";
+        let files = [("a.h", "#pragma once\nonce\n")];
+        let (spells, diagnostics) = with_includes(source, &files);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["once", ""]);
+    }
+
+    #[test]
+    fn an_include_guard_works_without_pragma_once() {
+        let guard = "#ifndef A_H\n#define A_H\nguarded\n#endif\n";
+        let files = [("a.h", guard)];
+        let (spells, diagnostics) = with_includes("#include \"a.h\"\n#include \"a.h\"\n", &files);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["guarded", ""]);
+    }
+
+    #[test]
+    fn included_tokens_say_which_file_they_came_from() {
+        let file = SourceFile::new("t.c", "#include \"b.h\"\nx\n");
+        let mut interner = Interner::new();
+        let preprocessed = preprocess(
+            &file,
+            &Options::default(),
+            &Map::new(&[("b.h", "y\n")]),
+            &mut interner,
+        );
+        assert_eq!(preprocessed.files, ["t.c", "b.h"]);
+        let y = preprocessed
+            .tokens
+            .iter()
+            .find(|token| interner.resolve(token.text) == "y")
+            .expect("the included token");
+        assert_eq!(y.file, 1);
+    }
+
+    // ---- what the command line defines ------------------------------------------
+
+    #[test]
+    fn options_defines_and_undefines_are_installed_first() {
+        let options = Options {
+            defines: vec!["N=3".to_owned(), "FLAG".to_owned(), "GONE=1".to_owned()],
+            undefines: vec!["GONE".to_owned()],
+            ..Options::default()
+        };
+        let (spells, diagnostics) = run_options(
+            "#ifdef FLAG\nint n = N;\n#endif\n#ifdef GONE\ngone\n#endif",
+            &options,
+            &(),
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["int", "n", "=", "3", ";", ""]);
+    }
+
+    // ---- the macros the language defines itself ---------------------------------
+
+    #[test]
+    fn file_and_line_say_where_they_are() {
+        let (spells, diagnostics) = run_options("__LINE__\n__LINE__", &Options::default(), &());
+        assert!(diagnostics.is_empty());
+        assert_eq!(spells, ["1", "2", ""]);
+
+        let source = SourceFile::new("dir/t.c", "__FILE__\n");
+        let mut interner = Interner::new();
+        let preprocessed = preprocess(source_ref(&source), &Options::default(), &(), &mut interner);
+        let first = &preprocessed.tokens[0];
+        assert_eq!(interner.resolve(first.text), "\"dir/t.c\"");
+    }
+
+    fn source_ref(source: &SourceFile) -> &SourceFile {
+        source
+    }
+
+    #[test]
+    fn date_and_time_come_from_the_options() {
+        let options = Options {
+            stamp: Some(Stamp::new("Nov 15 2026", "12:34:56")),
+            ..Options::default()
+        };
+        let (spells, diagnostics) = run_options("__DATE__ __TIME__", &options, &());
+        assert!(diagnostics.is_empty());
+        assert_eq!(spells, ["\"Nov 15 2026\"", "\"12:34:56\"", ""]);
+
+        let (spells, _) = run_options("__DATE__", &Options::default(), &());
+        assert_eq!(spells, ["\"Jan  1 1970\"", ""], "no clock is ever read");
+    }
+
+    #[test]
+    fn the_standard_macros_are_defined() {
+        let (spells, _) = run_options(
+            "__STDC__ __STDC_VERSION__ __STDC_HOSTED__",
+            &Options::default(),
+            &(),
+        );
+        assert_eq!(spells, ["1", "199901L", "0", ""]);
+    }
+
+    // ---- #line ------------------------------------------------------------------
+
+    #[test]
+    fn line_directive_renumbers_what_follows() {
+        let (spells, diagnostics) = run_options(
+            "#line 100\n__LINE__\n__LINE__\n#line 7 \"other.c\"\n__LINE__ __FILE__",
+            &Options::default(),
+            &(),
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spells, ["100", "101", "7", "\"other.c\"", ""]);
     }
 }

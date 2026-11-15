@@ -96,8 +96,13 @@ Everything after this milestone depends on the API being right, so it comes befo
       short-circuit `&&`/`||` (so `#if 0 && 1/0` is not an error), and division by zero or
       signed overflow diagnosed. A skipped group is not read: no definitions leak, no errors
       fire, and a nested `#if` inside it is not evaluated.
-- [ ] `#include` (quoted and angled, in-memory includes for embedding), `__FILE__`, `__LINE__`,
-      `__DATE__`/`__TIME__` (deterministic, from `Options`), and `#line` with it (M2.4).
+- [x] `#include` quoted and angled through a host-supplied `Includes` (so an embedder's
+      includes stay in memory and the compiler opens nothing), `#pragma once`, the include
+      depth budget, `__FILE__`/`__LINE__`/`__DATE__`/`__TIME__`/`__STDC__`/`__STDC_VERSION__`/
+      `__STDC_HOSTED__` (date and time from `Options::stamp`, never a clock), `#line` for
+      `__LINE__`/`__FILE__`, and `-I`/`-D`/`-U` in the CLI.
+- [ ] The M2 gate: token streams identical to `clang -E` over the freestanding corpus, and a
+      `--depfile` that lists what was read.
 - [ ] `-I`, `-D`, `-U`, `--depfile`, `<...>` search that never escapes the configured roots
       (embedding hosts compile untrusted scripts).
 - [ ] Limits: include depth, macro expansion depth, total source and output size.
