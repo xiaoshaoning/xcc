@@ -6,7 +6,7 @@ members = ["crates/xcc", "crates/xcc-cli"]
 version = "0.0.1"
 edition = "2021"
 license = "MIT"
-rust-version = "1.75"
+rust-version = "1.82"
 
 [workspace.dependencies]
 xcc = { path = "crates/xcc" }

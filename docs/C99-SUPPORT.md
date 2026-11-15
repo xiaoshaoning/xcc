@@ -33,9 +33,9 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `#include_next` | `refused` - a host concern (see the refusals below) |
 | `#define` object-like, `#undef`, redefinition checking | `sound` (M2.1) |
 | `#define` function-like, `#`/`##`, variadic `...`/`__VA_ARGS__`, argument prescan and rescan | `sound` (M2.2), with the C rules that have observable consequences: an argument is expanded unless it is stringified or pasted, `##` produces one token or a diagnostic, and a macro never expands inside its own expansion |
-| `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, full constant expressions | `planned` |
+| `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, integer constant expressions | `sound` (M2.3) - `intmax_t`/`uintmax_t` arithmetic, `&&`/`||` short-circuit so `#if 0 && 1/0` is not an error, and division by zero or signed overflow diagnosed rather than produced |
 | `#error`, `#warning` | `sound` - the rest of the line is the message |
-| `#line` | `planned` (M2.3) |
+| `#line` | `planned` (M2.4, with `__LINE__`: reporting a line the source does not have needs the diagnostic model to carry an override) |
 | `#pragma once`, unknown `#pragma` ignored with a warning | `sound` for the directive itself; `once` matters at M2.4 |
 | `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__` | `planned` - the clock comes from `Options`, so output stays reproducible |
 | `#pragma pack`, `#pragma comment` | `refused` - a diagnostic, not a silent misparse |

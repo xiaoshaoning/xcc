@@ -91,10 +91,13 @@ Everything after this milestone depends on the API being right, so it comes befo
       rescanning after substitution, and the blue-paint rule that stops a macro expanding
       inside itself. Both budgets it needs are enforced and tested: nesting depth, and total
       tokens produced (a doubling macro nests not at all, so depth cannot bound it).
-- [ ] `#if`/`#ifdef`/`#elif`/`#else`/`#endif` with a real constant-expression evaluator,
-      `defined`, `#line` (M2.3).
+- [x] `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `defined`, and an integer
+      constant-expression evaluator in `intmax_t`/`uintmax_t` semantics: C precedence, `?:`,
+      short-circuit `&&`/`||` (so `#if 0 && 1/0` is not an error), and division by zero or
+      signed overflow diagnosed. A skipped group is not read: no definitions leak, no errors
+      fire, and a nested `#if` inside it is not evaluated.
 - [ ] `#include` (quoted and angled, in-memory includes for embedding), `__FILE__`, `__LINE__`,
-      `__DATE__`/`__TIME__` (deterministic, from `Options`) (M2.4).
+      `__DATE__`/`__TIME__` (deterministic, from `Options`), and `#line` with it (M2.4).
 - [ ] `-I`, `-D`, `-U`, `--depfile`, `<...>` search that never escapes the configured roots
       (embedding hosts compile untrusted scripts).
 - [ ] Limits: include depth, macro expansion depth, total source and output size.

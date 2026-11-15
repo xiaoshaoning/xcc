@@ -11,6 +11,8 @@
 //! The output is a flat token vector: what the parser gets, with every spelling interned and
 //! every span pointing into the original source.
 
+mod eval;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::diag::{Diagnostic, Span};
@@ -78,6 +80,7 @@ pub fn preprocess(source: &SourceFile, budgets: &Budgets, interner: &mut Interne
         diagnostics: lexed.diagnostics,
         reported: HashSet::new(),
         last_line: 0,
+        conditionals: Vec::new(),
         depth: 0,
     };
     preprocessor.run();
@@ -107,6 +110,32 @@ struct Params {
     variadic: bool,
 }
 
+/// Which form opened a conditional.
+#[derive(Debug, Clone, Copy)]
+enum Branch {
+    /// `#if expression`.
+    If,
+    /// `#ifdef name`.
+    Ifdef,
+    /// `#ifndef name`.
+    Ifndef,
+}
+
+/// One `#if` and the groups below it, while they are being read.
+#[derive(Debug, Clone, Copy)]
+struct Conditional {
+    /// Whether this group's tokens are kept.
+    active: bool,
+    /// Whether some group of this chain has been taken, so no other may be.
+    taken: bool,
+    /// Whether the region around this chain was active: a skip stays a skip.
+    parent_active: bool,
+    /// Whether `#else` has been seen, after which `#elif` is an error.
+    seen_else: bool,
+    /// Where the `#if` was, for the diagnostic about it never being closed.
+    span: Span,
+}
+
 /// A macro definition: its parameters (none for an object-like macro) and its body.
 #[derive(Debug, Clone)]
 struct Macro {
@@ -126,6 +155,8 @@ struct Preprocessor<'a> {
     /// Directives whose "not implemented yet" has already been said, once each.
     reported: HashSet<&'static str>,
     last_line: u32,
+    /// The conditionals being read, innermost last.
+    conditionals: Vec<Conditional>,
     /// How deep expansion is: prescanning an argument nests.
     depth: usize,
 }
@@ -133,6 +164,11 @@ struct Preprocessor<'a> {
 impl Preprocessor<'_> {
     fn run(&mut self) {
         while let Some(raw) = self.next() {
+            // The end of the file always reaches the parser, whatever group it is "in".
+            if raw.token.kind == TokenKind::Eof {
+                self.out.push(raw.token);
+                continue;
+            }
             if !raw.spliced {
                 let line = self.line(raw.token.span);
                 let at_line_start = line > self.last_line;
@@ -142,8 +178,22 @@ impl Preprocessor<'_> {
                     continue;
                 }
             }
+            if !self.active() {
+                continue;
+            }
             self.emit(raw);
         }
+        if let Some(open) = self.conditionals.first() {
+            let span = open.span;
+            self.error(span, "`#if` is never closed by `#endif`");
+        }
+    }
+
+    /// Whether the tokens being read are in a group that is kept.
+    fn active(&self) -> bool {
+        self.conditionals
+            .last()
+            .is_none_or(|conditional| conditional.active)
     }
 
     /// Keep a token, or splice what it expands to in front of the tokens still to come.
@@ -163,7 +213,7 @@ impl Preprocessor<'_> {
         let line = self.line(hash.token.span);
         let mut words = Vec::new();
         while let Some(next) = self.peek() {
-            if self.line(next.token.span) != line {
+            if next.token.kind == TokenKind::Eof || self.line(next.token.span) != line {
                 break;
             }
             words.push(self.next().expect("peeked and present"));
@@ -181,6 +231,25 @@ impl Preprocessor<'_> {
         let span = name.token.span;
         let rest = &words[1..];
 
+        // Conditionals are read whatever the state: the `#else` that ends a skip is one.
+        match name_text.as_str() {
+            "if" => return self.open_conditional(rest, span, Branch::If),
+            "ifdef" => return self.open_conditional(rest, span, Branch::Ifdef),
+            "ifndef" => return self.open_conditional(rest, span, Branch::Ifndef),
+            "elif" => return self.elif(rest, span),
+            "else" => return self.else_group(span),
+            "endif" => {
+                if self.conditionals.pop().is_none() {
+                    self.error(span, "`#endif` without `#if`");
+                }
+                return;
+            }
+            _ => {}
+        }
+        if !self.active() {
+            return; // inside a skipped group: no definitions, no errors, no includes
+        }
+
         match name_text.as_str() {
             "define" => self.define(rest, span),
             "undef" => self.undef(rest),
@@ -190,15 +259,7 @@ impl Preprocessor<'_> {
             "include" | "include_next" => {
                 self.error(span, "`#include` is not implemented yet (M2.4)")
             }
-            "if" | "ifdef" | "ifndef" | "elif" | "else" | "endif" => {
-                if self.reported.insert("conditional") {
-                    self.error(
-                        span,
-                        "conditional compilation is not implemented yet (M2.3)",
-                    );
-                }
-            }
-            "line" => self.error(span, "`#line` is not implemented yet (M2.3)"),
+            "line" => self.error(span, "`#line` is not implemented yet (M2.4)"),
             other => self.error(span, format!("unknown directive `#{other}`")),
         }
     }
@@ -308,6 +369,168 @@ impl Preprocessor<'_> {
                 }
             }
         }
+    }
+
+    fn open_conditional(&mut self, rest: &[Raw], span: Span, branch: Branch) {
+        let parent_active = self.active();
+        let condition = if parent_active {
+            match branch {
+                Branch::If => self.condition(rest, span),
+                Branch::Ifdef => self.defined(rest, span, true),
+                Branch::Ifndef => self.defined(rest, span, false),
+            }
+        } else {
+            // Nothing to decide: the whole chain sits inside a group that is already skipped,
+            // and its expression may name macros that do not exist there.
+            false
+        };
+        self.conditionals.push(Conditional {
+            active: parent_active && condition,
+            taken: condition,
+            parent_active,
+            seen_else: false,
+            span,
+        });
+    }
+
+    fn elif(&mut self, rest: &[Raw], span: Span) {
+        let Some(top) = self.conditionals.last() else {
+            self.error(span, "`#elif` without `#if`");
+            return;
+        };
+        let (parent_active, taken, seen_else) = (top.parent_active, top.taken, top.seen_else);
+        if seen_else {
+            self.error(span, "`#elif` after `#else`");
+            return;
+        }
+        let condition = parent_active && !taken && self.condition(rest, span);
+        if let Some(top) = self.conditionals.last_mut() {
+            top.active = condition;
+            top.taken = taken || condition;
+        }
+    }
+
+    fn else_group(&mut self, span: Span) {
+        let Some(top) = self.conditionals.last() else {
+            self.error(span, "`#else` without `#if`");
+            return;
+        };
+        let (parent_active, taken, seen_else) = (top.parent_active, top.taken, top.seen_else);
+        if seen_else {
+            self.error(span, "`#else` after `#else`");
+            return;
+        }
+        if let Some(top) = self.conditionals.last_mut() {
+            top.active = parent_active && !taken;
+            top.taken = true;
+            top.seen_else = true;
+        }
+    }
+
+    /// `#ifdef X` and `#ifndef X`: is `X` defined?
+    fn defined(&mut self, rest: &[Raw], span: Span, want_defined: bool) -> bool {
+        let Some(name) = rest.first() else {
+            self.error(span, "expected a macro name");
+            return false;
+        };
+        if name.token.kind != TokenKind::Ident {
+            let span = name.token.span;
+            self.error(span, "expected a macro name");
+            return false;
+        }
+        let present = self.macros.contains_key(&name.token.text);
+        present == want_defined
+    }
+
+    /// The value of an `#if` expression: `defined` first, then macros, then what is left.
+    fn condition(&mut self, rest: &[Raw], span: Span) -> bool {
+        if rest.is_empty() {
+            self.error(span, "expected an expression");
+            return false;
+        }
+        let Some(replaced) = self.replace_defined(rest) else {
+            return false;
+        };
+        let spelled: Vec<Raw> = replaced
+            .iter()
+            .map(|token| Raw {
+                token: *token,
+                hide: Vec::new(),
+                spliced: true,
+            })
+            .collect();
+        let expanded = self.expand_tokens(&spelled);
+        let mut tokens = Vec::with_capacity(expanded.len());
+        for raw in expanded {
+            // Any identifier left after expansion is `0`, which is what C99 6.10.1 says.
+            if raw.token.kind == TokenKind::Ident {
+                let zero = self.interner.intern("0");
+                tokens.push(PpToken {
+                    kind: TokenKind::Number,
+                    text: zero,
+                    span: raw.token.span,
+                });
+            } else {
+                tokens.push(raw.token);
+            }
+        }
+        let interner: &Interner = self.interner;
+        match eval::evaluate(&tokens, interner) {
+            Ok(value) => value.is_true(),
+            Err(failure) => {
+                self.error(failure.span, failure.message);
+                false
+            }
+        }
+    }
+
+    /// Rewrite `defined X` and `defined(X)` as `1` or `0`, before anything is expanded.
+    fn replace_defined(&mut self, rest: &[Raw]) -> Option<Vec<PpToken>> {
+        let mut out = Vec::new();
+        let mut at = 0;
+        while at < rest.len() {
+            let token = rest[at].token;
+            if !(token.kind == TokenKind::Ident && self.is_spelled(&token, "defined")) {
+                out.push(token);
+                at += 1;
+                continue;
+            }
+            at += 1;
+            let parenthesised = rest
+                .get(at)
+                .is_some_and(|raw| self.is_punct(&raw.token, "("));
+            if parenthesised {
+                at += 1;
+            }
+            let Some(name) = rest.get(at) else {
+                self.error(token.span, "expected a macro name after `defined`");
+                return None;
+            };
+            if name.token.kind != TokenKind::Ident {
+                let span = name.token.span;
+                self.error(span, "expected a macro name after `defined`");
+                return None;
+            }
+            at += 1;
+            if parenthesised {
+                let closes = rest
+                    .get(at)
+                    .is_some_and(|raw| self.is_punct(&raw.token, ")"));
+                if !closes {
+                    self.error(token.span, "expected `)` after the name in `defined`");
+                    return None;
+                }
+                at += 1;
+            }
+            let present = self.macros.contains_key(&name.token.text);
+            let text = self.interner.intern(if present { "1" } else { "0" });
+            out.push(PpToken {
+                kind: TokenKind::Number,
+                text,
+                span: token.span,
+            });
+        }
+        Some(out)
     }
 
     fn undef(&mut self, rest: &[Raw]) {
@@ -1017,9 +1240,153 @@ mod tests {
         assert!(diagnostics("#include <stdio.h>")[0]
             .message
             .contains("M2.4"));
-        let conditionals = diagnostics("#if 1\n#endif\n#if 0\n#endif\n");
-        assert_eq!(conditionals.len(), 1, "said once, not once per line");
-        assert!(conditionals[0].message.contains("M2.3"));
+        assert!(diagnostics("#line 20\n")[0].message.contains("M2.4"));
+    }
+
+    // ---- conditionals -----------------------------------------------------------
+
+    #[test]
+    fn if_takes_or_drops_a_group() {
+        assert_eq!(spelled("#if 1\nkeep\n#endif"), ["keep"]);
+        assert_eq!(spelled("#if 0\ndrop\n#endif"), Vec::<String>::new());
+        assert_eq!(spelled("#if 2 + 3 * 4 == 14\nyes\n#endif"), ["yes"]);
+    }
+
+    #[test]
+    fn else_and_elif_choose_one_group() {
+        assert_eq!(spelled("#if 0\na\n#elif 1\nb\n#else\nc\n#endif"), ["b"]);
+        assert_eq!(spelled("#if 0\na\n#elif 0\nb\n#else\nc\n#endif"), ["c"]);
+        assert_eq!(
+            spelled("#if 1\na\n#elif 1\nb\n#endif"),
+            ["a"],
+            "the first taken group wins"
+        );
+    }
+
+    #[test]
+    fn ifdef_and_ifndef_ask_the_macro_table() {
+        assert_eq!(spelled("#ifdef X\nyes\n#endif"), Vec::<String>::new());
+        assert_eq!(spelled("#define X\n#ifdef X\nyes\n#endif"), ["yes"]);
+        assert_eq!(spelled("#ifndef X\nyes\n#endif"), ["yes"]);
+        assert_eq!(
+            spelled("#define X\n#ifndef X\nyes\n#endif"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn defined_is_answered_before_expansion() {
+        assert_eq!(spelled("#define X 1\n#if defined(X)\nyes\n#endif"), ["yes"]);
+        assert_eq!(spelled("#define X 1\n#if defined X\nyes\n#endif"), ["yes"]);
+        assert_eq!(spelled("#if defined(X)\nyes\n#endif"), Vec::<String>::new());
+        assert_eq!(
+            spelled("#define X 3\n#if defined(X) && X > 1\nyes\n#endif"),
+            ["yes"]
+        );
+        // `defined` is not a macro call, and its operand is not expanded
+        assert_eq!(
+            spelled("#define X Y\n#if defined(X) && !defined(Y)\nyes\n#endif"),
+            ["yes"]
+        );
+    }
+
+    #[test]
+    fn an_identifier_that_is_not_a_macro_is_zero() {
+        assert_eq!(spelled("#if FOO\nyes\n#endif"), Vec::<String>::new());
+        assert_eq!(spelled("#if !FOO\nyes\n#endif"), ["yes"]);
+    }
+
+    #[test]
+    fn macros_are_expanded_before_the_expression_is_evaluated() {
+        assert_eq!(spelled("#define N 3\n#if N == 3\nyes\n#endif"), ["yes"]);
+        assert_eq!(spelled("#define N 3\n#if N * 2 == 6\nyes\n#endif"), ["yes"]);
+    }
+
+    #[test]
+    fn the_evaluator_has_c_s_precedence_and_operators() {
+        for source in [
+            "#if (1 + 2) * 3 == 9\nyes\n#endif",
+            "#if 1 << 4 == 16\nyes\n#endif",
+            "#if (7 & 3) == 3\nyes\n#endif",
+            "#if (1 ? 2 : 3) == 2\nyes\n#endif",
+            "#if 'a' == 97\nyes\n#endif",
+            "#if -1 < 0\nyes\n#endif",
+            "#if 0x10 == 16 && 010 == 8\nyes\n#endif",
+            "#if ~0 == -1\nyes\n#endif",
+        ] {
+            assert_eq!(spelled(source), ["yes"], "{source}");
+        }
+    }
+
+    #[test]
+    fn what_is_not_evaluated_is_not_diagnosed() {
+        assert_eq!(
+            spelled("#if 0 && 1/0\nyes\n#endif"),
+            Vec::<String>::new(),
+            "the right side of && is not evaluated"
+        );
+        assert_eq!(spelled("#if 1 || 1/0\nyes\n#endif"), ["yes"]);
+    }
+
+    #[test]
+    fn division_by_zero_and_overflow_are_reported() {
+        assert_eq!(
+            diagnostics("#if 1/0\n#endif")[0].message,
+            "division by zero"
+        );
+        assert_eq!(
+            diagnostics("#if 1%0\n#endif")[0].message,
+            "division by zero"
+        );
+        let overflow = diagnostics("#if 9223372036854775807 + 1\n#endif");
+        assert_eq!(overflow[0].message, "integer overflow in `+`");
+        let shift = diagnostics("#if 1 << 64\n#endif");
+        assert_eq!(shift[0].message, "shift by 64 does not fit in 64 bits");
+    }
+
+    #[test]
+    fn a_skipped_group_is_not_read_at_all() {
+        // no error from the inner `#error`, no definition leaking out
+        let source =
+            "#if 0\n#error not today\n#define X 1\n#frobnicate\n#endif\n#ifdef X\nleak\n#endif";
+        assert!(diagnostics(source).is_empty(), "{:?}", diagnostics(source));
+        assert_eq!(spelled(source), Vec::<String>::new());
+        // and a `#if` inside a skipped group is not evaluated, so its errors cannot fire
+        let source = "#if 0\n#if 1/0\nx\n#endif\n#endif\ny";
+        assert!(diagnostics(source).is_empty());
+        assert_eq!(spelled(source), ["y"]);
+    }
+
+    #[test]
+    fn conditionals_nest() {
+        let source = "#define A\n#ifdef A\n#if 0\nno\n#else\nyes\n#endif\n#endif";
+        assert_eq!(spelled(source), ["yes"]);
+    }
+
+    #[test]
+    fn a_file_without_a_final_newline_still_ends() {
+        // the directive must not eat the end of the file with its line
+        assert_eq!(spelled("#if 1\nkeep\n#endif"), ["keep"]);
+        assert_eq!(spelled("#define N 3\nN"), ["3"]);
+    }
+
+    #[test]
+    fn unbalanced_conditionals_are_reported() {
+        assert_eq!(diagnostics("#endif\n")[0].message, "`#endif` without `#if`");
+        assert_eq!(diagnostics("#else\n")[0].message, "`#else` without `#if`");
+        assert_eq!(diagnostics("#elif 1\n")[0].message, "`#elif` without `#if`");
+        assert_eq!(
+            diagnostics("#if 1\n#else\n#else\n#endif\n")[0].message,
+            "`#else` after `#else`"
+        );
+        assert_eq!(
+            diagnostics("#if 1\n#else\n#elif 0\n#endif\n")[0].message,
+            "`#elif` after `#else`"
+        );
+        assert_eq!(
+            diagnostics("#if 1\n")[0].message,
+            "`#if` is never closed by `#endif`"
+        );
     }
 
     #[test]
