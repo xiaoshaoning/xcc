@@ -203,9 +203,15 @@ The first thing worth showing, and the reason the project exists.
 
 ## M5 - objects and a real .exe  (M)
 
-- [ ] COFF object writing through `object`; relocations for functions, globals, string
-      literals, `.rdata`, `.data`, `.bss`.
-- [ ] `xcc-cli -c -o out.obj t.c`; link with `lld-link` or `link.exe` against UCRT.
+- [x] COFF object writing: `cranelift-object` writes `.text` and the symbol table, with
+      relocations for the functions a unit defines and the symbols it imports. `.rdata`,
+      `.data` and `.bss` wait for globals and string literals, which the emitter still refuses.
+- [x] **An object links into a `.exe` that runs**: `tests/exe.rs` writes the object, links it
+      with the host's `cc` (MinGW gcc driving GNU ld here) and runs the result, asserting the
+      process exit status is the C `return` value (`int main(void) { return 42; }` -> 42). This
+      is the first end-to-end claim of M5 and it is a test, not a paragraph.
+- [ ] `xcc-cli -c -o out.obj t.c` and `link.exe` against UCRT (the CLI writes objects, the
+      linking is still the host linker's job).
 - [ ] Minimal `crt`: entry point, `GetCommandLineW` to `argc`/`argv`, environment, exit code,
       stack probing.
 - [ ] Acceptance: `hello.exe` builds on a clean `windows-latest` runner with only VS Build
