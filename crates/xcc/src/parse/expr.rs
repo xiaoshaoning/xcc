@@ -153,9 +153,12 @@ impl Parser<'_> {
         let Some(place) = left.place else {
             return Value::new(ty, None, false);
         };
-        let mut result = self.write_bitfield_at(place, ty, value, bits, span);
-        // An assignment is not an lvalue, so the place and the bits stay behind: without this,
-        // `(s.a = 1) = 2` would be accepted.
+        self.write_bitfield_at(place, ty, value, bits, span);
+        // The value of the assignment is the field as it now stands, which is the read path's
+        // question - so a signed field is sign-extended there and not in the writer: `(s.c = -7)`
+        // is -7, not the four bits that were stored. An assignment is not an lvalue, so the place
+        // and the bits stay behind: without that, `(s.a = 1) = 2` would be accepted.
+        let mut result = self.read_bitfield(ty, place, bits, span);
         result.lvalue = false;
         result.place = None;
         result.bits = None;
@@ -163,8 +166,10 @@ impl Parser<'_> {
     }
 
     /// The merge a bitfield write is, at an address rather than at a place: read the unit, clear
-    /// the field's bits, put the new ones in. An assignment and an initialiser both end here, so
-    /// the mask arithmetic and the "the neighbours are kept" rule are written once.
+    /// the field's bits, put the new ones in. An assignment, `++` and an initialiser all end here,
+    /// so the mask arithmetic and the "the neighbours are kept" rule are written once. What the
+    /// field is *worth* afterwards is the read path's question, not this one's - which is why a
+    /// caller that stores for its own sake pays for no load it would not use.
     pub(super) fn write_bitfield_at(
         &mut self,
         address: cir::Value,
@@ -172,12 +177,13 @@ impl Parser<'_> {
         value: Value,
         (start, width): (u8, u8),
         span: Span,
-    ) -> Value {
+    ) {
+        // A value with no code is dead code: there is nothing to merge and nothing to store.
         let Value {
             cir: Some(value), ..
         } = value
         else {
-            return Value::new(ty, None, false);
+            return;
         };
         let mask = field_mask(width) as i64;
         let keep = self.constant_of(ty, !(mask << start), span);
@@ -186,7 +192,7 @@ impl Parser<'_> {
         let (keep, clear, shift) = (keep.cir, clear.cir, shift.cir);
         let unit = self.emit(|builder| builder.load(address, ty, span));
         let (Some(unit), Some(keep), Some(clear), Some(shift)) = (unit, keep, clear, shift) else {
-            return Value::new(ty, None, false);
+            return;
         };
         let some = |parser: &mut Self, op: cir::BinOp, a: cir::Value, b: cir::Value| {
             parser.emit(|builder| builder.binary(op, a, b, ty, span))
@@ -195,19 +201,15 @@ impl Parser<'_> {
             some(self, cir::BinOp::And, value, clear),
             some(self, cir::BinOp::And, unit, keep),
         ) else {
-            return Value::new(ty, None, false);
+            return;
         };
         let Some(shifted) = some(self, cir::BinOp::Shl, field, shift) else {
-            return Value::new(ty, None, false);
+            return;
         };
         let Some(merged) = some(self, cir::BinOp::Or, kept, shifted) else {
-            return Value::new(ty, None, false);
+            return;
         };
         self.emit(|builder| builder.store(address, merged, span));
-        // The field as it now stands, which is what an assignment is worth and what `++` yields:
-        // read back, so a signed field is sign-extended - `(s.c = -7)` is -7, not the nine bits
-        // that were stored.
-        self.read_bitfield(ty, address, (start, width), span)
     }
 
     /// `condition ? when_true : when_false`: two blocks and a join, and the join's parameter is

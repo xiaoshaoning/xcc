@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### bitfields stepped and initialised, reviewed - 2026-11-16 - a writer that answered a question nobody asked
+
+One commit since the last review (`94862ce`): `++`/`--` on a bitfield, bitfield initialisers in a
+frame and in a global's bytes, and the milestone paperwork.
+
+**Found: the merge returned a value its caller had to throw away.** `write_bitfield_at` ended with
+a read-back of the field, because an assignment's value *is* the field after the write. But an
+initialiser stores for its own sake: every `struct S s = {1, 2, 3}` emitted three loads and six
+shifts whose results nothing used. The fix is the one the split already implied: the writer writes
+and answers nothing, and `write_bitfield` asks the reader when it needs a value. Two responsibilities
+that had been sharing a return type - "merge these bits" and "what is this field worth" - are now
+one function each, and the initialiser path pays for no load it does not use.
+
+**Found: a comment that explained the wrong thing.** `self.bits = None` at the end of a member's
+write was commented as bookkeeping for the union check that follows it. Its real job is that the
+state means "the leaf just walked": stale, it would merge the *next* value - a plain member, or a
+global declared after this one - into bits nobody asked about. The clear was in the right place for
+the wrong stated reason, which is how it survives a future refactor.
+
+Checked and sound, no change needed: `self.bits` restored by `initialize_local` and cleared by
+every member's write (so a record followed by `int x = 200;` at file scope writes 200, not 200's
+low bits, measured against clang); `++` in dead code (no place, no step, no diagnostic); the same
+on a union member and a nested record; prefix versus postfix on a field that wraps (7 + 1 is 0 in
+three bits) and on a signed one (-1-- leaves -2); `bytes::merge_bits` on two fields sharing a unit
+in a global's bytes. Nine programs' worth of behaviour is pinned by the JIT test, whose expected
+values came from `clang -O0` printing its own, not from reasoning about ours.
+
+150 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6 closed: bitfields stepped and initialised, and the rest of the paperwork - 2026-11-16 - two refusals that were only a missing call
 
 The last two bitfield refusals, and the milestone paperwork that had drifted behind the code.

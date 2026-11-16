@@ -318,6 +318,9 @@ impl Parser<'_> {
             } else {
                 self.initializer_body(member, false);
             }
+            // The member is written, and `self.bits` describes "the leaf just walked": leaving it
+            // set would merge the *next* value - a plain member, or a global declared after this
+            // one - into bits nobody asked about.
             self.bits = None;
             if union {
                 // One member, one value: a second is one error, not a second store over the
