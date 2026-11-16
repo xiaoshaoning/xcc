@@ -78,6 +78,48 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### local initialisation - 2026-11-16 - the hole the review found, closed
+
+The review above found that an initialiser in a function was read, checked and then dropped. It is
+lowered now: a local's leaves become stores through its frame slot, and what the list does not name
+is zero (C99 6.7.8p21).
+
+The design was already half there. `write_leaf` is the one place a leaf lands in an object, and it
+had one destination - the buffer ADR-004 fills for a file-scope object. A local is the same leaf
+with a different destination, so the parser remembers the slot it is writing through
+(`init_target`, next to `bytes` and `offset`), and `write_leaf` stores instead of copying. The
+address of a leaf is a walk by *bytes* from the slot: `pointer_walk` with `char` as the element,
+whose scale is one, then a bitcast to the leaf's type - no second address-arithmetic.
+
+What the work turned up, worst first:
+
+1. **A file-scope array's initialiser wrote every element at offset zero.** `int a[3] = {1,2,3}`
+   gave `{3,0,0}`: `initialize_array` never advanced `self.offset`, while `initialize_record`
+   did. The unit test asserted the object's *size* (12 bytes) and nothing looked inside, so the
+   bug survived the data patches and the review that followed them. The walker now sets
+   `base + index * size_of(element)`, and the unit test asserts the bytes.
+2. **`char *p = "abc"` at file scope was a null pointer.** The string became `.str0`, the pointer
+   was left out of the initialiser, and the object was declared with zeroes. ADR-004's bytes
+   cannot express a relocation, so this is refused now with a diagnostic instead of being wrong;
+   lowering it means teaching a global's data description about addresses, which is an ADR-level
+   change, not a patch.
+3. **The null pointer constant rule lived in `assign`.** `int *p = 0;` needs it, `return 0;` from
+   a pointer-returning function still does not have it, and a third caller was coming. It is in
+   `convert` now (C99 6.3.2.3p3), where the conversion happens, and `assign`'s copy is gone.
+4. **A float literal has no code.** `double d = 1.5;` is typed and then stored as nothing, so a
+   local which had no cir and no constant is refused ("this initialiser value is not lowered
+   yet") rather than reading the frame. The refusal leaves when M6's float constants land.
+
+Also settled while writing it: the diagnostic spelling. `init.rs` said "cannot initialise" in one
+place and "cannot initialize" in another, and two tests pinned one each. Both say "initialise",
+like the rest of the file's prose.
+
+Still not lowered, with a diagnostic each: a record or array-of-record local (its initialiser is
+read and its mistakes reported, but the declaration itself is refused); a pointer to a literal at
+file scope; local aggregate initialisation beyond arrays of scalars.
+
+140 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### array locals and `++`/`--` - 2026-11-16 - a review of the last four code commits
 
 Not a corpus audit: a pass over everything committed since the previous review that it did not

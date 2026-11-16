@@ -233,15 +233,23 @@ fn a_variable_needs_a_complete_type() {
         "int f(void) { int a[]; return 0; }",
         "an array with no size cannot be a variable",
     );
-    // An initialiser gives the array a size, and then has nowhere to write it: refused, once.
+    // An initialiser is what gives the array a size, so there is nothing wrong with it.
+    parses("int f(void) { char s[] = \"abc\"; return s[0]; }");
+    parses("int f(void) { int a[] = {1, 2, 3}; return a[2]; }");
+    // A value the initialiser cannot write is said, not stored as whatever the frame held.
     refuses(
-        "int f(void) { char s[] = \"abc\"; return s[0]; }",
-        "initialising a variable in a function",
+        "int f(void) { double d = 1.5; return 0; }",
+        "this initialiser value is not lowered yet",
     );
-    // Scalar locals are not initialised either, and saying so beats reading uninitialised.
     refuses(
-        "int f(void) { int x = 3; return x; }",
-        "initialising a variable in a function",
+        "int f(void) { int x = \"abc\"; return x; }",
+        "cannot initialise int with pointer to char",
+    );
+    // At file scope a pointer to a literal needs a relocation, so it is refused rather than
+    // left null - which is what it silently was.
+    refuses(
+        "char *p = \"abc\"; int f(void) { return 0; }",
+        "a pointer to a string literal in a file-scope initialiser is not lowered yet",
     );
 }
 

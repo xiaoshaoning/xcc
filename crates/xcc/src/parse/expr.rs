@@ -93,15 +93,7 @@ impl Parser<'_> {
             self.error(span, format!("cannot assign {from} to {to}"));
             return Some(Value::temporary(left.ty));
         }
-        let converted = if self.types.is_pointer(left.ty) && right.constant == Some(0) {
-            // `p = 0` is the null pointer, whatever `int` the constant was written as.
-            match self.emit(|builder| builder.constant(left.ty, 0, span)) {
-                Some(cir) => Value::code(left.ty, cir).with_constant(Some(0)),
-                None => Value::new(left.ty, Some(0), false),
-            }
-        } else {
-            self.convert(right, left.ty, span)
-        };
+        let converted = self.convert(right, left.ty, span);
         match (left.place, converted.cir) {
             (Some(place), Some(value)) => {
                 self.emit(|builder| builder.store(place, value, span));

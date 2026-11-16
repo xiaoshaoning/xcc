@@ -68,6 +68,12 @@ impl Parser<'_> {
         if self.types.is_error(wanted) {
             return Value::new(wanted, value.constant, false);
         }
+        // C99 6.3.2.3p3: the integer constant zero converts to a null pointer of any pointer
+        // type, whichever integer type it was written as. It is a property of the value, so
+        // it belongs here rather than in each caller that stores or returns one.
+        if self.types.is_pointer(wanted) && value.constant == Some(0) {
+            return self.constant_of(wanted, 0, span);
+        }
         let Some(source) = value.cir else {
             return Value::new(wanted, None, false);
         };

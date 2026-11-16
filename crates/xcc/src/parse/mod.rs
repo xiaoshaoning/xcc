@@ -64,6 +64,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         last_declared: None,
         bytes: None,
         offset: 0,
+        init_target: None,
         literals: 0,
         targets: Vec::new(),
     };
@@ -218,8 +219,13 @@ struct Parser<'a> {
     /// traversal that checks an initialiser fills this, so the bytes and the diagnostics come
     /// from one reading of the source (ADR-004).
     bytes: Option<Vec<u8>>,
-    /// The offset into `bytes` that the initialiser being read is at.
+    /// The offset into `bytes` that the initialiser being read is at, in bytes from the
+    /// object's start - for a local it is the same offset, from the slot's address.
     offset: usize,
+    /// The frame slot a local initialiser is writing through, with the type of the object
+    /// it is: `Some` while such an initialiser is being read, and `None` for a file-scope
+    /// object, whose bytes `bytes` collects (ADR-004).
+    init_target: Option<(cir::Value, TypeId)>,
     /// How many string literals have been given an anonymous global: `.str0`, `.str1`, ...
     literals: u32,
     /// Where `break` and `continue` go, innermost last: the block after the loop, and the block
@@ -493,15 +499,14 @@ impl Parser<'_> {
             if self.eat("=") {
                 let span = self.span();
                 if self.in_body() {
-                    // A local's initialiser is read and checked and then dropped: the emitter
-                    // writes bytes for file-scope objects only. A variable read uninitialised
-                    // is a wrong program, not a missing feature, so this is refused until a
-                    // slot can be written. A type that is not lowerable at all has its own
-                    // diagnostic above, and does not get a second one here.
-                    if self.lowerable(ty) {
-                        self.not_lowered(span, "initialising a variable in a function");
-                    }
-                    self.initializer(ty);
+                    // A local has a slot, so its initialiser becomes stores into the frame.
+                    // A type with no slot (an aggregate in a body) was refused above; its
+                    // initialiser is still read, so its own mistakes are still reported.
+                    let target = name
+                        .and_then(|name| self.symbols.here(name))
+                        .and_then(|entry| entry.storage)
+                        .map(|place| (place, ty));
+                    self.initialize_local(ty, target);
                 } else if let Some(bytes) = self.initializer_bytes(ty) {
                     if let Some(name) = name {
                         self.globals.push(cir::Global {
@@ -1291,6 +1296,17 @@ block0 (entry)(v0: int, v1: int):
         assert!(
             text.contains("global a: array[3] of int (12 bytes)"),
             "{text}"
+        );
+        // Each element at its own offset. An array that walked no offset wrote all three at the
+        // start - `3` alone - which a count of bytes could not see.
+        let a = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "a")
+            .expect("the array is a global");
+        assert_eq!(
+            a.init.as_deref(),
+            Some(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0][..])
         );
         // A value that is not a constant clears the buffer: no global claims bytes it lacks.
         let (unit, names, _) = module("int f(void) { return 1; } int y = f();");

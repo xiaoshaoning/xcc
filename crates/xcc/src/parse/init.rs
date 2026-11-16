@@ -34,7 +34,7 @@ impl Parser<'_> {
                 }
                 spelling
             };
-            let (literal, bytes, _) = self.string_literal();
+            let (literal, bytes, name) = self.string_literal();
             if let Type::Array { element, count } = *self.types.kind(ty) {
                 // C99 6.7.8p14: an array of character type, which `int` is not even though a
                 // `char` converts to one.
@@ -80,13 +80,52 @@ impl Parser<'_> {
                     }
                     Some(_) => {}
                 }
+                // A local's array is filled from the same bytes the file-scope path lays down,
+                // one store each: there is no run-time string copy to call, and the tail of a
+                // sized array is zeroes in those bytes (C99 6.7.8p21).
+                if let Some(target) = self.init_target {
+                    if let Some(bytes) =
+                        crate::parse::bytes::string_literal_bytes(&self.types, ty, &spelling)
+                    {
+                        let char = self.types.fundamental("char").unwrap();
+                        for (offset, byte) in bytes.into_iter().enumerate() {
+                            let value = self.constant_of(char, i64::from(byte), span);
+                            self.store_leaf(target, offset, char, value, span);
+                        }
+                    }
+                }
                 return;
             }
             // Anything else takes the literal as the `char *` it decays to.
-            let value = self.decay(Value::new(literal, None, true));
-            if !self.types.is_assignable(ty, value.ty) {
-                let (from, to) = (self.describe(value.ty), self.describe(ty));
+            let pointer = self.types.decay(literal);
+            if !self.types.is_assignable(ty, pointer) {
+                let (from, to) = (self.describe(pointer), self.describe(ty));
                 self.error(span, format!("cannot initialise {to} with {from}"));
+                return;
+            }
+            // In a body the value is the address of the anonymous object the literal became
+            // (ADR-004). At file scope a pointer to an object is a relocation, which the bytes
+            // ADR-004 gives a global cannot express: refused, because leaving it out made the
+            // pointer null rather than the literal's address.
+            if self.init_target.is_none() {
+                self.error(
+                    span,
+                    "a pointer to a string literal in a file-scope initialiser is not lowered yet",
+                );
+                return;
+            }
+            match self.emit(|builder| builder.global_address(name, pointer, span)) {
+                Some(address) => {
+                    let value = Value {
+                        ty: pointer,
+                        constant: None,
+                        lvalue: false,
+                        cir: Some(address),
+                        place: None,
+                    };
+                    self.leaf(ty, value);
+                }
+                None => self.leaf(ty, Value::new(pointer, None, false)),
             }
             return;
         }
@@ -105,9 +144,13 @@ impl Parser<'_> {
             let span = self.span();
             self.error(span, "expected an initialiser");
         }
-        // A file-scope object's bytes are written from the same value the type checker sees.
+        // A file-scope object's bytes are written from the same value the type checker sees;
+        // a local's slot is written the same way.
         match value {
-            Some(value) => self.write_leaf(ty, value),
+            Some(value) => {
+                let value = self.decay(value);
+                self.leaf(ty, value);
+            }
             None => self.bytes = None,
         }
     }
@@ -154,6 +197,10 @@ impl Parser<'_> {
         braced: bool,
     ) {
         let span = self.span();
+        let base = self.offset;
+        // Every element is a leaf (or an aggregate of them) at its own offset. An element with
+        // no size - an incomplete record in an array - gets offset zero and its own diagnostic.
+        let size = self.types.size_of(element).unwrap_or(0) as usize;
         let mut written = 0u64;
         let mut first = true;
         loop {
@@ -187,6 +234,7 @@ impl Parser<'_> {
                     self.error_at_current("expected `=` after a designator");
                 }
             }
+            self.offset = base + written as usize * size;
             if self.at_punct("{") {
                 self.brace_initializer(element);
             } else {
@@ -304,13 +352,18 @@ impl Parser<'_> {
         }
     }
 
-    /// Write one leaf's bytes at the cursor's offset, or clear the buffer when this value is not
-    /// something that can be written.
+    /// One leaf in the object being initialised: a store into a local's slot, or bytes into a
+    /// file-scope object's buffer, at the cursor's offset.
     ///
     /// One place, because a leaf in a brace list and a leaf that is the whole initialiser are the
     /// same question about the same value. A partly-filled object is a wrong program, not a
     /// smaller one, so anything unwritable clears everything (ADR-004).
     fn write_leaf(&mut self, ty: TypeId, value: Value) {
+        if let Some(target) = self.init_target {
+            let (offset, span) = (self.offset, self.span());
+            self.store_leaf(target, offset, ty, value, span);
+            return;
+        }
         if self.bytes.is_none() {
             return;
         }
@@ -333,7 +386,15 @@ impl Parser<'_> {
         let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
             return;
         };
-        // A file-scope object's bytes are written from the same value the type checker sees.
+        self.leaf(ty, value);
+    }
+
+    /// A value that initialises one object of type `ty`: written if C allows it, and one
+    /// diagnostic if it does not.
+    ///
+    /// One place, because a value at a leaf of a list and a value that is the whole
+    /// initialiser are the same question about the same object.
+    fn leaf(&mut self, ty: TypeId, value: Value) {
         self.write_leaf(ty, value);
         if self.types.is_error(ty) || self.types.is_error(value.ty) {
             return;
@@ -342,8 +403,92 @@ impl Parser<'_> {
         if !null_pointer && !self.types.is_assignable(ty, value.ty) {
             let (from, to) = (self.describe(value.ty), self.describe(ty));
             let span = self.span();
-            self.error(span, format!("cannot initialize {to} with {from}"));
+            self.error(span, format!("cannot initialise {to} with {from}"));
         }
+    }
+
+    /// A local's initialiser: the leaves become stores through its slot, and what the list
+    /// does not name is zero (C99 6.7.8p21).
+    pub(super) fn initialize_local(&mut self, ty: TypeId, target: Option<(cir::Value, TypeId)>) {
+        let Some(target) = target else {
+            self.initializer(ty);
+            return;
+        };
+        // A declared size can have elements no list reaches; an array whose size came from its
+        // initialiser has none, and a string literal writes every byte including the tail.
+        if matches!(self.types.kind(ty), Type::Array { count: Some(_), .. }) {
+            self.zero_object(target, ty);
+        }
+        let saved_target = self.init_target;
+        let saved_offset = self.offset;
+        self.init_target = Some(target);
+        self.offset = 0;
+        self.initializer(ty);
+        self.init_target = saved_target;
+        self.offset = saved_offset;
+    }
+
+    /// C99 6.7.8p21: what an initialiser list does not name is zero, and a frame slot holds
+    /// whatever the frame held. A byte at a time: a byte store is always aligned, and a
+    /// wider one is M10's optimiser's job.
+    fn zero_object(&mut self, target: (cir::Value, TypeId), ty: TypeId) {
+        let Some(size) = self.types.size_of(ty) else {
+            return;
+        };
+        let char = self.types.fundamental("char").unwrap();
+        let span = self.span();
+        for offset in 0..size as usize {
+            let zero = self.constant_of(char, 0, span);
+            self.store_leaf(target, offset, char, zero, span);
+        }
+    }
+
+    /// One leaf's store into the object being initialised: the value converted to the leaf's
+    /// type, at `offset` bytes from the object's address.
+    fn store_leaf(
+        &mut self,
+        target: (cir::Value, TypeId),
+        offset: usize,
+        ty: TypeId,
+        value: Value,
+        span: Span,
+    ) {
+        let Some(address) = self.leaf_address(target, offset, ty, span) else {
+            return;
+        };
+        let converted = self.convert(value, ty, span);
+        let Some(code) = converted.cir else {
+            // A value with neither code nor a constant - a float literal is still only typed
+            // (M6) - would store nothing and leave the slot holding the frame's bytes.
+            if converted.constant.is_none() && !self.types.is_error(ty) {
+                self.not_lowered(span, "this initialiser value");
+            }
+            return;
+        };
+        self.emit(|builder| builder.store(address, code, span));
+    }
+
+    /// The address of the leaf at `offset` bytes into the object. The slot's address is typed
+    /// `pointer to the object`, so walking it by a byte count is `pointer_walk`'s job with
+    /// `char` as the element - the scale is then one - and the last step is a bitcast to
+    /// `pointer to the leaf`.
+    fn leaf_address(
+        &mut self,
+        target: (cir::Value, TypeId),
+        offset: usize,
+        leaf: TypeId,
+        span: Span,
+    ) -> Option<cir::Value> {
+        let (base, object) = target;
+        let char = self.types.fundamental("char").unwrap();
+        let int = self.types.fundamental("int").unwrap();
+        let bytes = self.pointer_to(char);
+        let pointer = self.pointer_to(leaf);
+        let address = Value::new(self.pointer_to(object), None, false).with_cir(Some(base));
+        let index = self.constant_of(int, offset as i64, span);
+        let walked = self.pointer_walk(bytes, address, index, true, span);
+        let address = walked.cir?;
+        self.emit(|builder| builder.convert(cir::ConvertOp::Bitcast, address, bytes, pointer, span))
     }
 
     /// Whether a designator comes next, now or after the comma - the reason the capacity check

@@ -307,6 +307,48 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("stepped"), 7);
     }
 
+    /// A local's initialiser becomes stores into its slot: a scalar, the null pointer, an
+    /// address, and the brace lists and string literals that fill an array - with C's zeroes in
+    /// what the list does not name (C99 6.7.8p21).
+    #[test]
+    fn local_initialisers_store_into_the_frame() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int scalar(void) { int x = 3; return x; }
+             int null_pointer(void) { int *p = 0; return p == 0; }
+             int address_of(void) { int y; int *p = &y; *p = 7; return y; }
+             int braces(void) { int a[3] = {1, 2, 3}; return a[0] * 100 + a[1] * 10 + a[2]; }
+             int partial(void) { int a[3] = {5}; return a[0] * 100 + a[1] * 10 + a[2]; }
+             int nested(void) { int m[2][2] = {{1, 2}, {3, 4}}; return m[0][1] * 10 + m[1][0]; }
+             int flat(void) { int m[2][2] = {1, 2, 3, 4}; return m[1][1]; }
+             int designator(void) { int a[5] = {[2] = 7}; return a[2] * 10 + a[0]; }
+             int sized_by_text(void) { char s[] = \"abc\"; return s[0] + s[3]; }
+             int text_tail(void) { char s[8] = \"hi\"; return s[1] * 10 + s[2]; }
+             int pointer_to_text(void) { char *p = \"abc\"; return p[1]; }",
+        )
+        .expect("it compiles");
+        for (name, wanted) in [
+            ("scalar", 3),
+            ("null_pointer", 1),
+            ("address_of", 7),
+            ("braces", 123),
+            // The elements the list does not name are zero, not whatever the frame held.
+            ("partial", 500),
+            ("nested", 23),
+            ("flat", 4),
+            ("designator", 70),
+            // 97 + the NUL the literal's size includes.
+            ("sized_by_text", 97),
+            // 'i' * 10 + the NUL of the sized array's tail.
+            ("text_tail", 1050),
+            ("pointer_to_text", 98),
+        ] {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            assert_eq!(function(), wanted, "{name}");
+        }
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {
