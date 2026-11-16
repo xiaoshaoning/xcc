@@ -65,6 +65,7 @@ impl Parser<'_> {
                 lvalue: true,
                 cir: Some(place),
                 place: Some(place),
+                bits: None,
             };
         }
         match self.emit(|builder| builder.load(place, ty, span)) {
@@ -74,6 +75,7 @@ impl Parser<'_> {
                 lvalue: true,
                 cir: Some(value),
                 place: Some(place),
+                bits: None,
             },
             // No block to load in - dead code, or a construct that ended the block. The place is
             // still a place; what uses it finds no value rather than one that was never computed,
@@ -84,6 +86,7 @@ impl Parser<'_> {
                 lvalue: true,
                 cir: None,
                 place: Some(place),
+                bits: None,
             },
         }
     }

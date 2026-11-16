@@ -78,6 +78,33 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: bitfields read and written in code - 2026-11-16 - the unit, and the bits in it
+
+The last M6 item the differential runner could reach. The layout was already right (measured
+against clang two commits ago); what was missing was the code: a bitfield has no address of its
+own, only a bit range inside a storage unit.
+
+**Reading** is the unit loaded as its own type, converted to a 64-bit working type - signed or
+unsigned by the field, which is what decides whether the back end's `Shr` is arithmetic or logical
+- and then two shifts: `shl(64 - start - width)` then `shr(64 - width)` for a signed field (which
+sign-extends from the field's own width), `shr(start)` then `and(mask)` for an unsigned one. The
+result converts back to the field's declared type, because that is the expression's type.
+
+**Writing** is read-modify-write on the unit: `(unit & ~(mask << start)) | ((value & mask) <<
+start)`. The value of the assignment is the field *after* the write, as C has it.
+
+The one design cost is in `Value`: a bitfield value carries `bits: Option<(u8, u8)>`, because
+`place` alone would say "the unit's address" and the writer would then put the field's value over
+its neighbours. Ten struct literals gained the field; the constructors answer `None`.
+
+Two things stay refused, each with a diagnostic: **`++`/`--` on a bitfield** (`step` reads a place,
+steps it and stores - the store would write the whole unit) and **a bitfield in an initialiser
+list** (the walker writes the unit; masking and shifting belong where the value is written). The
+corpus's differential count did not move - 375 still - because the bitfield programs it holds are
+either invalid C99 or refused for one of those two reasons.
+
+150 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: `goto` and labels - 2026-11-16 - a label needs a block a `goto` may target
 
 `goto` had been parsed since M3.4 and refused by the emitter since M4. Three corpus programs, and it

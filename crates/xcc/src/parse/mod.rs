@@ -119,6 +119,10 @@ struct Value {
     cir: Option<cir::Value>,
     /// The address, when the value is a place that can be assigned to or taken.
     place: Option<cir::Value>,
+    /// For a bitfield: the bit it starts at in the storage unit whose address is `place`, and
+    /// its width. Reading the value went through it; writing one has to read the unit, clear
+    /// these bits and put them back, so the places that write need to know.
+    bits: Option<(u8, u8)>,
 }
 
 impl Value {
@@ -131,6 +135,7 @@ impl Value {
             lvalue,
             cir: None,
             place: None,
+            bits: None,
         }
     }
 
@@ -162,6 +167,7 @@ impl Value {
             lvalue: false,
             cir: Some(cir),
             place: None,
+            bits: None,
         }
     }
 }
@@ -1462,9 +1468,10 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        // A bitfield has no address: reading one needs a shift the emitter does not do.
+        // `++` on a bitfield would have to read, step and merge inside the storage unit, which
+        // `step` does not do.
         let (module, _, diagnostics) =
-            module("struct S { int a : 3; }; int f(struct S s) { return s.a; }");
+            module("struct S { int a : 3; }; int f(struct S s) { s.a++; return 0; }");
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())

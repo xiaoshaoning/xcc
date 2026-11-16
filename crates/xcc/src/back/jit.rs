@@ -865,6 +865,43 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("doubles"), 354);
     }
 
+    /// A bitfield read and written in code: the storage unit is loaded once, the field's bits are
+    /// shifted and masked out of it, and a write puts them back without touching its neighbours.
+    /// The layout these rely on is pinned by `a_record_lays_out_like_the_abi`.
+    #[test]
+    fn bitfields_are_masked_into_their_unit() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "struct S { unsigned a : 3; unsigned b : 5; int c : 4; unsigned d : 20; };
+             int write_and_read(void) {
+                 struct S s; s.a = 5; s.b = 17; s.c = -3; s.d = 1000000;
+                 return (int)(s.a * 1000 + s.b * 10) + (int)(s.d / 1000) + s.c;
+             }
+             int truncated(void) { struct S s; s.a = 9; return s.a; }
+             int sign_extended(void) { struct S s; s.c = -7; return s.c; }
+             int neighbours(void) { struct S s; s.a = 7; s.b = 31; s.c = 7; s.d = 0xFFFFF; s.a = 1;
+                 return (int)(s.b * 100 + s.c) + (int)(s.d >> 16); }
+             struct T { unsigned char x : 3; unsigned char y : 2; };
+             int in_a_char(void) { struct T t; t.x = 5; t.y = 3; return t.x * 10 + t.y; }
+             int compound(void) { struct S s; s.a = 1; s.a += 3; return s.a; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("write_and_read"), 5 * 1000 + 170 + 1000 - 3);
+        // Nine does not fit three bits: C stores the low three, so nine is one.
+        assert_eq!(call("truncated"), 1);
+        // A four-bit signed field holds -8..7, sign-extended to `int`.
+        assert_eq!(call("sign_extended"), -7);
+        // Writing one field leaves its neighbours alone.
+        assert_eq!(call("neighbours"), 31 * 100 + 7 + 0xF);
+        assert_eq!(call("in_a_char"), 53);
+        assert_eq!(call("compound"), 4);
+    }
+
     /// `goto` and labels: a forward jump into code not yet read, a backward one that is a loop,
     /// a jump over dead code, and a label on a block that a `goto` may not target (the entry
     /// block, or a join, which takes parameters a `goto` has no values for) getting a block of

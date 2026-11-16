@@ -97,6 +97,7 @@ impl Parser<'_> {
                     lvalue: false,
                     cir: Some(address),
                     place: None,
+                    bits: None,
                 };
                 self.write_leaf(ty, value);
             }

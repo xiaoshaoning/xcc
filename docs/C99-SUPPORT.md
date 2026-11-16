@@ -55,7 +55,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | a struct or union local, member access, struct assignment and initialisation, unions with type punning | `sound` (M6): an aggregate in a frame is a slot whose value is its address, so assignment copies bytes and a union's members share them. Copy-initialisation (`struct P q = p;`) and designators work |
 | calls through a function pointer | `sound` (M6): the signature is the function type the pointer points at, aggregates and their ABI rules included |
 | aggregates passed and returned by value | `sound` (M6) on the Win64 ABI: 1, 2, 4 and 8 bytes travel in an integer register, anything else by reference to a caller-owned copy, and a large result comes back through a buffer the caller passes first. Measured against Rust's `extern "C"`, which implements the same ABI, in both directions |
-| a bitfield read in code | `refused` - it shares its storage unit, so reading one needs a mask and a shift the emitter does not do yet |
+| a bitfield read and written in code | `sound` (M6): the unit is loaded once and the field shifted and masked out of it; a write merges the new bits back without disturbing its neighbours, and a signed field is sign-extended from its own width |
+| `++`/`--` on a bitfield, a bitfield in an initialiser list | `refused` - both would have to read, step and merge inside the unit, which the paths that do them do not; each has a diagnostic |
 | a struct value inside a brace list (`struct Q q = {v};`) | `refused` - brace elision decides by the expression's type, which is not known before it is read; `struct Q q = {v, 3};` spelled with member's own braces works |
 | `typedef` | `sound` (M3.1) |
 | qualifiers (`const`, `volatile`, `restrict`), `inline` | `partial` - accepted and ignored, which is conforming for `restrict` and wrong for `const`; enforcing `const` arrives with the expression checker (M3.2) |

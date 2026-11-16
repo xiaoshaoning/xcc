@@ -6,6 +6,15 @@
 
 use super::*;
 
+/// The mask a bitfield of `width` bits has, as a 64-bit pattern.
+fn field_mask(width: u8) -> u64 {
+    if width >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << width) - 1
+    }
+}
+
 impl Parser<'_> {
     // ---- expressions ----------------------------------------------------------
     //
@@ -108,6 +117,9 @@ impl Parser<'_> {
             return Some(Value::temporary(left.ty));
         }
         let converted = self.convert(right, left.ty, span);
+        if let Some((start, width)) = left.bits {
+            return Some(self.write_bitfield(left, converted, (start, width), span));
+        }
         match (left.place, converted.cir) {
             (Some(place), Some(value)) => {
                 self.store_at(place, left.ty, converted, span);
@@ -118,6 +130,7 @@ impl Parser<'_> {
                         ty: left.ty,
                         constant: None,
                         lvalue: false,
+                        bits: None,
                         cir: Some(place),
                         place: Some(place),
                     });
@@ -131,6 +144,47 @@ impl Parser<'_> {
             }
             _ => Some(Value::new(left.ty, converted.constant, false)),
         }
+    }
+
+    /// A bitfield write: the unit is read, the field's bits are cleared and the new value put
+    /// in them. The value of the assignment is the field *after* the write, as C has it.
+    fn write_bitfield(
+        &mut self,
+        left: Value,
+        value: Value,
+        (start, width): (u8, u8),
+        span: Span,
+    ) -> Value {
+        let ty = left.ty;
+        let (Some(place), Some(value)) = (left.place, value.cir) else {
+            return Value::new(ty, None, false);
+        };
+        let mask = field_mask(width) as i64;
+        let keep = self.constant_of(ty, !(mask << start), span);
+        let clear = self.constant_of(ty, mask, span);
+        let shift = self.constant_of(ty, i64::from(start), span);
+        let (keep, clear, shift) = (keep.cir, clear.cir, shift.cir);
+        let unit = self.emit(|builder| builder.load(place, ty, span));
+        let (Some(unit), Some(keep), Some(clear), Some(shift)) = (unit, keep, clear, shift) else {
+            return Value::new(ty, None, false);
+        };
+        let some = |parser: &mut Self, op: cir::BinOp, a: cir::Value, b: cir::Value| {
+            parser.emit(|builder| builder.binary(op, a, b, ty, span))
+        };
+        let (Some(field), Some(kept)) = (
+            some(self, cir::BinOp::And, value, clear),
+            some(self, cir::BinOp::And, unit, keep),
+        ) else {
+            return Value::new(ty, None, false);
+        };
+        let Some(shifted) = some(self, cir::BinOp::Shl, field, shift) else {
+            return Value::new(ty, None, false);
+        };
+        let Some(merged) = some(self, cir::BinOp::Or, kept, shifted) else {
+            return Value::new(ty, None, false);
+        };
+        self.emit(|builder| builder.store(place, merged, span));
+        Value::code(ty, field)
     }
 
     /// `condition ? when_true : when_false`: two blocks and a join, and the join's parameter is
@@ -793,6 +847,11 @@ impl Parser<'_> {
             self.error(span, "`++` and `--` need a variable holding a number");
             return Value::temporary(self.types.error());
         }
+        if value.bits.is_some() {
+            // `step`'s store would write the field's value over its whole storage unit.
+            self.not_lowered(span, "`++` on a bitfield");
+            return Value::temporary(self.types.error());
+        }
         let ty = value.ty;
         let written = if self.types.is_pointer(ty) {
             // `p++` walks one element, which is the same "scale by the pointee" the `+` operator
@@ -1123,6 +1182,7 @@ impl Parser<'_> {
             lvalue: true,
             cir: Some(buffer),
             place: Some(buffer),
+            bits: None,
         }
     }
 
@@ -1244,12 +1304,6 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         };
         let (member_ty, offset, bitfield) = (member.ty, member.offset, member.bits);
-        if bitfield.is_some() {
-            // A bitfield shares its storage unit with its neighbours: it has no address, and
-            // reading one is a shift the emitter does not do yet.
-            self.not_lowered(span, "a bitfield in code");
-            return Value::temporary(self.types.error());
-        }
         let Some(base_address) = base.cir else {
             // The object has no address this compiler can name yet (a global, as `named_value`
             // says): the member is a place all the same, and whatever uses it refuses in its own
@@ -1266,7 +1320,69 @@ impl Parser<'_> {
         else {
             return Value::new(member_ty, None, true);
         };
-        self.read_place(member_ty, address, span)
+        match bitfield {
+            None => self.read_place(member_ty, address, span),
+            Some(bits) => self.read_bitfield(member_ty, address, bits, span),
+        }
+    }
+
+    /// A bitfield read: the storage unit loaded as its own type, then the field shifted and
+    /// masked out of it. The place stays the *unit's* address, because a write has to put the
+    /// field back without disturbing its neighbours - which is why `bits` travels with the
+    /// value.
+    fn read_bitfield(
+        &mut self,
+        ty: TypeId,
+        address: cir::Value,
+        (start, width): (u8, u8),
+        span: Span,
+    ) -> Value {
+        let signed = matches!(self.types.kind(ty), Type::Int { signed: true, .. });
+        // Arithmetic shifts for a signed field, logical ones for an unsigned field: the
+        // working type's signedness is what decides which `Shr` the back end picks.
+        let wide = self.types.integer_with(signed, 64);
+        let unit = self.emit(|builder| builder.load(address, ty, span));
+        let Some(unit) = unit else {
+            return Value::new(ty, None, true);
+        };
+        let unit = self.convert(Value::code(ty, unit), wide, span);
+        let Some(unit) = unit.cir else {
+            return Value::new(ty, None, true);
+        };
+        let step = |parser: &mut Self, op: cir::BinOp, left: cir::Value, amount: i64| {
+            let amount = parser.constant_of(wide, amount, span);
+            let amount = amount.cir?;
+            parser.emit(|builder| builder.binary(op, left, amount, wide, span))
+        };
+        let extracted = if signed {
+            // The sign bit is put at the top and shifted back down: the result is
+            // sign-extended from the field's own width.
+            let up = step(self, cir::BinOp::Shl, unit, i64::from(64 - start - width));
+            let Some(up) = up else {
+                return Value::new(ty, None, true);
+            };
+            let Some(down) = step(self, cir::BinOp::Shr, up, i64::from(64 - width)) else {
+                return Value::new(ty, None, true);
+            };
+            down
+        } else {
+            let Some(down) = step(self, cir::BinOp::Shr, unit, i64::from(start)) else {
+                return Value::new(ty, None, true);
+            };
+            let Some(masked) = step(self, cir::BinOp::And, down, field_mask(width) as i64) else {
+                return Value::new(ty, None, true);
+            };
+            masked
+        };
+        let extracted = self.convert(Value::code(wide, extracted), ty, span);
+        Value {
+            ty,
+            constant: None,
+            lvalue: true,
+            cir: extracted.cir,
+            place: Some(address),
+            bits: Some((start, width)),
+        }
     }
 
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {
@@ -1289,6 +1405,7 @@ impl Parser<'_> {
                         lvalue: true,
                         cir: Some(slot),
                         place: Some(slot),
+                        bits: None,
                     }
                 }
                 // No body, or no room for one: the value is read for its type and dropped.
@@ -1455,6 +1572,7 @@ impl Parser<'_> {
                         ty: pointer,
                         constant: None,
                         lvalue: false,
+                        bits: None,
                         cir: Some(address),
                         place: Some(address),
                     },

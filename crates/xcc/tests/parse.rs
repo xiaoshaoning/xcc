@@ -320,11 +320,11 @@ fn what_is_not_implemented_is_said_not_guessed() {
 
 #[test]
 fn what_aggregates_still_cannot_do() {
-    // A bitfield has no address of its own, so a member access to one is refused rather than read
-    // out of its whole storage unit.
+    // A bitfield is read and written now, but stepping one would have to read, step and merge
+    // inside its storage unit, which `step` does not do.
     refuses(
-        "struct S { int a : 3; }; int f(void) { struct S s; s.a = 1; return 0; }",
-        "a bitfield in code",
+        "struct S { int a : 3; }; int f(void) { struct S s; s.a++; return 0; }",
+        "`++` on a bitfield",
     );
     // An aggregate cannot be carried through a join: the join would need a register for it.
     refuses(
