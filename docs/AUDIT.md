@@ -78,6 +78,47 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M7: the C API - 2026-11-16 - five functions, and one place where `unsafe` is the job
+
+M7's headline item: `crates/xcc-capi`, a `cdylib` + `staticlib` + `rlib` that exports
+`xcc_new`, `xcc_add_source`, `xcc_function`, `xcc_last_error` and `xcc_free`, with `include/xcc.h`
+for a C compiler to read. Nothing in it compiles anything: each function is one call into
+`Jit` and one message kept on the handle.
+
+**The interface is not `libtcc`'s, and the reason is a dependency.** tcc lets a host add symbols
+at any time; Cranelift takes them at builder construction and nowhere else. Honouring that would
+mean a "not built yet" handle state, a rule ("symbols precede the first compile") the caller has to
+remember, and a failure mode for breaking it. So `xcc_new(symbols, count)` takes them up front: the
+one ordering rule the dependency imposes is expressed by the signature instead of by a doc
+sentence. A host that discovers a symbol later makes a new handle.
+
+**Failures are messages, not codes to decode.** `xcc_new` never answers NULL - a symbol list it
+cannot read, or an instruction set it cannot build, leaves a handle whose first `xcc_add_source`
+refuses with the reason in `xcc_last_error`. One error path, so a host that checks the one call it
+already checks checks everything; there is no second place to look. `xcc_last_error` is never NULL
+and empty after a call that worked, so a host may print it unconditionally.
+
+**A panic is a message too.** `xcc_add_source` wraps the compile in `catch_unwind`: a bug in this
+compiler reaches the host as `internal error compiling: ...` instead of unwinding through a
+language that cannot catch it. One `catch_unwind`, at the one entry point that does work.
+
+**What the tests found.** Writing the Python host's second unit as `int twice(...) { return
+add(...); }` failed with "`add` is not declared" - and that is C, not a bug: each `xcc_add_source`
+is a translation unit of its own, so a second one declares what it uses from the first, exactly as
+one `.c` file declares what another defines. The JIT is the linker, not a shared header. The first
+draft of the header claimed the functions of every source could call each other, which was wrong in
+exactly the way that matters to a host: the answer is in the docs now, and both hosts declare.
+
+Verified: the six Rust-side tests (compile and call, a host symbol called from compiled C - the
+host's own `triple(14)` is 42, a refused source that leaves the earlier unit working and clears on
+the next good call, a missing name, and a NULL handle that is refused rather than chased); and
+`tests/host.py`, which is a real Python program with ctypes: it compiles C at run time, calls it,
+calls the C runtime's `abs` through the symbol table, adds a second unit, reads a diagnostic, and
+frees. The crate-root docs still described M2 as the present; they describe M6 now.
+
+150 unit, 20 parser, 13 CLI, 6 C API, differential, crt, pp gate, fuzz, exe - green; fmt and
+clippy clean.
+
 ### bitfields stepped and initialised, reviewed - 2026-11-16 - a writer that answered a question nobody asked
 
 One commit since the last review (`94862ce`): `++`/`--` on a bitfield, bitfield initialisers in a

@@ -258,8 +258,11 @@ The first thing worth showing, and the reason the project exists.
 
 ## M7 - embedding polish  (M)
 
-- [ ] C API for hosts that are not Rust (`capi/`): create compiler, add source, add symbol,
-      get function pointer, free, last error - the shape `libtcc` users know.
+- [x] C API for hosts that are not Rust (`crates/xcc-capi`): `xcc_new` (with the host symbols it
+      may call), `xcc_add_source`, `xcc_function`, `xcc_last_error`, `xcc_free` - five functions,
+      an opaque handle, and a `xcc.h`. It is the one crate where `unsafe` lives; a failure is a
+      message on the handle rather than a return code to decode, and a panic inside the compiler
+      reaches the host as one of those messages instead of an abort.
 - [ ] Sandbox: no filesystem access unless given a resolver, memory and time budgets per
       compile, recursion limits, `#[forbid(unsafe_code)]` everywhere else.
 - [ ] Deterministic output: pinned clock, stable symbol order, reproducible objects.

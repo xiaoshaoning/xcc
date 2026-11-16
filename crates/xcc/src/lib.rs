@@ -20,9 +20,11 @@
 //!
 //! # Status
 //!
-//! Milestone M2 of [PLAN.md]: the lexer runs (translation phases 1 and 2, then tokens), and the
-//! preprocessor and parser are still to come. [`Compile::compile`] therefore answers with a
-//! "not implemented" diagnostic once a source lexes cleanly.
+//! M6 of [PLAN.md]: the preprocessor, the C99 front end, and code generation for scalars, floats,
+//! pointers, aggregates by value and bitfields are all in place, and a corpus of C programs runs
+//! with the same results as `clang -O0`. Varargs is the one M6 item still refused, with the reason
+//! in [docs/ADR-006-varargs.md]; [docs/C99-SUPPORT.md] is the line-by-line answer to "can this
+//! compiler do X".
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]

@@ -669,6 +669,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "xcc-capi"
+version = "0.0.1"
+dependencies = [
+ "xcc",
+]
+
+[[package]]
 name = "xcc-cli"
 version = "0.0.1"
 dependencies = [

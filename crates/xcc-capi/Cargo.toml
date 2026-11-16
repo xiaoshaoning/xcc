@@ -1,0 +1,16 @@
+[package]
+name = "xcc-capi"
+description = "The C API of xcc: compile C from a host that is not Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "xcc_capi"
+# `rlib` too: the tests call these functions directly, which needs a Rust library to link;
+# the header and the cdylib are what a host that is not Rust uses.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+xcc = { workspace = true }
