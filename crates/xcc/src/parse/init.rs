@@ -103,14 +103,9 @@ impl Parser<'_> {
             return;
         }
 
-        // (C99 6.7.8p20): `int a[2][2] = {1,2,3,4}`.
-        if !self.at_punct("{")
-            && (self.types.record_of(ty).is_some()
-                || matches!(self.types.kind(ty), Type::Array { .. }))
-        {
-            self.initializer_body(ty, false);
-            return;
-        }
+        // C99 6.7.8p1: an initialiser is a brace list or an assignment-expression. `{1,2,3,4}`
+        // reached the list walker above, and brace *elision* happens inside a list; here what
+        // follows is one expression, which is how `struct P q = p;` copies a struct.
         let value = self.conditional_expression();
         self.skip_until(&[",", ";"], false);
         if value.is_none() {
@@ -381,9 +376,10 @@ impl Parser<'_> {
             self.initializer(ty);
             return;
         };
-        // A declared size can have elements no list reaches; an array whose size came from its
-        // initialiser has none, and a string literal writes every byte including the tail.
-        if matches!(self.types.kind(ty), Type::Array { count: Some(_), .. }) {
+        // A declared size can have elements or members no list reaches, and C says they are
+        // zero. An array whose size came from its initialiser has none, and a string literal
+        // writes every byte including the tail.
+        if self.types.value_is_address(ty) && self.types.is_complete(ty) {
             self.zero_object(target, ty);
         }
         let saved_target = self.init_target;
@@ -420,12 +416,13 @@ impl Parser<'_> {
         value: Value,
         span: Span,
     ) {
-        let Some(address) = self.leaf_address(target, offset, ty, span) else {
+        let (base, object) = target;
+        let Some(address) = self.address_within(base, object, offset, ty, span) else {
             return;
         };
         let before = self.error_count();
         let converted = self.convert(value, ty, span);
-        let Some(code) = converted.cir else {
+        if converted.cir.is_none() {
             // A value with neither code nor a constant would store nothing and leave the slot
             // holding the frame's bytes. A conversion that already said why is one diagnostic,
             // and this does not add a second.
@@ -436,31 +433,8 @@ impl Parser<'_> {
                 self.not_lowered(span, "this initialiser value");
             }
             return;
-        };
-        self.emit(|builder| builder.store(address, code, span));
-    }
-
-    /// The address of the leaf at `offset` bytes into the object. The slot's address is typed
-    /// `pointer to the object`, so walking it by a byte count is `pointer_walk`'s job with
-    /// `char` as the element - the scale is then one - and the last step is a bitcast to
-    /// `pointer to the leaf`.
-    fn leaf_address(
-        &mut self,
-        target: (cir::Value, TypeId),
-        offset: usize,
-        leaf: TypeId,
-        span: Span,
-    ) -> Option<cir::Value> {
-        let (base, object) = target;
-        let char = self.types.fundamental("char").unwrap();
-        let int = self.types.fundamental("int").unwrap();
-        let bytes = self.pointer_to(char);
-        let pointer = self.pointer_to(leaf);
-        let address = Value::new(self.pointer_to(object), None, false).with_cir(Some(base));
-        let index = self.constant_of(int, offset as i64, span);
-        let walked = self.pointer_walk(bytes, address, index, true, span);
-        let address = walked.cir?;
-        self.emit(|builder| builder.convert(cir::ConvertOp::Bitcast, address, bytes, pointer, span))
+        }
+        self.store_at(address, ty, converted, span);
     }
 
     /// Whether a designator comes next, now or after the comma - the reason the capacity check

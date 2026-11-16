@@ -464,19 +464,22 @@ impl Parser<'_> {
                     );
                 }
             }
-            if self.in_body() && !self.lowerable(ty) && !specs.is_typedef {
-                let span = self.span();
-                self.not_lowered(span, "a variable whose type is an aggregate or a function");
-            }
             // What this declarator names, when it is a thing with storage: a function is a
             // signature and a `typedef` is a name for a type, and neither is an object. `void`
-            // is not one either (C99 6.7.1p2), and an object past the host's budget is refused
-            // rather than truncated by whichever back end asks next (a frame slot is a `u32`).
+            // is not one either (C99 6.7.1p2), a record with no members has no size, and an
+            // object past the host's budget is refused rather than truncated by whichever back
+            // end asks next (a frame slot is a `u32`).
             let mut object =
                 !specs.is_typedef && !matches!(self.types.kind(ty), Type::Function { .. });
             if object && matches!(self.types.kind(ty), Type::Void) {
                 let span = self.span();
                 self.error(span, "a variable cannot have type void");
+                object = false;
+            }
+            if object && self.types.record_of(ty).is_some() && !self.types.is_complete(ty) {
+                let span = self.span();
+                let ty = self.describe(ty);
+                self.error(span, format!("a variable of {ty} has no size"));
                 object = false;
             }
             if object && !self.object_fits(ty) {

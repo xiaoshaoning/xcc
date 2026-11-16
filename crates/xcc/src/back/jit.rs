@@ -527,6 +527,67 @@ int twice(int x) { return host_double(x); }",
         );
     }
 
+    /// Aggregates in the frame (M6): a struct local is a slot, a member is its address plus an
+    /// offset, and a struct's *value* is the address of its bytes - so assignment copies, and a
+    /// `cir` register never has to hold one. Unions come along by the same layout, and a bitfield
+    /// has no address, so it is refused in code.
+    #[test]
+    fn aggregates_live_in_the_frame() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "struct P { int x; int y; };
+             struct Q { struct P inner; int z; };
+             struct A { int v[3]; };
+             struct N { struct N *next; int v; };
+             union U { int i; char c; };
+             struct D { double d; int i; };
+             int members(void) { struct P p; p.x = 3; p.y = 4; return p.x * 10 + p.y; }
+             int braces(void) { struct P p = {1, 2}; return p.x * 10 + p.y; }
+             int designator(void) { struct P p = {.y = 7}; return p.x * 10 + p.y; }
+             int copy(void) { struct P p = {1, 2}; struct P q = p; return q.x * 10 + q.y; }
+             int assigned(void) { struct P a = {1, 2}; struct P b = {3, 4}; a = b; return a.x * 10 + a.y; }
+             int through_pointer(void) { struct P a; struct P *p = &a; p->x = 5; p->y = 6; return p->x * 10 + p->y; }
+             int address_of_member(void) { struct P a = {1, 0}; int *q = &a.x; *q = 9; return a.x; }
+             int stepped(void) { struct P a = {1, 0}; a.x += 4; a.x++; return a.x; }
+             int by_size(void) { struct P p; return sizeof(p.y); }
+             int nested(void) { struct P p = {7, 8}; struct Q q; q.inner = p; q.z = 9; return q.inner.x * 10 + q.inner.y; }
+             int array_member(void) { struct A a; a.v[1] = 5; return a.v[1]; }
+             int array_of_structs(void) { struct P a[2] = {{1, 2}, {3, 4}}; return a[0].x * 10 + a[1].y; }
+             int list(void) { struct N a; struct N b; a.next = &b; a.v = 1; b.v = 2; return a.next->v; }
+             int punning(void) { union U u; u.i = 0x41424344; return u.c; }
+             int copied_union(void) { union U a; union U b; a.i = 0x41424344; b = a; return b.c; }
+             int of_assignment(void) { struct P a = {1, 0}; return (a = a).x; }
+             int doubles(void) { struct D a; struct D b; b.d = 3.5; b.i = 4; a = b; return (int)(a.d * 10.0) * 10 + a.i; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("members"), 34);
+        assert_eq!(call("braces"), 12);
+        // The members a list does not name are zero.
+        assert_eq!(call("designator"), 7);
+        assert_eq!(call("copy"), 12);
+        assert_eq!(call("assigned"), 34);
+        assert_eq!(call("through_pointer"), 56);
+        assert_eq!(call("address_of_member"), 9);
+        assert_eq!(call("stepped"), 6);
+        assert_eq!(call("by_size"), 4);
+        assert_eq!(call("nested"), 78);
+        assert_eq!(call("array_member"), 5);
+        assert_eq!(call("array_of_structs"), 14);
+        assert_eq!(call("list"), 2);
+        // A union's members all start at zero: the same bytes read as an `int` and as a `char`.
+        assert_eq!(call("punning"), 0x44);
+        assert_eq!(call("copied_union"), 0x44);
+        // An assignment's value is the object after the copy, so `.x` reads it.
+        assert_eq!(call("of_assignment"), 1);
+        // The copy is of bytes, so a `double` member comes along too.
+        assert_eq!(call("doubles"), 354);
+    }
+
     /// C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1. It used to be a narrowing
     /// conversion, so `(_Bool)2` stored 2, `(_Bool)0.5` was refused, and a pointer was not
     /// accepted at all - the three ways a narrowing conversion is the wrong rule.

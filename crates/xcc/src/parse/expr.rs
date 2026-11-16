@@ -110,7 +110,18 @@ impl Parser<'_> {
         let converted = self.convert(right, left.ty, span);
         match (left.place, converted.cir) {
             (Some(place), Some(value)) => {
-                self.emit(|builder| builder.store(place, value, span));
+                self.store_at(place, left.ty, converted, span);
+                if self.types.record_of(left.ty).is_some() {
+                    // The result of a record assignment is the object after the copy: a place, so
+                    // `(a = b).x` reads it, and not an lvalue.
+                    return Some(Value {
+                        ty: left.ty,
+                        constant: None,
+                        lvalue: false,
+                        cir: Some(place),
+                        place: Some(place),
+                    });
+                }
                 Some(Value::code(left.ty, value))
             }
             (None, _) if self.in_body() && !self.types.is_error(left.ty) => {
@@ -199,6 +210,16 @@ impl Parser<'_> {
         };
         // A `void` arm carries side effects and no value, so the join takes no parameter then.
         let void = matches!(self.types.kind(ty), Type::Void);
+        if !void && !self.lowerable(ty) {
+            // An aggregate arm would have to be carried through the join, and `cir` has no
+            // register for one: refused rather than half-lowered.
+            self.not_lowered(
+                question,
+                "a conditional expression whose arms are aggregates",
+            );
+            // Poisoned: nothing downstream complains a second time about a value with no address.
+            return Some(Value::temporary(self.types.error()));
+        }
         let params: Vec<TypeId> = if void { Vec::new() } else { vec![ty] };
         let join = self.emit(|builder| builder.append_block(&params, question))?;
         for (exit, arm) in [(then_exit, when_true), (else_exit, when_false)] {
@@ -613,7 +634,8 @@ impl Parser<'_> {
         }
         // Decay is the one place an array becomes a pointer (ADR-004): its value is already the
         // address of the array, typed `pointer to array[N]`, so the conversion C asks for here
-        // is a bitcast to `pointer to element` - and every use sees only the result.
+        // is a bitcast to `pointer to element` - and every use sees only the result. A record or
+        // a pointer returns above: neither decays, and a record is not loaded anywhere.
         let Some(address) = value.cir else {
             return Value::temporary(ty);
         };
@@ -935,6 +957,17 @@ impl Parser<'_> {
                     }
                     continue;
                 }
+                if !self.lowerable(argument.ty) && !self.types.is_error(argument.ty) {
+                    // An aggregate argument travels by value, which is the ABI's question;
+                    // refusing it here beats a signature the back end cannot make.
+                    self.not_lowered(span, "an aggregate argument");
+                    given += 1;
+                    values.push(argument);
+                    if !self.eat(",") {
+                        break;
+                    }
+                    continue;
+                }
                 if given < params.len() {
                     let expected = params[given];
                     let null_pointer = self.null_pointer_constant(&argument);
@@ -978,6 +1011,11 @@ impl Parser<'_> {
         if variadic {
             self.not_lowered(span, "a call to a variadic function");
             return Value::new(result, None, false);
+        }
+        if !self.lowerable(result) && !self.types.is_error(result) {
+            self.not_lowered(span, "an aggregate returned by value");
+            // Poisoned: `p = make(42)` must not complain a second time about the copy.
+            return Value::temporary(self.types.error());
         }
         self.emit_call(callee, &params, values, result, span)
     }
@@ -1102,9 +1140,6 @@ impl Parser<'_> {
 
     /// `a.b` and `p->b`: the member's type, and whether it can be assigned to.
     pub(super) fn member_access(&mut self, base: Value, arrow: bool, span: Span) -> Value {
-        // The layout exists, but lowering a field needs address arithmetic on the aggregate,
-        // which the emitter does not do yet.
-        self.not_lowered(span, "a member access in code");
         let Some(token) = self.peek().copied() else {
             return Value::temporary(self.types.error());
         };
@@ -1139,14 +1174,35 @@ impl Parser<'_> {
             self.error(span, format!("`{ty}` is not complete yet"));
             return Value::temporary(self.types.error());
         }
-        match self.types.member(record, token.text) {
-            Some(member) => Value::new(member.ty, None, base.lvalue || arrow),
-            None => {
-                let name = self.spell_of(token.text).to_owned();
-                self.error(span, format!("`{name}` is not a member"));
-                Value::temporary(self.types.error())
-            }
+        let Some(member) = self.types.member(record, token.text) else {
+            let name = self.spell_of(token.text).to_owned();
+            self.error(span, format!("`{name}` is not a member"));
+            return Value::temporary(self.types.error());
+        };
+        let (member_ty, offset, bitfield) = (member.ty, member.offset, member.bits);
+        if bitfield.is_some() {
+            // A bitfield shares its storage unit with its neighbours: it has no address, and
+            // reading one is a shift the emitter does not do yet.
+            self.not_lowered(span, "a bitfield in code");
+            return Value::temporary(self.types.error());
         }
+        let Some(base_address) = base.cir else {
+            // The object has no address this compiler can name yet (a global, as `named_value`
+            // says): the member is a place all the same, and whatever uses it refuses in its own
+            // words rather than this saying the same thing a second time.
+            return Value::new(member_ty, None, base.lvalue || arrow);
+        };
+        let aggregate_ty = if arrow {
+            self.types.pointee(base.ty)
+        } else {
+            base.ty
+        };
+        let Some(address) =
+            self.address_within(base_address, aggregate_ty, offset as usize, member_ty, span)
+        else {
+            return Value::new(member_ty, None, true);
+        };
+        self.read_place(member_ty, address, span)
     }
 
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {

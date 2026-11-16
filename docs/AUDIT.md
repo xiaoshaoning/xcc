@@ -78,6 +78,45 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: aggregates in the frame - 2026-11-16 - a struct's value is the address of its bytes
+
+Struct and union locals, member access, struct assignment and brace initialisation are lowered. The
+decision that made it small is ADR-004's rule extended: `cir` has no register for an aggregate, so
+**an aggregate expression's value is the address of the object holding it** - the same shape an
+array already had. `value_is_address` says so, `read_place` therefore never loads one, and the
+kernel of the change is one new sentence in `assign`: a record is put into an object by a *copy*,
+not a store.
+
+1. **One place a value lands in an object.** `store_at` decides between a store (a machine value)
+   and a byte copy (`copy_object`), and both the assignment and the initialiser's leaf writer call
+   it. Without it, `struct P q = p;` stored the *address* of `p` into `q` - eight bytes into a
+   struct that may be smaller - and the compiler would have been quietly wrong.
+2. **The copy is byte-wise.** A union, a bitfield's storage unit and the padding between members
+   come along without the copier knowing the layout, which is `Types`' knowledge (ADR-004). M10's
+   optimiser is where a wider copy belongs.
+3. **`address_within` is the one byte-arithmetic helper.** It was `leaf_address` in the initialiser
+   code; member access and the aggregate copy need the same walk, so it moved next to
+   `pointer_walk` and all three ask it.
+4. **The initialiser's top-level elision branch was wrong, and this found it.** `struct P q = p;`
+   read as "a brace-elided list for a record" and descended into `p`'s first member, so a struct
+   *copy* was refused as "cannot initialise int with struct P". C99 6.7.8p1 says an initialiser is
+   a brace list or an assignment-expression: at the top level there is no elision, and the branch
+   is gone. Elision stays inside a list, where it belongs.
+
+Refused with a diagnostic rather than half-lowered, each found by probing: a **bitfield read in
+code** (it has no address of its own), a **conditional expression whose arms are aggregates** (the
+join would need a register), an **aggregate argument** and an **aggregate returned by value** (the
+Win64 aggregate ABI - the next slice), and a **struct value inside a brace list** (`{v}`), where
+elision would have to know the expression's type before reading it. A `void` object, a record with
+no members and an object past the budget were already refused.
+
+Two cascades the corpus gate caught and this closed: a call returning a struct poisoned the value
+so the assignment does not complain a second time, and a member of an object with no address (a
+global) is a place-less lvalue - the consumer refuses in its own words, as `named_value` already
+did for the global itself.
+
+146 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### the budget and `_Bool`, reviewed - 2026-11-16 - `void` was a slot the back end could not make
 
 The review of the object-budget and `_Bool` commits. Two real findings, one of them older.

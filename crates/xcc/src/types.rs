@@ -458,10 +458,15 @@ impl Types {
     }
 
     /// Whether a value of this type *is* the address of the thing rather than bytes read from
-    /// it: an array (C99 6.3.2.1p3) and a function designator (6.3.2.1p4). These are the cases
+    /// it: an array (C99 6.3.2.1p3), a function designator (6.3.2.1p4), and a struct or union,
+    /// which `cir` has no register for - an aggregate expression is the address of the object
+    /// holding it, so assignment copies bytes and never stores an address. These are the cases
     /// where loading the place would read the wrong thing, or nothing at all (ADR-004).
     pub fn value_is_address(&self, id: TypeId) -> bool {
-        matches!(self.kind(id), Type::Array { .. } | Type::Function { .. })
+        matches!(
+            self.kind(id),
+            Type::Array { .. } | Type::Function { .. } | Type::Record(_)
+        )
     }
 
     /// Whether a value of this type is a pointer.

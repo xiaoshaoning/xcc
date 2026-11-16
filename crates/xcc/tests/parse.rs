@@ -301,6 +301,34 @@ fn what_is_not_implemented_is_said_not_guessed() {
 }
 
 #[test]
+fn what_aggregates_still_cannot_do() {
+    // A bitfield has no address of its own, so a member access to one is refused rather than read
+    // out of its whole storage unit.
+    refuses(
+        "struct S { int a : 3; }; int f(void) { struct S s; s.a = 1; return 0; }",
+        "a bitfield in code",
+    );
+    // An aggregate cannot be carried through a join, passed by value, or returned by value yet:
+    // each is the ABI's question, and each says so instead of half-lowering.
+    refuses(
+        "struct P { int x; }; int f(int c) { struct P a = {1}; struct P b = {2}; return (c ? a : b).x; }",
+        "a conditional expression whose arms are aggregates",
+    );
+    refuses(
+        "struct P { int x; }; int sink(struct P p) { return p.x; } int f(void) { struct P a = {3}; return sink(a); }",
+        "an aggregate argument",
+    );
+    refuses(
+        "struct P { int x; }; struct P make(int v) { struct P r; r.x = v; return r; } int f(void) { struct P p; p = make(1); return p.x; }",
+        "an aggregate returned by value",
+    );
+    refuses(
+        "struct Incomplete; int f(void) { struct Incomplete s; return 0; }",
+        "has no size",
+    );
+}
+
+#[test]
 fn only_an_object_has_storage() {
     // C99 6.7.1p2: `void` is not an object type. A local, a global and a parameter each say so;
     // none of them used to reach the back end and come back as an internal error.

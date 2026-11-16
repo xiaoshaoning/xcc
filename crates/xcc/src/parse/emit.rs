@@ -42,8 +42,9 @@ impl Parser<'_> {
     }
 
     /// A value read from a place: a load, unless the type's value *is* its address, which is
-    /// `value_is_address` - then the place is the value, typed `pointer to array[N]` or
-    /// `pointer to function`, and `decay` bitcasts it to what the use expects (ADR-004).
+    /// `value_is_address` - then the place is the value, typed `pointer to array[N]`, `pointer to
+    /// function` or `pointer to struct`, and `decay` bitcasts an array's to what a use expects
+    /// (ADR-004). An aggregate is never loaded: `cir` has no register for one.
     pub(super) fn read_place(&mut self, ty: TypeId, place: cir::Value, span: Span) -> Value {
         if self.types.value_is_address(ty) {
             return Value {
@@ -225,6 +226,78 @@ impl Parser<'_> {
         match back {
             Some(back) => Value::code(pointer_ty, back),
             None => result,
+        }
+    }
+
+    /// The address of the object `offset` bytes into the place `base`, typed `pointer to leaf`.
+    /// `object` is the type the place is: a slot's address is `pointer to object`, so walking it
+    /// by a byte count is `pointer_walk`'s job with `char` as the element - the scale is then
+    /// one - and the last step is a bitcast to `pointer to leaf`. One place for "somewhere
+    /// inside a thing": an initialiser's leaf, a member, and an aggregate copy all ask it.
+    pub(super) fn address_within(
+        &mut self,
+        base: cir::Value,
+        object: TypeId,
+        offset: usize,
+        leaf: TypeId,
+        span: Span,
+    ) -> Option<cir::Value> {
+        let char = self.types.fundamental("char").unwrap();
+        let int = self.types.fundamental("int").unwrap();
+        let bytes = self.pointer_to(char);
+        let pointer = self.pointer_to(leaf);
+        let from = self.pointer_to(object);
+        let address = Value::new(from, None, false).with_cir(Some(base));
+        let index = self.constant_of(int, offset as i64, span);
+        let walked = self.pointer_walk(bytes, address, index, true, span);
+        let address = walked.cir?;
+        self.emit(|builder| builder.convert(cir::ConvertOp::Bitcast, address, bytes, pointer, span))
+    }
+
+    /// Put `value` into the object at `place`, whose type is `ty`: a store for a machine value,
+    /// and a byte copy for a record, whose value is the address of another object rather than a
+    /// register. The one place a value lands in an object, whichever kind it is.
+    pub(super) fn store_at(&mut self, place: cir::Value, ty: TypeId, value: Value, span: Span) {
+        if self.types.record_of(ty).is_some() {
+            if let Some(source) = value.cir {
+                self.copy_object(place, ty, source, value.ty, ty, span);
+            }
+            return;
+        }
+        if let Some(code) = value.cir {
+            self.emit(|builder| builder.store(place, code, span));
+        }
+    }
+
+    /// Copy an object of `ty` from `source` to `destination`: one byte at a time, because `cir`
+    /// has no aggregate register and a byte load is always aligned. A union, a bitfield's unit
+    /// and the padding in between come along without this needing to know the layout - which is
+    /// the point: `Types` owns it. M10's optimiser is where a wider copy belongs.
+    pub(super) fn copy_object(
+        &mut self,
+        destination: cir::Value,
+        destination_ty: TypeId,
+        source: cir::Value,
+        source_ty: TypeId,
+        copy_ty: TypeId,
+        span: Span,
+    ) {
+        let Some(size) = self.types.size_of(copy_ty) else {
+            return;
+        };
+        let char = self.types.fundamental("char").unwrap();
+        for offset in 0..size as usize {
+            let Some(from) = self.address_within(source, source_ty, offset, char, span) else {
+                return;
+            };
+            let Some(to) = self.address_within(destination, destination_ty, offset, char, span)
+            else {
+                return;
+            };
+            let Some(byte) = self.emit(|builder| builder.load(from, char, span)) else {
+                return;
+            };
+            self.emit(|builder| builder.store(to, byte, span));
         }
     }
 
