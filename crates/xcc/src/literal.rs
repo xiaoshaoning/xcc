@@ -163,6 +163,36 @@ pub fn string_length(spelling: &str) -> u64 {
     length
 }
 
+/// The value of a floating constant (C99 6.4.4.2): how many bits its type has - 32 for the `f`
+/// suffix, 64 otherwise, since this compiler makes `long double` 64-bit - and the bits
+/// themselves.
+///
+/// `None` for a hexadecimal constant (`0x1.8p3`): C99 has them and this reader does not, which
+/// the caller says rather than reading the digits as something else. The value is rounded to
+/// the type exactly once, through `f64`, which is what C says the result is.
+pub fn float_value(spelling: &str) -> Option<(u8, u64)> {
+    let lower = spelling.to_ascii_lowercase();
+    let single = lower.ends_with('f');
+    let body = lower.trim_end_matches(['f', 'l']);
+    if body.starts_with("0x") {
+        return None;
+    }
+    // `1.` and `.5` are constants; `f64`'s reader wants a digit on both sides of the point.
+    let body = if body.starts_with('.') {
+        format!("0{body}")
+    } else if body.ends_with('.') {
+        format!("{body}0")
+    } else {
+        body.to_owned()
+    };
+    let value: f64 = body.parse().ok()?;
+    Some(if single {
+        (32, u64::from((value as f32).to_bits()))
+    } else {
+        (64, value.to_bits())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +251,25 @@ mod tests {
                 "{spelling}"
             );
         }
+    }
+
+    #[test]
+    fn a_floating_constant_is_read_once_at_its_type() {
+        assert_eq!(float_value("1.5"), Some((64, 1.5f64.to_bits())));
+        assert_eq!(float_value("1.5f"), Some((32, u64::from(1.5f32.to_bits()))));
+        assert_eq!(float_value("1.5L"), Some((64, 1.5f64.to_bits())));
+        assert_eq!(float_value("1."), Some((64, 1.0f64.to_bits())));
+        assert_eq!(float_value(".5"), Some((64, 0.5f64.to_bits())));
+        assert_eq!(float_value("1e3"), Some((64, 1000.0f64.to_bits())));
+        assert_eq!(float_value("1.5e-3"), Some((64, 1.5e-3f64.to_bits())));
+        // An `f` constant is rounded to `float`, not kept as the wider double.
+        assert_eq!(float_value("0.1f"), Some((32, u64::from(0.1f32.to_bits()))));
+        assert_eq!(
+            float_value("0x1.8p1"),
+            None,
+            "hexadecimal floats are not read yet"
+        );
+        assert_eq!(float_value("1.5x"), None);
     }
 
     #[test]

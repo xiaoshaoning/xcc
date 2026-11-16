@@ -430,36 +430,33 @@ impl<M: Module> Lowerer<'_, M> {
             } => {
                 let (left, right) = (value(values, *left)?, value(values, *right)?);
                 let signed = matches!(self.types.kind(*ty), Type::Int { signed: true, .. });
-                let float = self.types.is_float(*ty);
-                let comparison = match (op, float, signed) {
-                    (CmpOp::Eq, _, _) => ir::condcodes::IntCC::Equal,
-                    (CmpOp::Ne, _, _) => ir::condcodes::IntCC::NotEqual,
-                    (CmpOp::Less, false, true) => ir::condcodes::IntCC::SignedLessThan,
-                    (CmpOp::Less, false, false) => ir::condcodes::IntCC::UnsignedLessThan,
-                    (CmpOp::LessEqual, false, true) => ir::condcodes::IntCC::SignedLessThanOrEqual,
-                    (CmpOp::LessEqual, false, false) => {
-                        ir::condcodes::IntCC::UnsignedLessThanOrEqual
-                    }
-                    (CmpOp::Greater, false, true) => ir::condcodes::IntCC::SignedGreaterThan,
-                    (CmpOp::Greater, false, false) => ir::condcodes::IntCC::UnsignedGreaterThan,
-                    (CmpOp::GreaterEqual, false, true) => {
-                        ir::condcodes::IntCC::SignedGreaterThanOrEqual
-                    }
-                    (CmpOp::GreaterEqual, false, false) => {
+                // A float is compared with `fcmp` for every operator: `icmp.f64` is not an
+                // instruction, and C's `!=` is the *unordered* one, which is true for a NaN.
+                if self.types.is_float(*ty) {
+                    let code = match op {
+                        CmpOp::Eq => ir::condcodes::FloatCC::Equal,
+                        CmpOp::Ne => ir::condcodes::FloatCC::NotEqual,
+                        CmpOp::Less => ir::condcodes::FloatCC::LessThan,
+                        CmpOp::LessEqual => ir::condcodes::FloatCC::LessThanOrEqual,
+                        CmpOp::Greater => ir::condcodes::FloatCC::GreaterThan,
+                        CmpOp::GreaterEqual => ir::condcodes::FloatCC::GreaterThanOrEqual,
+                    };
+                    let flag = builder.ins().fcmp(code, left, right);
+                    Self::widen_flag(builder, values, *result, flag);
+                    return Ok(());
+                }
+                let comparison = match (op, signed) {
+                    (CmpOp::Eq, _) => ir::condcodes::IntCC::Equal,
+                    (CmpOp::Ne, _) => ir::condcodes::IntCC::NotEqual,
+                    (CmpOp::Less, true) => ir::condcodes::IntCC::SignedLessThan,
+                    (CmpOp::Less, false) => ir::condcodes::IntCC::UnsignedLessThan,
+                    (CmpOp::LessEqual, true) => ir::condcodes::IntCC::SignedLessThanOrEqual,
+                    (CmpOp::LessEqual, false) => ir::condcodes::IntCC::UnsignedLessThanOrEqual,
+                    (CmpOp::Greater, true) => ir::condcodes::IntCC::SignedGreaterThan,
+                    (CmpOp::Greater, false) => ir::condcodes::IntCC::UnsignedGreaterThan,
+                    (CmpOp::GreaterEqual, true) => ir::condcodes::IntCC::SignedGreaterThanOrEqual,
+                    (CmpOp::GreaterEqual, false) => {
                         ir::condcodes::IntCC::UnsignedGreaterThanOrEqual
-                    }
-                    (_, true, _) => {
-                        let code = match op {
-                            CmpOp::Eq => ir::condcodes::FloatCC::Equal,
-                            CmpOp::Ne => ir::condcodes::FloatCC::NotEqual,
-                            CmpOp::Less => ir::condcodes::FloatCC::LessThan,
-                            CmpOp::LessEqual => ir::condcodes::FloatCC::LessThanOrEqual,
-                            CmpOp::Greater => ir::condcodes::FloatCC::GreaterThan,
-                            CmpOp::GreaterEqual => ir::condcodes::FloatCC::GreaterThanOrEqual,
-                        };
-                        let flag = builder.ins().fcmp(code, left, right);
-                        Self::widen_flag(builder, values, *result, flag);
-                        return Ok(());
                     }
                 };
                 let flag = builder.ins().icmp(comparison, left, right);
@@ -489,7 +486,10 @@ impl<M: Module> Lowerer<'_, M> {
                 ..
             } => {
                 let operand = value(values, *operand)?;
-                let (from, to) = (self.machine_type(*from)?, self.machine_type(*to)?);
+                // The C types as well as the machine ones: an unsigned integer converts from and
+                // to unsigned, and only the C type says which it is.
+                let (from_ty, to_ty) = (*from, *to);
+                let (from, to) = (self.machine_type(from_ty)?, self.machine_type(to_ty)?);
                 let converted = match op {
                     ConvertOp::Bitcast => {
                         if from == to {
@@ -501,8 +501,46 @@ impl<M: Module> Lowerer<'_, M> {
                     ConvertOp::Truncate => builder.ins().ireduce(to, operand),
                     ConvertOp::SignExtend => builder.ins().sextend(to, operand),
                     ConvertOp::ZeroExtend => builder.ins().uextend(to, operand),
-                    ConvertOp::IntToFloat => builder.ins().fcvt_from_sint(to, operand),
-                    ConvertOp::FloatToInt => builder.ins().fcvt_to_sint(to, operand),
+                    // An unsigned integer converts from and to unsigned: `fcvt_from_sint` of
+                    // 4e9 held in 32 bits would come out negative. x64's convert takes a 32- or
+                    // 64-bit integer, so a `char` or a `short` is widened on the way in and the
+                    // result is narrowed on the way out.
+                    ConvertOp::IntToFloat => {
+                        let unsigned =
+                            matches!(self.types.kind(from_ty), Type::Int { signed: false, .. });
+                        let operand = match from {
+                            ir::types::I8 | ir::types::I16 if unsigned => {
+                                builder.ins().uextend(ir::types::I32, operand)
+                            }
+                            ir::types::I8 | ir::types::I16 => {
+                                builder.ins().sextend(ir::types::I32, operand)
+                            }
+                            _ => operand,
+                        };
+                        if unsigned {
+                            builder.ins().fcvt_from_uint(to, operand)
+                        } else {
+                            builder.ins().fcvt_from_sint(to, operand)
+                        }
+                    }
+                    ConvertOp::FloatToInt => {
+                        let unsigned =
+                            matches!(self.types.kind(to_ty), Type::Int { signed: false, .. });
+                        let wide = match to {
+                            ir::types::I8 | ir::types::I16 => ir::types::I32,
+                            _ => to,
+                        };
+                        let converted = if unsigned {
+                            builder.ins().fcvt_to_uint(wide, operand)
+                        } else {
+                            builder.ins().fcvt_to_sint(wide, operand)
+                        };
+                        if wide == to {
+                            converted
+                        } else {
+                            builder.ins().ireduce(to, converted)
+                        }
+                    }
                     ConvertOp::FloatExtend => builder.ins().fpromote(to, operand),
                     ConvertOp::FloatTruncate => builder.ins().fdemote(to, operand),
                 };

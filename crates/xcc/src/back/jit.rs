@@ -433,6 +433,100 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call_void("merged"), 5);
     }
 
+    /// Floats and doubles (M6): literals, arithmetic, comparisons, conversions both ways, a
+    /// float condition, and `sizeof`. A float constant is a bit pattern in `Value::constant`,
+    /// which is why `null_pointer_constant` asks about the type and not just the value.
+    #[test]
+    fn floats_have_values_and_arithmetic() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "double add(double a, double b) { return a + b; }
+             double scaled(int n) { return n * 1.5; }
+             int truncate(double d) { return (int)d; }
+             int narrow_to_short(double d) { return (short)d; }
+             double from_char(void) { char c = 7; return c; }
+             int less(double a, double b) { return a < b; }
+             int equal(double a, double b) { return a == b; }
+             int not_equal(double a, double b) { return a != b; }
+             double widened(float f) { return f * 2.0; }
+             float narrowed(double d) { return d; }
+             int condition(double d) { if (d) { return 1; } return 0; }
+             int logical(double d) { return d && 1; }
+             int chosen(double d) { return d ? 10 : 20; }
+             double negative(void) { return -1.5; }
+             int sizes(void) { return sizeof(float) * 100 + sizeof(long double); }
+             int from_double(double d) { int i = d; return i; }
+             int unsigned_from(double d) { unsigned u = d; return (int)u; }",
+        )
+        .expect("it compiles");
+        let two = |name: &str, a: f64, b: f64| -> f64 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(f64, f64) -> f64 = unsafe { std::mem::transmute(address) };
+            function(a, b)
+        };
+        let compare = |name: &str, a: f64, b: f64| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(f64, f64) -> i32 = unsafe { std::mem::transmute(address) };
+            function(a, b)
+        };
+        let one = |name: &str, a: f64| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(f64) -> i32 = unsafe { std::mem::transmute(address) };
+            function(a)
+        };
+        let call_int = |name: &str, a: i32| -> f64 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(i32) -> f64 = unsafe { std::mem::transmute(address) };
+            function(a)
+        };
+        let call_float = |name: &str, a: f32| -> f64 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(f32) -> f64 = unsafe { std::mem::transmute(address) };
+            function(a)
+        };
+        let to_float = |name: &str, a: f64| -> f32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(f64) -> f32 = unsafe { std::mem::transmute(address) };
+            function(a)
+        };
+        let no_argument = |name: &str| -> f64 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> f64 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        let sizes = jit.function("sizes").expect("the function is there");
+        let sizes: extern "C" fn() -> i32 = unsafe { std::mem::transmute(sizes) };
+
+        assert_eq!(two("add", 1.25, 2.5), 3.75);
+        assert_eq!(call_int("scaled", 4), 6.0);
+        assert_eq!(one("truncate", 3.9), 3);
+        // A conversion to a `char` or a `short` is not an x64 instruction: it goes through 32 bits.
+        assert_eq!(one("narrow_to_short", 3.9), 3);
+        // ...and one from a narrow integer is widened first.
+        assert_eq!(no_argument("from_char"), 7.0);
+        assert_eq!(compare("less", 1.0, 2.0), 1);
+        assert_eq!(compare("less", 2.0, 1.0), 0);
+        assert_eq!(compare("equal", 2.5, 2.5), 1);
+        assert_eq!(compare("not_equal", 2.5, 2.5), 0);
+        assert_eq!(compare("not_equal", 2.5, 2.0), 1);
+        assert_eq!(call_float("widened", 1.5), 3.0);
+        assert_eq!(to_float("narrowed", 1.5), 1.5f32);
+        // A float condition is a comparison, not a conversion: NaN is true, and 0.0 is false.
+        assert_eq!(one("condition", 0.5), 1);
+        assert_eq!(one("condition", 0.0), 0);
+        assert_eq!(one("logical", 0.0), 0);
+        assert_eq!(one("logical", 2.0), 1);
+        assert_eq!(one("chosen", 0.0), 20);
+        assert_eq!(one("chosen", -1.0), 10);
+        assert_eq!(no_argument("negative"), -1.5);
+        assert_eq!(sizes(), 408);
+        assert_eq!(one("from_double", 42.9), 42);
+        assert_eq!(
+            one("unsigned_from", 4_000_000_000.0),
+            4_000_000_000u32 as i32
+        );
+    }
+
     /// C99 6.3.1.8: the integer promotions come before the usual arithmetic conversions, so
     /// `char + char` is `int + int` and cannot wrap at eight bits. It did: 120 + 121 came back
     /// as -15, because `usual_arithmetic` compared the two types without promoting either.

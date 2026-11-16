@@ -254,11 +254,8 @@ fn a_variable_needs_a_complete_type() {
     // An initialiser is what gives the array a size, so there is nothing wrong with it.
     parses("int f(void) { char s[] = \"abc\"; return s[0]; }");
     parses("int f(void) { int a[] = {1, 2, 3}; return a[2]; }");
-    // A value the initialiser cannot write is said, not stored as whatever the frame held.
-    refuses(
-        "int f(void) { double d = 1.5; return 0; }",
-        "this initialiser value is not lowered yet",
-    );
+    // A float has a value now, so its initialiser is a store like any other.
+    parses("int f(void) { double d = 1.5; return 0; }");
     refuses(
         "int f(void) { int x = \"abc\"; return x; }",
         "cannot initialise int with pointer to char",

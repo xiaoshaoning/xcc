@@ -106,7 +106,10 @@ impl Body {
 #[derive(Debug, Clone, Copy)]
 struct Value {
     ty: TypeId,
-    /// The value, when it is known at compile time.
+    /// The value, when it is known at compile time: an integer's value, or a float's bit
+    /// pattern, which is what `cir::Const` carries for either. `Parser::constant_is_zero`
+    /// and `Parser::null_pointer_constant` are the two questions asked of it, and they do not
+    /// mean the same thing for a float (`-0.0` is zero, and is not a null pointer).
     constant: Option<i64>,
     /// Whether it can be assigned to: a variable, an element, a dereference.
     lvalue: bool,
@@ -517,16 +520,33 @@ impl Parser<'_> {
                         .and_then(|entry| entry.storage)
                         .map(|place| (place, ty));
                     self.initialize_local(ty, target);
-                } else if let Some(bytes) = self.initializer_bytes(ty) {
-                    if let Some(name) = name {
-                        self.globals.push(cir::Global {
-                            name: self.spell_of(name).to_owned(),
-                            ty,
-                            defined: true,
-                            init: Some(bytes),
-                            external: true,
-                            span,
-                        });
+                } else {
+                    let before = self.error_count();
+                    match self.initializer_bytes(ty) {
+                        Some(bytes) => {
+                            if let Some(name) = name {
+                                self.globals.push(cir::Global {
+                                    name: self.spell_of(name).to_owned(),
+                                    ty,
+                                    defined: true,
+                                    init: Some(bytes),
+                                    external: true,
+                                    span,
+                                });
+                            }
+                        }
+                        // C99 6.7.8p4 wants a constant expression here, and an object this
+                        // cannot evaluate would be declared with no bytes at all - a wrong
+                        // program, not a smaller one. One diagnostic, and not a second one on
+                        // top of whatever the initialiser already said.
+                        None => {
+                            if self.error_count() == before {
+                                self.error(
+                                    span,
+                                    "a file-scope initialiser this compiler cannot evaluate is not lowered yet",
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1332,7 +1352,22 @@ block0 (entry)(v0: int, v1: int):
             .find(|global| global.name == "s")
             .expect("the array is a global");
         assert_eq!(s.init.as_deref(), Some(&b"abcd\0"[..]));
-        // A value that is not a constant clears the buffer: no global claims bytes it lacks.
+        // A float initialiser is its bit pattern, and a folded one is folded in its own width.
+        let (unit, _, diagnostics) = module("double d = 1.5; double e = 1.5 * 2; float f = 0.5f;");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        for (name, wanted) in [
+            ("d", 1.5f64.to_bits().to_le_bytes().to_vec()),
+            ("e", 3.0f64.to_bits().to_le_bytes().to_vec()),
+            ("f", 0.5f32.to_bits().to_le_bytes().to_vec()),
+        ] {
+            let global = unit
+                .globals
+                .iter()
+                .find(|global| global.name == name)
+                .expect("the object is a global");
+            assert_eq!(global.init.as_deref(), Some(&wanted[..]), "{name}");
+        }
+        // A value that is not a constant is refused, not declared with no bytes at all.
         let (unit, names, _) = module("int f(void) { return 1; } int y = f();");
         let text = cir::dump::dump(&unit, &names);
         assert!(!text.contains("global y:"), "{text}");

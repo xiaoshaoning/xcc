@@ -66,6 +66,53 @@ impl Parser<'_> {
         }
     }
 
+    /// Whether a compile-time constant is C's *zero*: an integer 0, a null pointer, or a float
+    /// whose value is 0.0 - `-0.0` included, which `fcmp eq` also calls equal.
+    pub(super) fn constant_is_zero(&self, value: &Value) -> bool {
+        let Some(bits) = value.constant else {
+            return false;
+        };
+        if !self.types.is_float(value.ty) {
+            return bits == 0;
+        }
+        if self.types.size_of(value.ty) == Some(4) {
+            f32::from_bits(bits as u32) == 0.0
+        } else {
+            f64::from_bits(bits as u64) == 0.0
+        }
+    }
+
+    /// Whether a value is a *null pointer constant*: an *integer* constant expression with the
+    /// value zero (C99 6.3.2.3p3). A float `0.0` is zero and is not one, which is why this is
+    /// not `constant_is_zero`.
+    pub(super) fn null_pointer_constant(&self, value: &Value) -> bool {
+        self.types.is_integer(value.ty) && value.constant == Some(0)
+    }
+
+    /// `value` compared with zero, as an `int` 0 or 1: `Ne` is what a condition branches on
+    /// (C99 6.3.1.2) and what `&&`/`||` hand their join, `Eq` is `!value` (6.5.3.3). A float is
+    /// *compared*, never converted: NaN is a true condition, and `fcvt_to_sint` of a NaN is
+    /// undefined.
+    pub(super) fn compare_to_zero(
+        &mut self,
+        value: Value,
+        op: cir::CmpOp,
+        span: Span,
+    ) -> Option<cir::Value> {
+        if self.types.is_error(value.ty) {
+            return None;
+        }
+        let ty = value.ty;
+        let zero = self.constant_of(ty, 0, span);
+        let int = self.types.fundamental("int").unwrap();
+        match (value.cir, zero.cir) {
+            (Some(value), Some(zero)) => {
+                self.emit(|builder| builder.compare(op, value, zero, ty, int, span))
+            }
+            _ => None,
+        }
+    }
+
     /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
     /// signed, decide which conversion C needs.
     pub(super) fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {
@@ -75,10 +122,10 @@ impl Parser<'_> {
         if self.types.is_error(wanted) {
             return Value::new(wanted, value.constant, false);
         }
-        // C99 6.3.2.3p3: the integer constant zero converts to a null pointer of any pointer
-        // type, whichever integer type it was written as. It is a property of the value, so
-        // it belongs here rather than in each caller that stores or returns one.
-        if self.types.is_pointer(wanted) && value.constant == Some(0) {
+        // C99 6.3.2.3p3: the null pointer constant converts to a pointer of any type. It is a
+        // property of the value, so it belongs here rather than in each caller that stores or
+        // returns one.
+        if self.types.is_pointer(wanted) && self.null_pointer_constant(&value) {
             return self.constant_of(wanted, 0, span);
         }
         let Some(source) = value.cir else {
@@ -265,6 +312,10 @@ impl Parser<'_> {
         }
         let from_float = self.types.is_float(from);
         let to_float = self.types.is_float(to);
+        // `_Bool` holds 0 or 1, and no instruction conversion of 0.5 gives 1.
+        if from_float && matches!(self.types.kind(to), Type::Bool) {
+            return None;
+        }
         match (from_float, to_float) {
             (true, true) => Some(if self.types.size_of(to)? >= self.types.size_of(from)? {
                 cir::ConvertOp::FloatExtend

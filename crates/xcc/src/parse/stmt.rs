@@ -180,7 +180,8 @@ impl Parser<'_> {
         if let Some(condition) = condition {
             self.require_scalar(&condition, "the condition of `if`");
         }
-        let test = condition.and_then(|condition| condition.cir);
+        let test =
+            condition.and_then(|condition| self.compare_to_zero(condition, cir::CmpOp::Ne, span));
         let (then_block, else_block, join) = match (test, self.in_body()) {
             (Some(_), true) => (
                 self.new_block(span),
@@ -233,9 +234,8 @@ impl Parser<'_> {
         }
         if let Some(condition) = self.parenthesised_condition("`while`") {
             self.require_scalar(&condition, "the condition of `while`");
-            if let (Some(condition), Some(body_block), Some(exit)) =
-                (condition.cir, body_block, exit)
-            {
+            let test = self.compare_to_zero(condition, cir::CmpOp::Ne, span);
+            if let (Some(condition), Some(body_block), Some(exit)) = (test, body_block, exit) {
                 self.emit(|builder| {
                     builder.branch(
                         condition,
@@ -324,7 +324,8 @@ impl Parser<'_> {
         if !self.eat(";") {
             self.error_at_current("expected `;` after `do ... while`");
         }
-        condition.and_then(|condition| condition.cir)
+        let span = self.span();
+        condition.and_then(|condition| self.compare_to_zero(condition, cir::CmpOp::Ne, span))
     }
 
     /// `for`: the increment lives in a block of its own, which is parsed (and filled) before the
@@ -359,9 +360,8 @@ impl Parser<'_> {
         if !self.at_punct(";") {
             if let Some(condition) = self.expression() {
                 self.require_scalar(&condition, "the condition of `for`");
-                if let (Some(condition), Some(body_block), Some(exit)) =
-                    (condition.cir, body_block, exit)
-                {
+                let test = self.compare_to_zero(condition, cir::CmpOp::Ne, span);
+                if let (Some(condition), Some(body_block), Some(exit)) = (test, body_block, exit) {
                     self.emit(|builder| {
                         builder.branch(
                             condition,
@@ -467,7 +467,7 @@ impl Parser<'_> {
                     "this function returns nothing, so `return` takes no value",
                 );
             } else {
-                let null_pointer = self.types.is_pointer(result) && value.constant == Some(0);
+                let null_pointer = self.null_pointer_constant(&value);
                 if !null_pointer && !self.types.is_assignable(result, value.ty) {
                     let (from, to) = (self.describe(value.ty), self.describe(result));
                     self.error(span, format!("this function returns {to}, not {from}"));

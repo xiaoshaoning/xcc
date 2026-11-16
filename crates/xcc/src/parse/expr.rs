@@ -89,7 +89,7 @@ impl Parser<'_> {
             self.error(span, "cannot assign to an array");
             return Some(Value::temporary(left.ty));
         }
-        let null_pointer = self.types.is_pointer(left.ty) && right.constant == Some(0);
+        let null_pointer = self.null_pointer_constant(&right);
         if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
             let (to, from) = (self.describe(left.ty), self.describe(right.ty));
             self.error(span, format!("cannot assign {from} to {to}"));
@@ -128,7 +128,11 @@ impl Parser<'_> {
         self.require_scalar(&condition, "the condition of `?:`");
         // Code is wanted unless there is none to want: a constant being folded, or an operand
         // nothing evaluates.
-        let branch_on = condition.cir.filter(|_| self.in_body());
+        let branch_on = if self.in_body() {
+            self.compare_to_zero(condition, cir::CmpOp::Ne, question)
+        } else {
+            None
+        };
         let (then_block, else_block) = if branch_on.is_some() {
             (self.new_block(question), self.new_block(question))
         } else {
@@ -163,12 +167,14 @@ impl Parser<'_> {
             .map(|value| self.decay(value))?;
         let else_exit = self.current_block();
         let ty = self.ternary_type(when_true, when_false, question);
+        let condition_zero = self.constant_is_zero(&condition);
         let folded = match (when_true.constant, when_false.constant) {
             (Some(t), Some(f)) => condition
                 .constant
-                .map(|condition| if condition != 0 { t } else { f }),
-            (Some(t), None) if condition.constant == Some(1) => Some(t),
-            (None, Some(f)) if condition.constant == Some(0) => Some(f),
+                .map(|_| if condition_zero { f } else { t }),
+            // One arm constant, and the condition known to pick it.
+            (Some(t), None) if condition.constant.is_some() && !condition_zero => Some(t),
+            (None, Some(f)) if condition.constant.is_some() && condition_zero => Some(f),
             _ => None,
         };
         if branch_on.is_none() || self.types.is_error(ty) {
@@ -233,10 +239,10 @@ impl Parser<'_> {
                 self.types.error()
             };
         }
-        if self.types.is_pointer(left.ty) && right.constant == Some(0) {
+        if self.types.is_pointer(left.ty) && self.null_pointer_constant(&right) {
             return left.ty;
         }
-        if self.types.is_pointer(right.ty) && left.constant == Some(0) {
+        if self.types.is_pointer(right.ty) && self.null_pointer_constant(&left) {
             return right.ty;
         }
         if self.types.is_arithmetic(left.ty) && self.types.is_arithmetic(right.ty) {
@@ -323,7 +329,11 @@ impl Parser<'_> {
                     } else {
                         cir::BinOp::Sub
                     };
-                    let folded = folded(left, right);
+                    let folded = if self.types.is_float(ty) {
+                        self.fold_float(operator, ty, left, right)
+                    } else {
+                        folded(left, right)
+                    };
                     return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
                 // `pointer + integer` and `integer + pointer` are the same expression; adding
@@ -400,7 +410,11 @@ impl Parser<'_> {
                     } else {
                         cir::BinOp::Div
                     };
-                    let folded = folded(left, right);
+                    let folded = if self.types.is_float(ty) {
+                        self.fold_float(operator, ty, left, right)
+                    } else {
+                        folded(left, right)
+                    };
                     return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
@@ -435,8 +449,8 @@ impl Parser<'_> {
             "<" | ">" | "<=" | ">=" | "==" | "!=" => {
                 let comparable = (arithmetic
                     || self.types.is_pointer(left.ty) && self.types.is_pointer(right.ty))
-                    || (self.types.is_pointer(left.ty) && right.constant == Some(0))
-                    || (self.types.is_pointer(right.ty) && left.constant == Some(0));
+                    || (self.types.is_pointer(left.ty) && self.null_pointer_constant(&right))
+                    || (self.types.is_pointer(right.ty) && self.null_pointer_constant(&left));
                 if comparable {
                     let int = self.types.fundamental("int").unwrap();
                     let op = match operator {
@@ -478,26 +492,20 @@ impl Parser<'_> {
         let int = self.types.fundamental("int").unwrap();
         let short_circuits_on = operator == "||";
         // Without code to emit, the parse still has to happen: diagnostics and folding.
-        let Some(left_cir) = left.cir.filter(|_| self.in_body()) else {
+        if left.cir.is_none() || !self.in_body() {
             let right = self.binary_expression(level + 1)?;
+            let left_zero = self.constant_is_zero(&left);
             let constant = match (short_circuits_on, left.constant, right.constant) {
-                (true, Some(c), _) if c != 0 => Some(1),
-                (false, Some(0), _) => Some(0),
-                (_, Some(_), Some(b)) => Some(i64::from(b != 0)),
+                (true, Some(_), _) if !left_zero => Some(1),
+                (false, Some(_), _) if left_zero => Some(0),
+                (_, Some(_), Some(_)) => Some(i64::from(!self.constant_is_zero(&right))),
                 _ => None,
             };
             return Some(Value::new(int, constant, false));
-        };
-        let zero = self.constant_of(int, 0, span);
-        let left_int = self.convert(left, int, span);
-        let Some(zero_cir) = zero.cir else {
-            return Some(Value::new(int, None, false));
-        };
-        // One left side: the converted one when the conversion emitted an instruction, else the
-        // original. `convert` of a same-typed value returns it unchanged.
-        let left_cir = left_int.cir.unwrap_or(left_cir);
-        let flag = self
-            .emit(|builder| builder.compare(cir::CmpOp::Ne, left_cir, zero_cir, int, int, span))?;
+        }
+        // Each side is compared with zero in its own type: a pointer has no conversion to
+        // `int`, and a NaN is a true condition rather than a conversion with no answer.
+        let flag = self.compare_to_zero(left, cir::CmpOp::Ne, span)?;
         let take_right = self.new_block(span)?;
         let join = self.emit(|builder| builder.append_block(&[int], span))?;
         // The answer the left side alone settles: 1 for `||`, 0 for `&&`.
@@ -519,11 +527,8 @@ impl Parser<'_> {
         }
         self.switch_to(take_right);
         let right = self.binary_expression(level + 1)?;
-        let right_int = self.convert(right, int, span);
-        let right_flag = match right_int.cir {
-            Some(right_cir) => self.emit(|builder| {
-                builder.compare(cir::CmpOp::Ne, right_cir, zero_cir, int, int, span)
-            })?,
+        let right_flag = match self.compare_to_zero(right, cir::CmpOp::Ne, span) {
+            Some(flag) => flag,
             None => return Some(Value::new(int, None, false)),
         };
         self.emit(|builder| builder.jump(join, vec![right_flag], span));
@@ -548,6 +553,43 @@ impl Parser<'_> {
             format!("`{operator}` cannot be applied to {left} and {right}"),
         );
         Value::temporary(self.types.error())
+    }
+
+    /// Fold `left op right` when both sides are floating constants, in the result's own width.
+    /// The back end would compute the same at run time; the front end needs the number because a
+    /// file-scope initialiser is bytes (ADR-004), and a global this cannot evaluate must not be
+    /// written half-way.
+    fn fold_float(&self, operator: &str, ty: TypeId, left: Value, right: Value) -> Option<i64> {
+        let single = self.types.size_of(ty) == Some(4);
+        // An integer side is converted first, as C's usual arithmetic conversions do; the value
+        // is a constant, so the conversion is exact in `f64` and rounded once to `f32`.
+        let value_of = |value: Value| -> Option<f64> {
+            if self.types.is_float(value.ty) {
+                let bits = value.constant?;
+                Some(if single {
+                    f64::from(f32::from_bits(bits as u32))
+                } else {
+                    f64::from_bits(bits as u64)
+                })
+            } else if self.types.is_integer(value.ty) {
+                Some(value.constant? as f64)
+            } else {
+                None
+            }
+        };
+        let (left, right) = (value_of(left)?, value_of(right)?);
+        let folded = match operator {
+            "+" => left + right,
+            "-" => left - right,
+            "*" => left * right,
+            "/" => left / right,
+            _ => return None,
+        };
+        Some(if single {
+            i64::from((folded as f32).to_bits())
+        } else {
+            folded.to_bits() as i64
+        })
     }
 
     /// An array or function used as a value is a pointer to it (C99 6.3.2.1). Everything that
@@ -603,7 +645,16 @@ impl Parser<'_> {
                             return Some(Value::temporary(self.types.error()));
                         }
                         let ty = self.types.promote(ty);
-                        let folded = value.constant.map(|value| value.wrapping_neg());
+                        // A float's constant is a bit pattern, so it is negated as a number.
+                        let folded = value.constant.map(|bits| {
+                            if self.types.size_of(ty) == Some(4) {
+                                i64::from((-f32::from_bits(bits as u32)).to_bits())
+                            } else if self.types.is_float(ty) {
+                                (-f64::from_bits(bits as u64)).to_bits() as i64
+                            } else {
+                                bits.wrapping_neg()
+                            }
+                        });
                         Some(self.emit_unary(cir::UnOp::Neg, value, ty, folded, span))
                     }
                     "+" => Some(Value::new(self.types.promote(ty), value.constant, false)),
@@ -620,24 +671,13 @@ impl Parser<'_> {
                     _ => {
                         self.require_scalar(&value, "`!`");
                         let int = self.types.fundamental("int").unwrap();
-                        let folded = value.constant.map(|value| i64::from(value == 0));
-                        let zero = Value::new(value.ty, Some(0), false);
-                        let zero = if self.in_body() {
-                            match self.emit(|builder| builder.constant(value.ty, 0, span)) {
-                                Some(cir) => Value::code(value.ty, cir),
-                                None => zero,
-                            }
-                        } else {
-                            zero
-                        };
-                        Some(self.emit_compare(
-                            cir::CmpOp::Eq,
-                            value.ty,
-                            [value, zero],
-                            int,
-                            folded,
-                            span,
-                        ))
+                        let folded = value
+                            .constant
+                            .map(|_| i64::from(self.constant_is_zero(&value)));
+                        match self.compare_to_zero(value, cir::CmpOp::Eq, span) {
+                            Some(cir) => Some(Value::code(int, cir).with_constant(folded)),
+                            None => Some(Value::new(int, folded, false)),
+                        }
                     }
                 }
             }
@@ -883,8 +923,7 @@ impl Parser<'_> {
                 }
                 if given < params.len() {
                     let expected = params[given];
-                    let null_pointer =
-                        self.types.is_pointer(expected) && argument.constant == Some(0);
+                    let null_pointer = self.null_pointer_constant(&argument);
                     if !null_pointer && !self.types.is_assignable(expected, argument.ty) {
                         let (from, to) = (self.describe(argument.ty), self.describe(expected));
                         self.error(
@@ -1144,7 +1183,22 @@ impl Parser<'_> {
             } else {
                 "double"
             };
-            return Value::temporary(self.types.fundamental(name).unwrap());
+            let ty = self.types.fundamental(name).unwrap();
+            let Some((bits, value)) = crate::literal::float_value(spelling) else {
+                // A hexadecimal constant is C99 and is not read here: refused rather than
+                // read as the integer its digits happen to spell.
+                self.error(
+                    span,
+                    format!("`{spelling}` is not a floating constant this compiler reads"),
+                );
+                return Value::temporary(self.types.error());
+            };
+            // The reader and the type table must agree about how wide the type is.
+            debug_assert_eq!(
+                Some(u64::from(bits)),
+                self.types.size_of(ty).map(|size| size * 8)
+            );
+            return self.constant_of(ty, value as i64, span);
         }
         self.integer_value(spelling, span)
     }
@@ -1364,7 +1418,7 @@ impl Parser<'_> {
 
     /// How many errors have been reported: enough to tell whether a function body was read
     /// without one.
-    fn error_count(&self) -> usize {
+    pub(super) fn error_count(&self) -> usize {
         self.diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.is_error())

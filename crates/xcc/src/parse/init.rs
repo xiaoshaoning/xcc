@@ -336,7 +336,7 @@ impl Parser<'_> {
     /// clears everything (ADR-004).
     fn write_leaf(&mut self, ty: TypeId, value: Value) {
         if !self.types.is_error(ty) && !self.types.is_error(value.ty) {
-            let null_pointer = self.types.is_pointer(ty) && value.constant == Some(0);
+            let null_pointer = self.null_pointer_constant(&value);
             if !null_pointer && !self.types.is_assignable(ty, value.ty) {
                 let (from, to) = (self.describe(value.ty), self.describe(ty));
                 let span = self.span();
@@ -423,11 +423,16 @@ impl Parser<'_> {
         let Some(address) = self.leaf_address(target, offset, ty, span) else {
             return;
         };
+        let before = self.error_count();
         let converted = self.convert(value, ty, span);
         let Some(code) = converted.cir else {
-            // A value with neither code nor a constant - a float literal is still only typed
-            // (M6) - would store nothing and leave the slot holding the frame's bytes.
-            if converted.constant.is_none() && !self.types.is_error(ty) {
+            // A value with neither code nor a constant would store nothing and leave the slot
+            // holding the frame's bytes. A conversion that already said why is one diagnostic,
+            // and this does not add a second.
+            if converted.constant.is_none()
+                && self.error_count() == before
+                && !self.types.is_error(ty)
+            {
                 self.not_lowered(span, "this initialiser value");
             }
             return;

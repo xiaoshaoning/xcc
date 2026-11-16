@@ -78,6 +78,52 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: floats and doubles - 2026-11-16 - the front end was the missing half
+
+The back end already had the instructions: `fadd`/`fsub`/`fmul`/`fdiv`, `fneg`, `icmp`/`fcmp`,
+`fcvt_*`, `fpromote`/`fdemote`, and `Const` already wrote float bits. What was missing was the
+front end, and it was missing in a way that made the back end's work unreachable: a floating
+constant was *typed* and given no value (`Value::temporary`), so no float expression could emit.
+
+1. **A float constant is now its bits.** `literal::float_value` reads the text once - `1.5`, `1.5f`
+   rounded to `float`, `1.5L` (64-bit, as documented), `1.`, `.5`, exponents - and hands back the
+   bit pattern; `Value::constant` holds it, exactly as `cir::Const` does. That makes the *two
+   questions* asked of a constant different, so they are now asked in one place each:
+   `constant_is_zero` is C's zero and includes `-0.0`; `null_pointer_constant` is an *integer*
+   constant 0 (6.3.2.3p3) and deliberately does not include `0.0`. Eight ad-hoc
+   `constant == Some(0)` tests became those two predicates.
+2. **Conditions are comparisons.** `if (d)`, `while (d)`, `d ? a : b`, `d && e`, `!d` were all
+   "branch on the value", which the verifier rightly refused for an `f64` - and `p && q` did not
+   work at all, because `logical` converted its operands to `int` and a pointer has no such
+   conversion. One helper, `compare_to_zero(value, Ne | Eq)`, is now the answer for every
+   condition: it compares in the value's own type, so a pointer compares with a null pointer and
+   a float with 0.0 - which is also the only way NaN is handled correctly (`fcvt_to_sint` of a NaN
+   is undefined, and NaN is a true condition).
+3. **Folding for file scope.** A file-scope initialiser is bytes (ADR-004), so `double d = 1.5 * 2;`
+   needs the number, not the instruction. `fold_float` folds `+ - * /` in the result's width, with
+   an integer side converted first. When it cannot fold, the object is **refused**:
+   `a file-scope initialiser this compiler cannot evaluate is not lowered yet`. Before, it was
+   *silently dropped* - the global simply did not exist - which is a wrong program, not a smaller
+   one, and it was reachable for every non-constant file-scope initialiser.
+
+Two back-end faults the tests found, both an assertion or a verifier error rather than a wrong
+answer:
+
+- **`icmp.f64`.** The compare lowering matched `Eq`/`Ne` before it looked at the type, so float
+  equality asked Cranelift for an integer comparison of an `f64`. Every float comparison goes
+  through `fcmp` now; `Ne` is the unordered one, which is what C's `!=` means for a NaN.
+- **A conversion to or from a narrow integer.** x64's `fcvt_*` takes a 32- or 64-bit integer, so
+  `(short)3.9` and `char c; (double)c` panicked the instruction selector. The conversion widens on
+  the way in and narrows on the way out; and because the signedness is a property of the *C* type,
+  `unsigned` now converts with `fcvt_*_uint` instead of reinterpreting 4e9 as negative.
+
+Still refused, with a diagnostic: hexadecimal floating constants, and a float converted to
+`_Bool`. Still not lowered and now recorded: `_Bool` holds whatever a narrowing conversion leaves
+(`_Bool b = 2;` stores 2, and truthiness saves it) - C says 0 or 1, and nothing implements that
+yet.
+
+144 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### `?:`, reviewed - 2026-11-16 - the folded value was dropped exactly where there was code
 
 The review of the `?:` commit. Two findings, one of them a real hole in the new lowering.
