@@ -865,6 +865,38 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("doubles"), 354);
     }
 
+    /// `goto` and labels: a forward jump into code not yet read, a backward one that is a loop,
+    /// a jump over dead code, and a label on a block that a `goto` may not target (the entry
+    /// block, or a join, which takes parameters a `goto` has no values for) getting a block of
+    /// its own.
+    #[test]
+    fn a_goto_jumps_to_its_label() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int forward(void) { int x = 0; goto skip; x = 100; skip: return x + 1; }
+             int loop(void) { int n = 0; int s = 0; again: s = s + n; n = n + 1; if (n < 4) { goto again; } return s; }
+             int dead(void) { int x = 0; goto end; x = 100; end: return x; }
+             int at_the_top(int n) { int s = 0; top: if (n <= 0) { goto done; } s = s + n; n = n - 1; goto top; done: return s; }
+             int shared(int x) { if (x) { goto out; } x = 2; out: return x; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("forward"), 1);
+        assert_eq!(call("loop"), 6);
+        assert_eq!(call("dead"), 0);
+        assert_eq!(call("shared"), 1);
+        // A label at the top of a function that *has* parameters: the label needs a block of its
+        // own, because a `goto` cannot jump to the entry block.
+        let at_the_top: extern "C" fn(i32) -> i32 =
+            unsafe { std::mem::transmute(jit.function("at_the_top").unwrap()) };
+        assert_eq!(at_the_top(3), 6);
+        assert_eq!(at_the_top(0), 0);
+    }
+
     /// C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1. It used to be a narrowing
     /// conversion, so `(_Bool)2` stored 2, `(_Bool)0.5` was refused, and a pointer was not
     /// accepted at all - the three ways a narrowing conversion is the wrong rule.

@@ -56,6 +56,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         loops: 0,
         switches: Vec::new(),
         labels: HashMap::new(),
+        label_blocks: HashMap::new(),
         gotos: Vec::new(),
         last_parameters: Vec::new(),
         funcs: Vec::new(),
@@ -208,6 +209,9 @@ struct Parser<'a> {
     /// The labels defined in the function being read, function-scoped (C99 6.2.1p4), and the
     /// `goto`s that are still waiting for one.
     labels: HashMap<Symbol, Span>,
+    /// Where a label's code starts. Whichever of the label and a `goto` to it comes first
+    /// creates the block; the other one switches to it.
+    label_blocks: HashMap<Symbol, cir::Block>,
     gotos: Vec<(Symbol, Span)>,
     /// The parameter names of the last function declarator, which a definition declares in its
     /// body's scope.

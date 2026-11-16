@@ -74,8 +74,6 @@ impl Parser<'_> {
                 return;
             }
             Some("goto") => {
-                let span = self.span();
-                self.not_lowered(span, "`goto`");
                 self.goto_statement();
                 self.leave_nesting();
                 return;
@@ -165,6 +163,15 @@ impl Parser<'_> {
     }
 
     /// Whether a block already ends, so it is not given a second terminator.
+    /// Whether a `goto` may target `block`: not the entry block (Cranelift forbids jumping to it)
+    /// and not a block with parameters (a `goto` has no values to give them). A label sitting on
+    /// either gets a block of its own, and the code above it jumps there.
+    fn can_be_a_label(&self, block: cir::Block) -> bool {
+        self.body.as_ref().is_some_and(|body| {
+            block != body.func.entry && body.func.block(block).params.is_empty()
+        })
+    }
+
     fn terminated(&self, block: cir::Block) -> bool {
         self.body
             .as_ref()
@@ -682,26 +689,72 @@ impl Parser<'_> {
         let span = self.span();
         self.bump(); // the name
         self.bump(); // the `:`
-        if self.labels.insert(token.text, span).is_some() {
-            let name = self.spell_of(token.text).to_owned();
-            self.error(span, format!("this function already has a label `{name}`"));
+        let name = token.text;
+        if self.labels.insert(name, span).is_some() {
+            let spelled = self.spell_of(name).to_owned();
+            self.error(
+                span,
+                format!("this function already has a label `{spelled}`"),
+            );
+        }
+        // Where the label's code starts: the block a `goto` ahead of it made, else the block
+        // the code above is in - unless that block has already ended, in which case the label
+        // needs a fresh one for a later `goto` to reach.
+        let target = match self.label_blocks.get(&name).copied() {
+            Some(block) => block,
+            None => match self
+                .current_block()
+                .filter(|block| !self.terminated(*block) && self.can_be_a_label(*block))
+            {
+                Some(current) => current,
+                None => match self.new_block(span) {
+                    Some(block) => block,
+                    // No body: nothing to label.
+                    None => return,
+                },
+            },
+        };
+        self.label_blocks.insert(name, target);
+        if self.current_block() != Some(target) {
+            // The code above the label leaves to it; a block that already ended has nothing
+            // to leave and emits nothing.
+            self.jump(target, span);
+            self.switch_to(target);
         }
         self.statement();
     }
 
-    /// `goto name ;` - resolved when the function ends, because the label may come later.
+    /// `goto name ;` - the label may come later, so a block that has to is made here and
+    /// filled when the label arrives.
     pub(super) fn goto_statement(&mut self) {
         let span = self.span();
         self.bump();
+        let mut name = None;
         match self.peek().copied() {
             Some(token) if token.kind == crate::lex::TokenKind::Ident => {
                 self.bump();
                 self.gotos.push((token.text, span));
+                name = Some(token.text);
             }
             _ => self.error_at_current("expected a label name after `goto`"),
         }
         if !self.eat(";") {
             self.error_at_current("expected `;` after `goto`");
+        }
+        if let Some(name) = name {
+            let target = match self.label_blocks.get(&name).copied() {
+                Some(block) => Some(block),
+                None => match self.new_block(span) {
+                    Some(block) => {
+                        self.label_blocks.insert(name, block);
+                        Some(block)
+                    }
+                    None => None,
+                },
+            };
+            if let Some(target) = target {
+                self.jump(target, span);
+            }
         }
     }
 

@@ -78,6 +78,37 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: `goto` and labels - 2026-11-16 - a label needs a block a `goto` may target
+
+`goto` had been parsed since M3.4 and refused by the emitter since M4. Three corpus programs, and it
+turned out to need one idea rather than machinery: **which block a label's code starts in**, and who
+creates it.
+
+The label and the `goto` to it can come in either order, so whichever comes first creates the block
+and the other switches to it. A label the code above falls into is the block the code is already
+in; a label a `goto` reached first was already given a block by that `goto`.
+
+Two cases forced a third rule, **a label cannot *be* a block that a `goto` may not target** - found
+by the verifier, one after the other:
+
+1. **The entry block.** `int f(int n) { top: ... goto top; }` jumped to the entry block, and
+   Cranelift says `invalid reference to entry block block0`. The label gets a block of its own and
+   the entry jumps there.
+2. **A block with parameters.** `int f(int n) { top: ... goto top; }` with the label on the entry is
+   case one, but a label on a *join* had the same shape: the join's parameters are the values its
+   construct passes it, and a `goto` has none - `block 0 is given 0 values and takes 1`.
+
+A third thing fell out of writing the test: **dead code after a `goto` was diagnosed**.
+`goto skip; x = 100;` reported "this kind of assignment is not lowered yet", because the load of
+`x` emitted nothing (no block to emit into) and `read_place` dropped the *place* with it. A place is
+a place even when no block is there to load from; the value is missing and the store is skipped,
+which is what dead code should do.
+
+15 corpus programs were already at the finish line for a different reason and this moved the count
+to 375 running and agreeing (was 372), 49 refused (was 52).
+
+149 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: calls through a function pointer - 2026-11-16 - the last refusal in the call path
 
 The largest single gap the differential runner measured: thirteen corpus programs refused at "a call

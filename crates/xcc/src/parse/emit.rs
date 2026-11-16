@@ -75,7 +75,16 @@ impl Parser<'_> {
                 cir: Some(value),
                 place: Some(place),
             },
-            None => Value::new(ty, None, true),
+            // No block to load in - dead code, or a construct that ended the block. The place is
+            // still a place; what uses it finds no value rather than one that was never computed,
+            // and `x = 1` after a `goto` is skipped instead of diagnosed.
+            None => Value {
+                ty,
+                constant: None,
+                lvalue: true,
+                cir: None,
+                place: Some(place),
+            },
         }
     }
 

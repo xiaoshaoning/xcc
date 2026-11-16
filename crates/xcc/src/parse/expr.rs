@@ -1534,6 +1534,7 @@ impl Parser<'_> {
         self.loops = 0;
         self.switches.clear();
         self.labels.clear();
+        self.label_blocks.clear();
         self.gotos.clear();
         self.targets.clear();
         let span = self.span();

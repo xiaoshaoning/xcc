@@ -78,7 +78,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | a call to a variadic function (`printf`-style) | `refused` - Win64 wants `AL` set to the vector-register count and a signature per call site; this back end can express neither, so the refusal names the reason ([ADR-006](ADR-006-varargs.md)) |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
-| `switch`, `goto`, labels | `sound` (M3.4): the controlling expression must be an integer, `case` values unique, one `default`, `goto` may jump forward |
+| `switch`, `goto`, labels | `sound` (M6): the controlling expression must be an integer, `case` values unique, one `default`, and a `goto` lowers to a jump - forward or backward, with a label on the entry block or a join given a block of its own |
 | initialisation of aggregates, static and automatic | `sound` (M6): brace lists, elision and designators, read into a frame slot or a file-scope object's bytes |
 | `__func__` | `planned` |
 
