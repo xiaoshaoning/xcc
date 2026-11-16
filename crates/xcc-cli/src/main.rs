@@ -176,6 +176,12 @@ fn run(args: &Args) -> ExitCode {
         eprintln!("xcc: --run takes one source");
         return ExitCode::from(2);
     };
+    // `Jit::add_source` compiles with `Options::default()`, so these would be accepted and
+    // quietly ignored. Saying so beats both.
+    if !args.defines.is_empty() || !args.undefines.is_empty() || !args.include_paths.is_empty() {
+        eprintln!("xcc: --run takes no -D, -U or -I yet: the JIT compiles with the defaults");
+        return ExitCode::from(2);
+    }
     let name = input.display().to_string();
     let text = match std::fs::read_to_string(input) {
         Ok(text) => text,
@@ -184,11 +190,6 @@ fn run(args: &Args) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let options = Options {
-        defines: args.defines.clone(),
-        undefines: args.undefines.clone(),
-        ..Options::default()
-    };
     let mut jit = match xcc::Jit::new() {
         Ok(jit) => jit,
         Err(message) => {
@@ -196,7 +197,6 @@ fn run(args: &Args) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let _ = options; // a JIT compilation takes the defaults today
     if let Err(message) = jit.add_source(&text) {
         eprintln!("xcc: {message}");
         return ExitCode::from(1);

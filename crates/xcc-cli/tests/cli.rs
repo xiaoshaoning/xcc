@@ -223,4 +223,14 @@ fn run_gives_main_its_arguments_and_reports_a_missing_one() {
         "{}",
         stderr(&output)
     );
+
+    // The JIT compiles with the defaults, so a flag that would change them is refused rather than
+    // accepted and quietly ignored.
+    let output = run(xcc().args(["--run", "-DFOO"]).arg(&source));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("--run takes no -D, -U or -I"),
+        "{}",
+        stderr(&output)
+    );
 }

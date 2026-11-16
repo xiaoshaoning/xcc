@@ -78,6 +78,39 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the differential runner, reviewed - 2026-11-16 - what the harness could not see, and two of its own
+
+The review of the runner and of the four bugs it found. The four fixes held up (each is now a
+corpus program that runs), and the review's findings were in the harness and at its edges.
+
+1. **`--run` accepted `-D`/`-U`/`-I` and ignored them.** `Jit::add_source` compiles with
+   `Options::default()` - the embedding API has no way to pass options yet (M7) - so the flag was
+   built and then discarded with a `let _ = options;`. Two lies in three lines: a flag that does
+   nothing, and a variable saying so quietly. The flag is refused with a message naming the
+   reason, which is the honest state until the JIT takes options.
+2. **The harness could not see a program that writes more than a pipe buffer.** The output was
+   read *after* the process exited, so a program printing 64 KiB would block on its own output,
+   miss the time limit, and be reported as a hang. The pipes are drained by threads while the
+   program runs. Nothing in the current subset prints anything (no `printf`), which is exactly why
+   this had to be fixed before the subset grows.
+3. **The counts were a `(usize, usize, usize)`** with `.0`, `.1`, `.2` meaning ran, refused,
+   skipped - the one thing in the test that a reader had to look up. It is a `Counts` struct with
+   three named fields.
+4. **`ran > 300` was a floor with no meaning.** It would have passed while fifty programs silently
+   stopped running. It is a ratchet at the measured number (`PROGRAMS_THAT_RAN = 359`): raising it
+   is what closing a gap looks like, and lowering it is the regression the test exists to catch.
+
+Two more found by probing the edges the runner had opened:
+
+5. **The unsigned-and-wider integer types in the new literal table were wrong.** `u` without
+   `ll` ended in a *signed* 64-bit type, so `unsigned long long a = 4294967296u;` was a signed
+   comparison and `18446744073709551615u` was refused as too large. Both lists end unsigned now.
+6. **Unary `+` accepted a pointer** (`+p` is not C, C99 6.5.3.3p1) where `-` already refused one,
+   and an incomplete record's initialiser said "too many initialisers" *after* the declaration had
+   said it had no size, then left the cursor inside the braces and cascaded into four diagnostics.
+
+148 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6 acceptance: the differential runner - 2026-11-16 - and the four bugs it found first
 
 M6's last item asks that the corpus be *run*, not just compiled, against a reference. This is that

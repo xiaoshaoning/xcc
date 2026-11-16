@@ -695,8 +695,14 @@ impl Parser<'_> {
                     }
                     // Unary `+` is the identity after promotion, and promotion can be a
                     // conversion (`+c` for a `char` is an `int`), so it is `convert` and not a
-                    // relabel: relabelling dropped the value.
+                    // relabel: relabelling dropped the value. Like `-`, it needs a number
+                    // (C99 6.5.3.3p1): a pointer is not one.
                     "+" => {
+                        if !self.types.is_arithmetic(ty) {
+                            let ty = self.describe(ty);
+                            self.error(span, format!("unary `+` needs a number, not {ty}"));
+                            return Some(Value::temporary(self.types.error()));
+                        }
                         let ty = self.types.promote(ty);
                         Some(self.convert(value, ty, span))
                     }
@@ -1401,11 +1407,12 @@ impl Parser<'_> {
         let candidates: &[(bool, u8)] = match (unsigned, longs) {
             (false, 0) if decimal => &[(true, 32), (true, 64)],
             (false, 0) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
-            (true, 0) => &[(false, 32), (true, 64)],
+            (true, 0) => &[(false, 32), (false, 64)],
             // `long` is 32 bits on this target, so `L` and no suffix have the same shape; `LL`
-            // is the 64-bit one.
+            // is the 64-bit one. A `u` suffix means the 64-bit candidate is `unsigned` too:
+            // `18446744073709551615u` is a `unsigned long long`, not too large.
             (false, 1) => &[(true, 32), (true, 64)],
-            (true, 1) => &[(false, 32), (true, 64)],
+            (true, 1) => &[(false, 32), (false, 64)],
             (false, _) => &[(true, 64)],
             (true, _) => &[(false, 64)],
         };

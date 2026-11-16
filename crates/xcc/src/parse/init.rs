@@ -253,6 +253,13 @@ impl Parser<'_> {
     /// unit as if it were a plain integer.
     fn initialize_record(&mut self, record: RecordId, braced: bool) {
         let span = self.span();
+        if !self.types.record_complete(record) {
+            // No members to fill, and the object's own declaration has already said it has no
+            // size: walking it would only add "too many initialisers" to that. The values are
+            // skipped rather than left, so the cursor is where the enclosing list expects it.
+            self.skip_until(&[",", "}"], false);
+            return;
+        }
         let base = self.offset;
         let union = matches!(self.types.record_kind(record), RecordKind::Union);
         let members: Vec<(Option<Symbol>, TypeId, usize, bool)> = self
