@@ -395,6 +395,15 @@ const EXPECTED_INVALID: &[(&str, &str)] = &[
     ("pp_badassign.c", "same"),
     ("cc_bad_dblshift.c", "shifts a `double`"),
     (
+        "cc16_strarray.c",
+        "assigns to an array, which C99 6.5.16 does not allow",
+    ),
+    ("cc16_strarray2.c", "same, at file scope"),
+    (
+        "cc16_strarray3.c",
+        "same, to a row of a two-dimensional array",
+    ),
+    (
         "pp_badarrinit.c",
         "gives a three-element array four initialisers",
     ),

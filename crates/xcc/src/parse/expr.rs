@@ -81,6 +81,12 @@ impl Parser<'_> {
             self.error(span, "cannot assign to this expression");
             return Some(Value::temporary(left.ty));
         }
+        // C99 6.5.16: the left operand must be a *modifiable* lvalue, and an array is not one.
+        // `s = "hi"` is a constraint violation, not an array copy.
+        if matches!(self.types.kind(left.ty), Type::Array { .. }) {
+            self.error(span, "cannot assign to an array");
+            return Some(Value::temporary(left.ty));
+        }
         let null_pointer = self.types.is_pointer(left.ty) && right.constant == Some(0);
         if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
             let (to, from) = (self.describe(left.ty), self.describe(right.ty));
@@ -493,7 +499,24 @@ impl Parser<'_> {
         if ty == value.ty {
             return value;
         }
-        Value::temporary(ty)
+        // Decay is the one place an array becomes a pointer (ADR-004): its value is already the
+        // address of the array, typed `pointer to array[N]`, so the conversion C asks for here
+        // is a bitcast to `pointer to element` - and every use sees only the result.
+        let Some(address) = value.cir else {
+            return Value::temporary(ty);
+        };
+        let span = self.span();
+        let array = matches!(self.types.kind(value.ty), Type::Array { .. });
+        let from = if array {
+            self.pointer_to(value.ty)
+        } else {
+            value.ty
+        };
+        match self.emit(|builder| builder.convert(cir::ConvertOp::Bitcast, address, from, ty, span))
+        {
+            Some(decayed) => Value::code(ty, decayed),
+            None => Value::temporary(ty),
+        }
     }
 
     pub(super) fn require_scalar(&mut self, value: &Value, what: &str) {
@@ -592,7 +615,13 @@ impl Parser<'_> {
                     self.error(span, format!("`*` needs a pointer, not {ty}"));
                     return Some(Value::temporary(self.types.error()));
                 }
-                Some(Value::new(self.types.pointee(value.ty), None, true))
+                // `*p` is the place `p` points at, and reading it is the load the emitter
+                // writes - the same place-and-load `p[i]` is built from.
+                let element = self.types.pointee(value.ty);
+                match value.cir {
+                    Some(place) => Some(self.load_place(element, place, span)),
+                    None => Some(Value::new(element, None, true)),
+                }
             }
             "++" | "--" => {
                 let down = self.spell(self.peek().expect("checked")) == "--";
@@ -623,7 +652,8 @@ impl Parser<'_> {
         let written = if self.types.is_pointer(ty) {
             // `p++` walks one element, which is the same "scale by the pointee" the `+` operator
             // does; a pointer is not "plus one byte".
-            let one = Value::constant(ty, 1);
+            let int = self.types.fundamental("int").unwrap();
+            let one = self.constant_of(int, 1, span);
             self.pointer_walk(ty, value, one, !down, span)
         } else {
             let one = self.constant_of(ty, 1, span);
@@ -661,12 +691,15 @@ impl Parser<'_> {
     /// long long`, the widest integer this front end has).
     pub(super) fn sizeof_expression(&mut self) -> Value {
         let size_type = self.types.fundamental("unsigned long long").unwrap();
+        let span = self.span();
         if let Some(ty) = self.parenthesised_type() {
             if self.types.is_error(ty) {
                 return Value::temporary(self.types.error());
             }
             return match self.types.size_of(ty) {
-                Some(size) => Value::constant(size_type, size as i64),
+                // A constant in a body is a value like any other, and needs its instruction:
+                // a literal gets one in `primary_expression` for the same reason.
+                Some(size) => self.constant_of(size_type, size as i64, span),
                 None => {
                     let typo = self.describe(ty);
                     let span = self.span();
@@ -682,7 +715,7 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         }
         match self.types.size_of(value.ty) {
-            Some(size) => Value::constant(size_type, size as i64),
+            Some(size) => self.constant_of(size_type, size as i64, span),
             None => {
                 let ty = self.describe(value.ty);
                 let span = self.span();
@@ -741,15 +774,11 @@ impl Parser<'_> {
                 // `base[index]` is `*(base + index)`: the address is a place, and reading it is a
                 // load the emitter writes.
                 let pointer = self.types.pointer(element);
-                let mut value = Value::new(element, None, true);
                 let address = self.pointer_walk(pointer, base, index, true, span);
-                if let Some(place) = address.cir {
-                    value.place = Some(place);
-                    if let Some(loaded) = self.emit(|b| b.load(place, element, span)) {
-                        value.cir = Some(loaded);
-                    }
+                match address.cir {
+                    Some(place) => self.load_place(element, place, span),
+                    None => Value::new(element, None, true),
                 }
-                value
             }
             _ => {
                 let ty = self.describe(base.ty);
@@ -783,6 +812,13 @@ impl Parser<'_> {
             } => (*result, params.clone(), *variadic),
             _ => unreachable!("checked above"),
         };
+        // A variadic call needs the Win64 argument-passing rules (M6), and a call emitted with
+        // the declared arity alone does not verify. Refused rather than half-emitted.
+        if variadic {
+            self.skip_until(&[")"], true);
+            self.not_lowered(span, "a call to a variadic function");
+            return Value::temporary(result);
+        }
 
         let mut given = 0usize;
         let mut surplus = 0usize;
@@ -903,7 +939,7 @@ impl Parser<'_> {
                 let int = self.types.fundamental("int").unwrap();
                 // A constant this does not read is refused, not turned into zero.
                 match character_constant(self.spell(&token)) {
-                    Some(value) => Some(Value::constant(int, value)),
+                    Some(value) => Some(self.constant_of(int, value, span)),
                     None => {
                         let spelling = self.spell(&token).to_owned();
                         self.error(
@@ -1025,7 +1061,13 @@ impl Parser<'_> {
             self.error(span, format!("cannot convert {from} to {to}"));
             return Value::temporary(self.types.error());
         }
-        Value::new(to, from.constant, false)
+        if matches!(self.types.kind(to), Type::Void) {
+            return Value::new(to, None, false);
+        }
+        // A cast is a conversion the C program asked for, so it emits whatever conversion C
+        // says it is: returning `Value::new(to, ..)` here dropped the instruction and turned
+        // `(int)x` into code that computes nothing.
+        self.convert(from, to, span)
     }
 
     /// A number literal: an integer is folded and typed by its suffix and magnitude (C99
@@ -1086,10 +1128,8 @@ impl Parser<'_> {
             self.error(span, format!("`{spelling}` is not declared"));
             return Value::temporary(self.types.error());
         };
-        let lowerable = self.lowerable(entry.ty);
-        let _ = lowerable;
         match entry.kind {
-            Kind::EnumConst(value) => Value::constant(entry.ty, value),
+            Kind::EnumConst(value) => self.constant_of(entry.ty, value, span),
             Kind::Function => {
                 // A function name is its address (C99 6.3.2.1p4): the callee of a call, and a
                 // value that can be stored in a function pointer.
@@ -1113,11 +1153,12 @@ impl Parser<'_> {
                 Value::temporary(self.types.error())
             }
             Kind::Variable => match entry.storage {
-                // A variable with a slot is a load from it; one without is a place the emitter
-                // cannot name yet (a global, or a member), which its own statement will refuse.
-                Some(slot) => {
-                    let (ty, slot) = (entry.ty, slot);
-                    self.load_variable(ty, slot, span)
+                // A variable with a storage place is read from it; one without is a place the
+                // emitter cannot name yet (a global, or a member), which its own statement will
+                // refuse.
+                Some(place) => {
+                    let (ty, place) = (entry.ty, place);
+                    self.load_place(ty, place, span)
                 }
                 None => Value::new(entry.ty, None, true),
             },

@@ -131,6 +131,10 @@ Why this rather than "arrays are pointers from the start": a `Value` whose type 
 type of its `cir` value is the thing `cir`'s verifier exists to catch, and the four failed patches
 each produced one. Relabelling is cheap to write and impossible to verify.
 
+Implemented in the fifth attempt; the test is
+`back::jit::tests::array_locals_are_their_own_address_and_decay_by_bitcast`, and what it cost
+is in [AUDIT.md](AUDIT.md#array-locals-the-fifth-attempt---2026-11-16---adr-004s-answer-implemented).
+
 ## Consequences
 
 - `cir::Global` gains no fields, which is the test of whether the shape was right at M4.

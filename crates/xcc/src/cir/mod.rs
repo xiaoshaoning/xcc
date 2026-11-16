@@ -993,7 +993,11 @@ impl Func {
                 value,
                 ..
             } => {
-                if self.value(*value).ty != *from || self.value(*result).ty != *to {
+                // Structural identity, not the id: the arena mints a fresh id for every
+                // `pointer(...)` it is asked for, so `==` rejects correct conversions (ADR-004).
+                if !types.same(self.value(*value).ty, *from)
+                    || !types.same(self.value(*result).ty, *to)
+                {
                     return wrong(format!("block {index} converts other types than it says"));
                 }
                 Ok(())

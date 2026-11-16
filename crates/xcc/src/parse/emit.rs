@@ -244,12 +244,15 @@ impl Parser<'_> {
         self.types.pointer(ty)
     }
 
-    /// Whether a type has a machine representation yet: scalars and pointers do, aggregates wait
-    /// until their layout is lowered.
+    /// Whether a type has a machine representation yet: scalars, pointers and arrays of them do;
+    /// aggregates wait until their layout is lowered.
     pub(super) fn lowerable(&self, ty: TypeId) -> bool {
-        matches!(
-            self.types.kind(ty),
-            Type::Void | Type::Bool | Type::Int { .. } | Type::Float { .. } | Type::Pointer(_)
-        )
+        match self.types.kind(ty) {
+            Type::Void | Type::Bool | Type::Int { .. } | Type::Float { .. } | Type::Pointer(_) => {
+                true
+            }
+            Type::Array { element, .. } => self.lowerable(*element),
+            _ => false,
+        }
     }
 }

@@ -277,6 +277,33 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("or_guard", 5), 1);
     }
 
+    /// An array local lives in the frame, and its value is its address: no load, and `a[i]`
+    /// addresses the slot. `&a + 1` steps a whole array only if the address is typed
+    /// `pointer to array[N]`, which is the question ADR-004 answers.
+    #[test]
+    fn array_locals_are_their_own_address_and_decay_by_bitcast() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int sum3(int n) { int a[3]; a[0] = n; a[1] = 2; a[2] = 3; return a[0] + a[1] + a[2]; }
+             int walk(void) { int a[3]; int *p; p = a; p[1] = 7; return *(p + 1) + a[1]; }
+             int whole(void) { int a[3]; return sizeof *(&a + 1) + sizeof a; }
+             int nested(void) { int a[2][3]; a[1][2] = 5; return a[1][2]; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        let address = jit.function("sum3").expect("the function is there");
+        let sum3: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+        assert_eq!(sum3(4), 9);
+        assert_eq!(call("walk"), 14);
+        // `*(&a + 1)` is the array after `a`, so 12 bytes; a flat `int *` would make it 4.
+        assert_eq!(call("whole"), 24);
+        assert_eq!(call("nested"), 5);
+    }
+
     /// Two JITs do not see each other's code, which is what "no global state" buys.
     #[test]
     fn two_jits_are_independent() {

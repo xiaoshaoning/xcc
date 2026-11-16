@@ -78,6 +78,38 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### array locals, the fifth attempt - 2026-11-16 - ADR-004's answer, implemented
+
+The answer (the slot's address is `pointer to array[N]`; `decay` is the one `Bitcast`) made the
+three failed patches collapse into three lines: `lowerable` accepts a sized array, `named_value`
+returns the slot without a load, and `decay` bitcasts. The verifier's `Convert` check compares
+with `Types::same` now, which the attempt needed and `==` could not give.
+
+Reverting the fourth attempt was worth it, because what it left behind was not array work: **four
+places emitted nothing for a value the parser believed it had**, and each one showed up only as
+`ud2` - a compiled function falling into `unreachable` because no `return` was ever emitted. Found
+by asking the new test for `sizeof`, a cast, and `*p`:
+
+1. **A cast emitted no conversion.** `cast` ended in `Value::new(to, from.constant, false)`, which
+   dropped the source value: `(int)x` computed nothing. It is `self.convert(from, to, span)` now.
+2. **Constants that were not literals had no instruction.** `sizeof`, character constants and
+   enumerators produced `Value::constant`, while `primary_expression` gave number literals
+   `constant_of`; only the literal survived to code. All three go through `constant_of` now,
+   which is the point of its existence.
+3. **`*p` was a value with no place**, so a dereference computed nothing. It is the place-and-load
+   `p[i]` is built from - the same `load_place`.
+4. **`p++` passed a `pointer` where an index belongs**, so the scale never ran. One `constant_of`.
+
+Two refusals were added rather than left half-emitted, both pending M6: **a call to a variadic
+function** (a signature built from the declared arity does not verify against five arguments;
+Win64 varargs is the missing piece) and **assignment to an array**, which is a constraint
+violation (C99 6.5.16) that the string-initialiser rule in `is_assignable` had been letting
+through - three corpus files (`cc16_strarray*.c`) are listed as correctly rejected now.
+
+Not fixed, and the same class: **`?:` emits nothing**. `int f(int a) { return a ? 1 : 2; }`
+compiles to a trap, because the arms' values are dropped and `cir` has no `Select` to hold them.
+That needs an instruction, so it is a design question like the array one was, not a patch.
+
 ### array locals - 2026-11-15 - an attempt, reverted, and the question it exposed
 
 Nothing was committed: the attempt failed `cir`'s verifier and was reverted rather than shipped
