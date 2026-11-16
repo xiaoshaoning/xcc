@@ -59,6 +59,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `typedef` | `sound` (M3.1) |
 | qualifiers (`const`, `volatile`, `restrict`), `inline` | `partial` - accepted and ignored, which is conforming for `restrict` and wrong for `const`; enforcing `const` arrives with the expression checker (M3.2) |
 | variably modified types, VLAs as parameters | `planned` - VLA objects are accepted, with a stack-growth check |
+| a file-scope object read or written in code | `sound` (M6): a global is data, so its value is the symbol's address - loaded, stored, subscripted and taken a member of like any other place |
 | `_Alignas`, `_Alignof`, `_Static_assert`, `_Generic`, `_Atomic` (without `<stdatomic.h>`) | `planned` behind `--std=c11` |
 
 ## Expressions and statements
@@ -68,7 +69,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | full C99 operator set and precedence, assignment operators, conditional, comma | `sound` (M3.2), with C's usual arithmetic conversions, array-to-pointer decay and constant folding of integer expressions |
 | casts, `sizeof` a type, `sizeof` an expression | `sound` (M3.2) |
 | `sizeof` a VLA, `offsetof` | `planned` (with VLAs) |
-| compound literals, brace initialisers with C's brace elision | `sound` (M3.3) |
+| compound literals, brace initialisers with C's brace elision | `sound` (M6) in a function - a compound literal gets a slot of its own and the walker fills it; at file scope a compound literal is refused (there is no frame to put it in) |
 | designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |
 | constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1); an *integer* constant expression is required where C asks for one, so `int a[1.5]` and `case 1.5:` are refused rather than read as the float's bits |
 | floating constants, including `f`/`l` suffixes and exponents | `partial` - decimal forms are read once into the type's bits; hexadecimal constants (`0x1.8p3`) are refused, which C99 6.4.4.2 requires and this reader does not do |
@@ -77,7 +78,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | a call to a variadic function (`printf`-style) | `refused` - Win64 wants `AL` set to the vector-register count and a signature per call site; this back end can express neither, so the refusal names the reason ([ADR-006](ADR-006-varargs.md)) |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
 | `switch`, `goto`, labels | `sound` (M3.4): the controlling expression must be an integer, `case` values unique, one `default`, `goto` may jump forward |
-| initialisation of aggregates, static and automatic | `partial` (M3.3, M3.4): brace lists, elision and designators are checked for type and shape; the values themselves are not lowered until M4 |
+| initialisation of aggregates, static and automatic | `sound` (M6): brace lists, elision and designators, read into a frame slot or a file-scope object's bytes |
 | `__func__` | `planned` |
 
 ## Run time and headers

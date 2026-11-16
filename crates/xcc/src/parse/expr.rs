@@ -693,7 +693,13 @@ impl Parser<'_> {
                         });
                         Some(self.emit_unary(cir::UnOp::Neg, value, ty, folded, span))
                     }
-                    "+" => Some(Value::new(self.types.promote(ty), value.constant, false)),
+                    // Unary `+` is the identity after promotion, and promotion can be a
+                    // conversion (`+c` for a `char` is an `int`), so it is `convert` and not a
+                    // relabel: relabelling dropped the value.
+                    "+" => {
+                        let ty = self.types.promote(ty);
+                        Some(self.convert(value, ty, span))
+                    }
                     "~" => {
                         if !self.types.is_integer(ty) {
                             let ty = self.describe(ty);
@@ -1260,14 +1266,35 @@ impl Parser<'_> {
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {
         if self.at_punct("{") {
             // `(struct P){1, 2}`: an unnamed object with the type the cast named. It is an
-            // object of its own, so the initialiser being read - a local's slot, or a
-            // file-scope object's bytes - is suspended: its leaves are not this object's.
+            // object of its own, so it gets a slot of its own and the walker fills it: the
+            // initialiser being read - a local's slot, or a file-scope object's bytes - is
+            // suspended while its leaves land in this one.
+            let pointer = self.pointer_to(to);
+            let slot = self.emit(|builder| builder.slot(to, pointer, span));
             let (bytes, offset, target) = (self.bytes.take(), self.offset, self.init_target.take());
-            self.brace_initializer(to);
+            let literal = match slot {
+                Some(slot) => {
+                    self.init_target = Some((slot, to));
+                    self.offset = 0;
+                    self.brace_initializer(to);
+                    Value {
+                        ty: to,
+                        constant: None,
+                        lvalue: true,
+                        cir: Some(slot),
+                        place: Some(slot),
+                    }
+                }
+                // No body, or no room for one: the value is read for its type and dropped.
+                None => {
+                    self.brace_initializer(to);
+                    Value::new(to, None, true)
+                }
+            };
             self.bytes = bytes;
             self.offset = offset;
             self.init_target = target;
-            return Value::new(to, None, true);
+            return literal;
         }
         let Some(from) = self.unary_expression() else {
             return Value::temporary(to);
@@ -1331,6 +1358,8 @@ impl Parser<'_> {
         let unsigned = lower.contains('u');
         let longs = lower.matches('l').count();
         let digits = lower.trim_end_matches(['u', 'l']);
+        // Decimal, octal (`0`) and hexadecimal (`0x`) are typed differently by C99 6.4.4.1p5.
+        let decimal = !(digits.starts_with("0x") || digits.len() > 1 && digits.starts_with('0'));
         let parsed = if let Some(hex) = digits.strip_prefix("0x") {
             u64::from_str_radix(hex, 16).ok()
         } else if digits.len() > 1 && digits.starts_with('0') {
@@ -1345,15 +1374,58 @@ impl Parser<'_> {
             );
             return Value::temporary(self.types.error());
         };
-        // A decimal constant too big for `int` becomes unsigned or wider, as C says.
-        let ty = if longs >= 2 {
-            self.types.integer_with(!unsigned && (bits as i64) >= 0, 64)
-        } else if unsigned || bits > i64::from(i32::MAX) as u64 {
-            self.types.integer_with(false, 32)
-        } else {
-            self.types.fundamental("int").unwrap()
+        // C99 6.4.4.1p5: the first type the value fits, in the order the suffix and the radix
+        // choose. A *decimal* constant has no unsigned type until `long long`: `4294967296` is
+        // a `long long`, not an `unsigned int` that would drop its top half.
+        let ty = self.integer_constant_type(bits, unsigned, longs, decimal);
+        let Some(ty) = ty else {
+            self.error(
+                span,
+                format!("`{spelling}` is too large for any integer type"),
+            );
+            return Value::temporary(self.types.error());
         };
         Value::constant(ty, bits as i64)
+    }
+
+    /// The type C99 6.4.4.1p5 gives an integer constant: the first of a list that can hold it,
+    /// and the list depends on the suffix and on whether the constant is written in decimal
+    /// (a decimal constant never takes an unsigned type before `long long`).
+    fn integer_constant_type(
+        &mut self,
+        bits: u64,
+        unsigned: bool,
+        longs: usize,
+        decimal: bool,
+    ) -> Option<TypeId> {
+        let candidates: &[(bool, u8)] = match (unsigned, longs) {
+            (false, 0) if decimal => &[(true, 32), (true, 64)],
+            (false, 0) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
+            (true, 0) => &[(false, 32), (true, 64)],
+            // `long` is 32 bits on this target, so `L` and no suffix have the same shape; `LL`
+            // is the 64-bit one.
+            (false, 1) => &[(true, 32), (true, 64)],
+            (true, 1) => &[(false, 32), (true, 64)],
+            (false, _) => &[(true, 64)],
+            (true, _) => &[(false, 64)],
+        };
+        let fits = |signed: bool, width: u8| -> bool {
+            if width == 64 {
+                if signed {
+                    bits <= i64::MAX as u64
+                } else {
+                    true
+                }
+            } else if signed {
+                bits <= i32::MAX as u64
+            } else {
+                bits <= u32::MAX as u64
+            }
+        };
+        candidates
+            .iter()
+            .find(|(signed, width)| fits(*signed, *width))
+            .map(|(signed, width)| self.types.integer_with(*signed, *width))
     }
 
     /// The value of a name: a variable, a function, or an enumeration constant.
@@ -1387,16 +1459,24 @@ impl Parser<'_> {
                 self.error(span, format!("`{spelling}` is a type, not a value"));
                 Value::temporary(self.types.error())
             }
-            Kind::Variable => match entry.storage {
-                // A variable with a storage place is read from it; one without is a place the
-                // emitter cannot name yet (a global, or a member), which its own statement will
-                // refuse.
-                Some(place) => {
-                    let (ty, place) = (entry.ty, place);
-                    self.read_place(ty, place, span)
+            Kind::Variable => {
+                let ty = entry.ty;
+                match entry.storage {
+                    // A local has a frame slot, and reading it is a load.
+                    Some(place) => self.read_place(ty, place, span),
+                    // A file-scope object has no slot: it is data, and its address is the symbol
+                    // (ADR-004). Reading *or* writing it is the same place a local would be.
+                    None => {
+                        let pointer = self.pointer_to(ty);
+                        let link_name = self.spell_of(name).to_owned();
+                        match self.emit(|builder| builder.global_address(link_name, pointer, span))
+                        {
+                            Some(address) => self.read_place(ty, address, span),
+                            None => Value::new(ty, None, true),
+                        }
+                    }
                 }
-                None => Value::new(entry.ty, None, true),
-            },
+            }
         }
     }
 

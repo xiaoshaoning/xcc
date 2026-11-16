@@ -23,6 +23,14 @@ struct Args {
     #[arg(short = 'E')]
     preprocess_only: bool,
 
+    /// Run the source now: compile it in process, call `main`, and exit with what it returns.
+    ///
+    /// The embedding API, used the way a host would. `#include` is not resolved here (there are
+    /// no headers until M8), and `main` is called as `int main(int, char **)` whether it was
+    /// written that way or `int main(void)`.
+    #[arg(long = "run")]
+    run: bool,
+
     /// Write the object here instead of next to the source.
     #[arg(short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
@@ -86,9 +94,12 @@ fn main() -> ExitCode {
     }
     let args = Args::parse_from(full);
 
-    if !args.compile_only && !args.preprocess_only {
+    if !args.compile_only && !args.preprocess_only && !args.run {
         eprintln!("xcc: linking is not implemented yet (PLAN.md, M5); pass -c to compile only");
         return ExitCode::from(2);
+    }
+    if args.run {
+        return run(&args);
     }
     if args.output.is_some() && args.inputs.len() > 1 {
         eprintln!("xcc: -o with more than one source is not supported yet");
@@ -153,6 +164,53 @@ fn main() -> ExitCode {
     }
 
     status
+}
+
+/// `--run`: compile one source in process, call `main`, and leave with its value.
+///
+/// The exit is `std::process::exit`, not a returned `ExitCode`: `main`'s `int` is the whole
+/// status on Windows, and truncating it to a byte would make a comparison with a real executable
+/// wrong for a program that returns more than 255.
+fn run(args: &Args) -> ExitCode {
+    let [input] = args.inputs.as_slice() else {
+        eprintln!("xcc: --run takes one source");
+        return ExitCode::from(2);
+    };
+    let name = input.display().to_string();
+    let text = match std::fs::read_to_string(input) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("xcc: cannot read {name}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    let options = Options {
+        defines: args.defines.clone(),
+        undefines: args.undefines.clone(),
+        ..Options::default()
+    };
+    let mut jit = match xcc::Jit::new() {
+        Ok(jit) => jit,
+        Err(message) => {
+            eprintln!("xcc: {message}");
+            return ExitCode::from(2);
+        }
+    };
+    let _ = options; // a JIT compilation takes the defaults today
+    if let Err(message) = jit.add_source(&text) {
+        eprintln!("xcc: {message}");
+        return ExitCode::from(1);
+    }
+    let Some(address) = jit.function("main") else {
+        eprintln!("xcc: {name} defines no `main`");
+        return ExitCode::from(2);
+    };
+    // The Win64 shape of `main`: arguments are ignored by an `int main(void)`, which is what a
+    // program written that way compiles to.
+    let main: extern "C" fn(i32, *const *const u8) -> i32 = unsafe { std::mem::transmute(address) };
+    let argv = [name.as_ptr(), std::ptr::null()];
+    let status = main(1, argv.as_ptr());
+    std::process::exit(status)
 }
 
 /// `-E`: the tokens, whitespace between them, wrapped so a person can read it.

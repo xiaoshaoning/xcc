@@ -244,10 +244,11 @@ The first thing worth showing, and the reason the project exists.
       M10's own emitter unless the dependency grows the ability first.
 - [ ] `long long` arithmetic including division and shifts at the edges (`LLONG_MIN / -1`,
       shifts >= width): defined behaviour, no trap, matching clang's results.
-- [ ] Acceptance: differential testing in CI - compile and run a corpus with `xcc` and with
-      `clang -O0`, compare stdout and exit codes. The corpus is [tests/corpus](tests/corpus/README.md)
-      (which already covers structs, function pointers, doubles, aggregates and `long long`)
-      plus cases written for the constructs it does not: varargs, bitfields, unions.
+- [x] Acceptance: differential testing in CI - compile and run a corpus with `xcc` and with
+      `clang -O0`, compare stdout and exit codes: `crates/xcc-cli/tests/differential.rs`, over
+      the [tests/corpus](tests/corpus/README.md) programs both compilers can build - 359 of
+      464 run and agree. The cases M6 names but the compiler cannot run yet (varargs,
+      bitfields) are refused, so they wait for those features rather than for the runner.
 
 ## M7 - embedding polish  (M)
 

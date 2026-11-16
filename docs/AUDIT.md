@@ -78,6 +78,49 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6 acceptance: the differential runner - 2026-11-16 - and the four bugs it found first
+
+M6's last item asks that the corpus be *run*, not just compiled, against a reference. This is that
+runner, and it earned its keep on the first run: 28 of 332 programs disagreed with `clang -O0`,
+every one of them a silent wrong answer rather than a refusal.
+
+**The shape.** `xcc --run file.c` compiles the source in process, calls `main`, and exits with what
+it returns - the embedding API used the way a host would, and one new command-line flag. The test
+then runs each corpus program twice, as a *process*: through `xcc --run`, and through
+`clang -O0 -nostdinc` and its executable. Exit status and stdout are compared; a time limit turns a
+hang into a result; a condition code above `0xC0000000` is a crash, which is also a result. A
+program xcc refuses is counted, not failed - a refusal is a recorded gap - and so is one `clang`
+itself will not build.
+
+**The numbers now**: of 464 corpus programs, **359 run and agree**, 65 are refused (variadic
+`printf`, undeclared library calls, deliberately invalid programs), 40 are skipped (`#include`, no
+headers until M8, plus the few the reference rejects), 0 disagree. It costs about two minutes,
+parallelised across the machine's workers; `clang` is 0.66 s per file and our own `--run` 0.12 s.
+That is the price of isolation: a crash in one program is a result, not the end of the run.
+
+**Four bugs, all of them the same family - something emitted nothing:**
+
+1. **Reading a file-scope object produced a function with no return.** `return g;` emitted nothing,
+   because a global had no address to load from, so the function fell into `unreachable` and the
+   program died with `ud2`. Twenty-eight programs, all of the `cc1x_*init` family. Fixed by
+   extending ADR-004's rule to file scope: an object's value is the symbol's address, so a global
+   is a place like a local - loaded, stored, subscripted, a member's base.
+2. **Unary `+` dropped its operand.** `return +42;` was a trap. It is
+   `convert(value, promote(ty))` now, because promotion can be a conversion (`+c` for a `char`).
+3. **A decimal constant too big for `int` was typed `unsigned int`.** `unsigned long long a =
+   4294967296;` stored a 32-bit zero, so `a > b` was false where C says true. C99 6.4.4.1p5's table
+   is implemented: a *decimal* constant takes `int`, then `long long` - never an unsigned type
+   first - while octal and hexadecimal take the unsigned-and-wider order.
+4. **A compound literal had no storage.** `(struct P){3, 4}` was a value with no place, so `.x`
+   computed nothing and the program trapped. It gets a slot of its own now, filled by the same
+   walker `initialize_local` already used.
+
+The runner is `#[test]` and lives with the command line's tests, because it drives the command
+line. What it cannot cover yet is recorded above it: `printf` (ADR-006), headers (M8), and the
+bitfield cases M6 asks for, which the compiler refuses rather than runs.
+
+148 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### varargs, reviewed - 2026-11-16 - a reason is a note, not a longer sentence
 
 The review of the varargs commit. Its one code change was a diagnostic, and the diagnostic was

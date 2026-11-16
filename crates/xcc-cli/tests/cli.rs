@@ -194,3 +194,33 @@ fn a_missing_response_file_says_so() {
     assert_eq!(output.status.code(), Some(2));
     assert!(stderr(&output).contains("cannot read response file"));
 }
+
+#[test]
+fn run_calls_main_and_leaves_with_its_value() {
+    let temp = Temp::new("run");
+    let source = temp.write("t.c", "int main(void) { return 42; }\n");
+    let output = run(xcc().arg("--run").arg(&source));
+    assert_eq!(output.status.code(), Some(42), "{}", stderr(&output));
+}
+
+#[test]
+fn run_gives_main_its_arguments_and_reports_a_missing_one() {
+    let temp = Temp::new("runargs");
+    let source = temp.write(
+        "t.c",
+        "int main(int argc, char **argv) { return argc + (argv[0] != 0) + (argv[1] == 0); }\n",
+    );
+    // `argv[0]` is the source's path and `argv[1]` is the null that ends it: 1 + 1 + 1.
+    let output = run(xcc().arg("--run").arg(&source));
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+
+    // A source with no `main` is a usage error, not a program that exits 2 by accident.
+    let nothing = temp.write("empty.c", "int f(void) { return 0; }\n");
+    let output = run(xcc().arg("--run").arg(&nothing));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("defines no `main`"),
+        "{}",
+        stderr(&output)
+    );
+}

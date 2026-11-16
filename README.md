@@ -54,6 +54,13 @@ let add: extern "C" fn(i32, i32) -> i32 = unsafe { std::mem::transmute(address) 
 assert_eq!(add(2, 3), 5);
 ```
 
+From the command line, `xcc --run file.c` compiles the source in process, calls `main`, and
+leaves with its value - the embedding API used the way a host would:
+
+```
+$ xcc --run hello.c; echo $?
+```
+
 For a host function callable from C, register it at construction - the addresses must outlive the
 `Jit`:
 
