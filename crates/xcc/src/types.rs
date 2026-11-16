@@ -427,6 +427,13 @@ impl Types {
         self.is_integer(id) || self.is_float(id)
     }
 
+    /// Whether a value of this type *is* the address of the thing rather than bytes read from
+    /// it: an array (C99 6.3.2.1p3) and a function designator (6.3.2.1p4). These are the cases
+    /// where loading the place would read the wrong thing, or nothing at all (ADR-004).
+    pub fn value_is_address(&self, id: TypeId) -> bool {
+        matches!(self.kind(id), Type::Array { .. } | Type::Function { .. })
+    }
+
     /// Whether a value of this type is a pointer.
     pub fn is_pointer(&self, id: TypeId) -> bool {
         matches!(self.kind(id), Type::Pointer(_) | Type::Error)
@@ -620,7 +627,6 @@ impl Types {
             // is a property of the value, not of the type. `1: ... => false` until the
             // expression checker can test the value (M3.2), so this cannot accept `p = 42;`.
             (Type::Pointer(_), Type::Int { bits, .. }) => *bits == 64,
-            (Type::Array { element: a, .. }, Type::Pointer(_)) => self.same(*a, self.pointee(from)),
             _ => false,
         }
     }

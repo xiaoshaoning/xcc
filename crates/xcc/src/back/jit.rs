@@ -287,7 +287,8 @@ int twice(int x) { return host_double(x); }",
             "int sum3(int n) { int a[3]; a[0] = n; a[1] = 2; a[2] = 3; return a[0] + a[1] + a[2]; }
              int walk(void) { int a[3]; int *p; p = a; p[1] = 7; return *(p + 1) + a[1]; }
              int whole(void) { int a[3]; return sizeof *(&a + 1) + sizeof a; }
-             int nested(void) { int a[2][3]; a[1][2] = 5; return a[1][2]; }",
+             int nested(void) { int a[2][3]; a[1][2] = 5; return a[1][2]; }
+             int stepped(void) { int a[3]; int *p; p = a; p[1] = 7; p++; return p[0]; }",
         )
         .expect("it compiles");
         let call = |name: &str| -> i32 {
@@ -302,6 +303,8 @@ int twice(int x) { return host_double(x); }",
         // `*(&a + 1)` is the array after `a`, so 12 bytes; a flat `int *` would make it 4.
         assert_eq!(call("whole"), 24);
         assert_eq!(call("nested"), 5);
+        // `p++` steps one int, not one byte: a byte step would not land on the 7.
+        assert_eq!(call("stepped"), 7);
     }
 
     /// Two JITs do not see each other's code, which is what "no global state" buys.

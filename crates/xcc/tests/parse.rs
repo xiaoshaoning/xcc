@@ -216,6 +216,33 @@ fn what_is_not_implemented_is_said_not_guessed() {
     );
     refuses("int a[2] = {[0 ... 1] = 3};", "not implemented yet");
     refuses("int f(void) { asm(\"nop\"); }", "`asm` is not declared");
+    refuses(
+        "int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }",
+        "a call to a variadic function is not lowered yet",
+    );
+    // The refusal comes after the arguments are read, so the argument is still checked.
+    refuses(
+        "int printf(const char *, ...); int f(void) { return printf(1); }",
+        "argument 1 is int, expected pointer to char",
+    );
+}
+
+#[test]
+fn a_variable_needs_a_complete_type() {
+    refuses(
+        "int f(void) { int a[]; return 0; }",
+        "an array with no size cannot be a variable",
+    );
+    // An initialiser gives the array a size, and then has nowhere to write it: refused, once.
+    refuses(
+        "int f(void) { char s[] = \"abc\"; return s[0]; }",
+        "initialising a variable in a function",
+    );
+    // Scalar locals are not initialised either, and saying so beats reading uninitialised.
+    refuses(
+        "int f(void) { int x = 3; return x; }",
+        "initialising a variable in a function",
+    );
 }
 
 #[test]

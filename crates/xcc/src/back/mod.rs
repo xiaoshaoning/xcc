@@ -566,7 +566,6 @@ impl<M: Module> Lowerer<'_, M> {
         Ok(())
     }
 
-    /// A comparison produces a C `int`, so the flag becomes 1 or 0 in the result's width.
     /// A comparison produces a C `int`, so the flag becomes 0 or 1 in `int`'s width.
     fn widen_flag(
         builder: &mut FunctionBuilder<'_>,

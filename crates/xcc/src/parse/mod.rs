@@ -493,6 +493,14 @@ impl Parser<'_> {
             if self.eat("=") {
                 let span = self.span();
                 if self.in_body() {
+                    // A local's initialiser is read and checked and then dropped: the emitter
+                    // writes bytes for file-scope objects only. A variable read uninitialised
+                    // is a wrong program, not a missing feature, so this is refused until a
+                    // slot can be written. A type that is not lowerable at all has its own
+                    // diagnostic above, and does not get a second one here.
+                    if self.lowerable(ty) {
+                        self.not_lowered(span, "initialising a variable in a function");
+                    }
                     self.initializer(ty);
                 } else if let Some(bytes) = self.initializer_bytes(ty) {
                     if let Some(name) = name {
@@ -506,6 +514,15 @@ impl Parser<'_> {
                         });
                     }
                 }
+            }
+            // C99 6.2.5p20: a variable's type has to be complete. This is asked after the
+            // initialiser because C lets `char s[] = "abc"` take its size from the literal.
+            if self.in_body()
+                && !specs.is_typedef
+                && matches!(self.types.kind(ty), Type::Array { count: None, .. })
+            {
+                let span = self.span();
+                self.error(span, "an array with no size cannot be a variable");
             }
             last = Some(ty);
             self.last_declared = name;

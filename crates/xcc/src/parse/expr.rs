@@ -506,8 +506,7 @@ impl Parser<'_> {
             return Value::temporary(ty);
         };
         let span = self.span();
-        let array = matches!(self.types.kind(value.ty), Type::Array { .. });
-        let from = if array {
+        let from = if self.types.value_is_address(value.ty) {
             self.pointer_to(value.ty)
         } else {
             value.ty
@@ -619,12 +618,12 @@ impl Parser<'_> {
                 // writes - the same place-and-load `p[i]` is built from.
                 let element = self.types.pointee(value.ty);
                 match value.cir {
-                    Some(place) => Some(self.load_place(element, place, span)),
+                    Some(place) => Some(self.read_place(element, place, span)),
                     None => Some(Value::new(element, None, true)),
                 }
             }
             "++" | "--" => {
-                let down = self.spell(self.peek().expect("checked")) == "--";
+                let down = self.at_punct("--");
                 self.bump();
                 let value = self.unary_expression()?;
                 Some(self.step(value, down, false, span))
@@ -670,20 +669,12 @@ impl Parser<'_> {
             self.not_lowered(span, "the address of this kind of place");
             return Value::temporary(ty);
         };
-        let stored = match written.cir {
-            Some(cir) => {
-                self.emit(|builder| builder.store(place, cir, span));
-                written
-            }
-            None => {
-                let stepped = self.convert(written, ty, span);
-                if let Some(cir) = stepped.cir {
-                    self.emit(|builder| builder.store(place, cir, span));
-                }
-                stepped
-            }
-        };
-        let result = if postfix { value } else { stored };
+        // The operand is a place and the written value has `ty`, so no code on `written`
+        // means the place emitted none: there is nothing to store back either.
+        if let Some(cir) = written.cir {
+            self.emit(|builder| builder.store(place, cir, span));
+        }
+        let result = if postfix { value } else { written };
         Value::new(ty, result.constant, false).with_cir(result.cir)
     }
 
@@ -749,7 +740,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.at_punct("++") || self.at_punct("--") {
-                let down = self.spell(self.peek().expect("checked")) == "--";
+                let down = self.at_punct("--");
                 self.bump();
                 value = self.step(value, down, true, span);
                 continue;
@@ -776,7 +767,7 @@ impl Parser<'_> {
                 let pointer = self.types.pointer(element);
                 let address = self.pointer_walk(pointer, base, index, true, span);
                 match address.cir {
-                    Some(place) => self.load_place(element, place, span),
+                    Some(place) => self.read_place(element, place, span),
                     None => Value::new(element, None, true),
                 }
             }
@@ -812,14 +803,6 @@ impl Parser<'_> {
             } => (*result, params.clone(), *variadic),
             _ => unreachable!("checked above"),
         };
-        // A variadic call needs the Win64 argument-passing rules (M6), and a call emitted with
-        // the declared arity alone does not verify. Refused rather than half-emitted.
-        if variadic {
-            self.skip_until(&[")"], true);
-            self.not_lowered(span, "a call to a variadic function");
-            return Value::temporary(result);
-        }
-
         let mut given = 0usize;
         let mut surplus = 0usize;
         let mut values: Vec<Value> = Vec::new();
@@ -873,7 +856,14 @@ impl Parser<'_> {
             };
             self.error(span, format!("this function takes {takes}, {given} given"));
         }
-        self.emit_call(callee, &params, values, result, variadic, span)
+        // Win64 varargs - the AL count and the duplicated float registers - is M6. A call
+        // emitted with the declared arity alone does not describe it, so it is refused here,
+        // where the arguments have already been read and checked, rather than half-emitted.
+        if variadic {
+            self.not_lowered(span, "a call to a variadic function");
+            return Value::new(result, None, false);
+        }
+        self.emit_call(callee, &params, values, result, span)
     }
 
     /// The call itself: arguments converted to the parameter types, and the result value.
@@ -883,7 +873,6 @@ impl Parser<'_> {
         params: &[TypeId],
         values: Vec<Value>,
         result: TypeId,
-        variadic: bool,
         span: Span,
     ) -> Value {
         if !self.in_body() {
@@ -894,10 +883,11 @@ impl Parser<'_> {
         };
         let mut args = Vec::new();
         for (position, argument) in values.into_iter().enumerate() {
-            // A variadic argument is promoted, not converted: C99 6.5.2.2p6.
+            // Surplus arguments belong to a variadic call, which `call` refuses before it
+            // reaches here; a non-variadic call with too many arguments is diagnosed and
+            // its body dropped, so there is nothing left to convert.
             let wanted = match params.get(position) {
                 Some(wanted) => *wanted,
-                None if variadic => self.promote(argument.ty),
                 None => continue,
             };
             let converted = self.convert(argument, wanted, span);
@@ -1158,7 +1148,7 @@ impl Parser<'_> {
                 // refuse.
                 Some(place) => {
                     let (ty, place) = (entry.ty, place);
-                    self.load_place(ty, place, span)
+                    self.read_place(ty, place, span)
                 }
                 None => Value::new(entry.ty, None, true),
             },

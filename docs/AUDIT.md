@@ -78,6 +78,65 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### array locals and `++`/`--` - 2026-11-16 - a review of the last four code commits
+
+Not a corpus audit: a pass over everything committed since the previous review that it did not
+cover - `++`/`--` (153e29f), its clippy follow-up (ece00bd), the M6 test (bfbfc85), and array
+locals (70d2b1b). The test that found most of this was written for the array commit and then
+asked for `sizeof`, a cast, `*p` and an initialiser.
+
+Findings, worst first:
+
+1. **A local initialiser was read, checked, and never stored.** At file scope the initialiser
+   writes bytes; in a body it wrote nothing, so `int f(void) { int x = 3; return x; }` returned
+   whatever the stack slot held (21, when asked). That is every `int x = 3;` in every function -
+   the most ordinary C there is, miscompiled and silent. Arrays made it worse: `int a[3] = {1,2,3}`
+   and `char s[] = "abc"` parse, size and check correctly and then read uninitialised memory.
+   Refused now (`initialising a variable in a function is not lowered yet`), which is the honest
+   state until a slot can be written; the work is one function and belongs with M4.2b's frame
+   writes, not with this review.
+2. **An array with no size became an internal error.** `int f(void) { int a[]; ... }` reached the
+   back end and reported `internal: a slot for an incomplete type`, because `lowerable` had just
+   learned to accept arrays. A source diagnostic now (C99 6.2.5p20), asked *after* the initialiser
+   so that `char s[] = "abc"` is not refused for the size it is about to be given.
+3. **`is_assignable` was carrying the string-initialiser rule.** `(array of T, pointer to T)` was
+   accepted "so a string literal can initialise a char array", which put an initialisation rule
+   inside the predicate that assignment, casts, calls, the ternary and `cir`'s verifier all ask.
+   It bought the array commit a special case in `assign` to keep `s = "hi"` out. No caller needed
+   it: removed, and the corpus is unchanged (`cc16_strarray*.c` stay rejected, as correct C).
+4. **"A value that is its address" had no name and three spellings** - `read_place`'s
+   `Array | Function` match, `decay`'s `matches!(... Array)`, and a comment in `subscript` - and
+   the one function implementing it lived in `stmt.rs` although all three callers are expressions.
+   It is `Types::value_is_address`, used by both, and `read_place` sits next to `convert` and
+   `constant_of` in `emit.rs`, the seam that knows `cir`.
+5. **A refusal in front of the arguments it was about.** The variadic refusal added with the array
+   commit ran before the argument loop, so `printf(1)` reported only "not lowered" and never
+   "argument 1 is int, expected pointer to char" - and the arity check never ran either. Moved
+   behind both; `emit_call` lost the `variadic` parameter, which then had only one possible value.
+6. **A branch in `step` that could not be taken.** The written value always has the operand's type,
+   so the `None` arm converted it to the type it already had and then stored nothing. Deleted.
+   `self.spell(self.peek().expect("checked")) == "--"`, twice, is `self.at_punct("--")`.
+7. **A doc comment that said the same thing twice**, above `widen_flag`.
+8. **`p++` had no test.** `++`'s test only exercised `int i`, and the pointer form had been passing
+   a *pointer* where the index goes; nothing would have caught it. The array test steps to a
+   written element now (`stepped`), and the review's own three emitters (`sizeof`, a cast, `*p`)
+   were found the same way.
+
+Recorded, not fixed - each needs a decision rather than a patch:
+
+- **`int a[];` at file scope is an internal error.** `the object `a` has no size`. C99 6.9.2p5
+  completes it to one element at the end of the translation unit, and nothing does.
+- **Two tentative definitions of one object are two data objects.** `int x; int x;` is accepted
+  deliberately (the parser allows it) and then `cranelift module: Duplicate definition of
+  identifier: x`. One object, one `cir::Global`, is the fix.
+- **`int a[2][4] = {"ab", "cd"};`** - a string where a row belongs is descended to the `char`
+  element and refused ("cannot initialize char with pointer to char"). Pre-existing, and a
+  brace-elision question for M6's aggregate work.
+- **`?:` emits nothing**: `int f(int a) { return a ? 1 : 2; }` compiles to a trap, because `cir`
+  has no `Select`. Recorded in the array-locals entry above; unchanged.
+
+139 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### array locals, the fifth attempt - 2026-11-16 - ADR-004's answer, implemented
 
 The answer (the slot's address is `pointer to array[N]`; `decay` is the one `Bitcast`) made the

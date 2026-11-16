@@ -34,6 +34,31 @@ impl Parser<'_> {
         }
     }
 
+    /// A value read from a place: a load, unless the type's value *is* its address, which is
+    /// `value_is_address` - then the place is the value, typed `pointer to array[N]` or
+    /// `pointer to function`, and `decay` bitcasts it to what the use expects (ADR-004).
+    pub(super) fn read_place(&mut self, ty: TypeId, place: cir::Value, span: Span) -> Value {
+        if self.types.value_is_address(ty) {
+            return Value {
+                ty,
+                constant: None,
+                lvalue: true,
+                cir: Some(place),
+                place: Some(place),
+            };
+        }
+        match self.emit(|builder| builder.load(place, ty, span)) {
+            Some(value) => Value {
+                ty,
+                constant: None,
+                lvalue: true,
+                cir: Some(value),
+                place: Some(place),
+            },
+            None => Value::new(ty, None, true),
+        }
+    }
+
     /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
     /// signed, decide which conversion C needs.
     pub(super) fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {

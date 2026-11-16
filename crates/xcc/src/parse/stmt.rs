@@ -440,35 +440,6 @@ impl Parser<'_> {
         }
     }
 
-    /// A value read from a place: a load, unless the type's value *is* its address, which C says
-    /// of arrays (6.3.2.1p3) and of function designators (6.3.2.1p4). That address is typed
-    /// `pointer to array[N]` or `pointer to function`, which is what `&a` and `*fp` need and
-    /// what `decay` bitcasts to the pointer a use expects (ADR-004).
-    pub(super) fn load_place(&mut self, ty: TypeId, place: cir::Value, span: Span) -> Value {
-        if matches!(
-            self.types.kind(ty),
-            Type::Array { .. } | Type::Function { .. }
-        ) {
-            return Value {
-                ty,
-                constant: None,
-                lvalue: true,
-                cir: Some(place),
-                place: Some(place),
-            };
-        }
-        match self.emit(|builder| builder.load(place, ty, span)) {
-            Some(value) => Value {
-                ty,
-                constant: None,
-                lvalue: true,
-                cir: Some(value),
-                place: Some(place),
-            },
-            None => Value::new(ty, None, true),
-        }
-    }
-
     pub(super) fn return_statement(&mut self) {
         let span = self.span();
         self.bump();
