@@ -78,6 +78,44 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: varargs - 2026-11-16 - refused with the reason, and an ADR instead of an afternoon
+
+Varargs turned out to be a back-end question, not a front-end one, and the front end's half is
+cheap: a variadic `float` is promoted to `double` (already done by the parser) and then passed
+*twice*, in the next XMM register and in the next general-purpose register, so a callee can
+`va_arg` it out of whichever register file it saved. Two `cir` values - the `double` and its
+bitcast - express that.
+
+The two rules that cannot be expressed are both the caller's, and both were measured in the
+dependency's source rather than assumed:
+
+1. **`AL`.** Win64 sets `AL` to the number of vector registers the call used; the callee's
+   prologue spills `xmm0`-`xmm3` on the strength of it. `AL` is a physical register and `cir` has
+   none: Cranelift is a register allocator, and `cranelift-codegen` 0.117 has no mention of
+   `variadic`, `varargs` or a call-site register anywhere in it.
+2. **A signature per call site.** `cranelift-module`'s `FunctionDeclaration::merge` returns
+   `IncompatibleSignature` when the same name is declared with a second signature, so
+   `printf("%d", 1)` and `printf("%s %f", s, d)` cannot both be declared against the symbol.
+
+Neither is a missing line. So [ADR-006](ADR-006-varargs.md) records the decision - refuse, and
+make the refusal say why - and the message now names both constraints:
+
+```
+a call to a variadic function is not lowered yet: Win64 wants `AL` set and a signature per call
+site, and this back end can express neither (ADR-006)
+```
+
+The front-end half is deliberately *not* written: the duplicate and the promotion belong in
+`emit_call` and would be code no test can run, and the shape of the call changes the moment `AL`
+becomes expressible. What is lost by waiting is nothing; what is gained is that the next reader
+does not spend the afternoon this note did.
+
+Consequence for M6's acceptance item: the differential runner (compile *and run* corpus files with
+xcc and with clang) has to pick programs that print nothing until this is lifted - which is why it
+is the next thing worth doing, on a corpus subset rather than the whole thing.
+
+148 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### the aggregate ABI, reviewed - 2026-11-16 - what the probes got wrong, and one check that was a guess
 
 The review of the ABI commit. The rule itself held up: the probes that mattered - a by-reference

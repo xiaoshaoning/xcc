@@ -239,6 +239,9 @@ The first thing worth showing, and the reason the project exists.
       unions with type punning, nested and anonymous members.
 - [ ] Bitfields with C's layout rules, packed structs only where the ABI allows.
 - [ ] Varargs (`va_list` from `stdarg.h` over the Windows ABI), `printf`-style calls.
+      Blocked on the back end, not on the front end: [ADR-006](docs/ADR-006-varargs.md) records the
+      two things Cranelift cannot say (`AL`, and a signature per call site), so this waits for
+      M10's own emitter unless the dependency grows the ability first.
 - [ ] `long long` arithmetic including division and shifts at the edges (`LLONG_MIN / -1`,
       shifts >= width): defined behaviour, no trap, matching clang's results.
 - [ ] Acceptance: differential testing in CI - compile and run a corpus with `xcc` and with

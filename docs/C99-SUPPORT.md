@@ -74,6 +74,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | floating constants, including `f`/`l` suffixes and exponents | `partial` - decimal forms are read once into the type's bits; hexadecimal constants (`0x1.8p3`) are refused, which C99 6.4.4.2 requires and this reader does not do |
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
+| a call to a variadic function (`printf`-style) | `refused` - Win64 wants `AL` set to the vector-register count and a signature per call site; this back end can express neither, so the refusal names the reason ([ADR-006](ADR-006-varargs.md)) |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
 | `switch`, `goto`, labels | `sound` (M3.4): the controlling expression must be an integer, `case` values unique, one `default`, `goto` may jump forward |
 | initialisation of aggregates, static and automatic | `partial` (M3.3, M3.4): brace lists, elision and designators are checked for type and shape; the values themselves are not lowered until M4 |

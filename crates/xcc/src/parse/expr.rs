@@ -998,7 +998,15 @@ impl Parser<'_> {
         // emitted with the declared arity alone does not describe it, so it is refused here,
         // where the arguments have already been read and checked, rather than half-emitted.
         if variadic {
-            self.not_lowered(span, "a call to a variadic function");
+            // Win64 wants `AL` set to the vector-register count and a signature per call site;
+            // this back end can express neither (docs/ADR-006-varargs.md), so the reason travels
+            // with the refusal rather than living only in the ADR.
+            if self.in_body() && !self.unevaluated {
+                self.error(
+                    span,
+                    "a call to a variadic function is not lowered yet: Win64 wants `AL` set and a signature per call site, and this back end can express neither (ADR-006)",
+                );
+            }
             return Value::new(result, None, false);
         }
         self.emit_call(callee, &params, values, result, span)

@@ -291,6 +291,14 @@ fn what_is_not_implemented_is_said_not_guessed() {
         "int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }",
         "a call to a variadic function is not lowered yet",
     );
+    // ...and the refusal names the two things the back end cannot say, so a reader does not have
+    // to rediscover them (ADR-006).
+    let complaints =
+        check("int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }");
+    assert!(
+        complaints.iter().any(|message| message.contains("ADR-006")),
+        "{complaints:?}"
+    );
     // The refusal comes after the arguments are read, so the argument is still checked.
     refuses(
         "int printf(const char *, ...); int f(void) { return printf(1); }",
