@@ -326,6 +326,11 @@ fn what_aggregates_still_cannot_do() {
         "struct S { int a : 3; }; int f(void) { struct S s; s.a++; return 0; }",
         "`++` on a bitfield",
     );
+    // C99 6.5.3.2p1: the only address a bitfield has is its whole unit's, so `&` refuses.
+    refuses(
+        "struct S { unsigned a : 3; }; int f(void) { struct S s; return (int)&s.a; }",
+        "the address of a bitfield cannot be taken",
+    );
     // An aggregate cannot be carried through a join: the join would need a register for it.
     refuses(
         "struct P { int x; }; int f(int c) { struct P a = {1}; struct P b = {2}; return (c ? a : b).x; }",

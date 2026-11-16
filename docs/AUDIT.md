@@ -78,6 +78,28 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### function pointers, `goto` and bitfields, reviewed - 2026-11-16 - the edges the three opened
+
+The review of the three commits that cleared the differential runner's work list. The three
+mechanisms held; what the review found were the edges each one opened.
+
+1. **`&s.a` on a bitfield was accepted, and meant the whole storage unit.** Reading and writing a
+   bitfield went through `place`, which is the *unit's* address - so `&` saw a place and handed back
+   a pointer to the unit, and `*(int *)&s.a = 5` would have written a neighbour's bits. C99
+   6.5.3.2p1 says a bitfield has no address; it is refused now, which is what clang says too.
+2. **The value of a signed bitfield assignment was the masked bits, not the field.** `(s.c = -3)`
+   was 13 (`-3 & 0xF`) where C says the assignment's value is the field after the write, which is
+   -3 sign-extended from four bits. The writer reads the field back after storing - one load, which
+   M10 can fold - and clears its place and bits, because an assignment is not an lvalue.
+
+Checked and sound, no change needed: a variadic call through a pointer (the refusal sees the
+pointee's flags), an aggregate result through a pointer (the same `signature_of`, hidden buffer
+included), `(*f)()` against `f()`, a `goto` into a loop or an `if` body, a `goto` to a label at the
+end of a function, dead code after a `goto` in a declaration with an initialiser, and a bitfield in
+a union.
+
+150 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: bitfields read and written in code - 2026-11-16 - the unit, and the bits in it
 
 The last M6 item the differential runner could reach. The layout was already right (measured

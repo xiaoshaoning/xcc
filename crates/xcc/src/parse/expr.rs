@@ -184,7 +184,14 @@ impl Parser<'_> {
             return Value::new(ty, None, false);
         };
         self.emit(|builder| builder.store(place, merged, span));
-        Value::code(ty, field)
+        // The value of the assignment is the field *after* the write - which means read back, so
+        // a signed field is sign-extended: `(s.c = -7)` is -7, not the nine bits that were
+        // stored. The result is not an lvalue, so the place and the bits stay behind.
+        let mut result = self.read_bitfield(ty, place, (start, width), span);
+        result.lvalue = false;
+        result.place = None;
+        result.bits = None;
+        result
     }
 
     /// `condition ? when_true : when_false`: two blocks and a join, and the join's parameter is
@@ -787,6 +794,12 @@ impl Parser<'_> {
                 self.bump();
                 let value = self.unary_expression()?;
                 if self.types.is_error(value.ty) {
+                    return Some(Value::temporary(self.types.error()));
+                }
+                if value.bits.is_some() {
+                    // C99 6.5.3.2p1: a bitfield has no address of its own - the only address
+                    // there is belongs to its whole storage unit.
+                    self.error(span, "the address of a bitfield cannot be taken");
                     return Some(Value::temporary(self.types.error()));
                 }
                 let Some(place) = value.place else {

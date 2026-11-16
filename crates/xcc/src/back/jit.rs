@@ -883,7 +883,8 @@ int twice(int x) { return host_double(x); }",
                  return (int)(s.b * 100 + s.c) + (int)(s.d >> 16); }
              struct T { unsigned char x : 3; unsigned char y : 2; };
              int in_a_char(void) { struct T t; t.x = 5; t.y = 3; return t.x * 10 + t.y; }
-             int compound(void) { struct S s; s.a = 1; s.a += 3; return s.a; }",
+             int compound(void) { struct S s; s.a = 1; s.a += 3; return s.a; }
+             int assignment_value(void) { struct S s; s.c = -7; return (s.c = -3) == -3; }",
         )
         .expect("it compiles");
         let call = |name: &str| -> i32 {
@@ -900,6 +901,9 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("neighbours"), 31 * 100 + 7 + 0xF);
         assert_eq!(call("in_a_char"), 53);
         assert_eq!(call("compound"), 4);
+        // The value of the assignment is the field after the write, sign-extended: `(s.c = -3)`
+        // is -3, not the masked bits that were stored.
+        assert_eq!(call("assignment_value"), 1);
     }
 
     /// `goto` and labels: a forward jump into code not yet read, a backward one that is a loop,
