@@ -8,6 +8,10 @@
 use super::*;
 use crate::types::{RecordId, RecordKind};
 
+/// What the walker needs to know about one member: its name when it has one, its type, where it
+/// sits in the aggregate, and the bits it owns of its storage unit when it is a bitfield.
+type Member = (Option<Symbol>, TypeId, usize, Option<(u8, u8)>);
+
 impl Parser<'_> {
     /// `= <initialiser>`: one value for a scalar, a brace list for an array or aggregate.
     pub(super) fn initializer(&mut self, ty: TypeId) {
@@ -249,9 +253,8 @@ impl Parser<'_> {
     /// Fill a struct or union from the values at the cursor.
     ///
     /// C99 6.7.8p9: an unnamed bitfield is padding and takes no initialiser, and a union takes
-    /// one member and no more. A *named* bitfield would have to be masked and shifted into its
-    /// unit, which the emitter does not do, so it is refused rather than written over the whole
-    /// unit as if it were a plain integer.
+    /// one member and no more. A *named* bitfield's value goes into its bits of the unit, not over
+    /// the unit: `self.bits` carries it down to the write, wherever the object lives.
     fn initialize_record(&mut self, record: RecordId, braced: bool) {
         let span = self.span();
         if !self.types.record_complete(record) {
@@ -263,23 +266,16 @@ impl Parser<'_> {
         }
         let base = self.offset;
         let union = matches!(self.types.record_kind(record), RecordKind::Union);
-        let members: Vec<(Option<Symbol>, TypeId, usize, bool)> = self
+        let members: Vec<Member> = self
             .types
             .members(record)
             .iter()
-            .map(|member| {
-                (
-                    member.name,
-                    member.ty,
-                    member.offset as usize,
-                    member.bits.is_some(),
-                )
-            })
+            .map(|member| (member.name, member.ty, member.offset as usize, member.bits))
             .collect();
         let past_padding = |mut at: usize| {
             while members
                 .get(at)
-                .is_some_and(|(name, _, _, bitfield)| *bitfield && name.is_none())
+                .is_some_and(|(name, _, _, bits)| bits.is_some() && name.is_none())
             {
                 at += 1;
             }
@@ -311,19 +307,18 @@ impl Parser<'_> {
                     self.error_at_current("expected `=` after a designator");
                 }
             }
-            let Some((_, member, offset, bitfield)) = members.get(at).copied() else {
+            let Some((_, member, offset, bits)) = members.get(at).copied() else {
                 break;
             };
             self.offset = base + offset;
+            self.bits = bits;
             at += 1;
-            if bitfield {
-                self.not_lowered(span, "a bitfield in an initialiser");
-            }
             if self.at_punct("{") {
                 self.brace_initializer(member);
             } else {
                 self.initializer_body(member, false);
             }
+            self.bits = None;
             if union {
                 // One member, one value: a second is one error, not a second store over the
                 // same bytes.
@@ -337,12 +332,7 @@ impl Parser<'_> {
     }
 
     /// `.name` at the cursor: which member that is, and the check that there is one.
-    fn designated_member(
-        &mut self,
-        span: Span,
-        members: &[(Option<Symbol>, TypeId, usize, bool)],
-        at: usize,
-    ) -> usize {
+    fn designated_member(&mut self, span: Span, members: &[Member], at: usize) -> usize {
         self.bump(); // the `.`
         match self.peek().copied() {
             Some(token) if token.kind == crate::lex::TokenKind::Ident => {
@@ -400,9 +390,14 @@ impl Parser<'_> {
         }
         let written = crate::parse::bytes::constant_bytes(&self.types, ty, value);
         match (self.bytes.as_mut(), written) {
-            (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => {
-                out[at..at + bytes.len()].copy_from_slice(&bytes);
-            }
+            (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => match self.bits {
+                None => out[at..at + bytes.len()].copy_from_slice(&bytes),
+                // A global's bytes start as zeroes, but two bitfields share one unit: the
+                // second merges into what the first left there.
+                Some((start, width)) => {
+                    crate::parse::bytes::merge_bits(out, at, &bytes, start, width);
+                }
+            },
             _ => self.bytes = None,
         }
     }
@@ -430,11 +425,14 @@ impl Parser<'_> {
         }
         let saved_target = self.init_target;
         let saved_offset = self.offset;
+        let saved_bits = self.bits;
         self.init_target = Some(target);
         self.offset = 0;
+        self.bits = None;
         self.initializer(ty);
         self.init_target = saved_target;
         self.offset = saved_offset;
+        self.bits = saved_bits;
     }
 
     /// C99 6.7.8p21: what an initialiser list does not name is zero, and a frame slot holds
@@ -453,7 +451,8 @@ impl Parser<'_> {
     }
 
     /// One leaf's store into the object being initialised: the value converted to the leaf's
-    /// type, at `offset` bytes from the object's address.
+    /// type, at `offset` bytes from the object's address - or, for a bitfield `self.bits` names,
+    /// merged into the bits it owns of the storage unit there.
     fn store_leaf(
         &mut self,
         target: (cir::Value, TypeId),
@@ -480,7 +479,14 @@ impl Parser<'_> {
             }
             return;
         }
-        self.store_at(address, ty, converted, span);
+        match self.bits {
+            None => self.store_at(address, ty, converted, span),
+            // A bitfield shares its unit with its neighbours, so its value is merged into their
+            // bytes rather than written over them.
+            Some(bits) => {
+                self.write_bitfield_at(address, ty, converted, bits, span);
+            }
+        }
     }
 
     /// Whether a designator comes next, now or after the comma - the reason the capacity check

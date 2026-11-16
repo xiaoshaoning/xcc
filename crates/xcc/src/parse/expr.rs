@@ -7,7 +7,7 @@
 use super::*;
 
 /// The mask a bitfield of `width` bits has, as a 64-bit pattern.
-fn field_mask(width: u8) -> u64 {
+pub(super) fn field_mask(width: u8) -> u64 {
     if width >= 64 {
         u64::MAX
     } else {
@@ -148,15 +148,35 @@ impl Parser<'_> {
 
     /// A bitfield write: the unit is read, the field's bits are cleared and the new value put
     /// in them. The value of the assignment is the field *after* the write, as C has it.
-    fn write_bitfield(
+    fn write_bitfield(&mut self, left: Value, value: Value, bits: (u8, u8), span: Span) -> Value {
+        let ty = left.ty;
+        let Some(place) = left.place else {
+            return Value::new(ty, None, false);
+        };
+        let mut result = self.write_bitfield_at(place, ty, value, bits, span);
+        // An assignment is not an lvalue, so the place and the bits stay behind: without this,
+        // `(s.a = 1) = 2` would be accepted.
+        result.lvalue = false;
+        result.place = None;
+        result.bits = None;
+        result
+    }
+
+    /// The merge a bitfield write is, at an address rather than at a place: read the unit, clear
+    /// the field's bits, put the new ones in. An assignment and an initialiser both end here, so
+    /// the mask arithmetic and the "the neighbours are kept" rule are written once.
+    pub(super) fn write_bitfield_at(
         &mut self,
-        left: Value,
+        address: cir::Value,
+        ty: TypeId,
         value: Value,
         (start, width): (u8, u8),
         span: Span,
     ) -> Value {
-        let ty = left.ty;
-        let (Some(place), Some(value)) = (left.place, value.cir) else {
+        let Value {
+            cir: Some(value), ..
+        } = value
+        else {
             return Value::new(ty, None, false);
         };
         let mask = field_mask(width) as i64;
@@ -164,7 +184,7 @@ impl Parser<'_> {
         let clear = self.constant_of(ty, mask, span);
         let shift = self.constant_of(ty, i64::from(start), span);
         let (keep, clear, shift) = (keep.cir, clear.cir, shift.cir);
-        let unit = self.emit(|builder| builder.load(place, ty, span));
+        let unit = self.emit(|builder| builder.load(address, ty, span));
         let (Some(unit), Some(keep), Some(clear), Some(shift)) = (unit, keep, clear, shift) else {
             return Value::new(ty, None, false);
         };
@@ -183,15 +203,11 @@ impl Parser<'_> {
         let Some(merged) = some(self, cir::BinOp::Or, kept, shifted) else {
             return Value::new(ty, None, false);
         };
-        self.emit(|builder| builder.store(place, merged, span));
-        // The value of the assignment is the field *after* the write - which means read back, so
-        // a signed field is sign-extended: `(s.c = -7)` is -7, not the nine bits that were
-        // stored. The result is not an lvalue, so the place and the bits stay behind.
-        let mut result = self.read_bitfield(ty, place, (start, width), span);
-        result.lvalue = false;
-        result.place = None;
-        result.bits = None;
-        result
+        self.emit(|builder| builder.store(address, merged, span));
+        // The field as it now stands, which is what an assignment is worth and what `++` yields:
+        // read back, so a signed field is sign-extended - `(s.c = -7)` is -7, not the nine bits
+        // that were stored.
+        self.read_bitfield(ty, address, (start, width), span)
     }
 
     /// `condition ? when_true : when_false`: two blocks and a join, and the join's parameter is
@@ -860,10 +876,25 @@ impl Parser<'_> {
             self.error(span, "`++` and `--` need a variable holding a number");
             return Value::temporary(self.types.error());
         }
-        if value.bits.is_some() {
-            // `step`'s store would write the field's value over its whole storage unit.
-            self.not_lowered(span, "`++` on a bitfield");
-            return Value::temporary(self.types.error());
+        if let Some(bits) = value.bits {
+            // `s.a++` steps in the field's own type and then merges through the write path, so a
+            // value too wide for the field is truncated by the write - which is exactly what
+            // `s.a = s.a + 1` does.
+            let ty = value.ty;
+            let Some(current) = value.cir else {
+                // Dead code: the place emitted nothing, so there is nothing to step either.
+                return Value::temporary(ty);
+            };
+            let one = self.constant_of(ty, 1, span);
+            let op = if down {
+                cir::BinOp::Sub
+            } else {
+                cir::BinOp::Add
+            };
+            let stepped = self.emit_binary(op, ty, ty, [Value::code(ty, current), one], None, span);
+            let written = self.write_bitfield(value, stepped, bits, span);
+            let result = if postfix { value } else { written };
+            return Value::new(ty, result.constant, false).with_cir(result.cir);
         }
         let ty = value.ty;
         let written = if self.types.is_pointer(ty) {

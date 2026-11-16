@@ -873,6 +873,7 @@ int twice(int x) { return host_double(x); }",
         let mut jit = Jit::new().expect("a JIT");
         jit.add_source(
             "struct S { unsigned a : 3; unsigned b : 5; int c : 4; unsigned d : 20; };
+             struct S a_global = { 5, 17, -3 };
              int write_and_read(void) {
                  struct S s; s.a = 5; s.b = 17; s.c = -3; s.d = 1000000;
                  return (int)(s.a * 1000 + s.b * 10) + (int)(s.d / 1000) + s.c;
@@ -884,7 +885,16 @@ int twice(int x) { return host_double(x); }",
              struct T { unsigned char x : 3; unsigned char y : 2; };
              int in_a_char(void) { struct T t; t.x = 5; t.y = 3; return t.x * 10 + t.y; }
              int compound(void) { struct S s; s.a = 1; s.a += 3; return s.a; }
-             int assignment_value(void) { struct S s; s.c = -7; return (s.c = -3) == -3; }",
+             int assignment_value(void) { struct S s; s.c = -7; return (s.c = -3) == -3; }
+             int stepped(void) { struct S s; s.a = 6; int after = ++s.a; s.a = 6; int before = s.a++;
+                 return after * 1000000 + s.a * 10000 + before * 100; }
+             int wraps(void) { struct S s; s.a = 7; s.a++; return s.a; }
+             int signed_step(void) { struct S s; s.c = -1; int after = s.c--; return (after + 2) * 100 + (s.c + 8); }
+             int initialised(void) { struct S one = { 5 }; struct S three = { 5, 17, -3 };
+                 struct S named = { .c = -3 };
+                 return one.a * 100000 + one.b * 10000 + three.a * 1000 + three.b * 10 + named.c; }
+             int initialised_at_file_scope(void) {
+                 return (int)(a_global.a * 1000 + a_global.b * 10) + a_global.c; }",
         )
         .expect("it compiles");
         let call = |name: &str| -> i32 {
@@ -904,6 +914,17 @@ int twice(int x) { return host_double(x); }",
         // The value of the assignment is the field after the write, sign-extended: `(s.c = -3)`
         // is -3, not the masked bits that were stored.
         assert_eq!(call("assignment_value"), 1);
+        // `++` on a field steps in the field's type and merges back in: a prefix form yields the
+        // new value, a postfix form the old one, and seven plus one is zero in three bits.
+        assert_eq!(call("stepped"), 7 * 1000000 + 7 * 10000 + 6 * 100);
+        assert_eq!(call("wraps"), 0);
+        // `s.c--` at -1 hands back the old value, -1, and leaves -2: (1 * 100) + 6.
+        assert_eq!(call("signed_step"), 106);
+        // An initialiser merges a field's bits into its unit's bytes too - in a frame and in a
+        // global, where the bytes are built up without any code to run.
+        // `one` is {5, 0, 0} as {a, b, c}; `three` is {5, 17, -3}, `named` is {0, 0, -3}.
+        assert_eq!(call("initialised"), 500_000 + 5_000 + 170 - 3);
+        assert_eq!(call("initialised_at_file_scope"), 5 * 1000 + 170 - 3);
     }
 
     /// `goto` and labels: a forward jump into code not yet read, a backward one that is a loop,

@@ -67,6 +67,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         bytes: None,
         offset: 0,
         init_target: None,
+        bits: None,
         unevaluated: false,
         literals: 0,
         targets: Vec::new(),
@@ -248,6 +249,10 @@ struct Parser<'a> {
     /// sets `init_target`, both start `offset` at zero, and a compound literal suspends all
     /// three while it reads an object of its own (`cast`).
     init_target: Option<(cir::Value, TypeId)>,
+    /// The bitfield a leaf of the initialiser being walked is a field of: its start and width in
+    /// the storage unit at the leaf's offset, or `None` for a leaf that is a whole object. It is
+    /// part of the same flat state `offset` and `init_target` are, and `write_leaf` reads it.
+    bits: Option<(u8, u8)>,
     /// Whether the expression being read is not evaluated: `sizeof`'s operand, which C says is
     /// not (C99 6.5.3.4p2), and a `constant_expression`, which is wanted for its value and not
     /// for its code. Nothing parsed in either may emit: `sizeof(x = 3)` must not assign, and
@@ -1468,10 +1473,10 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        // `++` on a bitfield would have to read, step and merge inside the storage unit, which
-        // `step` does not do.
+        // A variadic call needs `AL` set to the vector-register count and a signature per call
+        // site: the back end can express neither (ADR-006).
         let (module, _, diagnostics) =
-            module("struct S { int a : 3; }; int f(struct S s) { s.a++; return 0; }");
+            module("int p(char *, ...); int f(void) { return p(0, 1); }");
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())

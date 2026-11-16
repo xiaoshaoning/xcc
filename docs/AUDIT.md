@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6 closed: bitfields stepped and initialised, and the rest of the paperwork - 2026-11-16 - two refusals that were only a missing call
+
+The last two bitfield refusals, and the milestone paperwork that had drifted behind the code.
+
+**`s.a++`** now steps in the field's own type and merges through the write path, so a value too
+wide for the field is truncated by the write - which is exactly what `s.a = s.a + 1` does, and
+what C stores. A prefix form yields the new value, a postfix form the old one.
+
+**A bitfield in an initialiser** merges the same way, in both places an object can live: a frame
+slot (code) and a global's bytes (no code). The code side was one call away - the mask arithmetic
+moved out of `write_bitfield` into `write_bitfield_at`, which takes an *address* rather than a
+`Value`, because that is what an initialiser has; `store_leaf` now decides between a whole store
+and a merge. The byte side is `bytes::merge_bits`, the same arithmetic over the object's bytes,
+taking its mask from the same `field_mask`. Two domains, one rule.
+
+**The paperwork.** `PLAN.md` still had floats, aggregates, bitfields and `long long` unticked, and
+the acceptance count at 359. The `long long` item is now settled by measurement, not by decision:
+against `clang -O0` on this machine a shift count at or beyond the width masks to the hardware's
+six bits in both (`(1LL << 70)` is 64 in each), and `LLONG_MIN / -1` raises the divide error in
+both. C leaves that undefined, so "defined behaviour, no trap" was never reachable - the two agree
+by doing what the machine does. `docs/C99-SUPPORT.md` had lost a row: it still said "a bitfield read
+in code ... refused" three lines above the row saying it was `sound`, which is worse than saying
+nothing, because a stale row is a confident wrong answer to "can this compiler do X".
+
+What is left of M6 is varargs ([ADR-006](ADR-006-varargs.md), blocked on the back end), and the
+rest is M7's C API and M8's headers.
+
+150 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### function pointers, `goto` and bitfields, reviewed - 2026-11-16 - the edges the three opened
 
 The review of the three commits that cleared the differential runner's work list. The three

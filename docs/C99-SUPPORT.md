@@ -44,19 +44,17 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 
 | construct | status |
 |---|---|
-| `char`, `short`, `int`, `long`, `long long` and unsigned forms; `_Bool` | `planned` |
+| `char`, `short`, `int`, `long`, `long long` and unsigned forms; `_Bool` | `sound` (M2, M6) - arithmetic, comparisons, division and shifts at the edges behave as `clang -O0` does on the same machine: a shift count at or beyond the width masks to the hardware's five or six bits, and `LLONG_MIN / -1` raises the divide error in both, which C leaves undefined |
 | `float`, `double` | `sound` (M6): literals, SSE arithmetic, comparisons (C's unordered `!=`), conversions both ways, constants folded where a file-scope initialiser needs bytes, `sizeof` |
 | `long double` | `sound` (M6), and 64-bit by design: the same type as `double`, as MSVC has it on x86-64. 80-bit arithmetic is in the refusals below |
 | `_Complex`, `_Imaginary`, `_Decimal*` | `refused` |
 | pointers, arrays, functions, declarations nested to any depth, grouped declarators (`int (*fp)(int)`, `int (*a)[3]`) | `sound` (M3.1, M3.3) |
 | `enum`, with constant enumerators | `sound` (M3.1) |
 | `struct`/`union`, tags, forward declarations, anonymous aggregates, bitfields | `sound` (M3.3) - laid out with the target's sizes, alignment and bitfield-unit rules, measured against `clang` on win64 (see the layout test); `_Alignas` and C11 anonymous members are still `planned` |
-| a bitfield read in code or named in an initialiser | `refused` - it shares its storage unit with its neighbours, so it has no address and needs a mask and a shift the emitter does not do yet |
 | a struct or union local, member access, struct assignment and initialisation, unions with type punning | `sound` (M6): an aggregate in a frame is a slot whose value is its address, so assignment copies bytes and a union's members share them. Copy-initialisation (`struct P q = p;`) and designators work |
 | calls through a function pointer | `sound` (M6): the signature is the function type the pointer points at, aggregates and their ABI rules included |
 | aggregates passed and returned by value | `sound` (M6) on the Win64 ABI: 1, 2, 4 and 8 bytes travel in an integer register, anything else by reference to a caller-owned copy, and a large result comes back through a buffer the caller passes first. Measured against Rust's `extern "C"`, which implements the same ABI, in both directions |
-| a bitfield read and written in code | `sound` (M6): the unit is loaded once and the field shifted and masked out of it; a write merges the new bits back without disturbing its neighbours, and a signed field is sign-extended from its own width |
-| `++`/`--` on a bitfield, a bitfield in an initialiser list | `refused` - both would have to read, step and merge inside the unit, which the paths that do them do not; each has a diagnostic |
+| a bitfield read, written, stepped and initialised | `sound` (M6): the unit is loaded once and the field shifted and masked out of it; a write merges the new bits back without disturbing its neighbours, and a signed field is sign-extended from its own width. `++`/`--` step in the field's own type and merge through the same write, so a value too wide is truncated by the field, as C stores it. In an initialiser the merge is the same arithmetic over the object's bytes, in a frame and in a global. The address of one is refused, as C99 6.5.3.2p1 says |
 | a struct value inside a brace list (`struct Q q = {v};`) | `refused` - brace elision decides by the expression's type, which is not known before it is read; `struct Q q = {v, 3};` spelled with member's own braces works |
 | `typedef` | `sound` (M3.1) |
 | qualifiers (`const`, `volatile`, `restrict`), `inline` | `partial` - accepted and ignored, which is conforming for `restrict` and wrong for `const`; enforcing `const` arrives with the expression checker (M3.2) |

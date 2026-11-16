@@ -233,22 +233,28 @@ The first thing worth showing, and the reason the project exists.
 
 ## M6 - enough C to be taken seriously  (XL)
 
-- [ ] Floats and doubles (SSE), conversions, comparisons, constants; `long double` = `f64`,
+- [x] Floats and doubles (SSE), conversions, comparisons, constants; `long double` = `f64`,
       documented, `sizeof` 8.
-- [ ] Aggregates by value in arguments and returns, struct assignment and initialisation,
-      unions with type punning, nested and anonymous members.
-- [ ] Bitfields with C's layout rules, packed structs only where the ABI allows.
+- [x] Aggregates by value in arguments and returns, struct assignment and initialisation,
+      unions with type punning, nested members. (C11 anonymous members are still `planned`: they
+      are a parse-and-layout question, not an M6 one.)
+- [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
+      refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
 - [ ] Varargs (`va_list` from `stdarg.h` over the Windows ABI), `printf`-style calls.
       Blocked on the back end, not on the front end: [ADR-006](docs/ADR-006-varargs.md) records the
       two things Cranelift cannot say (`AL`, and a signature per call site), so this waits for
       M10's own emitter unless the dependency grows the ability first.
-- [ ] `long long` arithmetic including division and shifts at the edges (`LLONG_MIN / -1`,
-      shifts >= width): defined behaviour, no trap, matching clang's results.
+- [x] `long long` arithmetic including division and shifts at the edges. Settled by measurement
+      rather than by decision: against `clang -O0` on this machine, a shift count at or beyond the
+      width masks to the hardware's six bits in both (`(1LL << 70)` is 64 in each), and
+      `LLONG_MIN / -1` raises the divide error in both. C leaves it undefined, so "no trap" was
+      never reachable: the two agree by doing what the machine does.
 - [x] Acceptance: differential testing in CI - compile and run a corpus with `xcc` and with
       `clang -O0`, compare stdout and exit codes: `crates/xcc-cli/tests/differential.rs`, over
-      the [tests/corpus](tests/corpus/README.md) programs both compilers can build - 359 of
-      464 run and agree. The cases M6 names but the compiler cannot run yet (varargs,
-      bitfields) are refused, so they wait for those features rather than for the runner.
+      the [tests/corpus](tests/corpus/README.md) programs both compilers can build - 375 of
+      464 run and agree, 49 refused and 40 skipped (`#include`, until M8). The cases M6 names but
+      the compiler cannot run yet (varargs) are refused, so they wait for that feature rather than
+      for the runner.
 
 ## M7 - embedding polish  (M)
 

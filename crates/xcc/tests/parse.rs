@@ -320,11 +320,12 @@ fn what_is_not_implemented_is_said_not_guessed() {
 
 #[test]
 fn what_aggregates_still_cannot_do() {
-    // A bitfield is read and written now, but stepping one would have to read, step and merge
-    // inside its storage unit, which `step` does not do.
+    // A bitfield is read, written, stepped and initialised now: what is left in the aggregate
+    // path is a struct value inside a brace list, and a replacement of the storage unit itself.
     refuses(
-        "struct S { int a : 3; }; int f(void) { struct S s; s.a++; return 0; }",
-        "`++` on a bitfield",
+        "struct P { int x, y; }; struct Q { struct P p; int n; };
+         int f(struct P v) { struct Q q = {v}; return q.n; }",
+        "cannot initialise int with struct P",
     );
     // C99 6.5.3.2p1: the only address a bitfield has is its whole unit's, so `&` refuses.
     refuses(
@@ -344,12 +345,8 @@ fn what_aggregates_still_cannot_do() {
         "struct Incomplete; int f(void) { struct Incomplete s; return 0; }",
         "has no size",
     );
-    // A bitfield has to be masked into its unit, which the initialiser walker does not do; it was
-    // writing the whole unit, so `unsigned a :3 = 9` kept nine instead of one.
-    refuses(
-        "struct S { unsigned a : 3; }; int f(void) { struct S s = {9}; return 0; }",
-        "a bitfield in an initialiser",
-    );
+    // A bitfield is merged into its unit now, so nine in a three-bit field is one, as C stores it.
+    parses("struct S { unsigned a : 3; }; int f(void) { struct S s = {9}; return s.a; }");
     // A union takes one member's initialiser: a second is one error, not a second store over the
     // same bytes.
     refuses(
