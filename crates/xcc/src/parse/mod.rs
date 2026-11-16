@@ -468,7 +468,14 @@ impl Parser<'_> {
                 let span = self.span();
                 self.not_lowered(span, "a variable whose type is an aggregate or a function");
             }
-            if self.in_body()
+            // A local is a frame slot and a global is a data object, and both are made from this
+            // type's size: an object past the host's budget is refused here, once, rather than
+            // truncated by whichever back end asks next.
+            let oversized = !specs.is_typedef
+                && !matches!(self.types.kind(ty), Type::Function { .. })
+                && !self.object_fits(ty);
+            if !oversized
+                && self.in_body()
                 && !specs.is_typedef
                 && !matches!(self.types.kind(ty), Type::Function { .. })
             {
@@ -486,7 +493,7 @@ impl Parser<'_> {
             // At file scope an object is data, not a slot: ADR-004. A tentative definition
             // (`int x;`) is defined and zero-filled; an initialiser is the list walker's work
             // and is still refused, because a global with no bytes would be a wrong program.
-            if !self.in_body() && !specs.is_typedef && !self.at_punct("=") {
+            if !oversized && !self.in_body() && !specs.is_typedef && !self.at_punct("=") {
                 if let Some(name) = name {
                     if matches!(self.types.kind(ty), Type::Function { .. }) {
                         // A function declaration is a signature, not data.
@@ -511,7 +518,10 @@ impl Parser<'_> {
             // An initialiser: only a constant expression, for now.
             if self.eat("=") {
                 let span = self.span();
-                if self.in_body() {
+                if oversized {
+                    // Nowhere to put it: read it for its own diagnostics, and write nothing.
+                    self.initializer(ty);
+                } else if self.in_body() {
                     // A local has a slot, so its initialiser becomes stores into the frame.
                     // A type with no slot (an aggregate in a body) was refused above; its
                     // initialiser is still read, so its own mistakes are still reported.

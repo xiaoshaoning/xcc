@@ -78,6 +78,25 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the object budget - 2026-11-16 - a truncated frame is not a refusal
+
+The review of the floats commit left one finding unfixed: `int a[100000000000];` is a legal
+constant expression and a 400 GB object, and the back end builds the frame slot with
+`size as u32` - about 542 MB of frame, silently, rather than refusing.
+
+The limit is a **budget**, not a constant, because it is the host's decision: xcc is embedded in
+programs that compile code they did not write, and `Budgets` is where this project already puts
+"what one compilation may spend". `max_object_bytes` defaults to 64 MiB - past any frame Windows
+will give a thread, and past the globals a JIT'ed module plausibly holds - and a host that knows
+its own limits raises it.
+
+One check, at the one place an object is declared (`object_fits`), covers a local's slot and a
+global's data object: both are made from the same type's size, and neither is more trusted. An
+oversized object is not silently dropped either - its initialiser is still read, so its own
+mistakes are reported, and nothing is written.
+
+144 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6 floats, reviewed - 2026-11-16 - the bits were read as the number, twice
 
 The review of the floats commit. Two of its bugs were the same mistake in different clothes: a

@@ -4,15 +4,20 @@ use xcc::{Options, SourceFile};
 
 /// Parse `source` the way `Compile::compile` does up to the parser, and return the diagnostics.
 fn check(source: &str) -> Vec<String> {
+    check_with(Options::default(), source)
+}
+
+/// The same, with options the host chose - a budget, say.
+fn check_with(options: Options, source: &str) -> Vec<String> {
     let file = SourceFile::new("t.c", source);
-    let preprocessed = xcc::preprocess(&file, &Options::default(), &());
+    let preprocessed = xcc::preprocess(&file, &options, &());
     assert!(
         !preprocessed.has_errors(),
         "the test source does not preprocess: {:?}",
         preprocessed.diagnostics
     );
     // The parser is internal; the public entry point runs it.
-    let diagnostics = match xcc::Compile::new(Options::default()).compile("t.c", source) {
+    let diagnostics = match xcc::Compile::new(options).compile("t.c", source) {
         Ok(_) => Vec::new(),
         Err(diagnostics) => diagnostics.items().to_vec(),
     };
@@ -194,6 +199,32 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses(
         "int f(void) { int a[0]; return 0; }",
         "an array's size must be greater than zero",
+    );
+    // An object past the budget is refused, for a local and a global alike: the back end's frame
+    // slot takes a `u32`, and a host compiling unfamiliar code wants a smaller ceiling than that.
+    refuses(
+        "int f(void) { int a[20000000]; return 0; }",
+        "is larger than this compilation's limit",
+    );
+    refuses(
+        "int a[20000000];",
+        "is larger than this compilation's limit",
+    );
+    // The budget is the host's to set, which is what makes it a budget and not a magic number.
+    let mut small = Options::default();
+    small.budgets.max_object_bytes = 8;
+    let complaints = check_with(small, "int a[4];");
+    assert!(
+        complaints
+            .iter()
+            .any(|message| message.contains("is larger than this compilation's limit of 8")),
+        "{complaints:?}"
+    );
+    let mut exact = Options::default();
+    exact.budgets.max_object_bytes = 8;
+    assert!(
+        check_with(exact, "int a[2];").is_empty(),
+        "eight bytes fits an eight-byte budget"
     );
     // A float is a constant and is not an *integer* constant expression: its bits are not its
     // value, so a size, a `case` label or an enumerator cannot take one.

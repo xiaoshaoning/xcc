@@ -61,6 +61,11 @@ pub struct Budgets {
     /// How deep declarators and expressions may nest: the parser is recursive descent, so a
     /// limit on the input is a limit on the stack (CONSTRAINTS 5).
     pub max_nesting: usize,
+    /// The largest object, in bytes, one declaration may ask for. A frame slot is a `u32` in the
+    /// back end, so an object past this is truncated rather than refused; the default is small
+    /// enough to catch that and large enough for the globals a JIT'ed module plausibly holds, and
+    /// a host that knows its own limits can raise it.
+    pub max_object_bytes: u64,
 }
 
 impl Default for Budgets {
@@ -72,6 +77,7 @@ impl Default for Budgets {
             max_tokens: 1 << 20,
             max_include_depth: 32,
             max_nesting: 256,
+            max_object_bytes: 64 << 20,
         }
     }
 }
@@ -110,6 +116,7 @@ mod tests {
         assert_eq!(options.budgets.max_tokens, 1 << 20);
         assert_eq!(options.budgets.max_include_depth, 32);
         assert_eq!(options.budgets.max_nesting, 256);
+        assert_eq!(options.budgets.max_object_bytes, 64 << 20);
         assert!(options.defines.is_empty() && options.undefines.is_empty());
         assert_eq!(options.stamp, Stamp::epoch());
     }
