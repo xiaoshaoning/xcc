@@ -78,6 +78,34 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the aggregate ABI, reviewed - 2026-11-16 - what the probes got wrong, and one check that was a guess
+
+The review of the ABI commit. The rule itself held up: the probes that mattered - a by-reference
+callee modifying "its" parameter (the caller's object must not change), three by-reference records
+and an integer filling the four registers exactly, a hidden result pointer shifting all of them, a
+union by value, a sixteen-byte struct in and out - all pass. Three of those are now in the test
+rather than in a scratch file, because they are the cases implementations get wrong.
+
+Two findings:
+
+1. **A *definition* with an incomplete record parameter or result was accepted.** `struct S; int
+   f(struct S s) { ... }` compiled: the ABI turns an incomplete record into a by-reference
+   parameter, so nothing ever asked for its size, and `sizeof(s)` inside would have been the only
+   complaint. C99 6.7.5.3p4 and 6.9.1p3 require a complete type in a *definition* (a declaration
+   may name an incomplete one), so the check is asked where the definition is, and each is one
+   diagnostic with the type's name in it.
+2. **Nothing was wrong with the stack slot's alignment**, and that was worth checking rather than
+   assuming: a by-reference aggregate's copy is read by the callee, and the Win64 rule wants it
+   8-byte aligned. Cranelift aligns every stack slot to at least a word (`machinst/abi.rs:
+   max(word_bytes, 1 << align_shift)`), so the copies are 8-aligned and no change was needed.
+
+One test bug found by the new cases, and it is a real C fact rather than a compiler fault: reading
+a union returned by value *as an integer* reads the bytes of the members never written. The test
+passes and reads a `#[repr(C)] union`'s `i` instead; a union's value is the member that was
+stored.
+
+148 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: the Win64 aggregate ABI - 2026-11-16 - where an aggregate crosses a call
 
 Structs and unions pass and return by value now, and the rules are MSVC's:

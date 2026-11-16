@@ -1449,6 +1449,18 @@ impl Parser<'_> {
             self.function_result = None;
             return;
         };
+        // C99 6.7.5.3p4 and 6.9.1p3: in a definition every parameter and the result must have
+        // a complete type. A declaration may name an incomplete one, so this is asked here.
+        for (_, ty, param_span) in &params {
+            if self.types.record_of(*ty).is_some() && !self.types.is_complete(*ty) {
+                let ty = self.describe(*ty);
+                self.error(*param_span, format!("a parameter of type {ty} has no size"));
+            }
+        }
+        if self.types.record_of(result).is_some() && !self.types.is_complete(result) {
+            let ty = self.describe(result);
+            self.error(span, format!("a result of type {ty} has no size"));
+        }
         // Win64: a record too big for a register comes back through a buffer the *caller*
         // owns, handed over as a leading pointer that the callee returns again. The body is
         // written against machine-shaped values, so the hidden pointer and the parameter

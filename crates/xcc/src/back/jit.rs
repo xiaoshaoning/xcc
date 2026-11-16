@@ -570,6 +570,18 @@ int twice(int x) { return host_double(x); }",
         struct Doubled {
             d: f64,
         }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Sixteen {
+            d: f64,
+            e: f64,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        union Union {
+            i: u32,
+            c: [u8; 8],
+        }
 
         extern "C" fn host_wide(w: Wide) -> i32 {
             w.a * 100 + w.b * 10 + w.c
@@ -598,6 +610,8 @@ int twice(int x) { return host_double(x); }",
              struct Pair { int a; int b; };
              struct Wide { int a; int b; int c; };
              struct Doubled { double d; };
+             struct Sixteen { double d; double e; };
+             union Union { int i; char c[8]; };
              int take_tiny(struct Tiny t) { return t.a * 10 + t.b; }
              int take_odd(struct Odd o) { return o.a * 100 + o.b * 10 + o.c; }
              int take_small(struct Small s) { return s.x; }
@@ -619,7 +633,17 @@ int twice(int x) { return host_double(x); }",
              int host_pair_after(struct Pair p, int n);
              int call_host(void) { struct Wide w = {1, 2, 3}; return host_wide(w); }
              int call_host_result(void) { struct Wide w = host_make_wide(7); return w.a * 100 + w.b * 10 + w.c; }
-             int call_host_after(void) { struct Pair p = {2, 3}; return host_pair_after(p, 10); }",
+             int call_host_after(void) { struct Pair p = {2, 3}; return host_pair_after(p, 10); }
+             int take_union(union Union u) { return u.i; }
+             union Union give_union(int v) { union Union u; u.i = v; return u; }
+             double take_sixteen(struct Sixteen s) { return s.d + s.e; }
+             struct Sixteen give_sixteen(double v) { struct Sixteen s; s.d = v; s.e = v * 2.0; return s; }
+             int modifies(struct Wide w) { w.a = 99; return w.a; }
+             int caller_keeps(void) { struct Wide w = {1, 2, 3}; int r = modifies(w); return w.a * 100 + r; }
+             int crowded(struct Wide a, struct Wide b, struct Wide c, int n)
+             { return a.a + b.b * 10 + c.c * 100 + n * 1000; }
+             struct Wide crowded_result(struct Wide a, struct Wide b, int n)
+             { struct Wide w; w.a = a.a + n; w.b = b.b + n; w.c = n; return w; }",
         )
         .expect("it compiles");
         let call = |name: &str| -> i32 {
@@ -685,6 +709,48 @@ int twice(int x) { return host_double(x); }",
         let wide = give_wide(10);
         assert_eq!((wide.a, wide.b, wide.c), (10, 11, 12));
         assert_eq!(call("round_trip"), 123);
+        // A union travels like the struct of its size it is. Only the member written is a
+        // value: the other bytes of the eight are as indeterminate as C's padding, so the
+        // reading is of `i` and not of the whole register.
+        let take_union: extern "C" fn(Union) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_union").unwrap()) };
+        assert_eq!(
+            take_union(Union {
+                c: [0x42, 0x41, 0, 0, 0, 0, 0, 0]
+            }),
+            0x4142
+        );
+        let give_union: extern "C" fn(i32) -> Union =
+            unsafe { std::mem::transmute(jit.function("give_union").unwrap()) };
+        let given = give_union(0x5152);
+        assert_eq!(unsafe { given.i }, 0x5152);
+        // Sixteen bytes is two doubles: by reference in, through a buffer out.
+        let take_sixteen: extern "C" fn(Sixteen) -> f64 =
+            unsafe { std::mem::transmute(jit.function("take_sixteen").unwrap()) };
+        assert_eq!(take_sixteen(Sixteen { d: 1.5, e: 2.5 }), 4.0);
+        let give_sixteen: extern "C" fn(f64) -> Sixteen =
+            unsafe { std::mem::transmute(jit.function("give_sixteen").unwrap()) };
+        let sixteen = give_sixteen(1.5);
+        assert_eq!((sixteen.d, sixteen.e), (1.5, 3.0));
+        // The by-reference copy is real: what the callee writes is not the caller's object.
+        assert_eq!(call("caller_keeps"), 100 + 99);
+        // Three by-reference records and an integer fill the four registers exactly.
+        let crowded: extern "C" fn(Wide, Wide, Wide, i32) -> i32 =
+            unsafe { std::mem::transmute(jit.function("crowded").unwrap()) };
+        assert_eq!(
+            crowded(
+                Wide { a: 1, b: 0, c: 0 },
+                Wide { a: 0, b: 2, c: 0 },
+                Wide { a: 0, b: 0, c: 3 },
+                4
+            ),
+            1 + 20 + 300 + 4000
+        );
+        // ...and a hidden result pointer takes the first of them, shifting everything along.
+        let crowded_result: extern "C" fn(Wide, Wide, i32) -> Wide =
+            unsafe { std::mem::transmute(jit.function("crowded_result").unwrap()) };
+        let shifted = crowded_result(Wide { a: 5, b: 0, c: 0 }, Wide { a: 0, b: 6, c: 0 }, 10);
+        assert_eq!((shifted.a, shifted.b, shifted.c), (15, 16, 10));
     }
 
     /// A record lays out the way the ABI does, measured against clang: the struct sizes and
