@@ -27,8 +27,20 @@ fn check_with(options: Options, source: &str) -> Vec<String> {
         .collect()
 }
 
+/// The notes of the diagnostics `source` produced: what a refusal says *beside* its message.
+fn notes(source: &str) -> Vec<String> {
+    match xcc::Compile::new(Options::default()).compile("t.c", source) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .items()
+            .iter()
+            .flat_map(|diagnostic| diagnostic.notes.clone())
+            .collect(),
+    }
+}
+
 /// Whether the source parses as declarations, with no complaint about the declarations
-/// themselves: the "the code generator is not implemented yet" notice is expected.
+/// themselves: "the code generator is not implemented yet" notice is expected.
 fn parses(source: &str) -> bool {
     let complaints: Vec<String> = check(source)
         .into_iter()
@@ -291,13 +303,13 @@ fn what_is_not_implemented_is_said_not_guessed() {
         "int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }",
         "a call to a variadic function is not lowered yet",
     );
-    // ...and the refusal names the two things the back end cannot say, so a reader does not have
-    // to rediscover them (ADR-006).
-    let complaints =
-        check("int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }");
+    // ...and the *note* names the two things the back end cannot say, so a reader does not have to
+    // rediscover them. The message stays one sentence; the reason is the diagnostic's note, which
+    // a host can show apart from it (ADR-006).
+    let notes = notes("int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }");
     assert!(
-        complaints.iter().any(|message| message.contains("ADR-006")),
-        "{complaints:?}"
+        notes.iter().any(|note| note.contains("ADR-006")),
+        "{notes:?}"
     );
     // The refusal comes after the arguments are read, so the argument is still checked.
     refuses(

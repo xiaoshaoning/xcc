@@ -42,15 +42,19 @@ no home in the current architecture. The second needs the object module to key d
 
 ## Decision
 
-**Variadic calls stay refused, and the refusal says what is missing.** The diagnostic keeps its
-"not lowered yet" wording (a host or a user can recognise it as a gap) and gains a note naming the
-two constraints, so that the next reader does not spend an afternoon rediscovering them:
+**Variadic calls stay refused, and the refusal says what is missing.** The message keeps its
+"not lowered yet" wording (a host or a user can recognise it as a gap) and the two constraints go
+into the diagnostic's *note*, which the renderer already prints and a host can show apart from the
+message - `Diagnostic::message` is documented as one sentence, and this reason is not:
 
 ```
-a call to a variadic function is not lowered yet: Win64 sets `AL` to the vector-register count
-and gives each call site its own signature, and this back end can express neither (ADR-006)
+t.c:1:58: error: a call to a variadic function is not lowered yet (M4.2b)
+  = note: Win64 sets `AL` to the vector-register count and gives every call site its own
+          signature; this back end can express neither (docs/ADR-006-varargs.md)
 ```
 
+That made `not_lowered` a special case of a new `not_lowered_with(span, what, Option<&str>)` - the
+ordinary refusal passes no note, and this one does.
 **The front-end half is not written early.** The duplicate and the promotion belong in
 `emit_call`, next to the aggregate rules; adding them now would be code no test can run, and the
 shape of the call will change the moment `AL` is expressible. The knowledge lives in this file

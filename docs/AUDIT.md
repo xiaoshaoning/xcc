@@ -78,6 +78,25 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### varargs, reviewed - 2026-11-16 - a reason is a note, not a longer sentence
+
+The review of the varargs commit. Its one code change was a diagnostic, and the diagnostic was
+written in the wrong field.
+
+**The refusal's reason went into `message`.** `Diagnostic::message` is documented as "one sentence,
+without a full stop", and the varargs message became one sentence with a colon, two clauses and a
+parenthetical. The struct has `notes: Vec<String>` for exactly this - the renderer prints them,
+`render_all` prints them, and a host can show them apart - and the parser had never used one. So
+`not_lowered` is now the no-note case of `not_lowered_with(span, what, Option<&str>)`, and the
+variadic refusal passes its reason as a note. The message is back to `a call to a variadic function
+is not lowered yet (M4.2b)`, with the milestone suffix that every other refusal carries and this one
+had dropped by hand-writing its own text.
+
+The test followed the reason to its new home: `tests/parse.rs` gained a `notes` helper, because
+`check` has always collected only messages and a note is part of what a refusal says.
+
+148 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: varargs - 2026-11-16 - refused with the reason, and an ADR instead of an afternoon
 
 Varargs turned out to be a back-end question, not a front-end one, and the front end's half is
@@ -98,11 +117,12 @@ dependency's source rather than assumed:
    `printf("%d", 1)` and `printf("%s %f", s, d)` cannot both be declared against the symbol.
 
 Neither is a missing line. So [ADR-006](ADR-006-varargs.md) records the decision - refuse, and
-make the refusal say why - and the message now names both constraints:
+make the refusal say why - with the two constraints in the diagnostic's note:
 
 ```
-a call to a variadic function is not lowered yet: Win64 wants `AL` set and a signature per call
-site, and this back end can express neither (ADR-006)
+t.c:1:58: error: a call to a variadic function is not lowered yet (M4.2b)
+  = note: Win64 sets `AL` to the vector-register count and gives every call site its own
+          signature; this back end can express neither (docs/ADR-006-varargs.md)
 ```
 
 The front-end half is deliberately *not* written: the duplicate and the promotion belong in

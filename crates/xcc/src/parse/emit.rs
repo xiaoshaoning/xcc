@@ -34,11 +34,23 @@ impl Parser<'_> {
     /// A construct the emitter cannot express is refused rather than quietly left out: an
     /// expression that emits nothing is a program that computes something else.
     pub(super) fn not_lowered(&mut self, span: Span, what: &str) {
+        self.not_lowered_with(span, what, None);
+    }
+
+    /// The same, with a note saying *why* - for the gaps whose reason is a fact about the back
+    /// end or the ABI rather than something the source can fix (ADR-006). The note is the
+    /// diagnostic's own field, so a host can show it apart from the one-sentence message.
+    pub(super) fn not_lowered_with(&mut self, span: Span, what: &str, note: Option<&str>) {
         // An unevaluated operand has no code to lower, so a construct that needs code is not a
         // construct this refused: `sizeof(p.a)` is a question about the type.
-        if self.in_body() && !self.unevaluated {
-            self.not_implemented(span, format!("{what} is not lowered yet (M4.2b)"));
+        if !self.in_body() || self.unevaluated {
+            return;
         }
+        let mut diagnostic = Diagnostic::error(format!("{what} is not lowered yet (M4.2b)"));
+        if let Some(note) = note {
+            diagnostic = diagnostic.with_note(note);
+        }
+        self.push(diagnostic, span);
     }
 
     /// A value read from a place: a load, unless the type's value *is* its address, which is
