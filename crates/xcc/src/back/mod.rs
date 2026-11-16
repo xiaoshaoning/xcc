@@ -193,6 +193,18 @@ impl<M: Module> Lowerer<'_, M> {
         Ok(signature)
     }
 
+    /// The signature a *pointer* to a function calls with: the function type it points at, read
+    /// the same way a declaration's is.
+    fn signature_of_pointer(&self, pointer: TypeId) -> Result<Signature, LoweringError> {
+        let function = self.types.pointee(pointer);
+        match self.types.kind(function) {
+            Type::Function { result, params, .. } => self.signature_of(params, *result),
+            _ => Err(LoweringError(
+                "a call of something that is not a function".to_owned(),
+            )),
+        }
+    }
+
     /// The machine type a C value crosses the ABI as: a record of 1, 2, 4 or 8 bytes is an
     /// integer that wide, any other record is a pointer to a caller-owned copy, and everything
     /// else is its own machine type.
@@ -593,16 +605,23 @@ impl<M: Module> Lowerer<'_, M> {
                 args,
                 ..
             } => {
-                // The callee's address was minted by a `GlobalAddress` in this body; a call
-                // through a function *pointer* is M4.5's problem, and says so.
-                let target = callees.get(callee).copied().ok_or_else(|| {
-                    LoweringError("a call through a function pointer is not lowered yet".to_owned())
-                })?;
                 let args: Vec<ClValue> = args
                     .iter()
                     .map(|arg| value(values, *arg))
                     .collect::<Result<_, _>>()?;
-                let call = builder.ins().call(target, &args);
+                // A direct call: the callee's address was minted by a `GlobalAddress` in this
+                // body, so the function itself is known. Anything else is a call through a
+                // pointer, and its signature is the function type the pointer points at - the
+                // same `signature_of` the direct path uses, ABI rules and all.
+                let call = match callees.get(callee).copied() {
+                    Some(target) => builder.ins().call(target, &args),
+                    None => {
+                        let address = value(values, *callee)?;
+                        let signature = self.signature_of_pointer(func.value(*callee).ty)?;
+                        let signature = builder.import_signature(signature);
+                        builder.ins().call_indirect(signature, address, &args)
+                    }
+                };
                 if let Some(result) = result {
                     let produced = builder.inst_results(call)[0];
                     values.insert(*result, produced);

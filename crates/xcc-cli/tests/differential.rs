@@ -31,7 +31,7 @@ const EXPECTED_MISMATCHES: &[(&str, &str)] = &[];
 /// How many programs ran when this was last measured. A ratchet: it goes up when a gap closes
 /// (headers, `printf`) and never down, because a drop means something that used to run is now
 /// refused, which is the regression this test exists to catch.
-const PROGRAMS_THAT_RAN: usize = 359;
+const PROGRAMS_THAT_RAN: usize = 372;
 
 /// How the subset split.
 #[derive(Default)]

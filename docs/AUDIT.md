@@ -78,6 +78,24 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: calls through a function pointer - 2026-11-16 - the last refusal in the call path
+
+The largest single gap the differential runner measured: thirteen corpus programs refused at "a call
+through a function pointer is not lowered yet". The front end had been ready for it for milestones -
+`call` accepts a function type or a pointer to one, converts the arguments to the declared
+parameters, and hands the emitter a callee *value* - so the gap was one branch in the back end.
+
+`Inst::Call` now asks whether the callee's address came from a `GlobalAddress` in this body. When it
+did, that is the function and the call is direct. When it did not, the callee is a pointer, and the
+call is `call_indirect` against the signature of **the function type the pointer points at** -
+`signature_of_pointer`, which is `signature_of` one dereference further along, so aggregates cross
+the ABI's way and `(*f)()` and `f()` lower to the same thing.
+
+The measurement moved with it: 372 corpus programs now run and agree with `clang -O0` (was 359), 52
+refused (was 65), and the ratchet is at 372.
+
+148 unit, 20 parser, 13 CLI, differential, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### the differential runner, reviewed - 2026-11-16 - what the harness could not see, and two of its own
 
 The review of the runner and of the four bugs it found. The four fixes held up (each is now a

@@ -38,7 +38,7 @@ Stated here rather than discovered later.
   and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
   works; *unwinding* through it - SEH, a debugger walking frames - does not. M5 does not claim it.
 - **Refused with one diagnostic each**: `&&`, `||`, `++`/`--`, member access in code, calls
-  through function pointers, and records or pointers-to-literals in file-scope initialisers.
+  and records or pointers-to-literals in file-scope initialisers.
 - **No optimiser.** `cir` is SSA from the first instruction, so `mem2reg` and friends are passes
   on this shape rather than a rewrite of it (M10).
 
