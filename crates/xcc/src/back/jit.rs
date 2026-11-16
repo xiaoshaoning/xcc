@@ -527,6 +527,57 @@ int twice(int x) { return host_double(x); }",
         );
     }
 
+    /// A record lays out the way the ABI does, measured against clang: the struct sizes and
+    /// offsets here are `clang -o t.exe t.c` on this machine (win64), which is the oracle the
+    /// plan names. A bitfield's *unit* is spoken for once a bitfield is packed into it, so a
+    /// member that is not a bitfield starts after that unit rather than inside it - the mistake
+    /// that made `struct { int a; int :3; int b; }` eight bytes instead of twelve.
+    #[test]
+    fn a_record_lays_out_like_the_abi() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "struct S1 { int a; int : 3; int b; };
+             struct S2 { int a : 3; int b : 5; char c; };
+             struct S3 { int a : 20; int b : 20; };
+             struct S4 { char a; double d; };
+             struct S5 { char a; int b : 3; char c; };
+             struct S6 { int : 0; char c; };
+             struct S7 { char a; short b; char c; };
+             struct S8 { char a : 4; char b : 4; };
+             struct S9 { int a : 3; int : 0; int b : 3; };
+             union U1 { char a; double d; };
+             int s1(void) { return sizeof(struct S1); }
+             int s2(void) { int n = sizeof(struct S2); struct S2 v; return n * 100 + (int)((char *)&v.c - (char *)&v); }
+             int s3(void) { return sizeof(struct S3); }
+             int s4(void) { int n = sizeof(struct S4); struct S4 v; return n * 100 + (int)((char *)&v.d - (char *)&v); }
+             int s5(void) { int n = sizeof(struct S5); struct S5 v; return n * 100 + (int)((char *)&v.c - (char *)&v); }
+             int s6(void) { int n = sizeof(struct S6); struct S6 v; return n * 100 + (int)((char *)&v.c - (char *)&v); }
+             int s7(void) { int n = sizeof(struct S7); struct S7 v; return n * 100 + (int)((char *)&v.b - (char *)&v) * 10 + (int)((char *)&v.c - (char *)&v); }
+             int s8(void) { return sizeof(struct S8); }
+             int s9(void) { return sizeof(struct S9); }
+             int u1(void) { return sizeof(union U1); }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        // clang: S1 12, S2 8 (c at 4), S3 8, S4 16 (d at 8), S5 12 (c at 8), S6 1 (c at 0),
+        // S7 6 (b at 2, c at 4), S8 1, S9 8, U1 8.
+        assert_eq!(call("s1"), 12);
+        assert_eq!(call("s2"), 8 * 100 + 4);
+        assert_eq!(call("s3"), 8);
+        assert_eq!(call("s4"), 16 * 100 + 8);
+        assert_eq!(call("s5"), 12 * 100 + 8);
+        // The zero-width bitfield raises nothing: `c` is at zero and the struct is one byte.
+        assert_eq!(call("s6"), 100);
+        assert_eq!(call("s7"), 6 * 100 + 2 * 10 + 4);
+        assert_eq!(call("s8"), 1);
+        assert_eq!(call("s9"), 8);
+        assert_eq!(call("u1"), 8);
+    }
+
     /// Aggregates in the frame (M6): a struct local is a slot, a member is its address plus an
     /// offset, and a struct's *value* is the address of its bytes - so assignment copies, and a
     /// `cir` register never has to hold one. Unions come along by the same layout, and a bitfield

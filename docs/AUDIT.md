@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### aggregates in the frame, reviewed - 2026-11-16 - the initialiser walker, and a layout measured against clang
+
+The review of the aggregates commit. Three silent wrongs in the initialiser, and the first
+differential measurement the plan asks for.
+
+1. **An unnamed bitfield took a value.** `struct S { int a; int :3; int b; } s = {1, 2};` wrote `2`
+   into the padding's storage instead of `b`'s: C99 6.7.8p9 says an unnamed member is not
+   initialised. The walker steps over padding now.
+2. **A named bitfield was written over its whole unit.** `struct S { unsigned a :3; } s = {9};`
+   stored 9 in the unit where C's value is `9 & 7` = 1, and nothing would have masked it on the way
+   out either. Refused with a diagnostic, since a bitfield cannot even be read in code yet.
+3. **A union took more than one initialiser.** `union U u = {1, 2};` wrote both into the same
+   bytes; C allows one. It is one error now.
+
+Then the layout, which had never been measured: the initialiser fixes made bitfield structs
+reachable, so their *sizes* started to matter, and they disagreed with the ABI.
+`struct { int a; int :3; int b; }` was 8 bytes and put `b` inside the bitfield's unit; a struct of
+bitfields and a `char` was 4 where the ABI says 8; `int :0` raised the alignment of the whole
+struct, which the ABI does not do. The rule is one sentence - **the unit a bitfield is packed into
+is spoken for, so whatever comes next starts after it** - and `int :0` closes a unit and is
+otherwise nothing.
+
+`a_record_lays_out_like_the_abi` is the measurement, with the oracle named: ten structs whose
+sizes and offsets are `clang`'s on win64, compared field by field. It failed on four of them before
+the fix and passes on all ten after. Layout is the first part of the front end with numbers from
+another compiler pinned in a test rather than in prose.
+
+147 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: aggregates in the frame - 2026-11-16 - a struct's value is the address of its bytes
 
 Struct and union locals, member access, struct assignment and brace initialisation are lowered. The

@@ -6,7 +6,7 @@
 //! the expression grammar hid that.
 
 use super::*;
-use crate::types::RecordId;
+use crate::types::{RecordId, RecordKind};
 
 impl Parser<'_> {
     /// `= <initialiser>`: one value for a scalar, a brace list for an array or aggregate.
@@ -245,21 +245,46 @@ impl Parser<'_> {
         }
     }
 
+    /// Fill a struct or union from the values at the cursor.
+    ///
+    /// C99 6.7.8p9: an unnamed bitfield is padding and takes no initialiser, and a union takes
+    /// one member and no more. A *named* bitfield would have to be masked and shifted into its
+    /// unit, which the emitter does not do, so it is refused rather than written over the whole
+    /// unit as if it were a plain integer.
     fn initialize_record(&mut self, record: RecordId, braced: bool) {
         let span = self.span();
         let base = self.offset;
-        let members: Vec<(Option<Symbol>, TypeId, usize)> = self
+        let union = matches!(self.types.record_kind(record), RecordKind::Union);
+        let members: Vec<(Option<Symbol>, TypeId, usize, bool)> = self
             .types
             .members(record)
             .iter()
-            .map(|member| (member.name, member.ty, member.offset as usize))
+            .map(|member| {
+                (
+                    member.name,
+                    member.ty,
+                    member.offset as usize,
+                    member.bits.is_some(),
+                )
+            })
             .collect();
+        let past_padding = |mut at: usize| {
+            while members
+                .get(at)
+                .is_some_and(|(name, _, _, bitfield)| *bitfield && name.is_none())
+            {
+                at += 1;
+            }
+            at
+        };
         let mut at = 0;
         let mut first = true;
         loop {
             if self.at_punct("}") || self.at_eof() {
                 break;
             }
+            // Padding takes no value, so step over it before asking whether there is room.
+            at = past_padding(at);
             if !self.designator_follows() && at >= members.len() {
                 if braced {
                     self.error(span, "too many initialisers for this struct or union");
@@ -273,19 +298,32 @@ impl Parser<'_> {
             first = false;
             if self.at_punct(".") {
                 at = self.designated_member(span, &members, at);
+                at = past_padding(at);
                 if !self.deeper_designator() && !self.eat("=") {
                     self.error_at_current("expected `=` after a designator");
                 }
             }
-            let Some((_, member, offset)) = members.get(at).copied() else {
+            let Some((_, member, offset, bitfield)) = members.get(at).copied() else {
                 break;
             };
             self.offset = base + offset;
             at += 1;
+            if bitfield {
+                self.not_lowered(span, "a bitfield in an initialiser");
+            }
             if self.at_punct("{") {
                 self.brace_initializer(member);
             } else {
                 self.initializer_body(member, false);
+            }
+            if union {
+                // One member, one value: a second is one error, not a second store over the
+                // same bytes.
+                if !self.at_punct("}") && !self.at_eof() {
+                    self.error(span, "a union takes one initialiser");
+                    self.skip_until(&["}"], false);
+                }
+                break;
             }
         }
     }
@@ -294,7 +332,7 @@ impl Parser<'_> {
     fn designated_member(
         &mut self,
         span: Span,
-        members: &[(Option<Symbol>, TypeId, usize)],
+        members: &[(Option<Symbol>, TypeId, usize, bool)],
         at: usize,
     ) -> usize {
         self.bump(); // the `.`
@@ -303,7 +341,7 @@ impl Parser<'_> {
                 self.bump();
                 match members
                     .iter()
-                    .position(|(member, _, _)| *member == Some(token.text))
+                    .position(|(member, _, _, _)| *member == Some(token.text))
                 {
                     Some(position) => position,
                     None => {

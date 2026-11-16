@@ -290,6 +290,17 @@ impl Types {
         let mut laid_out: Vec<Member> = Vec::with_capacity(members.len());
         for mut member in members {
             let member_align = self.align_of(member.ty).unwrap_or(1);
+            if matches!(member.bits, Some((_, 0))) {
+                // `int :0` is a marker: it closes the unit being packed and is otherwise
+                // nothing - no offset of its own, no size, and no alignment to raise. That is
+                // the win64 layout, measured against clang, and it is also what C99 6.7.2.1p12
+                // means by "no further bit-field is to be packed into the unit".
+                offset = offset.max(unit_start + unit_size);
+                unit_size = 0;
+                member.offset = offset;
+                laid_out.push(member);
+                continue;
+            }
             align = align.max(member_align);
             match member.bits {
                 Some((_, width)) => {
@@ -305,7 +316,9 @@ impl Types {
                     }
                     let fits = unit_left >= u16::from(width) && unit_size == member_size;
                     if !fits {
-                        // a new unit, aligned for the member's own type
+                        // The open unit holds bits the earlier bitfields claimed, so a new one
+                        // starts after it - not at its start, which is where `offset` still is.
+                        offset = offset.max(unit_start + unit_size);
                         offset = align_up(offset, member_align);
                         unit_start = offset;
                         unit_left = unit_bits;
@@ -323,6 +336,9 @@ impl Types {
                     size = size.max(offset.max(unit_start + member_size));
                 }
                 None => {
+                    // A member that is not a bitfield cannot share the unit one is filling: its
+                    // bits are the bitfields', so this member starts after the whole unit.
+                    offset = offset.max(unit_start + unit_size);
                     let start = if kind == RecordKind::Union {
                         0
                     } else {
@@ -331,7 +347,6 @@ impl Types {
                     member.offset = start;
                     let end = start + self.size_of(member.ty).unwrap_or(0);
                     offset = end;
-                    unit_size = 0;
                     size = size.max(end);
                 }
             }

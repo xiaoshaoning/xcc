@@ -326,6 +326,18 @@ fn what_aggregates_still_cannot_do() {
         "struct Incomplete; int f(void) { struct Incomplete s; return 0; }",
         "has no size",
     );
+    // A bitfield has to be masked into its unit, which the initialiser walker does not do; it was
+    // writing the whole unit, so `unsigned a :3 = 9` kept nine instead of one.
+    refuses(
+        "struct S { unsigned a : 3; }; int f(void) { struct S s = {9}; return 0; }",
+        "a bitfield in an initialiser",
+    );
+    // A union takes one member's initialiser: a second is one error, not a second store over the
+    // same bytes.
+    refuses(
+        "union U { int i; char c; }; int f(void) { union U u = {1, 2}; return 0; }",
+        "a union takes one initialiser",
+    );
 }
 
 #[test]
