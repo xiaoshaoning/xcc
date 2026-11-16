@@ -651,9 +651,10 @@ impl Types {
             return true;
         }
         match (self.kind(to), self.kind(from)) {
-            // C99 6.3.1.2: *any* scalar converts to `_Bool`, a pointer included.
+            // C99 6.3.1.2: *any* scalar converts to `_Bool`, a pointer included. Nothing comes
+            // the other way by this arm - a `_Bool` is an integer, so the arithmetic arms above
+            // already take it, and a `_Bool` *value* is not a null pointer constant.
             (Type::Bool, _) => self.is_scalar(from),
-            (_, Type::Bool) => self.is_scalar(from),
             (Type::Int { .. } | Type::Float { .. }, _) => {
                 self.is_arithmetic(from) && self.is_arithmetic(to)
             }

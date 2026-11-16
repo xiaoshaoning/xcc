@@ -132,25 +132,6 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether an object of this type fits the host's budget, and the one diagnostic when it
-    /// does not. A type with no size (an incomplete array) is not this check's business: it has
-    /// a diagnostic of its own.
-    pub(super) fn object_fits(&mut self, ty: TypeId) -> bool {
-        let Some(size) = self.types.size_of(ty) else {
-            return true;
-        };
-        if size <= self.budgets.max_object_bytes {
-            return true;
-        }
-        let span = self.span();
-        let limit = self.budgets.max_object_bytes;
-        self.error(
-            span,
-            format!("an object of {size} bytes is larger than this compilation's limit of {limit}"),
-        );
-        false
-    }
-
     /// The `cir` type of a value's type, for a conversion: how wide it is, and whether it is
     /// signed, decide which conversion C needs.
     pub(super) fn convert(&mut self, value: Value, wanted: TypeId, span: Span) -> Value {
@@ -168,9 +149,7 @@ impl Parser<'_> {
         }
         // C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1, which is a *comparison*, not a
         // narrowing conversion: `(_Bool)2` is 1, `(_Bool)0.5` is 1, and so is any NaN.
-        if matches!(self.types.kind(wanted), Type::Bool)
-            && (self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty))
-        {
+        if matches!(self.types.kind(wanted), Type::Bool) && self.types.is_scalar(value.ty) {
             return self.truth_value(value, span);
         }
         let Some(source) = value.cir else {

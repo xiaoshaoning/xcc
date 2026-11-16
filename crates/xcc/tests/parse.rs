@@ -301,6 +301,29 @@ fn what_is_not_implemented_is_said_not_guessed() {
 }
 
 #[test]
+fn only_an_object_has_storage() {
+    // C99 6.7.1p2: `void` is not an object type. A local, a global and a parameter each say so;
+    // none of them used to reach the back end and come back as an internal error.
+    refuses(
+        "int f(void) { void v; return 0; }",
+        "a variable cannot have type void",
+    );
+    refuses(
+        "void v; int f(void) { return 0; }",
+        "a variable cannot have type void",
+    );
+    refuses(
+        "int f(void v) { return 0; }",
+        "a parameter cannot have type void",
+    );
+    // A `_Bool` *value* is an integer, not a null pointer constant: only a constant zero is.
+    refuses(
+        "int f(void) { int *p; _Bool b = 1; p = b; return 0; }",
+        "cannot assign _Bool to pointer to int",
+    );
+}
+
+#[test]
 fn a_variable_needs_a_complete_type() {
     refuses(
         "int f(void) { int a[]; return 0; }",

@@ -1367,6 +1367,11 @@ impl Parser<'_> {
         }
         self.symbols.push();
         for (position, (name, ty, span)) in params.into_iter().enumerate() {
+            // C99 6.7.1p2: a parameter is an object, and `void` is not an object type.
+            if matches!(self.types.kind(ty), Type::Void) {
+                self.error(span, "a parameter cannot have type void");
+                continue;
+            }
             let pointer = self.pointer_to(ty);
             // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and the value that
             // arrives is stored into it.

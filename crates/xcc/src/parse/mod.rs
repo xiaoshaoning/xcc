@@ -468,17 +468,21 @@ impl Parser<'_> {
                 let span = self.span();
                 self.not_lowered(span, "a variable whose type is an aggregate or a function");
             }
-            // A local is a frame slot and a global is a data object, and both are made from this
-            // type's size: an object past the host's budget is refused here, once, rather than
-            // truncated by whichever back end asks next.
-            let oversized = !specs.is_typedef
-                && !matches!(self.types.kind(ty), Type::Function { .. })
-                && !self.object_fits(ty);
-            if !oversized
-                && self.in_body()
-                && !specs.is_typedef
-                && !matches!(self.types.kind(ty), Type::Function { .. })
-            {
+            // What this declarator names, when it is a thing with storage: a function is a
+            // signature and a `typedef` is a name for a type, and neither is an object. `void`
+            // is not one either (C99 6.7.1p2), and an object past the host's budget is refused
+            // rather than truncated by whichever back end asks next (a frame slot is a `u32`).
+            let mut object =
+                !specs.is_typedef && !matches!(self.types.kind(ty), Type::Function { .. });
+            if object && matches!(self.types.kind(ty), Type::Void) {
+                let span = self.span();
+                self.error(span, "a variable cannot have type void");
+                object = false;
+            }
+            if object && !self.object_fits(ty) {
+                object = false;
+            }
+            if object && self.in_body() {
                 // A local variable is a slot in the function's frame (ADR-002 invariant 3).
                 if let Some(name) = name {
                     let pointer = self.pointer_to(ty);
@@ -493,11 +497,9 @@ impl Parser<'_> {
             // At file scope an object is data, not a slot: ADR-004. A tentative definition
             // (`int x;`) is defined and zero-filled; an initialiser is the list walker's work
             // and is still refused, because a global with no bytes would be a wrong program.
-            if !oversized && !self.in_body() && !specs.is_typedef && !self.at_punct("=") {
+            if object && !self.in_body() && !self.at_punct("=") {
                 if let Some(name) = name {
-                    if matches!(self.types.kind(ty), Type::Function { .. }) {
-                        // A function declaration is a signature, not data.
-                    } else {
+                    {
                         let span = self.span();
                         self.globals.push(cir::Global {
                             name: self.spell_of(name).to_owned(),
@@ -518,13 +520,10 @@ impl Parser<'_> {
             // An initialiser: only a constant expression, for now.
             if self.eat("=") {
                 let span = self.span();
-                if oversized {
-                    // Nowhere to put it: read it for its own diagnostics, and write nothing.
-                    self.initializer(ty);
-                } else if self.in_body() {
-                    // A local has a slot, so its initialiser becomes stores into the frame.
-                    // A type with no slot (an aggregate in a body) was refused above; its
-                    // initialiser is still read, so its own mistakes are still reported.
+                if self.in_body() || !object {
+                    // A local has a slot, so its initialiser becomes stores into the frame. An
+                    // object this refused - `void`, too large, an aggregate in a body - has
+                    // nowhere to put one; it is still read, so its own mistakes are reported.
                     let target = name
                         .and_then(|name| self.symbols.here(name))
                         .and_then(|entry| entry.storage)
@@ -653,6 +652,25 @@ impl Parser<'_> {
     /// parser has the names and the type arena does not, so this is where they meet.
     fn describe(&self, ty: TypeId) -> String {
         self.types.describe_with(ty, self.preprocessed.names())
+    }
+
+    /// Whether an object of this type fits the host's budget, and the one diagnostic when it
+    /// does not. A type with no size (an incomplete array) is not this check's business: it has
+    /// a diagnostic of its own.
+    fn object_fits(&mut self, ty: TypeId) -> bool {
+        let Some(size) = self.types.size_of(ty) else {
+            return true;
+        };
+        let limit = self.budgets.max_object_bytes;
+        if size <= limit {
+            return true;
+        }
+        let span = self.span();
+        self.error(
+            span,
+            format!("an object of {size} bytes is larger than this compilation's limit of {limit}"),
+        );
+        false
     }
 
     /// How a name from the symbol table is spelled.

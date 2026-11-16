@@ -78,6 +78,28 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the budget and `_Bool`, reviewed - 2026-11-16 - `void` was a slot the back end could not make
+
+The review of the object-budget and `_Bool` commits. Two real findings, one of them older.
+
+1. **A `_Bool` value was assignable to a pointer.** The `_Bool` commit's `is_assignable` arm said
+   "any scalar comes out of a `_Bool`", so `p = b` passed the type checker and the emitter then
+   reported `this compiler cannot convert _Bool to pointer yet` - a compiler bug blamed for a
+   program that is simply not C. The arm is gone: a `_Bool` is an integer, the arithmetic arms
+   already take it, and a `_Bool` *value* is not a null pointer constant.
+2. **`void` objects were internal errors.** `void v;` in a function said `internal: a slot for an
+   incomplete type`, at file scope `internal: the object `v` has no size`, and `void v` as a
+   parameter `internal: a value of type void has no machine type yet`. `void` is not an object
+   type (C99 6.7.1p2) and each of the three is one diagnostic now. The declarator asks its
+   questions once - is this an object at all, is it `void`, does it fit the budget - instead of the
+   three places that each spelled out `!typedef && !function`.
+
+Also, both small enough to be part of the same pass: the budget check moved out of `emit.rs` (it
+is a fact about a declaration, not about `cir`) into the declaration code that owns it, and
+`convert`'s `_Bool` guard asks `is_scalar` rather than respelling "arithmetic or pointer".
+
+145 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### `_Bool` - 2026-11-16 - 0 or 1, by comparison rather than by truncation
 
 `_Bool` was converted to by *narrowing*: `_Bool b = 2;` stored 2, `_Bool b = 0.5;` was refused (no
