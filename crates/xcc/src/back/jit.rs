@@ -527,6 +527,166 @@ int twice(int x) { return host_double(x); }",
         );
     }
 
+    /// A record crosses a call on the Win64 ABI's terms: 1, 2, 4 and 8 bytes travel in an
+    /// integer register, anything else by reference to a copy the *caller* owns, and a result
+    /// too big for a register comes back through a buffer the caller passes first and gets in
+    /// `rax` again. `#[repr(C)]` structs and `extern "C"` in Rust are the same ABI, so Rust is
+    /// the oracle here, in both directions.
+    #[test]
+    fn aggregates_cross_a_call_on_the_abi() {
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Tiny {
+            a: i8,
+            b: i8,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Odd {
+            a: i8,
+            b: i8,
+            c: i8,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Small {
+            x: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Pair {
+            a: i32,
+            b: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Wide {
+            a: i32,
+            b: i32,
+            c: i32,
+        }
+        #[repr(C)]
+        #[derive(Clone, Copy)]
+        struct Doubled {
+            d: f64,
+        }
+
+        extern "C" fn host_wide(w: Wide) -> i32 {
+            w.a * 100 + w.b * 10 + w.c
+        }
+        extern "C" fn host_make_wide(v: i32) -> Wide {
+            Wide {
+                a: v,
+                b: v + 1,
+                c: v + 2,
+            }
+        }
+        extern "C" fn host_pair_after(p: Pair, n: i32) -> i32 {
+            p.a * 10 + p.b + n
+        }
+
+        let symbols: &[(&str, *const u8)] = &[
+            ("host_wide", host_wide as *const u8),
+            ("host_make_wide", host_make_wide as *const u8),
+            ("host_pair_after", host_pair_after as *const u8),
+        ];
+        let mut jit = unsafe { Jit::with_symbols(symbols) }.expect("a JIT");
+        jit.add_source(
+            "struct Tiny { char a; char b; };
+             struct Odd { char a; char b; char c; };
+             struct Small { int x; };
+             struct Pair { int a; int b; };
+             struct Wide { int a; int b; int c; };
+             struct Doubled { double d; };
+             int take_tiny(struct Tiny t) { return t.a * 10 + t.b; }
+             int take_odd(struct Odd o) { return o.a * 100 + o.b * 10 + o.c; }
+             int take_small(struct Small s) { return s.x; }
+             int take_pair(struct Pair p) { return p.a * 10 + p.b; }
+             int take_wide(struct Wide w) { return w.a * 100 + w.b * 10 + w.c; }
+             double take_doubled(struct Doubled d) { return d.d; }
+             struct Tiny give_tiny(int v) { struct Tiny t; t.a = v; t.b = v + 1; return t; }
+             struct Odd give_odd(int v) { struct Odd o; o.a = v; o.b = v + 1; o.c = v + 2; return o; }
+             struct Small give_small(int v) { struct Small s; s.x = v; return s; }
+             struct Pair give_pair(int a, int b) { struct Pair p; p.a = a; p.b = b; return p; }
+             struct Wide give_wide(int v) { struct Wide w; w.a = v; w.b = v + 1; w.c = v + 2; return w; }
+             int round_trip(int v) { struct Wide w = give_wide(v); return take_wide(w); }
+             int mixed(int a, struct Wide w, int b) { return a * 1000 + w.a * 100 + w.b * 10 + w.c + b; }
+             int two_smalls(struct Pair x, struct Pair y) {
+                 return x.a * 10 + x.b + y.a * 100 + y.b * 1000;
+             }
+             int host_wide(struct Wide w);
+             struct Wide host_make_wide(int v);
+             int host_pair_after(struct Pair p, int n);
+             int call_host(void) { struct Wide w = {1, 2, 3}; return host_wide(w); }
+             int call_host_result(void) { struct Wide w = host_make_wide(7); return w.a * 100 + w.b * 10 + w.c; }
+             int call_host_after(void) { struct Pair p = {2, 3}; return host_pair_after(p, 10); }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+
+        // xcc as the callee: Rust builds the arguments the ABI's way.
+        let take_tiny: extern "C" fn(Tiny) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_tiny").unwrap()) };
+        assert_eq!(take_tiny(Tiny { a: 1, b: 2 }), 12);
+        let take_odd: extern "C" fn(Odd) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_odd").unwrap()) };
+        // Three bytes is not a register size: passed by reference.
+        assert_eq!(take_odd(Odd { a: 1, b: 2, c: 3 }), 123);
+        let take_small: extern "C" fn(Small) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_small").unwrap()) };
+        assert_eq!(take_small(Small { x: 42 }), 42);
+        let take_pair: extern "C" fn(Pair) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_pair").unwrap()) };
+        assert_eq!(take_pair(Pair { a: 3, b: 4 }), 34);
+        let take_wide: extern "C" fn(Wide) -> i32 =
+            unsafe { std::mem::transmute(jit.function("take_wide").unwrap()) };
+        assert_eq!(take_wide(Wide { a: 1, b: 2, c: 3 }), 123);
+        // Eight bytes of a `double` still travels as an integer: the bits, not an XMM register.
+        let take_doubled: extern "C" fn(Doubled) -> f64 =
+            unsafe { std::mem::transmute(jit.function("take_doubled").unwrap()) };
+        assert_eq!(take_doubled(Doubled { d: 2.5 }), 2.5);
+
+        // ...and xcc as the caller of a Rust function and the callee of one at once.
+        let mixed: extern "C" fn(i32, Wide, i32) -> i32 =
+            unsafe { std::mem::transmute(jit.function("mixed").unwrap()) };
+        assert_eq!(mixed(1, Wide { a: 2, b: 3, c: 4 }, 5), 1234 + 5);
+        let two: extern "C" fn(Pair, Pair) -> i32 =
+            unsafe { std::mem::transmute(jit.function("two_smalls").unwrap()) };
+        assert_eq!(
+            two(Pair { a: 1, b: 2 }, Pair { a: 3, b: 4 }),
+            12 + 300 + 4000
+        );
+        assert_eq!(call("call_host"), 123);
+        assert_eq!(call("call_host_result"), 789);
+        assert_eq!(call("call_host_after"), 33);
+
+        // Results: a register width comes back in `rax`, anything else through a buffer.
+        let give_tiny: extern "C" fn(i32) -> Tiny =
+            unsafe { std::mem::transmute(jit.function("give_tiny").unwrap()) };
+        let tiny = give_tiny(4);
+        assert_eq!((tiny.a, tiny.b), (4, 5));
+        let give_odd: extern "C" fn(i32) -> Odd =
+            unsafe { std::mem::transmute(jit.function("give_odd").unwrap()) };
+        let odd = give_odd(4);
+        assert_eq!((odd.a, odd.b, odd.c), (4, 5, 6));
+        let give_small: extern "C" fn(i32) -> Small =
+            unsafe { std::mem::transmute(jit.function("give_small").unwrap()) };
+        assert_eq!(give_small(7).x, 7);
+        let give_pair: extern "C" fn(i32, i32) -> Pair =
+            unsafe { std::mem::transmute(jit.function("give_pair").unwrap()) };
+        let pair = give_pair(5, 6);
+        assert_eq!((pair.a, pair.b), (5, 6));
+        let give_wide: extern "C" fn(i32) -> Wide =
+            unsafe { std::mem::transmute(jit.function("give_wide").unwrap()) };
+        let wide = give_wide(10);
+        assert_eq!((wide.a, wide.b, wide.c), (10, 11, 12));
+        assert_eq!(call("round_trip"), 123);
+    }
+
     /// A record lays out the way the ABI does, measured against clang: the struct sizes and
     /// offsets here are `clang -o t.exe t.c` on this machine (win64), which is the oracle the
     /// plan names. A bitfield's *unit* is spoken for once a bitfield is packed into it, so a

@@ -78,6 +78,39 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6: the Win64 aggregate ABI - 2026-11-16 - where an aggregate crosses a call
+
+Structs and unions pass and return by value now, and the rules are MSVC's:
+
+- **1, 2, 4 or 8 bytes** travel in an integer register - the *bits*, so a struct holding a `double`
+  goes in `rcx` rather than an XMM register.
+- **Any other size** travels by reference, to a copy the **caller** owns; the callee may keep it,
+  which is exactly C's call-by-value.
+- **A result** of 1, 2, 4 or 8 bytes comes back in `rax`; any other comes back through a buffer the
+  caller passes as the leading argument and the callee returns again.
+
+The decision that made this tractable: **the ABI is lowered in the front end, and `cir` carries
+machine-shaped values.** A callee's `cir` parameters are integers and pointers, never records, so
+`signature(func)` is still just `machine_type` over what the body sees. The one place the *C* type
+is read instead is `signature_of`, which declares a function from its type - a call into the host,
+say - and so applies the same rules itself. Two implementations of one rule is a smell, and the
+test that matters is that they agree: `call_host` in the ABI test calls a Rust function declared
+from its type and gets the same answer a Rust caller gets from the xcc-compiled `take_wide`.
+
+Where the values live is unchanged from the aggregates commit: an aggregate's value is the address
+of its object. So a by-reference parameter's storage *is* the incoming pointer, a by-reference
+argument is copied into a slot of the caller's frame first, and a call's result is the slot the
+caller made for it - which is why `struct Wide w = host_make_wide(7);` needs no special case at the
+assignment.
+
+Both refusals this replaces are gone from `C99-SUPPORT`, and the corpus's `cc14_bv*` and
+`cc16_sretfptr*` files compile instead of refusing. Rust's `#[repr(C)]` plus `extern "C"` is the
+oracle: it implements the same ABI, so a wrong rule shows up as a wrong number rather than as a
+crash. That test covers every size class, arguments after an aggregate, two aggregates, a host
+function returning one, and a round trip through both directions.
+
+148 unit, 20 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### aggregates in the frame, reviewed - 2026-11-16 - the initialiser walker, and a layout measured against clang
 
 The review of the aggregates commit. Three silent wrongs in the initialiser, and the first

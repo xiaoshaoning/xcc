@@ -957,17 +957,6 @@ impl Parser<'_> {
                     }
                     continue;
                 }
-                if !self.lowerable(argument.ty) && !self.types.is_error(argument.ty) {
-                    // An aggregate argument travels by value, which is the ABI's question;
-                    // refusing it here beats a signature the back end cannot make.
-                    self.not_lowered(span, "an aggregate argument");
-                    given += 1;
-                    values.push(argument);
-                    if !self.eat(",") {
-                        break;
-                    }
-                    continue;
-                }
                 if given < params.len() {
                     let expected = params[given];
                     let null_pointer = self.null_pointer_constant(&argument);
@@ -1012,11 +1001,6 @@ impl Parser<'_> {
             self.not_lowered(span, "a call to a variadic function");
             return Value::new(result, None, false);
         }
-        if !self.lowerable(result) && !self.types.is_error(result) {
-            self.not_lowered(span, "an aggregate returned by value");
-            // Poisoned: `p = make(42)` must not complain a second time about the copy.
-            return Value::temporary(self.types.error());
-        }
         self.emit_call(callee, &params, values, result, span)
     }
 
@@ -1035,7 +1019,19 @@ impl Parser<'_> {
         let Some(callee) = callee.cir else {
             return Value::new(result, None, false);
         };
-        let mut args = Vec::new();
+        // Win64: a record result lives in a buffer the caller owns, so the address goes first;
+        // a record small enough for a register comes back in it instead.
+        let aggregate = self.types.record_of(result).is_some();
+        let buffer = if aggregate {
+            let pointer = self.pointer_to(result);
+            self.emit(|builder| builder.slot(result, pointer, span))
+        } else {
+            None
+        };
+        let mut args: Vec<cir::Value> = match (aggregate, buffer) {
+            (true, Some(buffer)) if !self.record_in_register(result) => vec![buffer],
+            _ => Vec::new(),
+        };
         for (position, argument) in values.into_iter().enumerate() {
             // Surplus arguments belong to a variadic call, which `call` refuses before it
             // reaches here; a non-variadic call with too many arguments is diagnosed and
@@ -1045,20 +1041,69 @@ impl Parser<'_> {
                 None => continue,
             };
             let converted = self.convert(argument, wanted, span);
-            match converted.cir {
-                Some(value) => args.push(value),
-                None => return Value::new(result, None, false),
+            let Some(value) = converted.cir else {
+                return Value::new(result, None, false);
+            };
+            if self.types.record_of(wanted).is_none() {
+                args.push(value);
+                continue;
             }
+            if self.record_in_register(wanted) {
+                // The record's bytes, loaded as one integer of its own width.
+                let integer = self.record_integer(wanted);
+                let Some(address) = self.address_within(value, wanted, 0, integer, span) else {
+                    return Value::new(result, None, false);
+                };
+                match self.emit(|builder| builder.load(address, integer, span)) {
+                    Some(loaded) => args.push(loaded),
+                    None => return Value::new(result, None, false),
+                }
+                continue;
+            }
+            // By reference: the caller owns the copy the callee may keep, so the argument is
+            // copied into a slot of this frame and its address is what travels.
+            let pointer = self.pointer_to(wanted);
+            let Some(copy) = self.emit(|builder| builder.slot(wanted, pointer, span)) else {
+                return Value::new(result, None, false);
+            };
+            self.copy_object(copy, wanted, value, wanted, wanted, span);
+            args.push(copy);
         }
         let returns = if matches!(self.types.kind(result), Type::Void) {
             None
+        } else if aggregate {
+            Some(self.abi_value(result))
         } else {
             Some(result)
         };
-        match self.emit(|builder| builder.call(callee, args, returns, span)) {
-            Some(Some(value)) => Value::code(result, value),
-            Some(None) => Value::new(result, None, false),
-            None => Value::new(result, None, false),
+        let called = self.emit(|builder| builder.call(callee, args, returns, span));
+        let Some(called) = called else {
+            return Value::new(result, None, false);
+        };
+        if !aggregate {
+            return match called {
+                Some(value) => Value::code(result, value),
+                None => Value::new(result, None, false),
+            };
+        }
+        let Some(buffer) = buffer else {
+            return Value::new(result, None, false);
+        };
+        if let Some(returned) = called.filter(|_| self.record_in_register(result)) {
+            // A register-carried result is stored into the slot the same way a parameter's
+            // integer is: the object the expression's value points at.
+            let integer = self.record_integer(result);
+            if let Some(address) = self.address_within(buffer, result, 0, integer, span) {
+                self.emit(|builder| builder.store(address, returned, span));
+            }
+        }
+        // The value of a call returning a record is the object it was written into.
+        Value {
+            ty: result,
+            constant: None,
+            lvalue: true,
+            cir: Some(buffer),
+            place: Some(buffer),
         }
     }
 
@@ -1404,23 +1449,40 @@ impl Parser<'_> {
             self.function_result = None;
             return;
         };
-        let func = cir::Func::new(name, result, span);
-        let param_types: Vec<TypeId> = params.iter().map(|(_, ty, _)| *ty).collect();
+        // Win64: a record too big for a register comes back through a buffer the *caller*
+        // owns, handed over as a leading pointer that the callee returns again. The body is
+        // written against machine-shaped values, so the hidden pointer and the parameter
+        // shapes are decided here, once.
+        let buffer = (self.types.record_of(result).is_some() && !self.record_in_register(result))
+            .then(|| self.pointer_to(result));
+        let mut param_types: Vec<TypeId> = Vec::with_capacity(params.len() + 1);
+        if let Some(buffer) = buffer {
+            param_types.push(buffer);
+        }
+        for (_, ty, _) in &params {
+            let shaped = if self.types.record_of(*ty).is_some() {
+                self.abi_value(*ty)
+            } else {
+                *ty
+            };
+            param_types.push(shaped);
+        }
+        let shaped_result = self.abi_value(result);
+        let func = cir::Func::new(name, shaped_result, span);
         let mut body = Body {
             current: func.entry,
             func,
         };
         body.builder().add_params(&param_types);
         let param_values: Vec<cir::Value> = body.func.params().to_vec();
+        let (buffer, param_values) = match buffer {
+            Some(_) => (param_values.first().copied(), param_values[1..].to_vec()),
+            None => (None, param_values),
+        };
+        self.function_buffer = buffer;
         self.body = Some(body);
 
         let errors_before = self.error_count();
-        // A parameter or a result with no machine type is refused here, after the body exists:
-        // `not_lowered` asks whether a body is being read, and a function whose parameter the
-        // back end cannot represent is an internal error if it is lowered.
-        if !params.iter().all(|(_, ty, _)| self.lowerable(*ty)) || !self.lowerable(result) {
-            self.not_lowered(span, "a function whose parameters or result are aggregates");
-        }
         self.symbols.push();
         for (position, (name, ty, span)) in params.into_iter().enumerate() {
             // C99 6.7.1p2: a parameter is an object, and `void` is not an object type.
@@ -1428,12 +1490,36 @@ impl Parser<'_> {
                 self.error(span, "a parameter cannot have type void");
                 continue;
             }
+            let incoming = param_values.get(position).copied();
+            // A record passed by reference *is* the parameter: the caller made the copy, and
+            // the callee may keep it, so the incoming pointer is the variable's storage.
+            if self.types.record_of(ty).is_some() && !self.record_in_register(ty) {
+                if let (Some(incoming), Some(name)) = (incoming, name) {
+                    let _ = self.symbols.declare(
+                        name,
+                        Entry {
+                            ty,
+                            kind: Kind::Variable,
+                            span,
+                            storage: Some(incoming),
+                        },
+                    );
+                }
+                continue;
+            }
             let pointer = self.pointer_to(ty);
-            // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and the value that
-            // arrives is stored into it.
+            // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and what arrives is
+            // stored into it - as an integer, for a record small enough for a register.
             if let Some(slot) = self.emit(|builder| builder.slot(ty, pointer, span)) {
-                if let Some(value) = param_values.get(position) {
-                    self.emit(|builder| builder.store(slot, *value, span));
+                if let Some(incoming) = incoming {
+                    if self.types.record_of(ty).is_some() {
+                        let integer = self.record_integer(ty);
+                        if let Some(address) = self.address_within(slot, ty, 0, integer, span) {
+                            self.emit(|builder| builder.store(address, incoming, span));
+                        }
+                    } else {
+                        self.emit(|builder| builder.store(slot, incoming, span));
+                    }
                 }
                 if let Some(name) = name {
                     let _ = self.symbols.declare(
@@ -1476,6 +1562,7 @@ impl Parser<'_> {
         }
         self.symbols.pop();
         self.function_result = None;
+        self.function_buffer = None;
         // The body is dropped, not lowered: the emitter does not express C yet. It is taken out
         // of the parser so the next function starts clean.
         let body = self.body.take().expect("this function's body");

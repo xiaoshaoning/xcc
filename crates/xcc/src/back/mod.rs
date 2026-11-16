@@ -176,15 +176,54 @@ impl<M: Module> Lowerer<'_, M> {
     /// the same question about the same C type.
     fn signature_of(&self, params: &[TypeId], result: TypeId) -> Result<Signature, LoweringError> {
         let mut signature = self.object.make_signature();
+        // A function this unit does not define is declared from its *C* type, so the ABI's
+        // aggregate rules have to be applied here: a record too big for a register is
+        // returned through a leading pointer the caller owns, and passed the same way.
+        let (hidden, returned) = self.abi_result(result)?;
+        if let Some(hidden) = hidden {
+            signature.params.push(AbiParam::new(hidden));
+        }
         for param in params {
-            let ty = self.machine_type(*param)?;
+            let ty = self.abi_value(*param)?;
             signature.params.push(AbiParam::new(ty));
         }
-        if !matches!(self.types.kind(result), Type::Void) {
-            let ty = self.machine_type(result)?;
-            signature.returns.push(AbiParam::new(ty));
+        if let Some(returned) = returned {
+            signature.returns.push(AbiParam::new(returned));
         }
         Ok(signature)
+    }
+
+    /// The machine type a C value crosses the ABI as: a record of 1, 2, 4 or 8 bytes is an
+    /// integer that wide, any other record is a pointer to a caller-owned copy, and everything
+    /// else is its own machine type.
+    fn abi_value(&self, ty: TypeId) -> Result<ir::Type, LoweringError> {
+        if self.types.record_of(ty).is_none() {
+            return self.machine_type(ty);
+        }
+        Ok(match self.types.size_of(ty) {
+            Some(1) => ir::types::I8,
+            Some(2) => ir::types::I16,
+            Some(4) => ir::types::I32,
+            _ => ir::types::I64,
+        })
+    }
+
+    /// A record too big for a register comes back through a buffer the caller owns: the hidden
+    /// leading pointer, and the address the callee returns in `rax`.
+    fn abi_result(
+        &self,
+        result: TypeId,
+    ) -> Result<(Option<ir::Type>, Option<ir::Type>), LoweringError> {
+        if matches!(self.types.kind(result), Type::Void) {
+            return Ok((None, None));
+        }
+        if self.types.record_of(result).is_none() {
+            return Ok((None, Some(self.machine_type(result)?)));
+        }
+        Ok(match self.types.size_of(result) {
+            Some(1 | 2 | 4 | 8) => (None, Some(self.abi_value(result)?)),
+            _ => (Some(ir::types::I64), Some(ir::types::I64)),
+        })
     }
 
     /// The signature of a function this module defines.

@@ -62,6 +62,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         globals: Vec::new(),
         body: None,
         last_declared: None,
+        function_buffer: None,
         bytes: None,
         offset: 0,
         init_target: None,
@@ -219,6 +220,9 @@ struct Parser<'a> {
     body: Option<Body>,
     /// The name the last declarator declared, for a definition that follows it.
     last_declared: Option<Symbol>,
+    /// The buffer a record-returning function was handed by its caller, while its body is being
+    /// read (Win64: the caller owns the result, and the callee returns its address).
+    function_buffer: Option<cir::Value>,
     /// Where the bytes of a file-scope initialiser are being written, when one is: the same
     /// traversal that checks an initialiser fills this, so the bytes and the diagnostics come
     /// from one reading of the source (ADR-004).
@@ -1454,8 +1458,9 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
+        // A bitfield has no address: reading one needs a shift the emitter does not do.
         let (module, _, diagnostics) =
-            module("struct P { int a; }; int f(struct P p) { return p.a; }");
+            module("struct S { int a : 3; }; int f(struct S s) { return s.a; }");
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())

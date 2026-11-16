@@ -229,6 +229,38 @@ impl Parser<'_> {
         }
     }
 
+    /// Whether a record of this type travels in a *register*: Win64 carries one of 1, 2, 4 or 8
+    /// bytes as an integer that wide ("as if it had been an integer"), and any other record by
+    /// reference to a copy the caller owns.
+    pub(super) fn record_in_register(&self, ty: TypeId) -> bool {
+        self.types.record_of(ty).is_some() && matches!(self.types.size_of(ty), Some(1 | 2 | 4 | 8))
+    }
+
+    /// How a C value of this type crosses a call boundary in `cir`: a register-carried record is
+    /// an integer of its own width, a by-reference one is the address of the caller's copy, and
+    /// everything else is already its own machine value.
+    pub(super) fn abi_value(&mut self, ty: TypeId) -> TypeId {
+        if self.types.record_of(ty).is_none() {
+            return ty;
+        }
+        if !self.record_in_register(ty) {
+            return self.pointer_to(ty);
+        }
+        let size = self.types.size_of(ty).unwrap_or(0);
+        self.types.integer_with(false, (size * 8) as u8)
+    }
+
+    /// The integer type a register-carried record is loaded as and stored as: its own width.
+    pub(super) fn record_integer(&mut self, ty: TypeId) -> TypeId {
+        let bits = match self.types.size_of(ty).unwrap_or(1) {
+            1 => 8,
+            2 => 16,
+            4 => 32,
+            _ => 64,
+        };
+        self.types.integer_with(false, bits)
+    }
+
     /// The address of the object `offset` bytes into the place `base`, typed `pointer to leaf`.
     /// `object` is the type the place is: a slot's address is `pointer to object`, so walking it
     /// by a byte count is `pointer_walk`'s job with `char` as the element - the scale is then

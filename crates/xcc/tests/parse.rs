@@ -249,11 +249,9 @@ fn mistakes_are_reported_once_with_a_place() {
     // ...and `sizeof`'s operand is not evaluated, so what it contains need not be lowerable.
     parses("int f(void) { int x = 0; return sizeof(x = 3); }");
     parses("struct P { int a; }; int f(struct P *p) { return sizeof(p->a); }");
-    // An aggregate parameter is still refused: the back end has no machine type for one.
-    refuses(
-        "struct P { int a; }; int f(struct P p) { return sizeof(p.a); }",
-        "a function whose parameters or result are aggregates is not lowered yet",
-    );
+    // A record parameter is an object in the frame like any other, and `sizeof` reads its type
+    // without evaluating anything.
+    parses("struct P { int a; }; int f(struct P p) { return sizeof(p.a); }");
     // A value of the wrong type is one diagnostic, not a failed conversion and a missing store
     // as well: the type check runs before anything is written.
     let complaints = check("int f(void) { int a[2] = {1, \"x\"}; return 0; }");
@@ -308,20 +306,15 @@ fn what_aggregates_still_cannot_do() {
         "struct S { int a : 3; }; int f(void) { struct S s; s.a = 1; return 0; }",
         "a bitfield in code",
     );
-    // An aggregate cannot be carried through a join, passed by value, or returned by value yet:
-    // each is the ABI's question, and each says so instead of half-lowering.
+    // An aggregate cannot be carried through a join: the join would need a register for it.
     refuses(
         "struct P { int x; }; int f(int c) { struct P a = {1}; struct P b = {2}; return (c ? a : b).x; }",
         "a conditional expression whose arms are aggregates",
     );
-    refuses(
-        "struct P { int x; }; int sink(struct P p) { return p.x; } int f(void) { struct P a = {3}; return sink(a); }",
-        "an aggregate argument",
-    );
-    refuses(
-        "struct P { int x; }; struct P make(int v) { struct P r; r.x = v; return r; } int f(void) { struct P p; p = make(1); return p.x; }",
-        "an aggregate returned by value",
-    );
+    // ...but it does travel by value across a call, on the ABI's terms (see the layout test and
+    // the ABI test in `back`).
+    parses("struct P { int x; }; int sink(struct P p) { return p.x; } int f(void) { struct P a = {3}; return sink(a); }");
+    parses("struct P { int x; }; struct P make(int v) { struct P r; r.x = v; return r; } int f(void) { struct P p; p = make(1); return p.x; }");
     refuses(
         "struct Incomplete; int f(void) { struct Incomplete s; return 0; }",
         "has no size",

@@ -481,6 +481,26 @@ impl Parser<'_> {
         let span = self.span();
         if let Some(value) = value {
             let value = self.convert(value, result, span);
+            if self.types.record_of(result).is_some() {
+                // The value is the address of the object to return: copied into the buffer the
+                // caller passed for a large one, and loaded as its integer for a small one.
+                if let Some(source) = value.cir {
+                    if let Some(buffer) = self.function_buffer {
+                        self.copy_object(buffer, result, source, result, result, span);
+                        self.emit(|builder| builder.ret(Some(buffer), span));
+                    } else {
+                        let integer = self.record_integer(result);
+                        if let Some(address) = self.address_within(source, result, 0, integer, span)
+                        {
+                            let loaded = self.emit(|builder| builder.load(address, integer, span));
+                            if let Some(loaded) = loaded {
+                                self.emit(|builder| builder.ret(Some(loaded), span));
+                            }
+                        }
+                    }
+                }
+                return;
+            }
             if let Some(cir) = value.cir {
                 self.emit(|builder| builder.ret(Some(cir), span));
             }
