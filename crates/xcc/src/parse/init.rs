@@ -21,20 +21,7 @@ impl Parser<'_> {
         if token.kind == crate::lex::TokenKind::Str {
             // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
             let span = self.span();
-            let spelling = {
-                // The literal's own spelling, before `string_literal` consumes the run.
-                let mut spelling = String::new();
-                let mut ahead = self.at;
-                while let Some(token) = self.tokens().get(ahead).copied() {
-                    if token.kind != crate::lex::TokenKind::Str {
-                        break;
-                    }
-                    spelling.push_str(self.spell(&token));
-                    ahead += 1;
-                }
-                spelling
-            };
-            let (literal, bytes, name) = self.string_literal();
+            let (literal, name, literal_bytes) = self.string_literal();
             if let Type::Array { element, count } = *self.types.kind(ty) {
                 // C99 6.7.8p14: an array of character type, which `int` is not even though a
                 // `char` converts to one.
@@ -47,52 +34,38 @@ impl Parser<'_> {
                     return;
                 }
                 match count {
-                    None => {
-                        self.types.complete_array(ty, bytes + 1);
-                        // Now that the array has a size, a file-scope object gets its bytes.
-                        if self.bytes.is_some() {
-                            match crate::parse::bytes::string_literal_bytes(
-                                &self.types,
-                                ty,
-                                &spelling,
-                            ) {
-                                Some(literal_bytes) => {
-                                    let at = self.offset;
-                                    let end = at + literal_bytes.len();
-                                    if let Some(out) = self.bytes.as_mut() {
-                                        // The array's size came from this literal, so the buffer
-                                        // may still be the empty one it started as.
-                                        if out.len() < end {
-                                            out.resize(end, 0);
-                                        }
-                                        out[at..end].copy_from_slice(&literal_bytes);
-                                    }
-                                }
-                                None => self.bytes = None,
-                            }
-                        }
-                    }
-                    Some(count) if count < bytes + 1 => {
+                    None => self.types.complete_array(ty, literal_bytes.len() as u64),
+                    Some(count) if count < literal_bytes.len() as u64 => {
+                        let string = literal_bytes.len() as u64 - 1;
                         self.error(
                             span,
-                            format!("a {count}-byte array cannot hold this {bytes}-byte string and its NUL"),
+                            format!("a {count}-byte array cannot hold this {string}-byte string and its NUL"),
                         );
                     }
                     Some(_) => {}
                 }
-                // A local's array is filled from the same bytes the file-scope path lays down,
-                // one store each: there is no run-time string copy to call, and the tail of a
-                // sized array is zeroes in those bytes (C99 6.7.8p21).
+                let Some(filled) =
+                    crate::parse::bytes::string_literal_bytes(&self.types, ty, &literal_bytes)
+                else {
+                    return;
+                };
+                // One destination: a file-scope object's bytes, or a local's stores. The tail
+                // of a sized array is the zeroes those bytes already hold (C99 6.7.8p21).
                 if let Some(target) = self.init_target {
-                    if let Some(bytes) =
-                        crate::parse::bytes::string_literal_bytes(&self.types, ty, &spelling)
-                    {
-                        let char = self.types.fundamental("char").unwrap();
-                        for (offset, byte) in bytes.into_iter().enumerate() {
-                            let value = self.constant_of(char, i64::from(byte), span);
-                            self.store_leaf(target, offset, char, value, span);
-                        }
+                    let char = self.types.fundamental("char").unwrap();
+                    for (offset, byte) in filled.into_iter().enumerate() {
+                        let value = self.constant_of(char, i64::from(byte), span);
+                        self.store_leaf(target, offset, char, value, span);
                     }
+                } else if let Some(out) = self.bytes.as_mut() {
+                    let at = self.offset;
+                    let end = at + filled.len();
+                    // The array's size may have come from this literal, so the buffer can
+                    // still be the empty one it started as.
+                    if out.len() < end {
+                        out.resize(end, 0);
+                    }
+                    out[at..end].copy_from_slice(&filled);
                 }
                 return;
             }
@@ -114,18 +87,18 @@ impl Parser<'_> {
                 );
                 return;
             }
-            match self.emit(|builder| builder.global_address(name, pointer, span)) {
-                Some(address) => {
-                    let value = Value {
-                        ty: pointer,
-                        constant: None,
-                        lvalue: false,
-                        cir: Some(address),
-                        place: None,
-                    };
-                    self.leaf(ty, value);
-                }
-                None => self.leaf(ty, Value::new(pointer, None, false)),
+            // A block that already ended writes nothing, and says nothing: dead code is not an
+            // initialiser this compiler cannot lower.
+            if let Some(address) = self.emit(|builder| builder.global_address(name, pointer, span))
+            {
+                let value = Value {
+                    ty: pointer,
+                    constant: None,
+                    lvalue: false,
+                    cir: Some(address),
+                    place: None,
+                };
+                self.write_leaf(ty, value);
             }
             return;
         }
@@ -149,7 +122,7 @@ impl Parser<'_> {
         match value {
             Some(value) => {
                 let value = self.decay(value);
-                self.leaf(ty, value);
+                self.write_leaf(ty, value);
             }
             None => self.bytes = None,
         }
@@ -352,13 +325,25 @@ impl Parser<'_> {
         }
     }
 
-    /// One leaf in the object being initialised: a store into a local's slot, or bytes into a
-    /// file-scope object's buffer, at the cursor's offset.
+    /// One value initialising one object of type `ty`: the check C asks for, and then the write,
+    /// which is a store into a local's slot or bytes into a file-scope object's buffer, at the
+    /// offset the walker has reached.
     ///
-    /// One place, because a leaf in a brace list and a leaf that is the whole initialiser are the
-    /// same question about the same value. A partly-filled object is a wrong program, not a
-    /// smaller one, so anything unwritable clears everything (ADR-004).
+    /// One place, because a leaf in a brace list and a value that is the whole initialiser are
+    /// the same question about the same object. The check comes first: a value of the wrong
+    /// type is one diagnostic, not a failed conversion and a missing store on top of it. A
+    /// partly-filled object is a wrong program, not a smaller one, so anything unwritable
+    /// clears everything (ADR-004).
     fn write_leaf(&mut self, ty: TypeId, value: Value) {
+        if !self.types.is_error(ty) && !self.types.is_error(value.ty) {
+            let null_pointer = self.types.is_pointer(ty) && value.constant == Some(0);
+            if !null_pointer && !self.types.is_assignable(ty, value.ty) {
+                let (from, to) = (self.describe(value.ty), self.describe(ty));
+                let span = self.span();
+                self.error(span, format!("cannot initialise {to} with {from}"));
+                return;
+            }
+        }
         if let Some(target) = self.init_target {
             let (offset, span) = (self.offset, self.span());
             self.store_leaf(target, offset, ty, value, span);
@@ -386,25 +371,7 @@ impl Parser<'_> {
         let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
             return;
         };
-        self.leaf(ty, value);
-    }
-
-    /// A value that initialises one object of type `ty`: written if C allows it, and one
-    /// diagnostic if it does not.
-    ///
-    /// One place, because a value at a leaf of a list and a value that is the whole
-    /// initialiser are the same question about the same object.
-    fn leaf(&mut self, ty: TypeId, value: Value) {
         self.write_leaf(ty, value);
-        if self.types.is_error(ty) || self.types.is_error(value.ty) {
-            return;
-        }
-        let null_pointer = self.types.is_pointer(ty) && value.constant == Some(0);
-        if !null_pointer && !self.types.is_assignable(ty, value.ty) {
-            let (from, to) = (self.describe(value.ty), self.describe(ty));
-            let span = self.span();
-            self.error(span, format!("cannot initialise {to} with {from}"));
-        }
     }
 
     /// A local's initialiser: the leaves become stores through its slot, and what the list

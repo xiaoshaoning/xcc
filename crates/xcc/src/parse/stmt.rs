@@ -503,7 +503,7 @@ impl Parser<'_> {
             }
         }
         let value = condition.and_then(|condition| condition.cir);
-        let condition_type = condition.map(|condition| self.promote(condition.ty));
+        let condition_type = condition.map(|condition| self.types.promote(condition.ty));
         let (exit, test) = match (value, self.in_body()) {
             (Some(_), true) => (self.new_block(span), self.new_block(span)),
             _ => (None, None),

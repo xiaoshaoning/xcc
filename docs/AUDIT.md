@@ -78,6 +78,45 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### local initialisation, reviewed - 2026-11-16 - `char + char` was eight bits
+
+The review of the local-initialisation commit, plus what probing the new path turned up. Two of the
+findings were older than the commit and silent.
+
+1. **`char + char` was computed in eight bits.** `usual_arithmetic` compared the two types and
+   returned the wider one, without the integer promotions C99 6.3.1.8 puts *first*: 120 + 121 came
+   back as -15. It is pre-existing and reachable from the first `char` sum anyone writes; nothing in
+   the suite ran arithmetic on a type narrower than `int`. `promote` moved from the parser into
+   `Types`, where the conversion rules live, and `usual_arithmetic` promotes both sides before
+   comparing them; the parser's copy is gone. `chars`, `unsigned_chars`, `negative` and
+   `promoted_size` (the `sizeof` is 4) are the test.
+2. **The initialiser wrote a value before checking it.** `int a[2] = {1, "x"}` produced three
+   diagnostics: a failed conversion, "this initialiser value is not lowered yet" for the store that
+   then could not be made, and finally the real "cannot initialise int with pointer to char". The
+   check runs first now, in the one leaf writer, and a test asserts the count is one. `leaf` and
+   `write_leaf` were two functions with the same doc comment and one caller between them; they are
+   one function.
+3. **Adjacent string literals were refused as an unreadable escape.** `string_bytes` decodes one
+   literal, but its callers concatenated the *spellings* of the run (`"ab" "cd"`) and handed that
+   over, so the decode saw stray quotes and the length check failed. The run is decoded once now,
+   token by token, in `string_literal`, which hands the bytes back: the initialiser no longer
+   re-scans the source for the spelling (twelve lines of pre-scan deleted), and
+   `string_literal_bytes` takes the bytes instead of a spelling. `char s[] = "ab" "cd"` is five
+   bytes at file scope and in a frame.
+4. **A compound literal's leaves went into the enclosing object.** `int y = (int[2]){7, 8}[0];`
+   walked the literal's brace list with the *outer* initialiser's destination and offset, so the
+   second int was stored four bytes past `y`'s slot. Nothing wrong reached the user - the enclosing
+   initialiser then fails to produce a value, and the body is dropped - but the state leak is the
+   bug: `cast` suspends the initialisation (bytes, offset, and slot together) while it reads an
+   object of its own.
+
+The three fields an initialiser runs on - `bytes`, `offset`, `init_target` - now say in one place
+that they move together. They were not merged into a struct: the parser's state is flat throughout,
+and the invariant fits in a comment; the compound-literal case is the second place that saves and
+restores them, and the second place is what would have justified the struct.
+
+141 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### local initialisation - 2026-11-16 - the hole the review found, closed
 
 The review above found that an initialiser in a function was read, checked and then dropped. It is

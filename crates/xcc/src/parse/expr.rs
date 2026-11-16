@@ -337,7 +337,7 @@ impl Parser<'_> {
                         {
                             common()
                         } else {
-                            self.promote(left.ty)
+                            self.types.promote(left.ty)
                         };
                     let op = match operator {
                         "%" => cir::BinOp::Rem,
@@ -348,7 +348,7 @@ impl Parser<'_> {
                         _ => cir::BinOp::Or,
                     };
                     let operands = if matches!(op, cir::BinOp::Shl | cir::BinOp::Shr) {
-                        self.promote(left.ty)
+                        self.types.promote(left.ty)
                     } else {
                         ty
                     };
@@ -475,15 +475,6 @@ impl Parser<'_> {
         Value::temporary(self.types.error())
     }
 
-    /// Integer promotion (C99 6.3.1.1): anything narrower than `int` becomes `int`.
-    pub(super) fn promote(&self, ty: TypeId) -> TypeId {
-        match self.types.kind(ty) {
-            Type::Int { bits, .. } if *bits < 32 => self.types.fundamental("int").unwrap(),
-            Type::Bool => self.types.fundamental("int").unwrap(),
-            _ => ty,
-        }
-    }
-
     /// An array or function used as a value is a pointer to it (C99 6.3.2.1). Everything that
     /// *uses* a value calls this; a place that assigns to one does not.
     pub(super) fn decay(&mut self, value: Value) -> Value {
@@ -536,18 +527,18 @@ impl Parser<'_> {
                             self.error(span, format!("unary `-` needs a number, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        let ty = self.promote(ty);
+                        let ty = self.types.promote(ty);
                         let folded = value.constant.map(|value| value.wrapping_neg());
                         Some(self.emit_unary(cir::UnOp::Neg, value, ty, folded, span))
                     }
-                    "+" => Some(Value::new(self.promote(ty), value.constant, false)),
+                    "+" => Some(Value::new(self.types.promote(ty), value.constant, false)),
                     "~" => {
                         if !self.types.is_integer(ty) {
                             let ty = self.describe(ty);
                             self.error(span, format!("`~` needs an integer, not {ty}"));
                             return Some(Value::temporary(self.types.error()));
                         }
-                        let ty = self.promote(ty);
+                        let ty = self.types.promote(ty);
                         let folded = value.constant.map(|value| !value);
                         Some(self.emit_unary(cir::UnOp::Not, value, ty, folded, span))
                     }
@@ -935,7 +926,7 @@ impl Parser<'_> {
             crate::lex::TokenKind::Str => {
                 // A string literal has an array type of its own (C99 6.2.5p20), which is what
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
-                let (ty, _, name) = self.string_literal();
+                let (ty, name, _) = self.string_literal();
                 let pointer = self.types.pointer(ty);
                 let mut value = Value::new(ty, None, true);
                 if let Some(address) =
@@ -1027,8 +1018,14 @@ impl Parser<'_> {
 
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {
         if self.at_punct("{") {
-            // `(struct P){1, 2}`: an unnamed object with the type the cast named.
+            // `(struct P){1, 2}`: an unnamed object with the type the cast named. It is an
+            // object of its own, so the initialiser being read - a local's slot, or a
+            // file-scope object's bytes - is suspended: its leaves are not this object's.
+            let (bytes, offset, target) = (self.bytes.take(), self.offset, self.init_target.take());
             self.brace_initializer(to);
+            self.bytes = bytes;
+            self.offset = offset;
+            self.init_target = target;
             return Value::new(to, None, true);
         }
         let Some(from) = self.unary_expression() else {

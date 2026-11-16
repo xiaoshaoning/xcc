@@ -225,6 +225,10 @@ struct Parser<'a> {
     /// The frame slot a local initialiser is writing through, with the type of the object
     /// it is: `Some` while such an initialiser is being read, and `None` for a file-scope
     /// object, whose bytes `bytes` collects (ADR-004).
+    ///
+    /// These three move together: `initializer_bytes` sets `bytes` and `initialize_local`
+    /// sets `init_target`, both start `offset` at zero, and a compound literal suspends all
+    /// three while it reads an object of its own (`cast`).
     init_target: Option<(cir::Value, TypeId)>,
     /// How many string literals have been given an anonymous global: `.str0`, `.str1`, ...
     literals: u32,
@@ -537,55 +541,57 @@ impl Parser<'_> {
         }
     }
 
-    /// How a name from the symbol table is spelled.
     /// A run of adjacent string literals: the type C gives them - `char[n]`, where `n` counts
-    /// the bytes and the NUL - and how many bytes they spell. Adjacent literals concatenate
-    /// (C99 6.4.5p5), so `"ab" "cd"` is one array of five.
-    fn string_literal(&mut self) -> (TypeId, u64, String) {
+    /// the bytes and the NUL - the name of the anonymous global that holds them, and the bytes
+    /// themselves, NUL included. Adjacent literals concatenate (C99 6.4.5p5), so `"ab" "cd"`
+    /// is one array of five.
+    ///
+    /// The bytes are decoded here and handed back, because the initialiser that needs them - a
+    /// global's buffer or a local's stores - would otherwise be a second reader of the same
+    /// literal, and the two would disagree about escapes and adjacent runs.
+    fn string_literal(&mut self) -> (TypeId, String, Vec<u8>) {
         let span = self.span();
-        let mut bytes_count = 0u64;
-        let mut spelling = String::new();
+        let mut init: Vec<u8> = Vec::new();
         while let Some(token) = self.peek().copied() {
             if token.kind != crate::lex::TokenKind::Str {
                 break;
             }
             let written = self.spell(&token).to_owned();
             self.bump();
-            bytes_count += string_length(&written);
-            spelling.push_str(&written);
+            match crate::literal::string_bytes(&written) {
+                Some(mut bytes) => init.append(&mut bytes),
+                None => {
+                    // An escape this compiler does not read is reported and filled with
+                    // zeroes: the object keeps the size the source spelled, rather than
+                    // silently becoming one byte for a two-byte array.
+                    self.error(
+                        span,
+                        "this string literal has an escape this compiler does not read",
+                    );
+                    let count = string_length(&written) as usize;
+                    init.resize(init.len() + count, 0);
+                }
+            }
         }
+        init.push(0);
         let char = self
             .types
             .fundamental("char")
             .unwrap_or_else(|| self.types.error());
-        let ty = self.types.array(char, Some(bytes_count + 1));
+        let ty = self.types.array(char, Some(init.len() as u64));
         // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
         // named with a `.` prefix so it can never collide with a C identifier.
         let name = format!(".str{}", self.literals);
         self.literals += 1;
-        // The bytes must be exactly as long as the array the type promised. An escape this
-        // compiler does not read is reported and filled with zeroes rather than silently making
-        // a one-byte object for a two-byte array.
-        let mut init = match crate::literal::string_bytes(&spelling) {
-            Some(bytes) if bytes.len() as u64 == bytes_count => bytes,
-            _ => {
-                self.error(
-                    span,
-                    "this string literal has an escape this compiler does not read",
-                );
-                vec![0u8; bytes_count as usize]
-            }
-        };
-        init.push(0);
         self.globals.push(cir::Global {
             name: name.clone(),
             ty,
             defined: true,
-            init: Some(init),
+            init: Some(init.clone()),
             external: false,
             span,
         });
-        (ty, bytes_count, name)
+        (ty, name, init)
     }
 
     /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value
@@ -613,6 +619,7 @@ impl Parser<'_> {
         self.types.describe_with(ty, self.preprocessed.names())
     }
 
+    /// How a name from the symbol table is spelled.
     fn spell_of(&self, name: Symbol) -> &str {
         self.preprocessed.spell(name)
     }
@@ -1308,6 +1315,17 @@ block0 (entry)(v0: int, v1: int):
             a.init.as_deref(),
             Some(&[1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0][..])
         );
+        // Adjacent literals are one run (C99 6.4.5p5): decoded once, and their bytes are the
+        // object's. A second reader of the spelling refused this with "an escape this compiler
+        // does not read".
+        let (unit, _, diagnostics) = module("char s[] = \"ab\" \"cd\";");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let s = unit
+            .globals
+            .iter()
+            .find(|global| global.name == "s")
+            .expect("the array is a global");
+        assert_eq!(s.init.as_deref(), Some(&b"abcd\0"[..]));
         // A value that is not a constant clears the buffer: no global claims bytes it lacks.
         let (unit, names, _) = module("int f(void) { return 1; } int y = f();");
         let text = cir::dump::dump(&unit, &names);

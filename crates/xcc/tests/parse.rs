@@ -186,6 +186,11 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses("enum e { A, A };", "is already declared in this scope");
     refuses("int f(int a, int a);", "duplicate parameter `a`");
     refuses("int a[sizeof(void)];", "`sizeof` needs a complete type");
+    // A value of the wrong type is one diagnostic, not a failed conversion and a missing store
+    // as well: the type check runs before anything is written.
+    let complaints = check("int f(void) { int a[2] = {1, \"x\"}; return 0; }");
+    assert_eq!(complaints.len(), 1, "{complaints:?}");
+    assert!(complaints[0].contains("cannot initialise int with pointer to char"));
 }
 
 #[test]

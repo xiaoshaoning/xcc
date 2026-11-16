@@ -427,6 +427,17 @@ impl Types {
         self.is_integer(id) || self.is_float(id)
     }
 
+    /// Integer promotion (C99 6.3.1.1): anything narrower than `int` becomes `int`. Every
+    /// arithmetic operator does this to its operands first, so the rule lives with the
+    /// conversions rather than with the parser that asks.
+    pub fn promote(&self, id: TypeId) -> TypeId {
+        match self.kind(id) {
+            Type::Int { bits, .. } if *bits < 32 => self.fundamental("int").unwrap(),
+            Type::Bool => self.fundamental("int").unwrap(),
+            _ => id,
+        }
+    }
+
     /// Whether a value of this type *is* the address of the thing rather than bytes read from
     /// it: an array (C99 6.3.2.1p3) and a function designator (6.3.2.1p4). These are the cases
     /// where loading the place would read the wrong thing, or nothing at all (ADR-004).
@@ -594,6 +605,9 @@ impl Types {
         if self.is_float(right) {
             return right;
         }
+        // The integer promotions come first, before the two types are compared: `char +
+        // char` is `int + int` and cannot wrap at 8 bits (C99 6.3.1.8).
+        let (left, right) = (self.promote(left), self.promote(right));
         let (left_bits, left_signed) = self.int_parts(left);
         let (right_bits, right_signed) = self.int_parts(right);
         let bits = left_bits.max(right_bits);

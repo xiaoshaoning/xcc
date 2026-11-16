@@ -324,7 +324,9 @@ int twice(int x) { return host_double(x); }",
              int designator(void) { int a[5] = {[2] = 7}; return a[2] * 10 + a[0]; }
              int sized_by_text(void) { char s[] = \"abc\"; return s[0] + s[3]; }
              int text_tail(void) { char s[8] = \"hi\"; return s[1] * 10 + s[2]; }
-             int pointer_to_text(void) { char *p = \"abc\"; return p[1]; }",
+             int pointer_to_text(void) { char *p = \"abc\"; return p[1]; }
+             int joined_text(void) { char s[] = \"a\" \"b\"; return s[0] + s[1]; }
+             int joined_length(void) { char s[] = \"ab\" \"cd\"; return sizeof s; }",
         )
         .expect("it compiles");
         for (name, wanted) in [
@@ -342,6 +344,34 @@ int twice(int x) { return host_double(x); }",
             // 'i' * 10 + the NUL of the sized array's tail.
             ("text_tail", 1050),
             ("pointer_to_text", 98),
+            // Adjacent literals are one run (C99 6.4.5p5), before and after the NUL.
+            ("joined_text", 195),
+            ("joined_length", 5),
+        ] {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            assert_eq!(function(), wanted, "{name}");
+        }
+    }
+
+    /// C99 6.3.1.8: the integer promotions come before the usual arithmetic conversions, so
+    /// `char + char` is `int + int` and cannot wrap at eight bits. It did: 120 + 121 came back
+    /// as -15, because `usual_arithmetic` compared the two types without promoting either.
+    #[test]
+    fn arithmetic_promotes_what_is_narrower_than_int() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int chars(void) { char a = 120; char b = 121; return a + b; }
+             int unsigned_chars(void) { unsigned char a = 200; return a * 2; }
+             int negative(void) { char a = -1; return a < 0; }
+             int promoted_size(void) { char a = 1; return sizeof(a + a); }",
+        )
+        .expect("it compiles");
+        for (name, wanted) in [
+            ("chars", 241),
+            ("unsigned_chars", 400),
+            ("negative", 1),
+            ("promoted_size", 4),
         ] {
             let address = jit.function(name).expect("the function is there");
             let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
