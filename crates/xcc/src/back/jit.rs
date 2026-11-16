@@ -354,6 +354,72 @@ int twice(int x) { return host_double(x); }",
         }
     }
 
+    /// `condition ? a : b` is two blocks and a join (C99 6.5.15). The untaken arm must not be
+    /// evaluated - `n ? 10 / n : -1` with zero is not a division - so it cannot be one
+    /// instruction with a `select`. The arms' common type is the join's parameter type, and an
+    /// arm that is itself `&&` or another `?:` leaves the cursor in its own join, which is where
+    /// that arm's jump has to leave from.
+    #[test]
+    fn a_conditional_expression_evaluates_only_the_arm_it_picks() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int pick(int c) { return c ? 10 : 20; }
+             int guarded(int n) { return n ? 10 / n : -1; }
+             int chain(int a) { return a == 1 ? 10 : a == 2 ? 20 : 30; }
+             int logical(int a, int b) { return (a && b) ? 1 : 2; }
+             int pointer(int c) { int a[2]; int *p = c ? a : 0; return p == 0; }
+             int merged(void) { return 1 ? 5 : 6; }
+             int side(int x) { int r = 0; x ? (r = 1) : (r = 2); return r; }
+             void nothing(void) { }
+             int no_value(int c) { c ? nothing() : nothing(); return c; }
+             int wider(int c) { long l = c ? 1 : 2L; return (int)l; }
+             int sized(void) { int a[1 ? 2 : 3]; return sizeof a; }
+             int unevaluated(void) { int x = 0; int s = sizeof(x = 3); return x * 10 + s; }
+             int texts(int c) { char *p = c ? \"a\" : \"b\"; return p[0]; }
+             int addresses(int c) { int a; int b; int *p = c ? &a : &b; return p == &a; }
+             int helper(int v) { return v * 10; }
+             int called(int c) { return c ? helper(1) : helper(2); }",
+        )
+        .expect("it compiles");
+        let call = |name: &str, argument: i32| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+            function(argument)
+        };
+        assert_eq!(call("pick", 1), 10);
+        assert_eq!(call("pick", 0), 20);
+        // `10 / 0` in the arm that is not taken would trap.
+        assert_eq!(call("guarded", 0), -1);
+        assert_eq!(call("guarded", 5), 2);
+        assert_eq!(call("chain", 1), 10);
+        assert_eq!(call("chain", 2), 20);
+        assert_eq!(call("chain", 9), 30);
+        assert_eq!(call("logical", 1), 1);
+        assert_eq!(call("logical", 0), 2);
+        assert_eq!(call("pointer", 1), 0);
+        assert_eq!(call("pointer", 0), 1);
+        assert_eq!(call("side", 1), 1);
+        assert_eq!(call("side", 0), 2);
+        assert_eq!(call("no_value", 7), 7);
+        assert_eq!(call("wider", 0), 2);
+        // A conditional expression in a declarator's size is read for its value only: no
+        // branch and no blocks in the middle of the declaration, and two ints of storage.
+        assert_eq!(call("sized", 0), 8);
+        // `sizeof`'s operand is not evaluated (C99 6.5.3.4p2): `x` is still 0, and `sizeof`
+        // is 4 whether or not the assignment in it looks like it ran.
+        assert_eq!(call("unevaluated", 0), 4);
+        // Arms of pointer type: a literal's address, and the address of a local.
+        assert_eq!(call("texts", 1), i32::from(b'a'));
+        assert_eq!(call("texts", 0), i32::from(b'b'));
+        assert_eq!(call("addresses", 1), 1);
+        assert_eq!(call("addresses", 0), 0);
+        assert_eq!(call("called", 1), 10);
+        assert_eq!(call("called", 0), 20);
+        let address = jit.function("merged").expect("the function is there");
+        let merged: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+        assert_eq!(merged(), 5);
+    }
+
     /// C99 6.3.1.8: the integer promotions come before the usual arithmetic conversions, so
     /// `char + char` is `int + int` and cannot wrap at eight bits. It did: 120 + 121 came back
     /// as -15, because `usual_arithmetic` compared the two types without promoting either.

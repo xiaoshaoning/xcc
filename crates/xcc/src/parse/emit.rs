@@ -11,6 +11,11 @@ impl Parser<'_> {
     /// Run `emit` on the block being filled, if a function body is being read. `None` means
     /// there is no body: a declaration at file scope, or an expression outside any function.
     pub(super) fn emit<T>(&mut self, emit: impl FnOnce(&mut cir::Builder<'_>) -> T) -> Option<T> {
+        // An unevaluated operand's code would land in the middle of whatever asked for it - a
+        // declarator, a `case` label, or the `sizeof` that does not evaluate it.
+        if self.unevaluated {
+            return None;
+        }
         let body = self.body.as_mut()?;
         // Code after a `return` or a `break` is unreachable, which C allows: it emits nothing
         // rather than a second terminator.
@@ -29,7 +34,9 @@ impl Parser<'_> {
     /// A construct the emitter cannot express is refused rather than quietly left out: an
     /// expression that emits nothing is a program that computes something else.
     pub(super) fn not_lowered(&mut self, span: Span, what: &str) {
-        if self.in_body() {
+        // An unevaluated operand has no code to lower, so a construct that needs code is not a
+        // construct this refused: `sizeof(p.a)` is a question about the type.
+        if self.in_body() && !self.unevaluated {
             self.not_implemented(span, format!("{what} is not lowered yet (M4.2b)"));
         }
     }

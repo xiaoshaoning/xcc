@@ -186,6 +186,19 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses("enum e { A, A };", "is already declared in this scope");
     refuses("int f(int a, int a);", "duplicate parameter `a`");
     refuses("int a[sizeof(void)];", "`sizeof` needs a complete type");
+    // A constant expression is wanted for its value, not its code, so a `?:` in a declarator or
+    // a `case` label is read and folded rather than lowered into the middle of the declaration.
+    parses("int f(void) { int a[1 ? 2 : 3]; return sizeof a; }");
+    parses("int f(int x) { switch (x) { case 1 ? 2 : 3: return 1; } return 0; }");
+    parses("int f(void) { enum { A = 1 && 1 ? 2 : 3 }; return A; }");
+    // ...and `sizeof`'s operand is not evaluated, so what it contains need not be lowerable.
+    parses("int f(void) { int x = 0; return sizeof(x = 3); }");
+    parses("struct P { int a; }; int f(struct P *p) { return sizeof(p->a); }");
+    // An aggregate parameter is still refused: the back end has no machine type for one.
+    refuses(
+        "struct P { int a; }; int f(struct P p) { return sizeof(p.a); }",
+        "a function whose parameters or result are aggregates is not lowered yet",
+    );
     // A value of the wrong type is one diagnostic, not a failed conversion and a missing store
     // as well: the type check runs before anything is written.
     let complaints = check("int f(void) { int a[2] = {1, \"x\"}; return 0; }");

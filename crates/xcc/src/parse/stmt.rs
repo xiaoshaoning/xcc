@@ -152,7 +152,7 @@ impl Parser<'_> {
 
     /// The block being filled, which is not always the one a construct opened: a nested `switch`
     /// leaves the cursor in its exit block, so "jump back from where we are" must ask here.
-    fn current_block(&self) -> Option<cir::Block> {
+    pub(super) fn current_block(&self) -> Option<cir::Block> {
         self.body.as_ref().map(|body| body.current)
     }
 

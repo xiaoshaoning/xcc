@@ -78,6 +78,42 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `?:` - 2026-11-16 - two blocks and a join, and an operand that was being evaluated
+
+`?:` was read, typed and folded, and emitted nothing: `return a ? 1 : 2;` compiled to a trap. It is
+lowered now as two blocks and a join whose parameter is the expression's value - not one `Select`,
+because the untaken arm must not be evaluated at all: `n ? 10 / n : -1` with `n` zero must not
+divide. An arm that is itself `&&` or another `?:` leaves the cursor in its own join, so each
+arm's jump leaves from *where the cursor is*, not from the block the arm started in - the trap the
+switch commit already recorded, in a second construct.
+
+Four findings on the way:
+
+1. **`sizeof` evaluated its operand.** `int s = sizeof(x = 3)` set `x` to 3, `sizeof(x++)`
+   incremented it, and `sizeof(a ? (b = 3) : a)` set `b`: C99 6.5.3.4p2 says the operand is not
+   evaluated. There is one parser flag for this now (`unevaluated`), set by `sizeof`'s operand and
+   by `constant_expression`; `emit` refuses to emit while it is set, and `not_lowered` stays
+   quiet - so `sizeof(p->a)` no longer reports "a member access in code is not lowered yet".
+2. **A constant expression in a body emitted code.** `int a[1 ? 2 : 3]` left a branch and two
+   blocks in the middle of the declaration *and* lost its folded value ("expected a constant
+   expression"); `&&`/`||` had the same fault since M6.1. The flag is what makes a declarator's
+   size and a `case` label read for their value.
+3. **The verifier compared types by `TypeId`.** `int *p = c ? &a : &b; p == &a` failed as
+   "compares values of another type", because every `pointer(...)` is a fresh id. ADR-004 fixed
+   that in the `Convert` check only; Load, Binary, Compare, Unary, Const and Slot compare
+   structurally now, which is what the arena's identity means.
+4. **An aggregate parameter or result was an internal error.** `struct P f(struct P p)` reported
+   `internal: a value of type struct P has no machine type yet`: the refusal was written before
+   the body existed, and `not_lowered` asks whether one is being read, so it said nothing. It
+   runs after the body is opened and inside `errors_before`'s count, so it is a diagnostic and the
+   body is dropped.
+
+The test runs: pick, a guarded division, a right-associative chain, `&&` in the condition, pointer
+arms (`&a`, `&b`), a literal's address, calls in both arms, a `void` arm, a `long` merge, a `?:`
+in an array's size, and `sizeof`'s unevaluated operand.
+
+142 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### local initialisation, reviewed - 2026-11-16 - `char + char` was eight bits
 
 The review of the local-initialisation commit, plus what probing the new path turned up. Two of the

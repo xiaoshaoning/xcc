@@ -23,7 +23,9 @@ impl Parser<'_> {
         if !self.enter_nesting() {
             return None;
         }
+        let saved = std::mem::replace(&mut self.unevaluated, true);
         let value = self.conditional_expression();
+        self.unevaluated = saved;
         self.leave_nesting();
         match value {
             Some(value) => match value.constant {
@@ -108,6 +110,12 @@ impl Parser<'_> {
         }
     }
 
+    /// `condition ? when_true : when_false`: two blocks and a join, and the join's parameter is
+    /// the expression's value (C99 6.5.15). Only the arm the condition picks is evaluated, so the
+    /// arms cannot be one instruction with a `select`: the untaken arm may divide by zero.
+    ///
+    /// The arms are read in blocks of their own, and their conversions are written back into the
+    /// block that computed them - the join's type is not known until both arms have been read.
     pub(super) fn conditional_expression(&mut self) -> Option<Value> {
         let condition = self.binary_expression(0)?;
         let question = self.span();
@@ -115,22 +123,83 @@ impl Parser<'_> {
             return Some(condition);
         }
         self.require_scalar(&condition, "the condition of `?:`");
-        let when_true = self.expression()?;
+        // A condition with code branches; one without - a constant, or no body being built -
+        // still reads both arms, for their diagnostics and for the value they fold to.
+        let branch_on = condition.cir.filter(|_| self.in_body());
+        let Some(branch_on) = branch_on else {
+            let constant = condition.constant;
+            let when_true = self.expression().map(|value| self.decay(value))?;
+            if !self.eat(":") {
+                self.error_at_current("expected `:`");
+                return None;
+            }
+            let when_false = self
+                .conditional_expression()
+                .map(|value| self.decay(value))?;
+            let ty = self.ternary_type(when_true, when_false, question);
+            let folded = match (when_true.constant, when_false.constant) {
+                (Some(t), Some(f)) => constant.map(|condition| if condition != 0 { t } else { f }),
+                (Some(t), None) if constant == Some(1) => Some(t),
+                (None, Some(f)) if constant == Some(0) => Some(f),
+                _ => None,
+            };
+            return Some(Value::new(ty, folded, false));
+        };
+        let then_block = self.new_block(question)?;
+        let else_block = self.new_block(question)?;
+        self.emit(|builder| {
+            builder.branch(
+                branch_on,
+                (then_block, Vec::new()),
+                (else_block, Vec::new()),
+                question,
+            )
+        });
+        self.switch_to(then_block);
+        let when_true = self.expression().map(|value| self.decay(value))?;
+        // The cursor after an arm is not always the block the arm started in: `a && b` and a
+        // nested `?:` leave it in their own join, and the arm's jump must leave from there.
+        let then_exit = self.current_block()?;
         if !self.eat(":") {
             self.error_at_current("expected `:`");
             return None;
         }
-        let when_false = self.conditional_expression()?;
+        self.switch_to(else_block);
+        let when_false = self
+            .conditional_expression()
+            .map(|value| self.decay(value))?;
+        let else_exit = self.current_block()?;
         let ty = self.ternary_type(when_true, when_false, question);
-        let constant = match (when_true.constant, when_false.constant) {
-            (Some(t), Some(f)) => condition
-                .constant
-                .map(|condition| if condition != 0 { t } else { f }),
-            (Some(t), None) if condition.constant == Some(1) => Some(t),
-            (None, Some(f)) if condition.constant == Some(0) => Some(f),
-            _ => None,
+        if self.types.is_error(ty) {
+            return Some(Value::new(ty, None, false));
+        }
+        // A `void` arm carries side effects and no value, so the join takes no parameter then.
+        let void = matches!(self.types.kind(ty), Type::Void);
+        let params: Vec<TypeId> = if void { Vec::new() } else { vec![ty] };
+        let join = self.emit(|builder| builder.append_block(&params, question))?;
+        for (exit, arm) in [(then_exit, when_true), (else_exit, when_false)] {
+            self.switch_to(exit);
+            let carried: Option<cir::Value> = if void {
+                None
+            } else {
+                match self.convert(arm, ty, question).cir {
+                    Some(value) => Some(value),
+                    // The arm already has a diagnostic of its own; a one-armed jump would only
+                    // hide it, and the body is dropped either way.
+                    None => return Some(Value::new(ty, None, false)),
+                }
+            };
+            self.emit(|builder| builder.jump(join, carried.into_iter().collect(), question));
+        }
+        self.switch_to(join);
+        let value = if void {
+            None
+        } else {
+            self.body
+                .as_ref()
+                .map(|body| body.func.block(join).params[0])
         };
-        Some(Value::new(ty, constant, false))
+        Some(Value::new(ty, None, false).with_cir(value))
     }
 
     /// The type of `a ? b : c` (C99 6.5.15): the common type of the two arms, which for
@@ -682,7 +751,12 @@ impl Parser<'_> {
                 }
             };
         }
-        let Some(value) = self.unary_expression() else {
+        // C99 6.5.3.4p2: the operand is not evaluated. A variable length array would be the
+        // exception, and this compiler has none.
+        let saved = std::mem::replace(&mut self.unevaluated, true);
+        let value = self.unary_expression();
+        self.unevaluated = saved;
+        let Some(value) = value else {
             return Value::temporary(self.types.error());
         };
         if self.types.is_error(value.ty) {
@@ -1201,9 +1275,6 @@ impl Parser<'_> {
             return;
         };
         let func = cir::Func::new(name, result, span);
-        if !params.iter().all(|(_, ty, _)| self.lowerable(*ty)) || !self.lowerable(result) {
-            self.not_lowered(span, "a function whose parameters or result are aggregates");
-        }
         let param_types: Vec<TypeId> = params.iter().map(|(_, ty, _)| *ty).collect();
         let mut body = Body {
             current: func.entry,
@@ -1214,6 +1285,12 @@ impl Parser<'_> {
         self.body = Some(body);
 
         let errors_before = self.error_count();
+        // A parameter or a result with no machine type is refused here, after the body exists:
+        // `not_lowered` asks whether a body is being read, and a function whose parameter the
+        // back end cannot represent is an internal error if it is lowered.
+        if !params.iter().all(|(_, ty, _)| self.lowerable(*ty)) || !self.lowerable(result) {
+            self.not_lowered(span, "a function whose parameters or result are aggregates");
+        }
         self.symbols.push();
         for (position, (name, ty, span)) in params.into_iter().enumerate() {
             let pointer = self.pointer_to(ty);

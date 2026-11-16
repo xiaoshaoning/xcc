@@ -65,6 +65,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         bytes: None,
         offset: 0,
         init_target: None,
+        unevaluated: false,
         literals: 0,
         targets: Vec::new(),
     };
@@ -230,6 +231,11 @@ struct Parser<'a> {
     /// sets `init_target`, both start `offset` at zero, and a compound literal suspends all
     /// three while it reads an object of its own (`cast`).
     init_target: Option<(cir::Value, TypeId)>,
+    /// Whether the expression being read is not evaluated: `sizeof`'s operand, which C says is
+    /// not (C99 6.5.3.4p2), and a `constant_expression`, which is wanted for its value and not
+    /// for its code. Nothing parsed in either may emit: `sizeof(x = 3)` must not assign, and
+    /// `int a[1 ? 2 : 3]` must not leave a branch in the middle of a declaration.
+    unevaluated: bool,
     /// How many string literals have been given an anonymous global: `.str0`, `.str1`, ...
     literals: u32,
     /// Where `break` and `continue` go, innermost last: the block after the loop, and the block

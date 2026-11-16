@@ -900,6 +900,8 @@ impl Func {
         inst: &Inst,
     ) -> Result<(), Broken> {
         let wrong = |message: String| Err(Broken::new(message));
+        // Every type comparison here is structural, as the arena's identity is: the same C type
+        // may be two `TypeId`s, and `==` would reject correct code (ADR-004's corollary).
         match inst {
             Inst::Load {
                 result,
@@ -907,7 +909,7 @@ impl Func {
                 address,
                 ..
             } => {
-                if self.value(*result).ty != *ty || self.value(*result).block != here {
+                if !types.same(self.value(*result).ty, *ty) || self.value(*result).block != here {
                     return wrong(format!("v{} is not a load of its own type", result.0));
                 }
                 if !types.is_pointer(self.value(*address).ty) {
@@ -943,7 +945,7 @@ impl Func {
                 right,
                 ..
             } => {
-                if self.value(*result).ty != *ty {
+                if !types.same(self.value(*result).ty, *ty) {
                     return wrong(format!(
                         "v{} is not of the type it is computed in",
                         result.0
@@ -951,7 +953,7 @@ impl Func {
                 }
                 for operand in [left, right] {
                     let seen = self.value(*operand).ty;
-                    if seen != *ty && !types.is_assignable(*ty, seen) {
+                    if !types.same(seen, *ty) && !types.is_assignable(*ty, seen) {
                         return wrong(format!(
                             "block {index} computes on v{} of another type",
                             operand.0
@@ -973,7 +975,8 @@ impl Func {
                         result.0
                     ));
                 }
-                if self.value(*left).ty != *ty || self.value(*right).ty != *ty {
+                if !types.same(self.value(*left).ty, *ty) || !types.same(self.value(*right).ty, *ty)
+                {
                     return wrong(format!("block {index} compares values of another type"));
                 }
                 Ok(())
@@ -981,7 +984,9 @@ impl Func {
             Inst::Unary {
                 result, ty, value, ..
             } => {
-                if self.value(*result).ty != *ty || self.value(*value).ty != *ty {
+                if !types.same(self.value(*result).ty, *ty)
+                    || !types.same(self.value(*value).ty, *ty)
+                {
                     return wrong(format!("block {index} applies one type to another"));
                 }
                 Ok(())
@@ -1016,7 +1021,7 @@ impl Func {
                 Ok(())
             }
             Inst::Const { result, ty, .. } => {
-                if self.value(*result).block != here || self.value(*result).ty != *ty {
+                if self.value(*result).block != here || !types.same(self.value(*result).ty, *ty) {
                     return wrong(format!("v{} is not a constant of its own type", result.0));
                 }
                 Ok(())
