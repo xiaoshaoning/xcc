@@ -28,6 +28,18 @@ impl Parser<'_> {
         self.unevaluated = saved;
         self.leave_nesting();
         match value {
+            // C99 6.6: what this is asked for - an array's size, a `case` label, an enumerator, a
+            // bitfield's width - is an *integer* constant expression. A float has a constant too,
+            // its bit pattern, and those bits are not the number.
+            Some(value) if !self.types.is_integer(value.ty) => {
+                let ty = self.describe(value.ty);
+                let span = self.span();
+                self.error(
+                    span,
+                    format!("expected an integer constant expression, not {ty}"),
+                );
+                None
+            }
             Some(value) => match value.constant {
                 Some(constant) => Some(constant),
                 None => {
@@ -646,13 +658,15 @@ impl Parser<'_> {
                         }
                         let ty = self.types.promote(ty);
                         // A float's constant is a bit pattern, so it is negated as a number.
+                        // The type is asked *first*: an `int` is also four bytes, and reading
+                        // its constant as an `f32` wrote `-3` as -2147483645.
                         let folded = value.constant.map(|bits| {
-                            if self.types.size_of(ty) == Some(4) {
-                                i64::from((-f32::from_bits(bits as u32)).to_bits())
-                            } else if self.types.is_float(ty) {
-                                (-f64::from_bits(bits as u64)).to_bits() as i64
-                            } else {
+                            if !self.types.is_float(ty) {
                                 bits.wrapping_neg()
+                            } else if self.types.size_of(ty) == Some(4) {
+                                i64::from((-f32::from_bits(bits as u32)).to_bits())
+                            } else {
+                                (-f64::from_bits(bits as u64)).to_bits() as i64
                             }
                         });
                         Some(self.emit_unary(cir::UnOp::Neg, value, ty, folded, span))

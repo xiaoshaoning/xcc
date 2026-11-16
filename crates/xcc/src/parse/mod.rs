@@ -989,7 +989,18 @@ impl Parser<'_> {
                 let count = if self.at_punct("]") {
                     None
                 } else {
-                    self.constant_expression().map(|size| size.max(0) as u64)
+                    match self.constant_expression() {
+                        // C99 6.7.5.2p1: an array's size is greater than zero. One is used after
+                        // the diagnostic because nothing will read it - the declaration is
+                        // refused - and a zero-sized object must not be built on the way.
+                        Some(size) if size <= 0 => {
+                            let span = self.span();
+                            self.error(span, "an array's size must be greater than zero");
+                            Some(1)
+                        }
+                        Some(size) => Some(size as u64),
+                        None => None,
+                    }
                 };
                 if !self.eat("]") {
                     self.error_at_current("expected `]`");
@@ -1359,6 +1370,23 @@ block0 (entry)(v0: int, v1: int):
             ("d", 1.5f64.to_bits().to_le_bytes().to_vec()),
             ("e", 3.0f64.to_bits().to_le_bytes().to_vec()),
             ("f", 0.5f32.to_bits().to_le_bytes().to_vec()),
+        ] {
+            let global = unit
+                .globals
+                .iter()
+                .find(|global| global.name == name)
+                .expect("the object is a global");
+            assert_eq!(global.init.as_deref(), Some(&wanted[..]), "{name}");
+        }
+        // A negative constant is negated as its *own* type. Reading an `int`'s constant as an
+        // `f32` because it is four bytes wide wrote `-3` as -2147483645.
+        let (unit, _, diagnostics) = module("int x = -3; long y = -4; double z = -1.5;");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        for (name, wanted) in [
+            ("x", (-3i32).to_le_bytes().to_vec()),
+            // `long` is four bytes on this target.
+            ("y", (-4i32).to_le_bytes().to_vec()),
+            ("z", (-1.5f64).to_bits().to_le_bytes().to_vec()),
         ] {
             let global = unit
                 .globals

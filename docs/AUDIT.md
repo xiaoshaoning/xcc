@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M6 floats, reviewed - 2026-11-16 - the bits were read as the number, twice
+
+The review of the floats commit. Two of its bugs were the same mistake in different clothes: a
+constant's *bits* used where its *value* was meant.
+
+1. **A float was accepted as an integer constant expression.** `Value.constant` now holds a float's
+   bit pattern, and `constant_expression` only asked whether a constant existed - so
+   `int a[1.5];` took 0x3FF8000000000000 as the array's size (and compiled), `case 1.5:` became a
+   case label, and `enum { A = 1.5 }` an enumerator. C99 6.6 wants an *integer* constant
+   expression, and the bits of a float are not the float. One type check refuses all three:
+   `expected an integer constant expression, not double`.
+2. **Unary minus read an `int` constant as an `f32`.** The fold asked `size_of(ty) == 4` before it
+   asked whether the type was a float at all, so every four-byte integer took the `f32` branch:
+   `int x = -3;` at file scope was written as -2147483645, and `int a[3] = {-1, 2, 3};` had the same
+   fault. The type is asked first now, and the byte test pins `int x = -3; long y = -4;
+   double z = -1.5;`.
+
+Found while probing the same corner, and fixed with it: **an array size of zero or less was
+accepted** and clamped to zero (`size.max(0)`), which C99 6.7.5.2p1 forbids - `int a[-1]` became a
+zero-element array, silently. It is one diagnostic now.
+
+Recorded, not fixed - it needs a decision, not a patch: **an absurdly large array is accepted, and
+the back end truncates its size**. `int a[100000000000];` is a legal constant expression and a
+400 GB object; `StackSlotData` takes a `u32`, so the slot is built with `size as u32` - about
+542 MB of frame, not 400 GB. A limit belongs in `Budgets` (where the other implementation limits
+live) with its reason written down; picking the number is the decision.
+
+144 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### M6: floats and doubles - 2026-11-16 - the front end was the missing half
 
 The back end already had the instructions: `fadd`/`fsub`/`fmul`/`fdiv`, `fneg`, `icmp`/`fcmp`,

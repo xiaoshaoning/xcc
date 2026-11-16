@@ -186,6 +186,30 @@ fn mistakes_are_reported_once_with_a_place() {
     refuses("enum e { A, A };", "is already declared in this scope");
     refuses("int f(int a, int a);", "duplicate parameter `a`");
     refuses("int a[sizeof(void)];", "`sizeof` needs a complete type");
+    // C99 6.7.5.2p1: a size is greater than zero. Zero is a GNU extension this does not take.
+    refuses(
+        "int f(void) { int a[-1]; return 0; }",
+        "an array's size must be greater than zero",
+    );
+    refuses(
+        "int f(void) { int a[0]; return 0; }",
+        "an array's size must be greater than zero",
+    );
+    // A float is a constant and is not an *integer* constant expression: its bits are not its
+    // value, so a size, a `case` label or an enumerator cannot take one.
+    refuses(
+        "int f(void) { int a[1.5]; return 0; }",
+        "expected an integer constant expression, not double",
+    );
+    refuses(
+        "int f(int x) { switch (x) { case 1.5: return 1; } return 0; }",
+        "expected an integer constant expression, not double",
+    );
+    refuses(
+        "int f(void) { enum { A = 1.5 }; return A; }",
+        "expected an integer constant expression, not double",
+    );
+    parses("int f(void) { char s[sizeof(double)]; return sizeof s; }");
     // A constant expression is wanted for its value, not its code, so a `?:` in a declarator or
     // a `case` label is read and folded rather than lowered into the middle of the declaration.
     parses("int f(void) { int a[1 ? 2 : 3]; return sizeof a; }");

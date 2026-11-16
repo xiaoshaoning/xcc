@@ -47,8 +47,6 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `char`, `short`, `int`, `long`, `long long` and unsigned forms; `_Bool` | `planned` |
 | `float`, `double` | `sound` (M6): literals, SSE arithmetic, comparisons (C's unordered `!=`), conversions both ways, constants folded where a file-scope initialiser needs bytes, `sizeof` |
 | `long double` | `sound` (M6), and 64-bit by design: the same type as `double`, as MSVC has it on x86-64. 80-bit arithmetic is in the refusals below |
-| hexadecimal floating constants (`0x1.8p3`) | `refused` - C99 6.4.4.2 has them and this reader does not, which is said rather than the digits read as an integer |
-| a float converted to `_Bool` | `refused` - `_Bool` holds 0 or 1, and no instruction conversion of 0.5 gives that |
 | `_Complex`, `_Imaginary`, `_Decimal*` | `refused` |
 | pointers, arrays, functions, declarations nested to any depth, grouped declarators (`int (*fp)(int)`, `int (*a)[3]`) | `sound` (M3.1, M3.3) |
 | `enum`, with constant enumerators | `sound` (M3.1) |
@@ -67,7 +65,9 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `sizeof` a VLA, `offsetof` | `planned` (with VLAs) |
 | compound literals, brace initialisers with C's brace elision | `sound` (M3.3) |
 | designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |
-| constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1) |
+| constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1); an *integer* constant expression is required where C asks for one, so `int a[1.5]` and `case 1.5:` are refused rather than read as the float's bits |
+| floating constants, including `f`/`l` suffixes and exponents | `partial` - decimal forms are read once into the type's bits; hexadecimal constants (`0x1.8p3`) are refused, which C99 6.4.4.2 requires and this reader does not do |
+| a float converted to `_Bool` | `refused` - `_Bool` holds 0 or 1, and no instruction conversion of 0.5 gives that |
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
@@ -91,7 +91,6 @@ These are decisions, not gaps: each one is a diagnostic with a note saying why.
 | refused | because |
 |---|---|
 | 80-bit `long double`, `_Complex`, `_Decimal` | the back end is SSE; 80-bit arithmetic would mean x87 and a second float model (ADR-001, decision 3) |
-| hexadecimal floating constants, a float converted to `_Bool` | not read and not lowered yet: a diagnostic each, not a guess |
 | `#include_next`, `#pragma pack`, `#pragma comment` | host and toolchain concerns; guessing is worse than saying no |
 | C++, GNU statement expressions, nested functions, `typeof`, `__attribute__` beyond a named few | the language is C99 (ADR-001, decision 4) |
 | any construct the front end cannot translate faithfully | miscompiling is not an option (CONSTRAINTS 3) |
