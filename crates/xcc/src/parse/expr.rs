@@ -116,6 +116,9 @@ impl Parser<'_> {
     ///
     /// The arms are read in blocks of their own, and their conversions are written back into the
     /// block that computed them - the join's type is not known until both arms have been read.
+    /// Both are read the same way whether or not the condition has code, because the folded value
+    /// is part of what the expression is: `int *p = 1 ? 0 : 0;` is a null pointer only if the
+    /// constant survives.
     pub(super) fn conditional_expression(&mut self) -> Option<Value> {
         let condition = self.binary_expression(0)?;
         let question = self.span();
@@ -123,56 +126,59 @@ impl Parser<'_> {
             return Some(condition);
         }
         self.require_scalar(&condition, "the condition of `?:`");
-        // A condition with code branches; one without - a constant, or no body being built -
-        // still reads both arms, for their diagnostics and for the value they fold to.
+        // Code is wanted unless there is none to want: a constant being folded, or an operand
+        // nothing evaluates.
         let branch_on = condition.cir.filter(|_| self.in_body());
-        let Some(branch_on) = branch_on else {
-            let constant = condition.constant;
-            let when_true = self.expression().map(|value| self.decay(value))?;
-            if !self.eat(":") {
-                self.error_at_current("expected `:`");
-                return None;
-            }
-            let when_false = self
-                .conditional_expression()
-                .map(|value| self.decay(value))?;
-            let ty = self.ternary_type(when_true, when_false, question);
-            let folded = match (when_true.constant, when_false.constant) {
-                (Some(t), Some(f)) => constant.map(|condition| if condition != 0 { t } else { f }),
-                (Some(t), None) if constant == Some(1) => Some(t),
-                (None, Some(f)) if constant == Some(0) => Some(f),
-                _ => None,
-            };
-            return Some(Value::new(ty, folded, false));
+        let (then_block, else_block) = if branch_on.is_some() {
+            (self.new_block(question), self.new_block(question))
+        } else {
+            (None, None)
         };
-        let then_block = self.new_block(question)?;
-        let else_block = self.new_block(question)?;
-        self.emit(|builder| {
-            builder.branch(
-                branch_on,
-                (then_block, Vec::new()),
-                (else_block, Vec::new()),
-                question,
-            )
-        });
-        self.switch_to(then_block);
+        if let (Some(condition), Some(then_block), Some(else_block)) =
+            (branch_on, then_block, else_block)
+        {
+            self.emit(|builder| {
+                builder.branch(
+                    condition,
+                    (then_block, Vec::new()),
+                    (else_block, Vec::new()),
+                    question,
+                )
+            });
+            self.switch_to(then_block);
+        }
         let when_true = self.expression().map(|value| self.decay(value))?;
         // The cursor after an arm is not always the block the arm started in: `a && b` and a
-        // nested `?:` leave it in their own join, and the arm's jump must leave from there.
-        let then_exit = self.current_block()?;
+        // nested `?:` leave it in their own join, and that is where the arm's jump leaves from.
+        let then_exit = self.current_block();
         if !self.eat(":") {
             self.error_at_current("expected `:`");
             return None;
         }
-        self.switch_to(else_block);
+        if let Some(else_block) = else_block {
+            self.switch_to(else_block);
+        }
         let when_false = self
             .conditional_expression()
             .map(|value| self.decay(value))?;
-        let else_exit = self.current_block()?;
+        let else_exit = self.current_block();
         let ty = self.ternary_type(when_true, when_false, question);
-        if self.types.is_error(ty) {
-            return Some(Value::new(ty, None, false));
+        let folded = match (when_true.constant, when_false.constant) {
+            (Some(t), Some(f)) => condition
+                .constant
+                .map(|condition| if condition != 0 { t } else { f }),
+            (Some(t), None) if condition.constant == Some(1) => Some(t),
+            (None, Some(f)) if condition.constant == Some(0) => Some(f),
+            _ => None,
+        };
+        if branch_on.is_none() || self.types.is_error(ty) {
+            return Some(Value::new(ty, folded, false));
         }
+        // A condition with code means a body, and a body means each arm ended in one of its
+        // blocks: no code path, no body, no exits - and this is the code path.
+        let (Some(then_exit), Some(else_exit)) = (then_exit, else_exit) else {
+            unreachable!("a branch condition has a body, so both arms end in blocks of it")
+        };
         // A `void` arm carries side effects and no value, so the join takes no parameter then.
         let void = matches!(self.types.kind(ty), Type::Void);
         let params: Vec<TypeId> = if void { Vec::new() } else { vec![ty] };
@@ -186,7 +192,7 @@ impl Parser<'_> {
                     Some(value) => Some(value),
                     // The arm already has a diagnostic of its own; a one-armed jump would only
                     // hide it, and the body is dropped either way.
-                    None => return Some(Value::new(ty, None, false)),
+                    None => return Some(Value::new(ty, folded, false)),
                 }
             };
             self.emit(|builder| builder.jump(join, carried.into_iter().collect(), question));
@@ -199,7 +205,7 @@ impl Parser<'_> {
                 .as_ref()
                 .map(|body| body.func.block(join).params[0])
         };
-        Some(Value::new(ty, None, false).with_cir(value))
+        Some(Value::new(ty, folded, false).with_cir(value))
     }
 
     /// The type of `a ? b : c` (C99 6.5.15): the common type of the two arms, which for

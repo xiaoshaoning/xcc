@@ -369,6 +369,8 @@ int twice(int x) { return host_double(x); }",
              int logical(int a, int b) { return (a && b) ? 1 : 2; }
              int pointer(int c) { int a[2]; int *p = c ? a : 0; return p == 0; }
              int merged(void) { return 1 ? 5 : 6; }
+             int middle(int a) { return a ? (a == 1 ? 10 : 20) : 30; }
+             int null_pointer(void) { int *p = 1 ? 0 : 0; return p == 0; }
              int side(int x) { int r = 0; x ? (r = 1) : (r = 2); return r; }
              void nothing(void) { }
              int no_value(int c) { c ? nothing() : nothing(); return c; }
@@ -381,10 +383,17 @@ int twice(int x) { return host_double(x); }",
              int called(int c) { return c ? helper(1) : helper(2); }",
         )
         .expect("it compiles");
+        // Two closures: calling a `void` function through `fn(i32)` would pass a register its
+        // signature does not have, and a signature mistake is exactly what a test must not hide.
         let call = |name: &str, argument: i32| -> i32 {
             let address = jit.function(name).expect("the function is there");
             let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
             function(argument)
+        };
+        let call_void = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
         };
         assert_eq!(call("pick", 1), 10);
         assert_eq!(call("pick", 0), 20);
@@ -394,20 +403,26 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("chain", 1), 10);
         assert_eq!(call("chain", 2), 20);
         assert_eq!(call("chain", 9), 30);
+        // The nested `?:` is the middle arm: its join is where the middle arm's jump leaves.
+        assert_eq!(call("middle", 1), 10);
+        assert_eq!(call("middle", 0), 30);
         assert_eq!(call("logical", 1), 1);
         assert_eq!(call("logical", 0), 2);
         assert_eq!(call("pointer", 1), 0);
         assert_eq!(call("pointer", 0), 1);
+        // The folded value survives the lowering, so a constant `?:` is still a null pointer
+        // constant in a body, as it is at file scope.
+        assert_eq!(call_void("null_pointer"), 1);
         assert_eq!(call("side", 1), 1);
         assert_eq!(call("side", 0), 2);
         assert_eq!(call("no_value", 7), 7);
         assert_eq!(call("wider", 0), 2);
         // A conditional expression in a declarator's size is read for its value only: no
         // branch and no blocks in the middle of the declaration, and two ints of storage.
-        assert_eq!(call("sized", 0), 8);
+        assert_eq!(call_void("sized"), 8);
         // `sizeof`'s operand is not evaluated (C99 6.5.3.4p2): `x` is still 0, and `sizeof`
         // is 4 whether or not the assignment in it looks like it ran.
-        assert_eq!(call("unevaluated", 0), 4);
+        assert_eq!(call_void("unevaluated"), 4);
         // Arms of pointer type: a literal's address, and the address of a local.
         assert_eq!(call("texts", 1), i32::from(b'a'));
         assert_eq!(call("texts", 0), i32::from(b'b'));
@@ -415,9 +430,7 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(call("addresses", 0), 0);
         assert_eq!(call("called", 1), 10);
         assert_eq!(call("called", 0), 20);
-        let address = jit.function("merged").expect("the function is there");
-        let merged: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
-        assert_eq!(merged(), 5);
+        assert_eq!(call_void("merged"), 5);
     }
 
     /// C99 6.3.1.8: the integer promotions come before the usual arithmetic conversions, so

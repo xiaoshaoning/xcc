@@ -78,6 +78,30 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `?:`, reviewed - 2026-11-16 - the folded value was dropped exactly where there was code
+
+The review of the `?:` commit. Two findings, one of them a real hole in the new lowering.
+
+1. **A constant `?:` stopped being a constant in a body.** `int *p = 1 ? 0 : 0;` was refused with
+   "cannot assign int to pointer", while the same spelling at file scope became the null pointer:
+   the lowering path returned `constant: None`, so the null pointer rule had nothing to see. C99
+   6.3.2.3p3's null pointer constant is *any* integer constant expression with the value zero, and
+   `1 ? 0 : 0` is one. The arms were read twice - once per path - and the fold had been written in
+   only one of them, which is how the two copies diverged. There is one flow now: the arms are read
+   in one place, the folded value is computed once, and only the lowering is gated on whether the
+   condition has code.
+2. **The test called `void` functions through `fn(i32)`.** `sized`, `unevaluated` and `merged` take
+   no parameters, and the test passed one anyway - harmless on Win64, and exactly the kind of
+   signature mistake a test exists to catch. Two closures now, one per signature.
+
+Checked and sound, no change needed: a condition of every width (`char`, `short`, `_Bool`,
+`unsigned`, `long long`), pointer arms (`&a`, `&b`, a literal's address), calls in both arms, a
+`void` arm, a `long` merge, `?:` in a declarator's size, a `?:` inside `sizeof`'s unevaluated
+operand, code after `return`, and a nested `?:` in the middle arm - the cursor rule applied to the
+arm the first test did not cover.
+
+142 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### `?:` - 2026-11-16 - two blocks and a join, and an operand that was being evaluated
 
 `?:` was read, typed and folded, and emitted nothing: `return a ? 1 : 2;` compiled to a trap. It is
