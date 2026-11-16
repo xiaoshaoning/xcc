@@ -1405,6 +1405,17 @@ block0 (entry)(v0: int, v1: int):
                 .expect("the object is a global");
             assert_eq!(global.init.as_deref(), Some(&wanted[..]), "{name}");
         }
+        // A `_Bool` at file scope holds 0 or 1, whatever constant it was given.
+        let (unit, _, diagnostics) = module("_Bool yes = 2; _Bool no = 0.0;");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        for (name, wanted) in [("yes", 1u8), ("no", 0u8)] {
+            let global = unit
+                .globals
+                .iter()
+                .find(|global| global.name == name)
+                .expect("the object is a global");
+            assert_eq!(global.init.as_deref(), Some(&[wanted][..]), "{name}");
+        }
         // A value that is not a constant is refused, not declared with no bytes at all.
         let (unit, names, _) = module("int f(void) { return 1; } int y = f();");
         let text = cir::dump::dump(&unit, &names);

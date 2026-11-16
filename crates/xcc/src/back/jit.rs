@@ -527,6 +527,49 @@ int twice(int x) { return host_double(x); }",
         );
     }
 
+    /// C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1. It used to be a narrowing
+    /// conversion, so `(_Bool)2` stored 2, `(_Bool)0.5` was refused, and a pointer was not
+    /// accepted at all - the three ways a narrowing conversion is the wrong rule.
+    #[test]
+    fn a_bool_holds_only_zero_or_one() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int from_int(void) { _Bool b = 2; return b; }
+             int from_zero(void) { _Bool b = 0; return b; }
+             int from_float(void) { _Bool b = 0.5; return b; }
+             int from_zero_float(void) { _Bool b = 0.0; return b; }
+             int from_nan(void) { double nan = 0.0 / 0.0; _Bool b = nan; return b; }
+             int from_pointer(void) { int x; _Bool b = &x; return b; }
+             int from_null(void) { int *p = 0; _Bool b = p; return b; }
+             int cast(int x) { return (_Bool)x; }
+             int added(void) { _Bool b = 1; return b + b; }
+             int negated(void) { _Bool b = 0; return !b; }
+             int size(void) { return sizeof(_Bool); }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("from_int"), 1);
+        assert_eq!(call("from_zero"), 0);
+        assert_eq!(call("from_float"), 1);
+        assert_eq!(call("from_zero_float"), 0);
+        // NaN is not zero, so it is true - and `fcvt_to_sint` of it would be undefined.
+        assert_eq!(call("from_nan"), 1);
+        assert_eq!(call("from_pointer"), 1);
+        assert_eq!(call("from_null"), 0);
+        let address = jit.function("cast").expect("the function is there");
+        let cast: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+        assert_eq!(cast(300), 1);
+        assert_eq!(cast(0), 0);
+        // A `_Bool` is promoted like any other narrow integer, so the arithmetic is `int`s.
+        assert_eq!(call("added"), 2);
+        assert_eq!(call("negated"), 1);
+        assert_eq!(call("size"), 1);
+    }
+
     /// C99 6.3.1.8: the integer promotions come before the usual arithmetic conversions, so
     /// `char + char` is `int + int` and cannot wrap at eight bits. It did: 120 + 121 came back
     /// as -15, because `usual_arithmetic` compared the two types without promoting either.

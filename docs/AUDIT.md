@@ -78,6 +78,33 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `_Bool` - 2026-11-16 - 0 or 1, by comparison rather than by truncation
+
+`_Bool` was converted to by *narrowing*: `_Bool b = 2;` stored 2, `_Bool b = 0.5;` was refused (no
+instruction conversion of a float to a one-byte integer gives 1), and a pointer was not assignable
+to one at all - three faces of the same wrong rule. C99 6.3.1.2 is a comparison: any scalar
+converted to `_Bool` is 0 if it equals zero and 1 otherwise.
+
+There is one `truth_value` now, a compare against zero with a `_Bool` result, and the back end's
+`widen_flag` takes the width of the *result's* type instead of assuming `int` - which is what makes
+a comparison produce a `_Bool` rather than an `int` the parser then lies about. The same
+comparison answers a float source (`(_Bool)0.5` is 1) and a NaN one (also 1, which is why a
+conversion was never the right shape: `fcvt_to_sint` of a NaN is undefined).
+
+Three smaller things fell out of it:
+
+- **`is_assignable` refused a pointer for `_Bool`**, because its `Bool` arm asked for *arithmetic*
+  on both sides. C99 6.3.1.2 says any *scalar*, so a pointer converts; `Types::is_scalar` is now
+  the one predicate for that, and `require_scalar` asks it too.
+- **The file-scope byte writer ignored the conversion.** `_Bool yes = 2;` was written as `02`, and
+  `int x = 1.5;` as the low four bytes of a double - the bytes path wrote a constant the store path
+  would have converted first. A `_Bool` leaf is 0 or 1 in `constant_bytes` now; the general float
+  case is refused, which it already was by the "cannot evaluate" rule.
+- **`constant_is_zero` moved to `Types`**, because "is this constant C's zero" is a fact about a
+  type and some bits, and the byte writer needs it as much as the parser does.
+
+145 unit, 18 parser, 11 CLI, crt, pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### the object budget - 2026-11-16 - a truncated frame is not a refusal
 
 The review of the floats commit left one finding unfixed: `int a[100000000000];` is a legal

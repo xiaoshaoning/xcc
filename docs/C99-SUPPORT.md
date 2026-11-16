@@ -67,7 +67,6 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |
 | constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1); an *integer* constant expression is required where C asks for one, so `int a[1.5]` and `case 1.5:` are refused rather than read as the float's bits |
 | floating constants, including `f`/`l` suffixes and exponents | `partial` - decimal forms are read once into the type's bits; hexadecimal constants (`0x1.8p3`) are refused, which C99 6.4.4.2 requires and this reader does not do |
-| a float converted to `_Bool` | `refused` - `_Bool` holds 0 or 1, and no instruction conversion of 0.5 gives that |
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |

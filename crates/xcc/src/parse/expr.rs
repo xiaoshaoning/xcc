@@ -634,7 +634,7 @@ impl Parser<'_> {
         if self.types.is_error(value.ty) {
             return;
         }
-        if !(self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty)) {
+        if !self.types.is_scalar(value.ty) {
             let ty = self.describe(value.ty);
             let span = self.span();
             self.error(span, format!("{what} must be a scalar, not {ty}"));

@@ -442,7 +442,8 @@ impl<M: Module> Lowerer<'_, M> {
                         CmpOp::GreaterEqual => ir::condcodes::FloatCC::GreaterThanOrEqual,
                     };
                     let flag = builder.ins().fcmp(code, left, right);
-                    Self::widen_flag(builder, values, *result, flag);
+                    let result_ty = self.machine_type(func.value(*result).ty)?;
+                    Self::widen_flag(builder, values, *result, result_ty, flag);
                     return Ok(());
                 }
                 let comparison = match (op, signed) {
@@ -460,7 +461,8 @@ impl<M: Module> Lowerer<'_, M> {
                     }
                 };
                 let flag = builder.ins().icmp(comparison, left, right);
-                Self::widen_flag(builder, values, *result, flag);
+                let result_ty = self.machine_type(func.value(*result).ty)?;
+                Self::widen_flag(builder, values, *result, result_ty, flag);
             }
             Inst::Unary {
                 result,
@@ -604,14 +606,20 @@ impl<M: Module> Lowerer<'_, M> {
         Ok(())
     }
 
-    /// A comparison produces a C `int`, so the flag becomes 0 or 1 in `int`'s width.
+    /// A comparison produces a flag; the C type of the result says how wide the 0 or 1 is - `int`
+    /// for a condition, `_Bool` for a conversion (which is already one byte).
     fn widen_flag(
         builder: &mut FunctionBuilder<'_>,
         values: &mut HashMap<cir::Value, ClValue>,
         result: cir::Value,
+        result_ty: ir::Type,
         flag: ClValue,
     ) {
-        let widened = builder.ins().uextend(ir::types::I32, flag);
+        let widened = if result_ty == ir::types::I8 {
+            flag
+        } else {
+            builder.ins().uextend(result_ty, flag)
+        };
         values.insert(result, widened);
     }
 

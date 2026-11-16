@@ -427,6 +427,25 @@ impl Types {
         self.is_integer(id) || self.is_float(id)
     }
 
+    /// Whether a constant of this type is C's zero: an integer 0, a null pointer, or a float
+    /// whose value is 0.0 - `-0.0` included, which the bits do not say on their own.
+    pub fn constant_is_zero(&self, ty: TypeId, bits: i64) -> bool {
+        if !self.is_float(ty) {
+            return bits == 0;
+        }
+        if self.size_of(ty) == Some(4) {
+            f32::from_bits(bits as u32) == 0.0
+        } else {
+            f64::from_bits(bits as u64) == 0.0
+        }
+    }
+
+    /// Whether a value of this type is a scalar: a number or a pointer (C99 6.2.5p21). What a
+    /// condition, a logical operator and a conversion to `_Bool` all accept.
+    pub fn is_scalar(&self, id: TypeId) -> bool {
+        self.is_arithmetic(id) || self.is_pointer(id)
+    }
+
     /// Integer promotion (C99 6.3.1.1): anything narrower than `int` becomes `int`. Every
     /// arithmetic operator does this to its operands first, so the rule lives with the
     /// conversions rather than with the parser that asks.
@@ -632,7 +651,9 @@ impl Types {
             return true;
         }
         match (self.kind(to), self.kind(from)) {
-            (Type::Bool, _) | (_, Type::Bool) => self.is_arithmetic(from) && self.is_arithmetic(to),
+            // C99 6.3.1.2: *any* scalar converts to `_Bool`, a pointer included.
+            (Type::Bool, _) => self.is_scalar(from),
+            (_, Type::Bool) => self.is_scalar(from),
             (Type::Int { .. } | Type::Float { .. }, _) => {
                 self.is_arithmetic(from) && self.is_arithmetic(to)
             }

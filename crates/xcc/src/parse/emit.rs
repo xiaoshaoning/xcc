@@ -66,20 +66,14 @@ impl Parser<'_> {
         }
     }
 
-    /// Whether a compile-time constant is C's *zero*: an integer 0, a null pointer, or a float
-    /// whose value is 0.0 - `-0.0` included, which `fcmp eq` also calls equal.
+    /// Whether a compile-time constant is C's *zero*, which is a question for the type arena:
+    /// an integer 0, a null pointer, or a float whose value is 0.0. A value with no constant is
+    /// not a known zero.
     pub(super) fn constant_is_zero(&self, value: &Value) -> bool {
         let Some(bits) = value.constant else {
             return false;
         };
-        if !self.types.is_float(value.ty) {
-            return bits == 0;
-        }
-        if self.types.size_of(value.ty) == Some(4) {
-            f32::from_bits(bits as u32) == 0.0
-        } else {
-            f64::from_bits(bits as u64) == 0.0
-        }
+        self.types.constant_is_zero(value.ty, bits)
     }
 
     /// Whether a value is a *null pointer constant*: an *integer* constant expression with the
@@ -87,6 +81,31 @@ impl Parser<'_> {
     /// not `constant_is_zero`.
     pub(super) fn null_pointer_constant(&self, value: &Value) -> bool {
         self.types.is_integer(value.ty) && value.constant == Some(0)
+    }
+
+    /// `value != 0` as a `_Bool`: the conversion C99 6.3.1.2 asks for, folded when the value is a
+    /// constant so that a file-scope `_Bool` gets its byte.
+    fn truth_value(&mut self, value: Value, span: Span) -> Value {
+        let bool_ty = self
+            .types
+            .fundamental("_Bool")
+            .unwrap_or_else(|| self.types.error());
+        let ty = value.ty;
+        let folded = value
+            .constant
+            .map(|_| i64::from(!self.constant_is_zero(&value)));
+        let zero = self.constant_of(ty, 0, span);
+        match (value.cir, zero.cir) {
+            (Some(value), Some(zero)) => {
+                match self
+                    .emit(|builder| builder.compare(cir::CmpOp::Ne, value, zero, ty, bool_ty, span))
+                {
+                    Some(cir) => Value::code(bool_ty, cir).with_constant(folded),
+                    None => Value::new(bool_ty, folded, false),
+                }
+            }
+            _ => Value::new(bool_ty, folded, false),
+        }
     }
 
     /// `value` compared with zero, as an `int` 0 or 1: `Ne` is what a condition branches on
@@ -146,6 +165,13 @@ impl Parser<'_> {
         // returns one.
         if self.types.is_pointer(wanted) && self.null_pointer_constant(&value) {
             return self.constant_of(wanted, 0, span);
+        }
+        // C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1, which is a *comparison*, not a
+        // narrowing conversion: `(_Bool)2` is 1, `(_Bool)0.5` is 1, and so is any NaN.
+        if matches!(self.types.kind(wanted), Type::Bool)
+            && (self.types.is_arithmetic(value.ty) || self.types.is_pointer(value.ty))
+        {
+            return self.truth_value(value, span);
         }
         let Some(source) = value.cir else {
             return Value::new(wanted, None, false);
@@ -331,10 +357,6 @@ impl Parser<'_> {
         }
         let from_float = self.types.is_float(from);
         let to_float = self.types.is_float(to);
-        // `_Bool` holds 0 or 1, and no instruction conversion of 0.5 gives 1.
-        if from_float && matches!(self.types.kind(to), Type::Bool) {
-            return None;
-        }
         match (from_float, to_float) {
             (true, true) => Some(if self.types.size_of(to)? >= self.types.size_of(from)? {
                 cir::ConvertOp::FloatExtend
