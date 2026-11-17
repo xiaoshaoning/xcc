@@ -78,6 +78,50 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M10: mem2reg - 2026-11-16 - 21% smaller, and the four bugs that got it there
+
+M10's first item, and the one the measuring stick said mattered most: the front end writes every
+local into a stack slot and reads it back, so a three-line function was a dozen loads and stores of
+values that never needed memory. `cir::pass::mem2reg` promotes the slots it can prove.
+
+**What it proves, and no more.** A slot is promoted when its address never escapes (every use of the
+address, or of any bitcast of it, is a load's or a store's `address`, or the next bitcast), when it
+has exactly one store, and when every load of it is dominated by that store *in the store's own
+type*. Anything else stays memory - including the case that needs a block parameter, a local
+assigned in a loop. Writing that ceiling down matters: half of the four bugs below were the pass
+promoting something it had not proven.
+
+**The four bugs, in the order they were found, all by measurement rather than review:**
+
+1. **A store whose address was a bitcast of an escaped slot was recorded as "the one store"** and
+   then removed, while the loads stayed: `struct P p; p.x = 3;` returned 10 where C says 34. The
+   escape analysis looked for the slot *value* in operands, and a bitcast of it is a different
+   value. It follows the chain now.
+2. **A store's value operand was treated as an address.** `int *p; p = &literal;` puts the slot's
+   address where someone else can read it - the definition of escaping - and the escape check
+   passed over it because it only asked whether the *instruction* was a load or a store.
+3. **A load of a different type was promoted.** `union U u; u.i = x; return u.c;` read the stored
+   `int` as the `char` it was loaded as: 101 where the byte is 68. Memory is exactly the mechanism
+   that makes a pun work, so a type mismatch vetoes the slot.
+4. **A replaced load could replace another load.** `int x = 42; int y = x;` mapped `y`'s load to
+   `x`'s load and then removed `x`'s: a use naming an instruction that no longer existed. The map
+   is resolved transitively before it is applied.
+
+**Two things came out of it that are theirs, not the pass's.** The verifier now checks that every
+value used is one a block still defines - the check that turned bugs 1 and 4 from a wrong answer
+into a message naming the value - and `address_within` no longer emits a walk of *zero* bytes for a
+leaf at offset 0: it was a multiply, an add and three bitcasts that meant "the same place", and
+mem2reg could not see the slot through them.
+
+**Measured, on the six-file corpus both ways:** 4857 -> **3822 bytes** of x64 code (-21%), and
+63 ms to compile the six instead of 72. Borland's 16-bit code stays at 1233, so the gap the stick
+measures narrowed from 3.9x to 3.1x - and the remaining difference is mostly register allocation,
+which is what the next pass is. The differential runner is unchanged at 412 ran, 8 refused, 0
+mismatched: the pass is sound on all 412 programs that run.
+
+173 unit, 23 parser, 19 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M9 reviewed - 2026-11-16 - a fixture nobody read, and a path the constraints said should not ship
 
 Review of `add5a70`: the measuring stick.

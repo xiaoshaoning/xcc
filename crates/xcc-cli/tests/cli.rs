@@ -73,8 +73,11 @@ fn explain_says_what_each_instruction_was_for() {
     // The function, the line it came from, the instruction C's rules added, and the registers.
     assert!(text.contains("function f"), "{text}");
     assert!(text.contains("return a + b;"), "{text}");
-    assert!(text.contains("v6 = sext char to int v4"), "{text}");
-    assert!(text.contains("v8 = add int v6, v7"), "{text}");
+    // The parameters are values already: mem2reg took the slot and the two loads away, so the
+    // conversions read `v0` and `v1` rather than two loads (M10).
+    assert!(text.contains("sext char to int v0"), "{text}");
+    assert!(text.contains("add int"), "{text}");
+    assert!(!text.contains("slot"), "{text}");
     assert!(text.contains("sextend.i32"), "{text}");
     // A mode of its own: no object is written.
     assert!(

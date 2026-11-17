@@ -345,7 +345,15 @@ The reason `--target=dos16` stays. It is a measuring stick, not a product.
 The milestone that makes "one day stand in for gcc/clang" a statement about code rather than
 ambition. Nothing here starts before M6 is solid, and nothing here may change the front end:
 
-- [ ] SSA construction over `cir` and `mem2reg`; a verifier and per-pass fixtures.
+- [~] SSA construction over `cir` and `mem2reg`; a verifier and per-pass fixtures.
+      **`mem2reg` is in** (`crates/xcc/src/cir/pass`): a slot whose address never escapes, is
+      stored exactly once, and whose every load that store dominates in the same type, becomes
+      values. Measured on the six-file corpus: **4857 -> 3822 bytes of x64 code, 21% smaller**, and
+      63 ms to compile instead of 72. What is *not* there is the case that needs a block parameter -
+      a local assigned in a loop, which the pass leaves as memory rather than half-promoting. That
+      is the dominance-frontier algorithm, and it is the next step, not a different design. The
+      verifier grew the check that caught this pass's first bugs: every value used must be one a
+      block still defines.
 - [ ] Passes, in the order Borland's own back end had them and this project can measure them:
       constant folding and propagation, DCE, GVN/CSE, jump and branch threading, cross-jumping
       (tail merging, the one borland-reborn documents in detail), loop rotation, strength

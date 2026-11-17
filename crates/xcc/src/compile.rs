@@ -148,13 +148,32 @@ impl Compile {
             return Err(Diagnostics::new(items, sources));
         }
 
+        // The passes, before either lowering sees the module: one `cir` in, one optimized `cir`
+        // out, so an object and a JIT run the same code (M10).
+        let mut module = parsed.module;
+        let _changes = crate::cir::pass::optimise(&mut module);
+        debug_assert!(
+            module
+                .funcs
+                .iter()
+                .all(|func| func.verify(&module.types).is_ok()),
+            "a pass must leave every function verifying: {}",
+            module
+                .funcs
+                .iter()
+                .filter_map(|func| func.verify(&module.types).err())
+                .map(|broken| broken.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+
         // A module with no function is a translation unit of declarations only: nothing to
         // lower, and an object is still what the caller asked for.
         let mut explained = None;
-        let object = if parsed.module.funcs.is_empty() {
+        let object = if module.funcs.is_empty() {
             Vec::new()
         } else {
-            match crate::back::object(&parsed.module, preprocessed.names(), explain) {
+            match crate::back::object(&module, preprocessed.names(), explain) {
                 Ok(lowered) => {
                     explained =
                         explain.then(|| crate::explain::render(&lowered.explained, &sources));

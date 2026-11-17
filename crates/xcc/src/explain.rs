@@ -84,7 +84,10 @@ mod tests {
         // The function, the source line, its instruction, and the registers the back end chose.
         assert!(text.contains("function add"), "{text}");
         assert!(text.contains("     2 |     return a + b;"), "{text}");
-        assert!(text.contains("v6 = add int v4, v5"), "{text}");
+        // The parameters are values already: mem2reg took the slots and their loads away, so the
+        // addition is of `v0` and `v1` rather than of two loads (M10).
+        assert!(text.contains("add int v0, v1"), "{text}");
+        assert!(!text.contains("slot"), "{text}");
         assert!(text.contains("  cranelift:"), "{text}");
         assert!(text.contains("iadd"), "{text}");
     }
@@ -99,11 +102,15 @@ mod tests {
              \x20   return s;\n\
              }\n",
         );
+        // Two instructions on one line: printed once. (`return s;` is a line that emits nothing
+        // once `s` is a value, which is why it is not what this test counts.)
         assert_eq!(text.matches("s = a * b + c;").count(), 1, "{text}");
-        assert_eq!(text.matches("return s;").count(), 1, "{text}");
-        assert!(text.contains("v10 = mul int v8, v9"), "{text}");
-        assert!(text.contains("v12 = add int v10, v11"), "{text}");
-        assert!(text.contains("store v12, v6"), "{text}");
+        assert!(text.contains("mul int"), "{text}");
+        assert!(text.contains("add int"), "{text}");
+        // `s` is stored once and read after, so it is a value: no slot, no load, no store.
+        for gone in ["slot", "load", "store"] {
+            assert!(!text.contains(gone), "{gone} survived: {text}");
+        }
     }
 
     #[test]
@@ -115,8 +122,8 @@ mod tests {
              \x20   return a + b;\n\
              }\n",
         );
-        assert!(text.contains("v6 = sext char to int v4"), "{text}");
-        assert!(text.contains("v8 = add int v6, v7"), "{text}");
+        assert!(text.contains("sext char to int"), "{text}");
+        assert!(text.contains("add int"), "{text}");
         // And what the back end made of each: the C-level sign extension is one instruction.
         assert!(text.contains("sextend.i32"), "{text}");
     }

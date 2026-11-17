@@ -18,6 +18,7 @@
 use crate::diag::Span;
 use crate::intern::Symbol;
 pub mod dump;
+pub mod pass;
 
 use crate::types::{TypeId, Types};
 
@@ -314,6 +315,39 @@ pub enum Inst {
 }
 
 impl Inst {
+    /// The values this instruction reads, in order: the same list [`used_values`] gives the
+    /// verifier, so a pass and the checker cannot disagree about what an operand is.
+    pub(crate) fn operands(&self) -> Vec<Value> {
+        used_values(self)
+    }
+
+    /// Rewrite the values this instruction reads; its own result is untouched.
+    fn rewrite_values(&mut self, rewrite: &mut impl FnMut(Value) -> Value) {
+        match self {
+            Inst::Load { address, .. } => *address = rewrite(*address),
+            Inst::Store { address, value, .. } => {
+                *address = rewrite(*address);
+                *value = rewrite(*value);
+            }
+            Inst::Binary { left, right, .. } => {
+                *left = rewrite(*left);
+                *right = rewrite(*right);
+            }
+            Inst::Compare { left, right, .. } => {
+                *left = rewrite(*left);
+                *right = rewrite(*right);
+            }
+            Inst::Unary { value, .. } | Inst::Convert { value, .. } => *value = rewrite(*value),
+            Inst::Call { callee, args, .. } => {
+                *callee = rewrite(*callee);
+                for arg in args {
+                    *arg = rewrite(*arg);
+                }
+            }
+            Inst::Slot { .. } | Inst::Const { .. } | Inst::GlobalAddress { .. } => {}
+        }
+    }
+
     /// The value this instruction defines, if it defines one.
     pub fn result(&self) -> Option<Value> {
         match self {
@@ -343,6 +377,39 @@ impl Inst {
             | Inst::Const { span, .. }
             | Inst::Call { span, .. }
             | Inst::GlobalAddress { span, .. } => *span,
+        }
+    }
+}
+
+impl Term {
+    /// Rewrite the values this terminator reads; a target's parameters are untouched.
+    fn rewrite_values(&mut self, rewrite: &mut impl FnMut(Value) -> Value) {
+        match self {
+            Term::Return { value, .. } => {
+                if let Some(value) = value {
+                    *value = rewrite(*value);
+                }
+            }
+            Term::Jump { args, .. } => {
+                for arg in args {
+                    *arg = rewrite(*arg);
+                }
+            }
+            Term::Branch {
+                condition,
+                then,
+                otherwise,
+                ..
+            } => {
+                *condition = rewrite(*condition);
+                for arg in &mut then.1 {
+                    *arg = rewrite(*arg);
+                }
+                for arg in &mut otherwise.1 {
+                    *arg = rewrite(*arg);
+                }
+            }
+            Term::Unreachable { .. } => {}
         }
     }
 }
@@ -482,7 +549,9 @@ impl Func {
         self.blocks[self.entry.0 as usize].span
     }
 
-    fn mint(&mut self, ty: TypeId, block: Block) -> Value {
+    /// A fresh value of `ty` defined in `block`: what a pass makes when it needs one (the builder
+    /// is the usual caller, and a pass is the other).
+    pub(crate) fn mint(&mut self, ty: TypeId, block: Block) -> Value {
         let value = Value(self.values.len() as u32);
         self.values.push(ValueDef { ty, block });
         value
@@ -832,7 +901,47 @@ impl Func {
     ///
     /// This is a compiler-bug detector: it runs in debug builds and in tests, never on a
     /// compilation's path.
+    /// Rewrite every value this function uses: `rewrite` sees each operand of each instruction
+    /// and each terminator and answers what it should be instead. A pass's whole job, in one call.
+    pub(crate) fn rewrite_values(&mut self, rewrite: &mut impl FnMut(Value) -> Value) {
+        for block in &mut self.blocks {
+            for inst in &mut block.insts {
+                inst.rewrite_values(rewrite);
+            }
+            if let Some(term) = &mut block.term {
+                term.rewrite_values(rewrite);
+            }
+        }
+    }
+
     pub fn verify(&self, types: &Types) -> Result<(), Broken> {
+        // Every value used must be one a block still defines. A pass can remove an instruction and
+        // leave a use behind, and nothing else notices until the back end asks `values` for it.
+        let mut defined: Vec<bool> = vec![false; self.values.len()];
+        for block in &self.blocks {
+            for param in &block.params {
+                defined[param.0 as usize] = true;
+            }
+            for inst in &block.insts {
+                if let Some(result) = inst.result() {
+                    defined[result.0 as usize] = true;
+                }
+            }
+        }
+        for block in &self.blocks {
+            let mut uses: Vec<Value> = block.insts.iter().flat_map(Inst::operands).collect();
+            if let Some(term) = &block.term {
+                uses.extend(term_operands(term));
+            }
+            for value in uses {
+                if !defined.get(value.0 as usize).copied().unwrap_or(false) {
+                    return Err(Broken::new(format!(
+                        "v{} is used but no instruction defines it",
+                        value.0
+                    )));
+                }
+            }
+        }
         for (index, block) in self.blocks.iter().enumerate() {
             let here = Block(index as u32);
             if block.term.is_none() {
@@ -1052,6 +1161,14 @@ impl Func {
         }
     }
 
+    /// Whether every path from the entry to `of` passes through `through`.
+    ///
+    /// The verifier asks this about every use, and a pass asks it before replacing a load with the
+    /// value a store put there: a value is only the one a load sees if its block dominates.
+    pub(crate) fn dominates(&self, through: Block, of: Block) -> bool {
+        self.dominators()[of.0 as usize][through.0 as usize]
+    }
+
     /// The blocks that every path from the entry to a block must pass through.
     fn dominators(&self) -> Vec<Vec<bool>> {
         let count = self.blocks.len();
@@ -1157,6 +1274,28 @@ impl Func {
     }
 }
 
+/// Every value a terminator reads.
+fn term_operands(term: &Term) -> Vec<Value> {
+    match term {
+        Term::Return { value, .. } => value.iter().copied().collect(),
+        Term::Jump { args, .. } => args.clone(),
+        Term::Branch {
+            condition,
+            then,
+            otherwise,
+            ..
+        } => {
+            let mut values = vec![*condition];
+            values.extend(then.1.iter().copied());
+            values.extend(otherwise.1.iter().copied());
+            values
+        }
+        Term::Unreachable { .. } => Vec::new(),
+    }
+}
+
+/// Every value an instruction reads, in a fixed order: the verifier walks them, and a pass
+/// rewrites them, and both must agree on what "the operands" are.
 fn used_values(inst: &Inst) -> Vec<Value> {
     match inst {
         Inst::Load { address, .. } => vec![*address],

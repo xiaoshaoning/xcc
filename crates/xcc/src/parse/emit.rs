@@ -303,6 +303,18 @@ impl Parser<'_> {
         let bytes = self.pointer_to(char);
         let pointer = self.pointer_to(leaf);
         let from = self.pointer_to(object);
+        // Nothing to walk: a leaf at offset zero *is* the object, and its address is the object's
+        // address once the type says so. Emitting a walk of zero bytes - a multiply, an add and
+        // three bitcasts - was six instructions that meant "the same place", and mem2reg could not
+        // see the slot through them (M10).
+        if offset == 0 {
+            if self.types.same(object, leaf) {
+                return Some(base);
+            }
+            return self.emit(|builder| {
+                builder.convert(cir::ConvertOp::Bitcast, base, from, pointer, span)
+            });
+        }
         let address = Value::new(from, None, false).with_cir(Some(base));
         let index = self.constant_of(int, offset as i64, span);
         let walked = self.pointer_walk(bytes, address, index, true, span);
