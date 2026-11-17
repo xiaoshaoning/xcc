@@ -1818,6 +1818,7 @@ impl Parser<'_> {
         self.label_blocks.clear();
         self.gotos.clear();
         self.targets.clear();
+        self.blocks_reported.clear();
         let span = self.span();
         let params = std::mem::take(&mut self.last_parameters);
         let Some(name) = name else {

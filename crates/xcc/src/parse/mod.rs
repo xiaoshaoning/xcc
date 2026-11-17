@@ -57,6 +57,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         current_function: None,
         switches: Vec::new(),
         labels: HashMap::new(),
+        blocks_reported: std::collections::HashSet::new(),
         label_blocks: HashMap::new(),
         gotos: Vec::new(),
         last_parameters: Vec::new(),
@@ -221,6 +222,9 @@ struct Parser<'a> {
     /// The labels defined in the function being read, function-scoped (C99 6.2.1p4), and the
     /// `goto`s that are still waiting for one.
     labels: HashMap<Symbol, Span>,
+    /// Whether the block budget of the function being read has already been reported: a source
+    /// over it makes hundreds of blocks in a row, and one diagnostic is the answer, not one each.
+    blocks_reported: std::collections::HashSet<()>,
     /// Where a label's code starts. Whichever of the label and a `goto` to it comes first
     /// creates the block; the other one switches to it.
     label_blocks: HashMap<Symbol, cir::Block>,

@@ -61,6 +61,15 @@ pub struct Budgets {
     /// How deep declarators and expressions may nest: the parser is recursive descent, so a
     /// limit on the input is a limit on the stack (CONSTRAINTS 5).
     pub max_nesting: usize,
+    /// The most basic blocks one function may have.
+    ///
+    /// The dominator analysis is a matrix of `blocks x blocks` and is asked three times per
+    /// function - the verifier's dominance check, `mem2reg`'s blockchain and the back end's
+    /// lowering order - so work grows with the square of the count. A function with forty thousand
+    /// blocks (which hostile input produces in one line) took longer than two minutes before this
+    /// limit; a real function has hundreds. The default leaves room for a machine-generated one and
+    /// keeps the matrix at 16 MiB.
+    pub max_blocks: usize,
     /// The largest object, in bytes, one declaration may ask for. A frame slot is a `u32` in the
     /// back end, so an object past this is truncated rather than refused; the default is small
     /// enough to catch that and large enough for the globals a JIT'ed module plausibly holds, and
@@ -77,6 +86,7 @@ impl Default for Budgets {
             max_tokens: 1 << 20,
             max_include_depth: 32,
             max_nesting: 256,
+            max_blocks: 4096,
             max_object_bytes: 64 << 20,
         }
     }
@@ -123,6 +133,7 @@ mod tests {
         assert_eq!(options.budgets.max_tokens, 1 << 20);
         assert_eq!(options.budgets.max_include_depth, 32);
         assert_eq!(options.budgets.max_nesting, 256);
+        assert_eq!(options.budgets.max_blocks, 4096);
         assert_eq!(options.budgets.max_object_bytes, 64 << 20);
         assert!(options.defines.is_empty() && options.undefines.is_empty());
         assert_eq!(options.stamp, Stamp::epoch());

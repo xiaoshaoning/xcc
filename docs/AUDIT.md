@@ -78,6 +78,41 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### mem2reg with parameters reviewed - 2026-11-16 - the quadratic that was hiding behind a comment
+
+Review of `915dd96`: block parameters in `mem2reg`, and the dominator order the back end needed.
+
+**Found: the verifier's dominator analysis was `O(blocks^3)` and ran on every compile.** It built an
+`n x n` matrix by iterating to a fixpoint, and since the passes started verifying in the compile path
+it ran for every function. Measured on 20000 `if` statements: **longer than two minutes**, i.e. a
+denial of service in one line of input. Two separate faults, both mine: the algorithm, and the fact
+that nothing bounds how many blocks a function may have.
+
+**Fixed two ways, because they are two problems.** `cir` computes dominators by Cooper-Harvey-Kennedy
+now - one `Vec<Option<Block>>`, a handful of passes over the blocks in reverse postorder - and
+`dominates` walks that chain instead of consulting a matrix. And `Budgets::max_blocks` (4096) refuses
+a function past the size where the polynomial matters, with a diagnostic that says what the limit is
+for. Measured after: the 20000-`if` function is refused in a second, and a thousand `if`s (2000
+blocks, inside the budget) compiles in 3.4 s where it took 16.2 s.
+
+**Found in passing: `dominates` recomputed the tree per call.** My first version of the new API did
+`self.dominator_tree()` inside `dominates`, and the verifier calls it once per use - so the fix above
+would have been quadratic in *uses* instead of in *blocks*. The verifier threads one tree through
+every check now (`dominates_with`), and the public shape keeps the convenient one-call version for
+callers that ask once.
+
+**Checked and sound:** the CHK implementation against the old matrix for every function in the corpus
+- the differential runner would have caught a wrong dominator (it changes what `mem2reg` may
+promote), and it is unchanged at 412 ran, 8 refused, 0 mismatched; the code sizes are unchanged too
+(3281 bytes at level 0, 1981 at level 1, Borland's 1233), which says the rewrite is a change of
+algorithm and not of answers; the entry block can never receive a parameter, because a block the
+entry dominates has the entry as its immediate dominator and the frontier walk stops there; and
+`feed` leaves an argument out rather than inventing one, so a missing edge argument is a verifier
+error and not a wrong program.
+
+174 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10: mem2reg with block parameters - 2026-11-16 - the dataflow that could not see a loop, and the lowering order that had never been tested
 
 `mem2reg` promoted only slots written once, which left every loop counter and accumulator in memory -

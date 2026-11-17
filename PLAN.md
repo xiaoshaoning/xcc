@@ -353,7 +353,10 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       pin what it proves and what it leaves (an escaping address, a pun through a union, a load with
       no value), and the verifier grew the check that caught its first bugs: every value used must
       be one a block still defines. The back end also lowers blocks in dominator order now, which
-      SSA needs and the parser's own numbering never promised.
+      SSA needs and the parser's own numbering never promised - and `cir` computes dominators by
+      Cooper-Harvey-Kennedy (one array, not a matrix), because the verifier, `mem2reg` and the back
+      end each ask. A function past `Budgets::max_blocks` (4096) is refused: everything downstream
+      is polynomial in blocks, and measuring a thousand `if`s at sixteen seconds was the alternative.
 - [ ] Passes, in the order Borland's own back end had them and this project can measure them:
       constant folding and propagation, DCE, GVN/CSE, jump and branch threading, cross-jumping
       (tail merging, the one borland-reborn documents in detail), loop rotation, strength

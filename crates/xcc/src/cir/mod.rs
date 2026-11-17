@@ -960,25 +960,25 @@ impl Func {
             }
         }
         // Dominance: a value must be defined in a block that every path to the use goes
-        // through. Computed once, then used by every check below.
-        let dominators = self.dominators();
+        // through. The tree is computed once for the whole function and walked by each check.
+        let idom = self.dominator_tree();
         for (index, block) in self.blocks.iter().enumerate() {
             let here = Block(index as u32);
             for inst in &block.insts {
                 for used in used_values(inst) {
-                    self.check_dominates(&dominators, here, used, types)?;
+                    self.check_dominates(&idom, here, used, types)?;
                 }
             }
             match block.term.as_ref().expect("checked above") {
                 Term::Return { value, .. } => {
                     if let Some(value) = value {
-                        self.check_dominates(&dominators, here, *value, types)?;
+                        self.check_dominates(&idom, here, *value, types)?;
                     }
                 }
                 Term::Jump { target, args, .. } => {
-                    self.check_arguments(&dominators, here, *target, args, types)?;
+                    self.check_arguments(*target, args, types)?;
                     for arg in args {
-                        self.check_dominates(&dominators, here, *arg, types)?;
+                        self.check_dominates(&idom, here, *arg, types)?;
                     }
                 }
                 Term::Branch {
@@ -987,7 +987,7 @@ impl Func {
                     otherwise,
                     ..
                 } => {
-                    self.check_dominates(&dominators, here, *condition, types)?;
+                    self.check_dominates(&idom, here, *condition, types)?;
                     if !types.is_integer(self.value(*condition).ty)
                         && !types.is_pointer(self.value(*condition).ty)
                     {
@@ -996,9 +996,9 @@ impl Func {
                         )));
                     }
                     for (target, args) in [then, otherwise] {
-                        self.check_arguments(&dominators, here, *target, args, types)?;
+                        self.check_arguments(*target, args, types)?;
                         for arg in args {
-                            self.check_dominates(&dominators, here, *arg, types)?;
+                            self.check_dominates(&idom, here, *arg, types)?;
                         }
                     }
                 }
@@ -1162,70 +1162,137 @@ impl Func {
     }
 
     /// The immediate dominator of every block: the closest block that dominates it, or `None` for
-    /// the entry. A pass that places block parameters (mem2reg) needs the tree, not just the
-    /// relation.
-    pub(crate) fn dominator_tree(&self) -> Vec<Option<Block>> {
-        let dominators = self.dominators();
-        // How many blocks dominate each one: depth in the tree, which is how "closest" is decided.
-        let depth: Vec<usize> = (0..self.blocks.len())
-            .map(|block| {
-                (0..self.blocks.len())
-                    .filter(|other| dominators[block][*other])
-                    .count()
-            })
-            .collect();
-        (0..self.blocks.len())
-            .map(|block| {
-                if Block(block as u32) == self.entry {
-                    return None;
-                }
-                (0..self.blocks.len())
-                    .filter(|other| *other != block && dominators[block][*other])
-                    .max_by_key(|other| depth[*other])
-                    .map(|other| Block(other as u32))
-            })
-            .collect()
-    }
-
-    /// Whether every path from the entry to `of` passes through `through`.
+    /// the entry.
     ///
-    /// The verifier asks this about every use, and a pass asks it before replacing a load with the
-    /// value a store put there: a value is only the one a load sees if its block dominates.
-    pub(crate) fn dominates(&self, through: Block, of: Block) -> bool {
-        self.dominators()[of.0 as usize][through.0 as usize]
-    }
-
-    /// The blocks that every path from the entry to a block must pass through.
-    fn dominators(&self) -> Vec<Vec<bool>> {
-        let count = self.blocks.len();
-        let mut dominators = vec![vec![true; count]; count];
-        dominators[self.entry.0 as usize] = (0..count).map(|b| b == 0).collect();
+    /// Cooper, Harvey and Kennedy's iterative algorithm: walk the blocks in reverse postorder,
+    /// and for each ask what its predecessors' dominators have in common. It needs one `Vec<Option>`
+    /// where the textbook formulation needs an `n x n` matrix, and it converges in a couple of
+    /// passes for real code - which matters, because this is asked by the verifier, by `mem2reg` and
+    /// by the back end, on every block of every function.
+    pub(crate) fn dominator_tree(&self) -> Vec<Option<Block>> {
+        let order = self.reverse_postorder();
+        // Postorder numbers: a block's number is smaller than its predecessors' while the tree is
+        // being built, which is what makes "the common dominator of two blocks" a walk upwards.
+        let mut postorder = vec![0usize; self.blocks.len()];
+        for (number, block) in order.iter().rev().enumerate() {
+            postorder[block.0 as usize] = number;
+        }
+        let mut idom: Vec<Option<Block>> = vec![None; self.blocks.len()];
+        idom[self.entry.0 as usize] = Some(self.entry);
+        let intersect = |idom: &Vec<Option<Block>>, mut a: Block, mut b: Block| -> Block {
+            while a != b {
+                while postorder[a.0 as usize] < postorder[b.0 as usize] {
+                    a = idom[a.0 as usize].unwrap_or(a);
+                }
+                while postorder[b.0 as usize] < postorder[a.0 as usize] {
+                    b = idom[b.0 as usize].unwrap_or(b);
+                }
+            }
+            a
+        };
         let mut changed = true;
         while changed {
             changed = false;
-            for block in 0..count {
-                if block == self.entry.0 as usize {
+            for block in &order {
+                if *block == self.entry {
                     continue;
                 }
-                let mut next = vec![true; count];
-                for (index, _) in self.blocks.iter().enumerate().filter(|(index, _)| {
-                    self.successors(Block(*index as u32))
-                        .contains(&Block(block as u32))
-                }) {
-                    for (target, seen) in next.iter_mut().enumerate() {
-                        *seen = *seen && dominators[index][target];
-                    }
+                let mut predecessors = self
+                    .predecessors(*block)
+                    .into_iter()
+                    .filter(|other| idom[other.0 as usize].is_some());
+                let Some(first) = predecessors.next() else {
+                    continue;
+                };
+                let mut new = first;
+                for other in predecessors {
+                    new = intersect(&idom, other, new);
                 }
-                // A block always dominates itself (the usual formulation is
-                // `{b} | intersection of its predecessors`).
-                next[block] = true;
-                if next != dominators[block] {
-                    dominators[block] = next;
+                if idom[block.0 as usize] != Some(new) {
+                    idom[block.0 as usize] = Some(new);
                     changed = true;
                 }
             }
         }
-        dominators
+        // The entry's own dominator is nothing, not itself: its callers ask "what dominates this
+        // block" and the entry is the end of the chain.
+        idom[self.entry.0 as usize] = None;
+        idom
+    }
+
+    /// Whether every path from the entry to `of` passes through `through`.
+    ///
+    /// The verifier asks this about every use, so it walks the dominator chain - short for real
+    /// code - rather than consulting a matrix.
+    pub(crate) fn dominates(&self, through: Block, of: Block) -> bool {
+        self.dominates_with(&self.dominator_tree(), through, of)
+    }
+
+    /// The same, with the tree already computed: the verifier asks this for every use of every
+    /// value, and computing the tree per question would be quadratic in the number of uses.
+    fn dominates_with(&self, idom: &[Option<Block>], through: Block, of: Block) -> bool {
+        if through == of {
+            return true;
+        }
+        let mut block = of;
+        let mut steps = 0;
+        loop {
+            match idom[block.0 as usize] {
+                Some(next) if next == through => return true,
+                Some(next) if next != block => {
+                    block = next;
+                    steps += 1;
+                    if steps > self.blocks.len() {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    /// Every block reachable from the entry, in an order where each comes after the blocks that
+    /// dominate it.
+    fn reverse_postorder(&self) -> Vec<Block> {
+        let mut visited = vec![false; self.blocks.len()];
+        let mut postorder = Vec::new();
+        let mut stack: Vec<(Block, bool)> = vec![(self.entry, false)];
+        while let Some((block, done)) = stack.pop() {
+            if done {
+                postorder.push(block);
+                continue;
+            }
+            if visited[block.0 as usize] {
+                continue;
+            }
+            visited[block.0 as usize] = true;
+            stack.push((block, true));
+            for successor in self.successors(block).into_iter().rev() {
+                if !visited[successor.0 as usize] {
+                    stack.push((successor, false));
+                }
+            }
+        }
+        postorder.reverse();
+        postorder
+    }
+
+    /// The blocks that jump to `block`.
+    fn predecessors(&self, block: Block) -> Vec<Block> {
+        let mut found = Vec::new();
+        for (index, other) in self.blocks.iter().enumerate() {
+            let into = match &other.term {
+                Some(Term::Jump { target, .. }) => *target == block,
+                Some(Term::Branch {
+                    then, otherwise, ..
+                }) => then.0 == block || otherwise.0 == block,
+                _ => false,
+            };
+            if into {
+                found.push(Block(index as u32));
+            }
+        }
+        found
     }
 
     fn successors(&self, block: Block) -> Vec<Block> {
@@ -1240,7 +1307,7 @@ impl Func {
 
     fn check_dominates(
         &self,
-        dominators: &[Vec<bool>],
+        idom: &[Option<Block>],
         here: Block,
         value: Value,
         types: &Types,
@@ -1252,7 +1319,7 @@ impl Func {
             )));
         }
         let definition = self.value(value).block;
-        if !dominators[here.0 as usize][definition.0 as usize] {
+        if !self.dominates_with(idom, definition, here) {
             return Err(Broken::new(format!(
                 "v{} is defined in block {} and used in block {} which it does not dominate",
                 value.0, definition.0, here.0
@@ -1267,14 +1334,7 @@ impl Func {
         Ok(())
     }
 
-    fn check_arguments(
-        &self,
-        dominators: &[Vec<bool>],
-        here: Block,
-        target: Block,
-        args: &[Value],
-        types: &Types,
-    ) -> Result<(), Broken> {
+    fn check_arguments(&self, target: Block, args: &[Value], types: &Types) -> Result<(), Broken> {
         let params = &self.blocks[target.0 as usize].params;
         if args.len() != params.len() {
             return Err(Broken::new(format!(
@@ -1294,8 +1354,6 @@ impl Func {
                 )));
             }
         }
-        let _ = dominators;
-        let _ = here;
         Ok(())
     }
 }

@@ -132,8 +132,22 @@ impl Parser<'_> {
     }
 
     /// A block to jump to, when code is being built.
+    ///
+    /// The count is a budget because everything after the parser is quadratic in it: the dominator
+    /// matrix is `blocks x blocks`, and the verifier, `mem2reg` and the back end each ask it.
     pub(super) fn new_block(&mut self, span: Span) -> Option<cir::Block> {
-        Some(self.body.as_mut()?.func.append_empty(span))
+        let body = self.body.as_mut()?;
+        let limit = self.budgets.max_blocks;
+        if body.func.blocks.len() >= limit {
+            if self.blocks_reported.insert(()) {
+                self.error(
+                    span,
+                    format!("a function of more than {limit} basic blocks is past what this compiler analyses: its dominator work grows with the square of the count"),
+                );
+            }
+            return None;
+        }
+        Some(body.func.append_empty(span))
     }
 
     /// Leave the current block for `target`.
