@@ -78,7 +78,7 @@ impl Jit {
     pub fn add_source(&mut self, source: &str) -> Result<(), String> {
         let file = SourceFile::new("<jit>", source);
         let options = Options::default();
-        let preprocessed = preprocess(&file, &options, &());
+        let preprocessed = preprocess(&file, &options, &crate::headers::Headers::new(Box::new(())));
         // Both stages report the same way, and every error is reported: a host fixing one
         // mistake at a time is a host that recompiles once per mistake.
         let mut errors: Vec<String> = Vec::new();
@@ -157,6 +157,43 @@ mod tests {
         };
         assert_eq!(call("read_first"), 5);
         assert_eq!(call("read_second"), 7);
+    }
+
+    /// The headers ship with the compiler: `--run` - which gives no host files at all - can still
+    /// `#include <stddef.h>`, and `offsetof` answers from the layout instead of from C's own
+    /// pointer expression, which this compiler cannot fold.
+    #[test]
+    fn the_headers_ship_with_the_compiler() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "#include <stddef.h>
+             #include <stdint.h>
+             #include <stdbool.h>
+             #include <limits.h>
+             struct S { char c; int i; struct S *next; };
+             int sizes(void) {
+                 size_t whole = sizeof(struct S);
+                 return (int)whole * 100 + (int)offsetof(struct S, i) * 10
+                      + (int)offsetof(struct S, next) - (int)offsetof(struct S, next);
+             }
+             int widths(void) {
+                 uint8_t small = UINT8_MAX;
+                 int16_t narrow = INT16_MIN;
+                 bool yes = true;
+                 return (int)small + (int)(narrow + 32768) + (yes ? 1 : 0) + CHAR_BIT;
+             }",
+        )
+        .expect("the headers compile");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        // `struct S` is a char, padding, an int, padding, a pointer: 16 bytes on this ABI, and
+        // the int is at 4.
+        assert_eq!(call("sizes"), 16 * 100 + 4 * 10);
+        // UINT8_MAX + (INT16_MIN + 32768) + true + CHAR_BIT.
+        assert_eq!(call("widths"), 255 + 1 + 8);
     }
 
     /// A function calling another one in the same unit, through the address the emitter mints.

@@ -6,11 +6,12 @@
 //! Everything is a subprocess, so a crash in one program is a result for that program and not the
 //! end of the run, and a hang is killed after a few seconds and reported as a difference.
 //!
-//! What is left out, and why: a program that `#include`s anything (there are no headers until M8)
-//! and one that calls a variadic function (`printf`; ADR-006) is *refused* by xcc, and a refusal
-//! is not a behavioural difference - it is a recorded gap, counted and printed here. A program
-//! `clang` itself cannot build is skipped: the corpus holds programs that are deliberately not
-//! C99, and this test is about the ones both compilers claim.
+//! What is left out, and why: a program that calls a variadic function (`printf`; ADR-006) is
+//! *refused* by xcc, and a refusal is not a behavioural difference - it is a recorded gap,
+//! counted and printed here. Both compilers read the same headers (`-nostdinc` and the ones xcc
+//! ships), so an `#include` compares like anything else. A program `clang` itself cannot build is
+//! skipped: the corpus holds programs that are deliberately not C99, and this test is about the
+//! ones both compilers claim.
 //!
 //! The count is printed even when the test passes, so a shrinking subset is visible.
 
@@ -31,7 +32,7 @@ const EXPECTED_MISMATCHES: &[(&str, &str)] = &[];
 /// How many programs ran when this was last measured. A ratchet: it goes up when a gap closes
 /// (headers, `printf`) and never down, because a drop means something that used to run is now
 /// refused, which is the regression this test exists to catch.
-const PROGRAMS_THAT_RAN: usize = 375;
+const PROGRAMS_THAT_RAN: usize = 376;
 
 /// How the subset split.
 #[derive(Default)]
@@ -40,7 +41,7 @@ struct Counts {
     ran: usize,
     /// Programs xcc would not compile: a recorded gap, not a difference.
     refused: usize,
-    /// Programs outside the subset: `#include`, or one `clang` will not build.
+    /// Programs outside the subset: one `clang` will not build.
     skipped: usize,
 }
 
@@ -122,11 +123,27 @@ fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus")
 }
 
+/// The headers xcc ships: what a corpus program's `#include` resolves to for both compilers.
+fn headers() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../xcc/include")
+}
+
 fn clang_exists() -> bool {
     Command::new("clang")
         .arg("--version")
         .output()
         .is_ok_and(|output| output.status.success())
+}
+
+/// Run one side, and once more if it timed out: a program that hung while the machine was running
+/// forty of them at once is a measurement about the machine, and a real hang hangs twice. Two
+/// clean runs and one full of false timeouts is exactly the flakiness this avoids.
+fn again_if_hung<T>(mut attempt: impl FnMut() -> Option<(Outcome, T)>) -> Option<(Outcome, T)> {
+    let first = attempt()?;
+    if first.0 != Outcome::Hung {
+        return Some(first);
+    }
+    attempt()
 }
 
 /// The program compiled by xcc and run in process, or `None` when xcc refused it - which is how a
@@ -144,8 +161,13 @@ fn xcc_runs(source: &Path) -> Option<(Outcome, Vec<u8>)> {
 
 /// The program compiled by `clang -O0` and run, or `None` when clang will not build it.
 fn clang_runs(source: &Path, exe: &Path) -> Option<(Outcome, Vec<u8>)> {
+    // `-nostdinc` plus our own headers: the two compilers must read the same declarations, or a
+    // program that includes one would be comparing two different programs. It also means every
+    // header xcc ships is checked by a real compiler the moment a corpus program includes it.
     let built = Command::new("clang")
-        .args(["-O0", "-std=c99", "-w", "-nostdinc", "-o"])
+        .args(["-O0", "-std=c99", "-w", "-nostdinc", "-isystem"])
+        .arg(headers())
+        .arg("-o")
         .arg(exe)
         .arg(source)
         .output()
@@ -196,16 +218,12 @@ fn the_corpus_runs_like_clang() {
                         .expect("a file name")
                         .to_string_lossy()
                         .into_owned();
-                    let source = std::fs::read_to_string(path).expect("a UTF-8 source");
-                    if source.contains("#include") {
-                        counts.lock().expect("the counts").skipped += 1;
-                        continue;
-                    }
-                    let Some((ours, our_output)) = xcc_runs(path) else {
+                    let Some((ours, our_output)) = again_if_hung(|| xcc_runs(path)) else {
                         counts.lock().expect("the counts").refused += 1;
                         continue;
                     };
-                    let Some((theirs, their_output)) = clang_runs(path, &exe) else {
+                    let Some((theirs, their_output)) = again_if_hung(|| clang_runs(path, &exe))
+                    else {
                         // `clang` would not build it: the corpus holds programs that are not C99
                         // on purpose, and this test is about the ones both compilers claim.
                         counts.lock().expect("the counts").skipped += 1;

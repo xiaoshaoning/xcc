@@ -282,7 +282,9 @@ The first thing worth showing, and the reason the project exists.
       reads as the instruction it is, and the Cranelift function follows with the virtual
       registers in it. `Compile::explain` is the same pipeline as `Compile::compile`, not a
       second one, and the back end only formats the Cranelift function when it is asked.
-- [~] Acceptance: `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
+- [~] Acceptance: `malloc`, `free` and `qsort` work in a program compiled by `xcc` and linked
+      against the SDK's libraries (measured, matching clang's own build); `printf` and `snprintf`
+      do not, because they are variadic (ADR-006). `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
       calls it, calls a host symbol through it, and reads a diagnostic; `tests/hostile.rs` runs
       seven hostile shapes through the binary and asserts a refusal, not a crash or a hang. The
       Lua half is not done: there is no Lua on this machine, and a script nobody can run is worse
@@ -290,11 +292,21 @@ The first thing worth showing, and the reason the project exists.
 
 ## M8 - runtime and headers  (M)
 
-- [ ] Clean-room C headers: `stddef`, `stdarg`, `stdbool`, `stdint`, `stdio`, `stdlib`,
-      `string`, `ctype`, `math`, `time`, `limits`, `float`.
+- [x] Clean-room C headers: `stddef`, `stdarg`, `stdbool`, `stdint`, `stdio`, `stdlib`,
+      `string`, `ctype`, `math`, `time`, `limits`, `float`. They ship *inside the compiler*
+      (`crates/xcc/include`, `include_str!`), so they need no `-I`, no filesystem and no host
+      resolver - `--run` finds them too - and a host's own files are consulted first, so `-I`
+      can shadow any of them. `stdarg.h` refuses with a reason instead of declaring functions
+      nothing can compile ([ADR-006](docs/ADR-006-varargs.md)). `offsetof` is
+      `__builtin_offsetof`: C's own definition needs a pointer-to-integer conversion this
+      compiler does not do, and the layout is already in the type table.
 - [ ] Decide the libc story: import UCRT (`ucrtbase.dll`, `kernel32.dll`) from our own import
       libraries, so no MSYS/mingw and no SDK headers are needed to compile; linking a final
       `.exe` still uses `lld-link` and the SDK's `.lib` files.
+      *Partly there*: a program including our headers and calling `malloc`, `free` and `qsort`
+      compiles with `xcc -c`, links with `clang`, and exits with what clang's own build exits
+      with. What is missing is the import libraries of our own, so that the link needs no
+      toolchain beyond `lld-link`.
 - [ ] `-nostdlib` freestanding mode: no headers, no UCRT, our own entry - for embedding and
       for kernels/firmware-shaped code.
 - [ ] Acceptance: `printf`, `malloc`, `fopen`/`fread`, `qsort`, `snprintf` work in a program

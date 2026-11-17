@@ -876,6 +876,10 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.sizeof_expression())
             }
+            "__builtin_offsetof" => {
+                self.bump();
+                Some(self.offsetof_expression(span))
+            }
             _ => self.postfix_expression(),
         }
     }
@@ -944,6 +948,68 @@ impl Parser<'_> {
 
     /// `sizeof` a type name or an expression, as a constant of type `size_t` (here `unsigned
     /// long long`, the widest integer this front end has).
+    /// `__builtin_offsetof(type-name, member.designator)`: the byte offset of a member.
+    ///
+    /// C99 7.17p3 defines `offsetof` as `(size_t)&(((type *)0)->member)`, which this compiler
+    /// cannot fold: it has no pointer-to-integer conversion, and taking the address of a member of
+    /// the null pointer has no address to give. The layout is already known here - that is what
+    /// `member.offset` is - so the builtin asks the type table instead of asking the machine.
+    ///
+    /// `stddef.h` spells `offsetof` in terms of this, the way every compiler's own header does.
+    fn offsetof_expression(&mut self, span: Span) -> Value {
+        let size_type = self.types.fundamental("unsigned long long").unwrap();
+        if !self.eat("(") {
+            self.error_at_current("`__builtin_offsetof` needs `(`");
+            return Value::temporary(self.types.error());
+        }
+        let Some(ty) = self.try_type_name() else {
+            self.error_at_current("`__builtin_offsetof` needs a type");
+            return Value::temporary(self.types.error());
+        };
+        if !self.eat(",") {
+            self.error_at_current("expected `,` before the member");
+            return Value::temporary(self.types.error());
+        }
+        // A member-designator: a name, then deeper names as `a.b.c`. An array subscript is
+        // refused rather than computed wrong: it would need the element's size and the index,
+        // which no caller in this corpus asks for and a C array member rarely uses.
+        let mut offset = 0usize;
+        let mut current = ty;
+        loop {
+            let Some(token) = self.peek().copied() else {
+                self.error_at_current("expected a member name");
+                return Value::temporary(self.types.error());
+            };
+            if token.kind != crate::lex::TokenKind::Ident {
+                self.error_at_current("expected a member name");
+                return Value::temporary(self.types.error());
+            }
+            self.bump();
+            let Some(record) = self.types.record_of(current) else {
+                let ty = self.describe(current);
+                self.error(span, format!("`{ty}` has no members"));
+                return Value::temporary(self.types.error());
+            };
+            let Some(member) = self.types.member(record, token.text) else {
+                let name = self.spell(&token).to_owned();
+                let ty = self.describe(current);
+                self.error(span, format!("`{ty}` has no member `{name}`"));
+                return Value::temporary(self.types.error());
+            };
+            offset += member.offset as usize;
+            current = member.ty;
+            if self.at_punct(".") {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the member");
+        }
+        self.constant_of(size_type, offset as i64, span)
+    }
+
     pub(super) fn sizeof_expression(&mut self) -> Value {
         let size_type = self.types.fundamental("unsigned long long").unwrap();
         let span = self.span();

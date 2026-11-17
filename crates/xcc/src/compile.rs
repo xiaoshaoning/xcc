@@ -56,9 +56,12 @@ pub struct Compile {
 impl Compile {
     /// A compiler that will compile with `options`, and read no files of its own.
     pub fn new(options: Options) -> Self {
+        // No host files, but the compiler's own headers: `#include <stddef.h>` is part of the
+        // compiler, and a host that wanted to be asked would be a host that cannot compile
+        // `size_t` without work.
         Self {
             options,
-            includes: Box::new(()),
+            includes: Box::new(crate::headers::Headers::new(Box::new(()))),
         }
     }
 
@@ -67,7 +70,10 @@ impl Compile {
     /// The compiler itself never touches a filesystem: a host that wants includes gives it
     /// something that can answer, which is also how an embedder keeps includes in memory.
     pub fn with_includes(options: Options, includes: Box<dyn Includes>) -> Self {
-        Self { options, includes }
+        Self {
+            options,
+            includes: Box::new(crate::headers::Headers::new(includes)),
+        }
     }
 
     /// The options this compiler was made with.

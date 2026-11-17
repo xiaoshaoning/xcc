@@ -78,6 +78,46 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8: the headers ship with the compiler - 2026-11-16 - and `offsetof` neither C nor we could write
+
+M8's first item: twelve clean-room C headers.
+
+**They live inside the compiler, not on a filesystem.** `crates/xcc/include/*.h` are compiled in
+with `include_str!` and answered by a `Headers` resolver that asks the host's files first and the
+compiler's second. That order is one decision in one place, and it gives three things at once: no
+`-I` for `#include <stddef.h>`, no filesystem for an embedder - `--run`, which has no host files at
+all, compiles headers now - and `-I` still shadows any header we ship, which is what a program
+carrying its own `stdint.h` expects. The "no filesystem access unless given a resolver" property is
+intact, because these are not files: they are the compiler.
+
+**`offsetof` needed a builtin.** C99 7.17p3 defines it as `(size_t)&(((type *)0)->member)`, which
+this compiler cannot fold twice over: it refuses pointer-to-integer conversions, and a member of the
+null pointer has no address to give. So `stddef.h` spells it `__builtin_offsetof(type, member)`, and
+the parser answers from `member.offset` - the layout it already has - for a dotted designator. One
+extension, in the one place that owns layout, for a macro whose standard definition is C the
+compiler cannot compile.
+
+**The headers are checked by two compilers.** The differential runner now gives clang `-isystem
+crates/xcc/include` instead of skipping every `#include`, so a corpus program with a header is
+compared against the same declarations - and clang has to accept our headers, which makes it a
+clean-room audit on every run. The blanket "skip anything with #include" is gone: 40 skips became
+2, and 376 programs now run and agree (was 375 with 40 skipped).
+
+**Verified against clang, not against ourselves:** a program using `size_t`, `uint8_t`, `int16_t`,
+`bool`, `CHAR_BIT`, `INT_MAX` and `offsetof` returns 21 under both compilers; a JIT test pins
+`sizeof(struct S) == 16` and `offsetof(struct S, i) == 4`; and `malloc`/`free`/`qsort` compile with
+`xcc -c`, link with clang against the SDK's libraries, and exit 11 - what clang's own build exits
+with. `printf` still refuses, which is 50 of the 86 corpus refusals.
+
+**Found while measuring: the differential runner is flaky under load.** One run reported 30
+mismatches, every one of them "hung" on one side - the machine was running forty programs at once
+and the ten-second limit caught ordinary programs. Two clean runs followed, so it was load, not a
+bug; the runner now retries a side that timed out, because a real hang hangs twice. A ratchet test
+that fails on a busy machine is a test people learn to ignore.
+
+156 unit (159 with the header tests), 21 parser, 18 CLI, 4 hostile, 6 C API, differential, crt,
+pp gate, fuzz, exe - green; fmt and clippy clean.
+
 ### `--explain` reviewed - 2026-11-16 - a mode that quietly ignored what it was given
 
 Review of `9a3e4ff`: the explanation, and the README rewrite that came with it.

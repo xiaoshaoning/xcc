@@ -124,6 +124,24 @@ fn explain_a_source_that_does_not_compile_reports_its_errors_and_no_explanation(
 }
 
 #[test]
+fn the_headers_that_ship_with_the_compiler_are_found_without_a_flag() {
+    let temp = Temp::new("headers");
+    let source = temp.write(
+        "t.c",
+        "#include <stdint.h>
+#include <stddef.h>
+         struct S { char c; int i; };
+         int f(void) { return (int)sizeof(struct S) + (int)offsetof(struct S, i) + UINT8_MAX; }
+",
+    );
+    // No -I: a host's own files are consulted first, and then the compiler's.
+    let out = temp.path().join("t.obj");
+    let output = run(xcc().arg("-c").arg(&source).arg("-o").arg(&out));
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(std::fs::metadata(&out).is_ok(), "no object was written");
+}
+
+#[test]
 fn the_same_source_writes_the_same_bytes() {
     // CONSTRAINTS 4: same source, same options, same object. Two *processes*, because that is what
     // catches an order that came from a hash map's iteration or from an address.

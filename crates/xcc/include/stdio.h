@@ -1,0 +1,60 @@
+/* stdio.h - C99 7.19, declarations only.  Calling a variadic one (`printf`) is refused by the
+ * compiler itself until ADR-006 is unblocked; the rest are the C runtime's, which the linker
+ * brings in.
+ */
+#ifndef XCC_STDIO_H
+#define XCC_STDIO_H
+
+#include <stddef.h>
+
+typedef struct _iobuf FILE;
+
+#define EOF (-1)
+#define BUFSIZ 512
+#define FOPEN_MAX 20
+#define FILENAME_MAX 260
+#define L_tmpnam 260
+#define TMP_MAX 32767
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+int remove(const char *path);
+int rename(const char *from, const char *to);
+FILE *tmpfile(void);
+int fclose(FILE *stream);
+int fflush(FILE *stream);
+FILE *fopen(const char *restrict path, const char *restrict mode);
+FILE *freopen(const char *restrict path, const char *restrict mode, FILE *restrict stream);
+void setbuf(FILE *restrict stream, char *restrict buffer);
+
+int fprintf(FILE *restrict stream, const char *restrict format, ...);
+int fscanf(FILE *restrict stream, const char *restrict format, ...);
+int printf(const char *restrict format, ...);
+int scanf(const char *restrict format, ...);
+int snprintf(char *restrict to, size_t count, const char *restrict format, ...);
+int sprintf(char *restrict to, const char *restrict format, ...);
+int sscanf(const char *restrict from, const char *restrict format, ...);
+
+int fgetc(FILE *stream);
+char *fgets(char *restrict to, int count, FILE *restrict stream);
+int fputc(int c, FILE *stream);
+int fputs(const char *restrict text, FILE *restrict stream);
+int getc(FILE *stream);
+int getchar(void);
+int putc(int c, FILE *stream);
+int putchar(int c);
+int puts(const char *text);
+int ungetc(int c, FILE *stream);
+
+size_t fread(void *restrict to, size_t size, size_t count, FILE *restrict stream);
+size_t fwrite(const void *restrict from, size_t size, size_t count, FILE *restrict stream);
+int fseek(FILE *stream, long long offset, int origin);
+long long ftell(FILE *stream);
+void rewind(FILE *stream);
+void clearerr(FILE *stream);
+int feof(FILE *stream);
+int ferror(FILE *stream);
+void perror(const char *text);
+
+#endif
