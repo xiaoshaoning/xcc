@@ -78,6 +78,32 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `--opt-level` reviewed - 2026-11-16 - one decision printed three times
+
+Review of `4ec8352`: the opt-level flag and the numbers behind it.
+
+**Found: "2 and 3 are not written" was said in three places.** The object path mapped `0`/`1` to
+Cranelift's spellings and its own message; the JIT mapped the same two numbers again, with a
+different message; and the front end checked the range a third time so the refusal would not arrive
+as an `internal:` error. Three copies of one decision, each free to drift. There is one function now
+(`back::cranelift_opt_level`) that answers either the spelling or the reason, and the three callers
+use it: the object path maps the reason to its error type, the JIT returns it, and the front end
+turns it into the diagnostic.
+
+**Found: the check ran after the source was parsed.** A wrong opt level is not a fact about the
+source, so it is now asked first - before the preprocessor, before the parser - and the diagnostic
+does not depend on the source compiling at all. (It also stopped constructing a `SourceFile` twice
+in the error path.)
+
+**Checked and sound:** the default is still `0`, so `cargo test`, the differential runner and every
+existing behaviour are on the path they were; `Jit::with_symbols` keeps level 0 explicitly, so a
+host that passes symbols does not silently get an optimiser it did not ask for; a level the JIT is
+given is validated where its flags are set, which is the only place it could take effect; and the
+measurement in the help text and the audit is the one the compare example prints.
+
+174 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10: `--opt-level`, and the measurement that made it worth a flag - 2026-11-16
 
 M10's `--opt-level` line, and the lesson that came before writing it.

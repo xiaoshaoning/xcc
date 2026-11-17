@@ -99,15 +99,7 @@ impl Jit {
         table.extend(symbols.iter().map(|(name, address)| (*name, *address)));
         let symbols = &table[..];
         let mut flags = settings::builder();
-        let level = match opt_level {
-            0 => "none",
-            1 => "speed",
-            other => {
-                return Err(format!(
-                    "opt level {other} needs this compiler's own back end"
-                ))
-            }
-        };
+        let level = crate::back::cranelift_opt_level(opt_level)?;
         flags
             .set("opt_level", level)
             .map_err(|error| error.to_string())?;

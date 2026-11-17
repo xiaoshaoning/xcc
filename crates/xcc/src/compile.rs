@@ -134,6 +134,19 @@ impl Compile {
     fn run(&mut self, name: &str, source: &str, explain: bool) -> Result<Outcome, Diagnostics> {
         let mut diagnostics = Vec::new();
 
+        // A level this back end does not have is the caller's mistake, and it is reported as one:
+        // the back end's refusal would arrive as an internal error, which blames the compiler for
+        // a number it was handed. Asked first, because it is not about the source.
+        if let Err(reason) = crate::back::cranelift_opt_level(self.options.opt_level) {
+            diagnostics.push(
+                Diagnostic::error(reason)
+                    .with_file(name)
+                    .with_span(Span::at(0)),
+            );
+            let items = truncate_diagnostics(diagnostics, &self.options);
+            return Err(Diagnostics::new(items, vec![SourceFile::new(name, source)]));
+        }
+
         // Phases 1 and 2, tokens, and the directives that exist so far.
         let preprocessed = self.preprocess(name, source)?;
         let sources = preprocessed.files.clone();
@@ -151,21 +164,6 @@ impl Compile {
         // The passes, before either lowering sees the module: one `cir` in, one optimized `cir`
         // out, so an object and a JIT run the same code (M10). A pass that breaks a function is a
         // compiler bug, so it says so rather than blaming the source.
-        // A level this back end does not have is the caller's mistake, and it is reported as one:
-        // the back end's own refusal would arrive as an internal error, which blames the compiler
-        // for a number it was handed.
-        if self.options.opt_level > 1 {
-            let level = self.options.opt_level;
-            diagnostics.push(
-                Diagnostic::error(format!(
-                    "opt level {level} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
-                ))
-                .with_file(name)
-                .with_span(Span::at(0)),
-            );
-            let items = truncate_diagnostics(diagnostics, &self.options);
-            return Err(Diagnostics::new(items, sources));
-        }
         let mut module = parsed.module;
         let opt_level = self.options.opt_level;
         if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {

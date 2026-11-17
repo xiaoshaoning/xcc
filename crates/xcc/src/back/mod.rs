@@ -69,15 +69,19 @@ pub struct Lowered {
     pub explained: Vec<Explained>,
 }
 
-/// How hard the back end works, as Cranelift spells it: `None` for an opt level this back end
-/// does not have.
-fn cranelift_opt_level(level: u8) -> Result<&'static str, LoweringError> {
+/// How hard the back end works, as Cranelift spells it - or why this compiler has no such level.
+///
+/// One mapping for the three callers: the object path, the JIT (whose flags are set at
+/// construction), and the front end, which reports the refusal to the caller who asked. The plan's
+/// levels 2 and 3 are this compiler's own back end, which is not written, so they are one message
+/// rather than three copies of one.
+pub(crate) fn cranelift_opt_level(level: u8) -> Result<&'static str, String> {
     match level {
         0 => Ok("none"),
         1 => Ok("speed"),
-        _ => Err(LoweringError(format!(
-            "opt level {level} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
-        ))),
+        other => Err(format!(
+            "opt level {other} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
+        )),
     }
 }
 
@@ -92,7 +96,10 @@ pub fn object(
     let mut flags = settings::builder();
     // The host's own feature set, so a JIT and an object cannot disagree about what runs.
     flags
-        .set("opt_level", cranelift_opt_level(opt_level)?)
+        .set(
+            "opt_level",
+            cranelift_opt_level(opt_level).map_err(LoweringError)?,
+        )
         .map_err(|error| LoweringError(error.to_string()))?;
     // A frame larger than a page must touch its guard pages as it allocates them, or a stack
     // overflow silently overwrites whatever is below. Inline, so no `__chkstk` import (ADR-005).
