@@ -98,6 +98,28 @@ impl Compile {
     /// Takes `&mut self` although nothing is kept yet: the preprocessor's arenas and interner
     /// arrive with M2, and callers should not have to change because of it.
     pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Diagnostics> {
+        let (artifact, _) = self.run(name, source, false)?;
+        Ok(artifact)
+    }
+
+    /// Compile `source`, and say what each function became: the C-level instruction next to the
+    /// source line it came from, and the Cranelift function with the virtual registers it chose.
+    ///
+    /// This is `--explain`, and it is the same pipeline as [`Compile::compile`]: a second way to
+    /// ask one compilation what it did, not a second compilation.
+    pub fn explain(&mut self, name: &str, source: &str) -> Result<String, Diagnostics> {
+        let (_, explained) = self.run(name, source, true)?;
+        Ok(explained.unwrap_or_default())
+    }
+
+    /// One compilation. `explain` asks the back end to keep what each function became, which
+    /// costs the formatting of every function and nothing else.
+    fn run(
+        &mut self,
+        name: &str,
+        source: &str,
+        explain: bool,
+    ) -> Result<(Artifact, Option<String>), Diagnostics> {
         let mut diagnostics = Vec::new();
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
@@ -116,11 +138,16 @@ impl Compile {
 
         // A module with no function is a translation unit of declarations only: nothing to
         // lower, and an object is still what the caller asked for.
+        let mut explained = None;
         let object = if parsed.module.funcs.is_empty() {
             Vec::new()
         } else {
-            match crate::back::object(&parsed.module, preprocessed.names()) {
-                Ok(bytes) => bytes,
+            match crate::back::object(&parsed.module, preprocessed.names(), explain) {
+                Ok(lowered) => {
+                    explained =
+                        explain.then(|| crate::explain::render(&lowered.explained, &sources));
+                    lowered.bytes
+                }
                 Err(error) => {
                     // A lowering failure is a compiler bug, so it says so rather than blaming
                     // the source (CONSTRAINTS 6).
@@ -135,7 +162,7 @@ impl Compile {
             }
         };
         let items = truncate_diagnostics(diagnostics, &self.options);
-        Ok(Artifact::new(object, items))
+        Ok((Artifact::new(object, items), explained))
     }
 }
 

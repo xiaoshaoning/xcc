@@ -83,7 +83,15 @@ fn type_text(types: &crate::types::Types, names: &Interner, ty: TypeId) -> Strin
     types.describe_with(ty, names)
 }
 
-fn instruction(types: &crate::types::Types, names: &Interner, func: &Func, inst: &Inst) -> String {
+/// One instruction, written on one line: what `dump_func` prints, and what `--explain` puts
+/// next to the source line it came from. Public to the crate because a second reader (the
+/// explanation) should not have a second spelling of the same instruction.
+pub(crate) fn instruction(
+    types: &crate::types::Types,
+    names: &Interner,
+    func: &Func,
+    inst: &Inst,
+) -> String {
     let v = |value: Value| format!("v{}", value.0);
     let ty = |ty: TypeId| type_text(types, names, ty);
     match inst {

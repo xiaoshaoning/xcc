@@ -31,6 +31,14 @@ struct Args {
     #[arg(long = "run")]
     run: bool,
 
+    /// Say what each function became, and write no object.
+    ///
+    /// Every C-level instruction under the source line it came from - promotions, decays and
+    /// conversions included, since they are instructions - and then the Cranelift function,
+    /// which is where the virtual registers appear.
+    #[arg(long = "explain")]
+    explain: bool,
+
     /// Write the object here instead of next to the source.
     #[arg(short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
@@ -94,7 +102,11 @@ fn main() -> ExitCode {
     }
     let args = Args::parse_from(full);
 
-    if !args.compile_only && !args.preprocess_only && !args.run {
+    if args.explain && (args.compile_only || args.preprocess_only || args.run) {
+        eprintln!("xcc: --explain is a mode of its own: no -c, -E or --run with it");
+        return ExitCode::from(2);
+    }
+    if !args.compile_only && !args.preprocess_only && !args.run && !args.explain {
         eprintln!("xcc: linking is not implemented yet (PLAN.md, M5); pass -c to compile only");
         return ExitCode::from(2);
     }
@@ -132,6 +144,16 @@ fn main() -> ExitCode {
         if args.preprocess_only {
             match compiler.preprocess(&name, &text) {
                 Ok(preprocessed) => print_spellings(&preprocessed),
+                Err(diagnostics) => {
+                    eprintln!("{}", diagnostics.render(format));
+                    status = ExitCode::from(1);
+                }
+            }
+            continue;
+        }
+        if args.explain {
+            match compiler.explain(&name, &text) {
+                Ok(explanation) => print!("{explanation}"),
                 Err(diagnostics) => {
                     eprintln!("{}", diagnostics.render(format));
                     status = ExitCode::from(1);

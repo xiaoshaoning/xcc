@@ -43,11 +43,37 @@ impl From<ModuleError> for LoweringError {
     }
 }
 
-/// Lower a translation unit to an object file, returning its bytes.
+use crate::diag::Span;
+
+/// One function as the compiler saw it and as Cranelift built it: what `--explain` prints.
+#[derive(Debug, Clone)]
+pub struct Explained {
+    /// The function's name in C.
+    pub name: String,
+    /// Its C-level instructions in program order, each with the source span it came from.
+    pub cir: Vec<(Span, String)>,
+    /// The Cranelift function after lowering, which is where the virtual registers the back end
+    /// chose are visible: `v3 = iadd v1, v2`.
+    pub clif: String,
+}
+
+/// What lowering a translation unit produced.
+#[derive(Debug)]
+pub struct Lowered {
+    /// The object file.
+    pub bytes: Vec<u8>,
+    /// Each function, when the caller asked to be told what was made of it. Empty otherwise, and
+    /// formatting the Cranelift function is most of the cost of asking.
+    pub explained: Vec<Explained>,
+}
+
+/// Lower a translation unit to an object file, keeping what each function became when `explain`
+/// is set.
 pub fn object(
     module: &CirModule,
     names: &crate::intern::Interner,
-) -> Result<Vec<u8>, LoweringError> {
+    explain: bool,
+) -> Result<Lowered, LoweringError> {
     let mut flags = settings::builder();
     // The host's own feature set, so a JIT and an object cannot disagree about what runs.
     flags
@@ -74,13 +100,17 @@ pub fn object(
         names,
         functions: HashMap::new(),
         data: HashMap::new(),
+        explained: explain.then(Vec::new),
     };
     // Every function is declared before any is lowered, so calls can be forward references.
     lower_all(&mut lowerer, module)?;
-    object
+    let explained = lowerer.explained.take().unwrap_or_default();
+    drop(lowerer); // the object cannot be finished while the lowerer still holds it
+    let bytes = object
         .finish()
         .emit()
-        .map_err(|error| LoweringError(error.to_string()))
+        .map_err(|error| LoweringError(error.to_string()))?;
+    Ok(Lowered { bytes, explained })
 }
 
 /// Declare every function, then lower every body, giving back the ids by name.
@@ -98,6 +128,7 @@ pub fn lower_into<M: Module>(
         names,
         functions: HashMap::new(),
         data: HashMap::new(),
+        explained: None,
     };
     lower_all(&mut lowerer, module)?;
     Ok(lowerer
@@ -133,6 +164,9 @@ struct Lowerer<'a, M: Module> {
     functions: HashMap<String, FuncId>,
     /// The objects each declared name means, so lowering an address can name one.
     data: HashMap<String, DataId>,
+    /// Every function as it was made, when the caller asked to be told - `None` otherwise, which
+    /// is why a normal compile pays nothing for the feature.
+    explained: Option<Vec<Explained>>,
 }
 
 impl<M: Module> Lowerer<'_, M> {
@@ -359,6 +393,26 @@ impl<M: Module> Lowerer<'_, M> {
             builder.seal_block(*block);
         }
         builder.finalize();
+
+        // After `finalize` every instruction is in the function and every value has the virtual
+        // register the back end gave it, which is the point of showing this at all.
+        if let Some(explained) = &mut self.explained {
+            explained.push(Explained {
+                name: name.clone(),
+                cir: func
+                    .blocks
+                    .iter()
+                    .flat_map(|block| block.insts.iter())
+                    .map(|inst| {
+                        (
+                            inst.span(),
+                            crate::cir::dump::instruction(self.types, self.names, func, inst),
+                        )
+                    })
+                    .collect(),
+                clif: context.func.display().to_string(),
+            });
+        }
 
         let name = self
             .object
@@ -764,7 +818,9 @@ mod tests {
         let preprocessed = preprocess(&file, &options, &());
         let parsed = crate::parse::parse(&preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        object(&parsed.module, preprocessed.names()).expect("lowering works")
+        object(&parsed.module, preprocessed.names(), false)
+            .expect("lowering works")
+            .bytes
     }
 
     /// The gate PLAN.md puts before M5: does a win64 object from Cranelift carry the unwind

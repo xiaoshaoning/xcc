@@ -192,12 +192,9 @@ int twice(int x) { return host_double(x); }",
     }
 
     /// `switch`, as the values it must produce: the arms, `break`, `default`, and C's
-    /// fall-through. Written before the emitter can lower it, and ignored until it can - a red
-    /// test in the suite would hide every other failure, and a deleted one would be forgotten.
-    ///
-    /// The failing case the first attempt left behind is `case 1: r = 5;`: a *store* inside a
-    /// case body, which reported "this kind of assignment is not lowered yet" because the block
-    /// the arm opened was already terminated.
+    /// fall-through. The case that made it hard is `case 1: r = 5;` - a *store* inside a case
+    /// body, which reported "this kind of assignment is not lowered yet" while the block the arm
+    /// opened was already terminated.
     #[test]
     fn switch_arms_break_default_and_fall_through() {
         let mut jit = Jit::new().expect("a JIT");

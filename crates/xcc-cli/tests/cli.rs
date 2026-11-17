@@ -64,6 +64,49 @@ fn help_is_offered() {
 }
 
 #[test]
+fn explain_says_what_each_instruction_was_for() {
+    let temp = Temp::new("explain");
+    let source = temp.write(
+        "t.c",
+        "int f(char a, char b) {
+    return a + b;
+}
+",
+    );
+    let output = run(xcc().arg("--explain").arg(&source));
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    // The function, the line it came from, the instruction C's rules added, and the registers.
+    assert!(text.contains("function f"), "{text}");
+    assert!(text.contains("return a + b;"), "{text}");
+    assert!(text.contains("v6 = sext char to int v4"), "{text}");
+    assert!(text.contains("v8 = add int v6, v7"), "{text}");
+    assert!(text.contains("sextend.i32"), "{text}");
+    // A mode of its own: no object is written.
+    assert!(
+        !source.with_extension("obj").exists(),
+        "--explain wrote an object"
+    );
+}
+
+#[test]
+fn explain_is_a_mode_and_says_so_when_given_another() {
+    let temp = Temp::new("explain-mode");
+    let source = temp.write(
+        "t.c",
+        "int f(void) { return 1; }
+",
+    );
+    let output = run(xcc().arg("--explain").arg("-c").arg(&source));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("--explain is a mode of its own"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn the_same_source_writes_the_same_bytes() {
     // CONSTRAINTS 4: same source, same options, same object. Two *processes*, because that is what
     // catches an order that came from a hash map's iteration or from an address.

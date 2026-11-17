@@ -9,8 +9,8 @@ global state: every compilation owns everything it touches, and two can run on t
 
 ## What works today
 
-This is M4 of the plan in [PLAN.md](PLAN.md), plus the data and pointer work that M5 needed
-first. The status below is what `cargo test --workspace` proves, not what is intended.
+This is M6 of the plan in [PLAN.md](PLAN.md), with M7's C API and sandbox in place. The status
+below is what `cargo test --workspace` proves, not what is intended.
 
 ```
 source -> preprocess -> parse -> cir (verified SSA CFG) -> Cranelift -> COFF object
@@ -24,21 +24,29 @@ source -> preprocess -> parse -> cir (verified SSA CFG) -> Cranelift -> COFF obj
 | code generation | locals and parameters as stack slots, globals and string literals as data (`.bss` for tentative definitions, anonymous `.strN` for literals), arithmetic, comparisons, conversions, casts, floats and doubles, aggregates by value (Win64 ABI), bitfields read/written/stepped/initialised, calls - direct, into host symbols, and through a function pointer - pointers, pointer arithmetic, subscripting, `if`/`else`, `while`, `do`/`while`, `for`, `goto`, `switch`, `break`, `continue`, `return`. |
 | embedding | `Jit::new()`, `Jit::add_source`, `Jit::function(name) -> Option<*const u8>`, `Jit::with_symbols` for calls back into the host. Eight threads compiling at once is a test. From C, Python, Lua or anything with `dlopen`: `xcc_new`, `xcc_add_source`, `xcc_function`, `xcc_last_error`, `xcc_free` in `crates/xcc-capi` (`xcc_capi.dll` and `include/xcc.h`) |
 | objects | `Compile::compile` returns an `Artifact` whose bytes are a COFF object with `.text`, data sections and a symbol table; `tests/exe.rs` links one with the host linker and runs it. |
+| explaining | `xcc --explain t.c` lists each C-level instruction under the source line it came from - conversions and decays included, because they are instructions - then the Cranelift function with the virtual registers in it. `Compile::explain` is the same call for a host. |
 
 ## What does not work yet
 
 Stated here rather than discovered later.
 
-- **`switch` does not lower.** It parses and type-checks; the emitter's comparison chain is not
-  finished. `back::jit::tests::switch_arms...` is written, `#[ignore]`d, and holds the six
-  run-time assertions it must satisfy.
-- **No `crt` and no `.exe` that prints.** There is no entry point, no `argc`/`argv`, no exit path;
-  linking is the host linker's job today.
+- **Variadic calls are refused**, which is why `printf` is not there yet: the Win64 ABI wants `AL`
+  set to the number of vector registers used and a signature per call site, and this back end can
+  express neither ([ADR-006](docs/ADR-006-varargs.md)). `-c` and `--run` both say so rather than
+  compiling something that would crash.
+- **No headers until M8.** `#include <stdio.h>` has no file to find; the preprocessor itself reads
+  includes through a host trait, which the CLI fills from the filesystem. 40 of the 464 corpus
+  programs are skipped for this reason.
 - **No unwind data.** A Cranelift win64 object carries `.text` and no `.pdata`/`.xdata` (measured,
   and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
-  works; *unwinding* through it - SEH, a debugger walking frames - does not. M5 does not claim it.
-- **Refused with one diagnostic each**: `&&`, `||`, `++`/`--`, member access in code, calls
-  and records or pointers-to-literals in file-scope initialisers.
+  works; *unwinding* through it - SEH, a debugger walking frames - does not.
+- **`argc`/`argv` are not there**: the runtime calls `int main(void)` (ADR-005 records the three
+  imports the alternative needs).
+- **`static` is not distinguished from external** yet: every object claims external linkage, which
+  is wrong for a `static` and harmless only because nothing reads the flag.
+- **Refused with one diagnostic each**: `_Complex`, `#pragma pack`, `#include_next`, a file-scope
+  pointer initialised from a literal, a struct value inside a brace list, and a bitfield's address.
+  [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) is the line-by-line answer.
 - **No optimiser.** `cir` is SSA from the first instruction, so `mem2reg` and friends are passes
   on this shape rather than a rewrite of it (M10).
 

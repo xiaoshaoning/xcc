@@ -276,8 +276,12 @@ The first thing worth showing, and the reason the project exists.
       stable symbol order, reproducible objects - `the_same_source_writes_the_same_bytes` compiles
       one program in two *processes* and compares the objects byte for byte, which is what catches
       an order that came from a hash map or an address.
-- [ ] `--explain`: why this instruction, which registers were used - borrowed from
-      borland-reborn's port, where it turned out to be the most useful debugging aid.
+- [x] `--explain`: why this instruction, which registers were used - borrowed from
+      borland-reborn's port, where it turned out to be the most useful debugging aid. Each C-level
+      instruction sits under the source line it came from, so a conversion the C rules added
+      reads as the instruction it is, and the Cranelift function follows with the virtual
+      registers in it. `Compile::explain` is the same pipeline as `Compile::compile`, not a
+      second one, and the back end only formats the Cranelift function when it is asked.
 - [~] Acceptance: `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
       calls it, calls a host symbol through it, and reads a diagnostic; `tests/hostile.rs` runs
       seven hostile shapes through the binary and asserts a refusal, not a crash or a hang. The

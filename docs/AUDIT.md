@@ -78,6 +78,42 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M7: `--explain`, and a README that had stopped being true - 2026-11-16 - the front page said M4
+
+M7's last item, and the documentation audit that came with it.
+
+**`--explain`** prints, for each function, the C-level instructions in program order - each under
+the source line it came from - and then the Cranelift function, which is where the virtual
+registers appear. Two questions, two answers: *why is this instruction here* is the line above it
+(a `sext char to int` is there because `char + char` is an `int` addition, which is the conversion
+showing itself), and *which registers* is `v6 = iadd v4, v5`.
+
+The implementation is one call into the existing pipeline rather than a second one:
+`Compile::explain` and `Compile::compile` share `run`, and the only difference is a `bool` that
+reaches the `Lowerer`, which keeps a `Vec<Explained>` instead of dropping each function. Formatting
+the Cranelift function is most of the cost of asking, so a compile that did not ask pays nothing.
+The two views are **not** paired instruction by instruction, and the module says so: one C
+instruction becomes zero, one or several machine instructions, and a mapping the back end does not
+keep would be a lie told by a debugger.
+
+The one thing it cannot do yet: a `Span` is an offset without the file it is an offset into, so a
+line number is shown for the unit's own file and an instruction from an included file is listed
+without one. M8 gives the span its file, because headers make the question real.
+
+**The README's front page had stopped being true.** It said "This is M4", that `switch` does not
+lower and its test is `#[ignore]`d, that there is no `crt` and no `.exe` that prints, and that
+`&&`, `||`, `++`/`--`, member access and calls are refused. Every one of those was done - the
+`switch` test passes unignored, `crates/xcc-crt` exists, `tests/exe.rs` links and runs a program,
+and a probe using all of them agrees with `clang -O0` (both 250). What actually does not work is
+variadic calls, headers, unwind data, `argc`/`argv`, `static` linkage and a short list of refusals;
+that is what it says now, with tests/corpus numbers attached.
+
+A wrong front page is worse than a wrong corner: it is the one page a reader trusts before they
+have any way to check it.
+
+156 unit, 21 parser, 16 CLI, 4 hostile, 6 C API, differential, crt, pp gate, fuzz, exe - green;
+fmt and clippy clean.
+
 ### M7 reviewed: one definition per name, and numbers from the right build - 2026-11-16 - legal C that reached Cranelift's words
 
 Review of the three M7 commits (`e4c8ab7`, `5c18111`, `ef3beff`).

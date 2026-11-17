@@ -37,6 +37,7 @@ mod back;
 mod cir;
 mod compile;
 mod diag;
+mod explain;
 mod intern;
 mod lex;
 mod literal;
