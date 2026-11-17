@@ -49,8 +49,10 @@ int ungetc(int c, FILE *stream);
 
 size_t fread(void *restrict to, size_t size, size_t count, FILE *restrict stream);
 size_t fwrite(const void *restrict from, size_t size, size_t count, FILE *restrict stream);
-int fseek(FILE *stream, long long offset, int origin);
-long long ftell(FILE *stream);
+/* `long`, not `long long`: the C library's `fseek` takes a 32-bit offset on this ABI (MSVC's
+ * `_fseeki64` is the 64-bit one, and not C99). Declaring it wider would compile and truncate. */
+int fseek(FILE *stream, long offset, int origin);
+long ftell(FILE *stream);
 void rewind(FILE *stream);
 void clearerr(FILE *stream);
 int feof(FILE *stream);

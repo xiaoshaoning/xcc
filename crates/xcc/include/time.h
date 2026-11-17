@@ -4,8 +4,10 @@
 
 #include <stddef.h>
 
+/* `time_t` is 64-bit on this ABI and `clock_t` is the C library's `long`, which is 32: the two
+ * are different types for a reason, and `clock()`'s result comes back in 32 bits. */
 typedef long long time_t;
-typedef long long clock_t;
+typedef long clock_t;
 
 #define CLOCKS_PER_SEC 1000
 

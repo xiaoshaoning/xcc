@@ -78,6 +78,48 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8 headers reviewed - 2026-11-16 - the LLP64 trap, in the one file that states the ABI's numbers
+
+Review of `7ed1353`: the headers that ship with the compiler.
+
+**Found: `limits.h` was wrong about `long`.** This ABI is LLP64 - `long` is 32 bits while a pointer
+and `long long` are 64 - and I wrote `LONG_MAX` and `ULONG_MAX` as 64-bit values because that is
+what a compiler on Linux would say. A program comparing them disagreed with clang: 27 against 57.
+`stdint.h` and `stddef.h` were right, because they say `long long`; `limits.h` is the one header
+whose whole job is to state the sizes, so a wrong number there is wrong in every program that reads
+it. Fixed and re-measured: 57 against 57.
+
+**Found: the same trap twice more, in declarations of real functions.** `stdio.h` declared
+`fseek(FILE *, long long, int)` and `long long ftell(FILE *)`, and `time.h` declared
+`clock_t` as `long long`. The C library's `fseek` takes a 32-bit offset, `ftell` returns one, and
+`clock()` returns a 32-bit `clock_t`. Declaring a real function wider than it is compiles and then
+truncates silently: the callee reads the low half of a register, and a large offset becomes a small
+one. Both are `long` now, with a comment naming the trap, and the fix is what makes `fseek(in, 4,
+SEEK_SET)` land on the byte it should.
+
+**Found by fixing it: `strtol` and `strtoul` were missing.** A header that declares `strtoll` and
+not `strtol` is a header that invites a program to use `long long` where the library means `long` -
+the same mistake, made by the program instead of by me. Both are declared now, at their real
+widths.
+
+Two tests came out of it, because a measurement that is not a test is a measurement that expires: a
+JIT test pins `LONG_MAX == 2147483647`, `ULONG_MAX == 4294967295`, `sizeof(long) == 4` and
+`sizeof(size_t) == 8` - the ABI's shape, in the header's own words - and `tests/exe.rs` links a
+program that `fopen`s, `fwrite`s, `fseek`s to byte four, `fgetc`s and `remove`s, built by xcc and
+linked by the host's linker. That last one is M8's libc claim minus the variadic half, and it is
+the first test in this repo where a program compiled here talks to the C runtime's own files.
+
+Also added: `#include <stdarg.h>` now has a test that it refuses *with the ADR in the message* -
+the one header whose value is that it says no.
+
+Checked and sound: the host's files come before ours in every path (`Compile::with_includes` wraps
+the host resolver, and a test shadows `stddef.h` from a host to prove it); `__builtin_offsetof`
+walks a dotted designator and refuses an array one with a diagnostic; `again_if_hung` retries only
+a timeout, so a real hang is still a mismatch.
+
+160 unit, 21 parser, 18 CLI, 2 exe, 4 hostile, 6 C API, differential (376 ran, 86 refused, 0
+mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8: the headers ship with the compiler - 2026-11-16 - and `offsetof` neither C nor we could write
 
 M8's first item: twelve clean-room C headers.

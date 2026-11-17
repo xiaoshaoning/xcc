@@ -89,6 +89,29 @@ mod tests {
     }
 
     #[test]
+    fn a_header_that_cannot_be_honoured_refuses_with_the_reason() {
+        // `stdarg.h` is the one header that is a promise this compiler cannot keep: `va_list` is
+        // the ABI's variadic convention, not a declaration (ADR-006). It says so, and the message
+        // names the record so a reader can find out why.
+        let mut compiler = crate::Compile::new(crate::Options::default());
+        let diagnostics = compiler
+            .compile(
+                "t.c",
+                "#include <stdarg.h>
+",
+            )
+            .expect_err("stdarg.h refuses");
+        let message = diagnostics
+            .items()
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(message.contains("variadic"), "{message}");
+        assert!(message.contains("ADR-006"), "{message}");
+    }
+
+    #[test]
     fn a_header_is_read_from_the_compiler_when_the_host_has_nothing() {
         let headers = Headers::new(Box::new(()));
         assert!(headers

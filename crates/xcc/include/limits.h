@@ -15,9 +15,11 @@
 #define INT_MIN (-2147483647 - 1)
 #define INT_MAX 2147483647
 #define UINT_MAX 4294967295U
-#define LONG_MIN (-9223372036854775807LL - 1)
-#define LONG_MAX 9223372036854775807LL
-#define ULONG_MAX 18446744073709551615ULL
+/* `long` is 32 bits on this ABI (LLP64), which is what makes the C library's own `long`-shaped
+ * functions agree with it: see `fseek` and `clock_t`. */
+#define LONG_MIN (-2147483647 - 1)
+#define LONG_MAX 2147483647
+#define ULONG_MAX 4294967295U
 #define LLONG_MIN (-9223372036854775807LL - 1)
 #define LLONG_MAX 9223372036854775807LL
 #define ULLONG_MAX 18446744073709551615ULL

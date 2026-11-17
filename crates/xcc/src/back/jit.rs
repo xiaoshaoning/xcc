@@ -176,6 +176,13 @@ mod tests {
                  return (int)whole * 100 + (int)offsetof(struct S, i) * 10
                       + (int)offsetof(struct S, next) - (int)offsetof(struct S, next);
              }
+             int limits(void) {
+                 return (LONG_MAX == 2147483647 ? 1 : 0)
+                      + (ULONG_MAX == 4294967295U ? 2 : 0)
+                      + (sizeof(long) == 4 ? 4 : 0)
+                      + (sizeof(long long) == 8 ? 8 : 0)
+                      + (sizeof(size_t) == 8 ? 16 : 0);
+             }
              int widths(void) {
                  uint8_t small = UINT8_MAX;
                  int16_t narrow = INT16_MIN;
@@ -194,6 +201,9 @@ mod tests {
         assert_eq!(call("sizes"), 16 * 100 + 4 * 10);
         // UINT8_MAX + (INT16_MIN + 32768) + true + CHAR_BIT.
         assert_eq!(call("widths"), 255 + 1 + 8);
+        // The ABI is LLP64: `long` is 32 bits while `long long`, `size_t` and a pointer are 64.
+        // `limits.h` says the same thing, which is why it is pinned here rather than trusted.
+        assert_eq!(call("limits"), 1 + 2 + 4 + 8 + 16);
     }
 
     /// A function calling another one in the same unit, through the address the emitter mints.

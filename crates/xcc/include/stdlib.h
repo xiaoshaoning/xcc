@@ -24,6 +24,8 @@ double atof(const char *text);
 int atoi(const char *text);
 long long atoll(const char *text);
 double strtod(const char *restrict text, char **restrict end);
+long strtol(const char *restrict text, char **restrict end, int base);
+unsigned long strtoul(const char *restrict text, char **restrict end, int base);
 long long strtoll(const char *restrict text, char **restrict end, int base);
 unsigned long long strtoull(const char *restrict text, char **restrict end, int base);
 
