@@ -833,6 +833,14 @@ impl Parser<'_> {
                     self.error(span, "the address of a bitfield cannot be taken");
                     return Some(Value::temporary(self.types.error()));
                 }
+                // `sizeof(&x)` asks for a *type*: the operand is not evaluated (C99 6.5.3.4p2),
+                // and a place may need code that nothing will run - `b[0]` of an array in a
+                // frame, whose address is arithmetic on a slot. So an unevaluated `&` is its
+                // pointer type and no value, which is all the caller can ask about.
+                let pointer = self.types.pointer(value.ty);
+                if self.unevaluated {
+                    return Some(Value::new(pointer, None, false));
+                }
                 let Some(place) = value.place else {
                     if value.lvalue {
                         self.not_lowered(span, "the address of this kind of place");
@@ -841,7 +849,6 @@ impl Parser<'_> {
                     }
                     return Some(Value::temporary(self.types.error()));
                 };
-                let pointer = self.types.pointer(value.ty);
                 let mut result = Value::new(pointer, None, false);
                 result.cir = Some(place);
                 result.place = Some(place);

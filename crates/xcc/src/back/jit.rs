@@ -399,6 +399,32 @@ int twice(int x) { return host_double(x); }",
         assert_eq!(twice(21), 42);
     }
 
+    /// `sizeof` asks for a type, and `&` of a place that needs arithmetic to find - a row of an
+    /// array in a frame - has a type without having a value. Taking the address anyway made the
+    /// operand an error, the `return` emit nothing, and the function end in `unreachable`: valid C
+    /// that ran as an illegal instruction.
+    #[test]
+    fn sizeof_an_address_takes_the_type_and_not_the_place() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int a[2][3];
+             int global_row(void) { return (int)sizeof(&a[0]); }
+             int local_row(void) { int b[2][3]; return (int)sizeof(&b[0]) * 10 + (int)sizeof(b[0]); }
+             int rows(void) { int b[2][3]; int k;
+                 for (k = 0; k < 6; k = k + 1) { (&b[0][0])[k] = k * 2; }
+                 return (*(&b[0] + 1))[0] * 100 + (*(&b[0] + 1))[2]; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("global_row"), 8);
+        assert_eq!(call("local_row"), 8 * 10 + 12);
+        assert_eq!(call("rows"), 6 * 100 + 10);
+    }
+
     /// Three things that were wrong together and are wrong on their own: a `goto` back to a label
     /// that is not the first statement of its block, a local with static storage duration, and a
     /// `break` inside a `switch` inside a loop.

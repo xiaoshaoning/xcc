@@ -78,6 +78,34 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8: the refusal count was flattering the compiler - 2026-11-16 - and a `sizeof` that crashed
+
+The differential runner asked xcc first and counted a refusal without asking whether `clang` could
+build the program at all. So "51 refused" was really "51 programs xcc would not compile", of which
+most are programs *nobody* can compile with these headers - `mex.h`, POSIX `open`/`read`, a `printf`
+called with no declaration (C99 has none), Borland's `word`. Both compilers are asked now, and only
+a program `clang` builds and xcc refuses counts as a gap.
+
+**The honest number is 9.** Of 464 corpus programs: 411 run and agree, **9 are refused that clang
+builds**, 44 are outside the subset for anyone, 0 mismatch. The nine have reasons, and the reasons
+are recorded in `crates/xcc/tests/parse.rs`'s table: four pass a `double` to a variadic function
+(ADR-006's `AL`), one takes the address of a string literal at file scope (ADR-004's bytes cannot
+express a relocation), one is the `&`-of-a-row case below, and three are *deliberately invalid* C
+that clang merely warns about. A new ratchet says the count may only shrink.
+
+**Found: `sizeof(&b[0])` compiled to an illegal instruction.** Valid C, no diagnostic, and the
+.emitted function was `slot; trap` - a `return` whose expression produced nothing at all. The chain:
+`sizeof`'s operand is unevaluated (C99 6.5.3.4p2), and `&` of a row of an array in a frame needs
+arithmetic on a slot to find its place - which emits nothing while unevaluated, so `place` was
+`None`, so `&` made it an error, so `sizeof` answered with the error type, so `return` emitted
+nothing, so the block got an `unreachable`. A `sizeof` operand asks for a *type*, not a value:
+`&` in an unevaluated context now answers its pointer type and no value, and says nothing about a
+place it was never going to need. `cc53_ptrrow2.c` - which is entirely about that expression -
+passes now, and a JIT test pins the global, local and row-arithmetic forms.
+
+169 unit, 22 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (411 ran, 9 refused, 44
+skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8 `--run` and the C library, reviewed - 2026-11-16 - a JIT that could no longer be moved
 
 Review of `59c439f`: the C runtime for `--run`, static locals, the label-block fix, the `break`

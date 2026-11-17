@@ -34,14 +34,20 @@ const EXPECTED_MISMATCHES: &[(&str, &str)] = &[];
 /// refused, which is the regression this test exists to catch.
 const PROGRAMS_THAT_RAN: usize = 411;
 
+/// How many programs xcc refused and `clang` built, when this was last measured. A ratchet in the
+/// other direction: the gap may shrink, and never grow. Which programs they are, and why each is
+/// refused, is `crates/xcc/tests/parse.rs`'s table - this only counts them.
+const AT_MOST_REFUSED: usize = 9;
+
 /// How the subset split.
 #[derive(Default)]
 struct Counts {
     /// Programs both compilers built and ran.
     ran: usize,
-    /// Programs xcc would not compile: a recorded gap, not a difference.
+    /// Programs xcc would not compile *and* `clang` would: a recorded gap of ours, not a
+    /// difference. A program neither would build is `skipped`.
     refused: usize,
-    /// Programs outside the subset: one `clang` will not build.
+    /// Programs outside the subset: `clang` will not build them, with or without our headers.
     skipped: usize,
     /// Programs that ran out of time in *both* compilers: the machine was busy, or the program
     /// does not terminate under either. Counted apart so a loaded machine cannot fail the ratchet,
@@ -222,15 +228,21 @@ fn the_corpus_runs_like_clang() {
                         .expect("a file name")
                         .to_string_lossy()
                         .into_owned();
-                    let Some((ours, our_output)) = again_if_hung(|| xcc_runs(path)) else {
-                        counts.lock().expect("the counts").refused += 1;
-                        continue;
-                    };
-                    let Some((theirs, their_output)) = again_if_hung(|| clang_runs(path, &exe))
+                    let ours = again_if_hung(|| xcc_runs(path));
+                    let theirs = again_if_hung(|| clang_runs(path, &exe));
+                    let built_by_clang = theirs.is_some();
+                    let (Some((ours, our_output)), Some((theirs, their_output))) = (ours, theirs)
                     else {
-                        // `clang` would not build it: the corpus holds programs that are not C99
-                        // on purpose, and this test is about the ones both compilers claim.
-                        counts.lock().expect("the counts").skipped += 1;
+                        // One of them would not build it. Which one matters: a program `clang`
+                        // cannot build is outside the subset - the corpus holds programs that are
+                        // not C99 on purpose, and ones that need headers nobody has - while a
+                        // program only *xcc* refuses is a gap of ours, and is counted as one.
+                        // Asking both, not just xcc first, is what tells them apart.
+                        if !built_by_clang {
+                            counts.lock().expect("the counts").skipped += 1;
+                        } else {
+                            counts.lock().expect("the counts").refused += 1;
+                        }
                         continue;
                     };
                     if ours == Outcome::Hung && theirs == Outcome::Hung {
@@ -268,6 +280,11 @@ fn the_corpus_runs_like_clang() {
         counts.skipped,
         counts.timed_out,
         mismatched.len()
+    );
+    assert!(
+        counts.refused <= AT_MOST_REFUSED,
+        "{} programs are refused that clang builds, and {AT_MOST_REFUSED} used to be: something          refuses code it used to compile",
+        counts.refused
     );
     assert!(
         counts.ran + counts.timed_out >= PROGRAMS_THAT_RAN,
