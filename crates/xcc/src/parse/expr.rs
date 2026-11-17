@@ -1786,6 +1786,7 @@ impl Parser<'_> {
                             kind: Kind::Variable,
                             span,
                             storage: Some(incoming),
+                            defined: false,
                         },
                     );
                 }
@@ -1813,6 +1814,7 @@ impl Parser<'_> {
                             kind: Kind::Variable,
                             span,
                             storage: Some(slot),
+                            defined: false,
                         },
                     );
                 }

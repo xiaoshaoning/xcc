@@ -78,6 +78,49 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M7 reviewed: one definition per name, and numbers from the right build - 2026-11-16 - legal C that reached Cranelift's words
+
+Review of the three M7 commits (`e4c8ab7`, `5c18111`, `ef3beff`).
+
+**Found: `int x; int x;` did not compile.** Two tentative definitions of one object are legal C99
+and there is nothing to choose between them, but the parser pushed a `cir::Global` per declaration,
+so the back end saw two symbols and answered `cranelift module: Duplicate definition of identifier:
+x`. The legal pair `int x; int x = 1;` failed the same way, and so did `int f(void) { } int f(void)
+{ }` - the one case where C does say no, but our message was Cranelift's rather than C's.
+
+Two facts were missing, and they are different facts. *Where is this object's record*, so a later
+declaration completes it instead of appending - that is `globals_by_name`, a map to the index in
+`globals`. And *has this name a definition already*, which is the question C99 6.9p5 asks - that
+belongs on the name, so it is `Entry.defined`, set by a file-scope initialiser and by a function
+body, and asked by both. `define_global` now either completes the tentative record or refuses with
+`redefinition of x`; the function path refuses a second body in the same words and skips it, which
+also keeps the emitter from seeing two bodies.
+
+Measured against clang, five cases: `int x = 1; int x = 2;` and two bodies are refusals, and
+`int x; int x;`, `int x; int x = 1;`, `int x = 1; int x;` all compile to one object with the bytes
+the real definition gave it (5 and 7 read back from a JIT test). That the corpus never caught it is
+fair: 375 programs, and none of them declared a name twice.
+
+**Found: the C API trusted the host's symbol count with an allocation.** `Vec::with_capacity(count)`
+allocates before a single symbol is read, so a host that passed a nonsense count made the compiler
+abort - in the one place a host's mistakes are supposed to come back as a message. `Vec::new()`, and
+the list grows with the symbols that are actually checked.
+
+**Found: my own numbers were from the wrong build.** The sandbox entry said a million tokens is
+"about a minute" and 60 µs a token to lower. Every one of those measurements was `target/debug`. In
+release the same inputs are ten to thirty times faster - a million tokens in 4.2 s, not 60 - so the
+documented cost of the budget was wrong by an order of magnitude in the direction that makes the
+compiler look worse than it is. CONSTRAINTS 5 carries release numbers now and says which build they
+came from. The lesson is one I had written down and then ignored: measure the build the host ships.
+
+Checked and sound: `within_nesting` gives its level back on every path (the numbers in the hostile
+tests moved by nothing when the corpus ran); the prescan budget stops the fan-out bomb and the
+`reported` guard stops the work rather than merely the output; the render window keeps the caret
+under its character; the determinism test's two processes really do produce one byte stream.
+
+153 unit, 21 parser, 14 CLI, 4 hostile, 6 C API, differential, crt, pp gate, fuzz, exe - green;
+fmt and clippy clean.
+
 ### M7: the same source writes the same bytes - 2026-11-16 - the test CONSTRAINTS promised
 
 CONSTRAINTS 4 has promised since M1 that "a test compiles the same source twice and compares byte

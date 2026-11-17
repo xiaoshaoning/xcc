@@ -91,8 +91,10 @@ the queue of tokens waiting to expand and not on the prescan of an argument. And
 **Time is not a budget.** Nothing here reads a clock, because the same source and the same options
 must give the same diagnostics (section 4) - a compilation refused on a slow machine and accepted
 on a fast one is not deterministic. Work is bounded by the token budget instead, and per token it
-is linear: measured at ~2.5 µs a token to preprocess and ~60 µs to lower, so the default million
-tokens is about a minute in the worst case and a host that needs less lowers `max_tokens`.
+is linear: measured in a release build at ~0.4 µs a token to preprocess and ~4 µs to lower, so the
+default million tokens is a few seconds in the worst case and a host that needs less lowers
+`max_tokens`. A debug build is ten to thirty times slower - measured, not assumed - which is why
+every number in this section is a release one.
 
 **Check**: the constants live in one module, `Budgets` overrides them per compilation, one test
 per limit asserts the diagnostic, and the fuzz smoke test feeds deeply nested input.

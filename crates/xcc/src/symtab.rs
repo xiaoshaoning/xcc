@@ -39,6 +39,10 @@ pub(crate) struct Entry {
     /// The address of the variable, when it has one in the function being built: a slot pointer
     /// from `cir`. Declaration and storage are one fact, so they are recorded together.
     pub storage: Option<crate::cir::Value>,
+    /// Whether the unit already holds this name's *definition*: an object's bytes or a
+    /// function's body. C99 6.9p5 gives an identifier one, so the second one is
+    /// `redefinition of ...` rather than a second symbol for the back end to refuse.
+    pub defined: bool,
 }
 
 /// One scope: the names declared in it, and the `struct`/`union` tags, which live in a
@@ -154,6 +158,7 @@ mod tests {
             kind,
             span: Span::default(),
             storage: None,
+            defined: false,
         }
     }
 

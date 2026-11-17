@@ -53,7 +53,10 @@ const NO_HANDLE: &[u8] = b"\0";
 /// NUL-terminated string. `NULL` with `count` 0 is the common case: no symbols.
 #[no_mangle]
 pub unsafe extern "C" fn xcc_new(symbols: *const xcc_symbol, count: usize) -> *mut Handle {
-    let mut table: Vec<(&str, *const u8)> = Vec::with_capacity(count);
+    // Deliberately not `with_capacity(count)`: `count` comes from the host, and a confused one
+    // would have this allocate before a single symbol was checked. The vector grows with the
+    // symbols that are actually read.
+    let mut table: Vec<(&str, *const u8)> = Vec::new();
     let mut failure = None;
     if count > 0 {
         if symbols.is_null() {
@@ -207,7 +210,7 @@ fn refuse(handle: &mut Handle, message: &str) -> c_int {
 }
 
 /// What a panic payload says, in the words a host would put in a log.
-fn internal_error(payload: &Box<dyn std::any::Any + Send>) -> String {
+fn internal_error(payload: &(dyn std::any::Any + Send)) -> String {
     let message = payload
         .downcast_ref::<&str>()
         .map(|text| (*text).to_owned())

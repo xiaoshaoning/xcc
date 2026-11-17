@@ -61,6 +61,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         last_parameters: Vec::new(),
         funcs: Vec::new(),
         globals: Vec::new(),
+        globals_by_name: HashMap::new(),
         body: None,
         last_declared: None,
         function_buffer: None,
@@ -225,8 +226,12 @@ struct Parser<'a> {
     last_parameters: Vec<(Option<Symbol>, TypeId, Span)>,
     /// The functions whose bodies have been read.
     funcs: Vec<cir::Func>,
-    /// The globals declared so far.
+    /// The globals declared so far: one per name, because C99 6.9p5 gives an identifier one
+    /// definition and the back end treats a second as an error rather than as C.
     globals: Vec<cir::Global>,
+    /// Where each global's definition sits in `globals`, so a later declaration completes it
+    /// instead of appending a duplicate.
+    globals_by_name: HashMap<Symbol, usize>,
     /// The function being read, while its body is being parsed.
     body: Option<Body>,
     /// The name the last declarator declared, for a definition that follows it.
@@ -395,6 +400,25 @@ impl Parser<'_> {
             match self.types.kind(declared) {
                 Type::Function { result, .. } => {
                     let result = *result;
+                    // A prototype may be followed by the body (`int f(void); int f(void) { }`),
+                    // and a body may be followed by a prototype, but a second body is a second
+                    // definition (C99 6.9p5).
+                    let already = name.is_some_and(|name| {
+                        self.symbols.here(name).is_some_and(|entry| entry.defined)
+                    });
+                    if already {
+                        let span = self.span();
+                        let spelling = name.map(|name| self.spell_of(name).to_owned());
+                        self.error(
+                            span,
+                            format!("redefinition of `{}`", spelling.unwrap_or_default()),
+                        );
+                        self.skip_balanced_block();
+                        return;
+                    }
+                    if let Some(entry) = name.and_then(|name| self.symbols.here_mut(name)) {
+                        entry.defined = true;
+                    }
                     self.function_body(name, result);
                 }
                 _ => {
@@ -436,6 +460,7 @@ impl Parser<'_> {
             let entry = Entry {
                 ty,
                 storage: None,
+                defined: false,
                 kind: if specs.is_typedef {
                     Kind::Typedef
                 } else if matches!(self.types.kind(ty), Type::Function { .. }) {
@@ -521,22 +546,8 @@ impl Parser<'_> {
             // and is still refused, because a global with no bytes would be a wrong program.
             if object && !self.in_body() && !self.at_punct("=") {
                 if let Some(name) = name {
-                    {
-                        let span = self.span();
-                        self.globals.push(cir::Global {
-                            name: self.spell_of(name).to_owned(),
-                            ty,
-                            defined: true,
-                            init: None,
-                            // `static` is not distinguished yet: the storage class lives in
-                            // `Specifiers`, and patch 4 (which makes visibility matter) is the
-                            // place to read it. Until then every object claims to be external,
-                            // which is wrong for a `static` and harmless only because nothing
-                            // reads the flag.
-                            external: true,
-                            span,
-                        });
-                    }
+                    let span = self.span();
+                    self.define_global(name, ty, None, span);
                 }
             }
             // An initialiser: only a constant expression, for now.
@@ -556,14 +567,7 @@ impl Parser<'_> {
                     match self.initializer_bytes(ty) {
                         Some(bytes) => {
                             if let Some(name) = name {
-                                self.globals.push(cir::Global {
-                                    name: self.spell_of(name).to_owned(),
-                                    ty,
-                                    defined: true,
-                                    init: Some(bytes),
-                                    external: true,
-                                    span,
-                                });
+                                self.define_global(name, ty, Some(bytes), span);
                             }
                         }
                         // C99 6.7.8p4 wants a constant expression here, and an object this
@@ -649,6 +653,57 @@ impl Parser<'_> {
             span,
         });
         (ty, name, init)
+    }
+
+    /// Record a file-scope object's definition, completing one already there rather than adding
+    /// a second.
+    ///
+    /// C99 6.9p5 gives an identifier one definition: a later declaration may *complete* it -
+    /// `int x;` then `int x = 1;` is one object, and two tentative definitions are one object
+    /// too - but a second initialiser is a second definition, which C does not allow. Both
+    /// halves matter: the back end refuses a duplicate symbol as an internal error, so a legal
+    /// program must never take the second path, and an illegal one must not reach the back end
+    /// to be told so in Cranelift's words.
+    ///
+    /// `static` is not distinguished yet: the storage class lives in `Specifiers`, and patch 4
+    /// (which makes visibility matter) is the place to read it. Until then every object claims
+    /// to be external, which is wrong for a `static` and harmless only because nothing reads the
+    /// flag.
+    fn define_global(&mut self, name: Symbol, ty: TypeId, init: Option<Vec<u8>>, span: Span) {
+        // A tentative definition defines nothing yet: `int x;` may be followed by `int x = 1;`.
+        let already = self.symbols.here(name).is_some_and(|entry| entry.defined);
+        if init.is_some() {
+            if already {
+                let spelling = self.spell_of(name).to_owned();
+                self.error(span, format!("redefinition of `{spelling}`"));
+                return;
+            }
+            if let Some(entry) = self.symbols.here_mut(name) {
+                entry.defined = true;
+            }
+        }
+        match (self.globals_by_name.get(&name).copied(), &init) {
+            (Some(index), Some(_)) => {
+                // The tentative definition becomes the real one: it is what gives the object its
+                // bytes, and its size when the initialiser is what completed the type.
+                self.globals[index].ty = ty;
+                self.globals[index].init = init;
+            }
+            (Some(_), None) => {
+                // `int x;` after anything: a tentative definition says nothing new.
+            }
+            (None, _) => {
+                self.globals_by_name.insert(name, self.globals.len());
+                self.globals.push(cir::Global {
+                    name: self.spell_of(name).to_owned(),
+                    ty,
+                    defined: true,
+                    init,
+                    external: true,
+                    span,
+                });
+            }
+        }
     }
 
     /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value
@@ -858,6 +913,7 @@ impl Parser<'_> {
                 kind: Kind::EnumConst(value),
                 span: token.span,
                 storage: None,
+                defined: false,
             };
             if self.symbols.declare(token.text, entry).is_err() {
                 let name = self.spell(&token).to_owned();
@@ -1149,6 +1205,7 @@ impl Parser<'_> {
             kind: Kind::Variable,
             span,
             storage: None,
+            defined: false,
         };
         if self.symbols.declare(name, entry).is_err() {
             let spelling = self.spell_of(name).to_owned();

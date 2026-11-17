@@ -319,6 +319,27 @@ fn what_is_not_implemented_is_said_not_guessed() {
 }
 
 #[test]
+fn an_identifier_has_one_definition() {
+    // C99 6.9p5. The back end treats a second symbol as an internal error, so the front end has to
+    // say it in C's words - and a tentative definition is not one yet.
+    refuses("int x = 1; int x = 2;", "redefinition of `x`");
+    refuses(
+        "int f(void) { return 1; } int f(void) { return 2; }",
+        "redefinition of `f`",
+    );
+    // A prototype between two bodies does not make the second one new.
+    refuses(
+        "int f(void) { return 1; } int f(void); int f(void) { return 2; }",
+        "redefinition of `f`",
+    );
+    // And these are one object each, which C allows.
+    parses("int f(void); int f(void) { return 1; }");
+    parses("int x; int x;");
+    parses("int x; int x = 1;");
+    parses("int x = 1; int x;");
+}
+
+#[test]
 fn what_aggregates_still_cannot_do() {
     // A bitfield is read, written, stepped and initialised now: what is left in the aggregate
     // path is a struct value inside a brace list, and a replacement of the storage unit itself.

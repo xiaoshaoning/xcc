@@ -136,6 +136,29 @@ mod tests {
         assert_eq!(add(-7, 7), 0);
     }
 
+    /// C99 6.9p5 from the other side: a tentative definition and a real one are *one* object, in
+    /// either order, and the bytes are the ones the real definition gave it.
+    #[test]
+    fn a_tentative_definition_and_a_real_one_are_one_object() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int first;
+             int first = 5;
+             int second = 7;
+             int second;
+             int read_first(void) { return first; }
+             int read_second(void) { return second; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("read_first"), 5);
+        assert_eq!(call("read_second"), 7);
+    }
+
     /// A function calling another one in the same unit, through the address the emitter mints.
     #[test]
     fn one_function_calls_another() {
