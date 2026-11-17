@@ -228,12 +228,10 @@ impl Compiler {
                 }
             }
             (self.free)(&mut result);
+            // The return value, not `result.status`: `bcc20_compile` answers -1 *without running*
+            // when a job has more files than it takes, and a zeroed result would read as success.
             Outcome {
-                status: if result.status == 0 {
-                    status
-                } else {
-                    result.status
-                },
+                status,
                 console,
                 outputs,
             }

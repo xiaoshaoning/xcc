@@ -78,6 +78,41 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M9 reviewed - 2026-11-16 - a fixture nobody read, and a path the constraints said should not ship
+
+Review of `add5a70`: the measuring stick.
+
+**Found: the OMF fixture was committed with nothing reading it.** The test that used
+`tests/aggregates.obj` - the 401-byte object the port actually wrote, which is where the checksum
+byte and Borland's segment names live - was written, then removed in the same turn while I renamed
+it, leaving a binary in the repository and the lesson untested. It is `tests/omf.rs` now, and asserts
+both readers on the same bytes: the code segment is 107 bytes, and the file is not a COFF object.
+
+**Found: CONSTRAINTS 7 said the `--target=dos16` path is "test-only", and the code was not.** The
+constraint is about licensing - libbcc20 is derived from Borland's binary and must never be linked
+into a shipped artefact - and we do load it at run time and never link it, so the promise held. But
+the *FFI crate* was an unconditional dependency of the CLI, so a released `xcc.exe` carried the
+whole path. It is a cargo feature now (`dos16`, on by default): `--no-default-features` builds a CLI
+with no `--target` flag, no FFI and no OMF reader, which is what "test-only" means when a build has
+to be able to leave it behind. Measured both ways: `--target=dos16` works in the default build,
+and a no-default build answers "unexpected argument '--target'".
+
+**Found: `Outcome.status` preferred the wrong of two equal values.** `bcc20_compile` returns the
+status *and* stores it, and the code took `result.status` when it was non-zero - but when the library
+refuses to run at all (a job over its file limit) it returns -1 and never touches the result, which
+we zeroed: that would have read as success. The return value is the one to trust, and the comment
+says why.
+
+**Checked and sound:** the FFI's layouts against `bcc20.h` field by field, including the function
+pointer and the `Option<fn>` null; the job's pointers all outlive the call, and the result is freed
+through the library's own `bcc20_free`; `GetProcAddress`'s null becomes `None` rather than a
+transmuted zero; the corpus is C89, freestanding and deterministic as its README says; and the
+comparison's two readers answer `None` on a file they do not understand instead of guessing.
+
+169 unit, 23 parser, 19 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean
+(with and without the `dos16` feature).
+
 ### M9: the measuring stick - 2026-11-16 - a 1991 compiler as an oracle, and the build tree that lied
 
 M9's item was to compare xcc against the compiler that built early-1990s DOS games, through

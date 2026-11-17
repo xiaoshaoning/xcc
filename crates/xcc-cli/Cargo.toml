@@ -10,7 +10,13 @@ rust-version.workspace = true
 name = "xcc"
 path = "src/main.rs"
 
+[features]
+default = ["dos16"]
+# The measuring stick (PLAN.md M9): borland-reborn's port of Borland C++ 2.0, loaded at run time.
+# A build without this feature has no `--target` flag and no FFI at all (CONSTRAINTS 7).
+dos16 = ["dep:bcc20-sys"]
+
 [dependencies]
 xcc.workspace = true
 clap.workspace = true
-bcc20-sys = { path = "../bcc20-sys" }
+bcc20-sys = { path = "../bcc20-sys", optional = true }

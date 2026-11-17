@@ -46,6 +46,10 @@ struct Args {
     /// Which compiler to be. `dos16` drives borland-reborn's port of Borland C++ 2.0 - the
     /// measuring stick of PLAN.md's M9, not a second product: it writes a 16-bit DOS object for
     /// comparison, and needs `libbcc20` on this machine.
+    ///
+    /// Compiled in only with the `dos16` feature (on by default); a build without it has no
+    /// `--target` flag and no FFI at all (CONSTRAINTS 7).
+    #[cfg(feature = "dos16")]
     #[arg(long = "target", value_enum, default_value_t = TargetArg::Win64)]
     target: TargetArg,
 
@@ -71,6 +75,7 @@ struct Args {
 }
 
 /// The two compilers this command line can be.
+#[cfg(feature = "dos16")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum TargetArg {
     /// xcc itself: 64-bit COFF for Windows.
@@ -117,6 +122,7 @@ fn main() -> ExitCode {
     }
     let args = Args::parse_from(full);
 
+    #[cfg(feature = "dos16")]
     if args.target == TargetArg::Dos16 {
         return dos16(&args);
     }
@@ -211,6 +217,7 @@ fn main() -> ExitCode {
 }
 
 /// `--target=dos16`: hand the source to the ported Borland C++ 2.0 and write its 16-bit object.
+#[cfg(feature = "dos16")]
 ///
 /// The measuring stick of PLAN.md's M9: the same source through a compiler that shipped in 1991,
 /// so the front end's behaviour and the code sizes can be compared against something that was not
