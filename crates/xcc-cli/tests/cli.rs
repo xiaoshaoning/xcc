@@ -124,6 +124,42 @@ fn explain_a_source_that_does_not_compile_reports_its_errors_and_no_explanation(
 }
 
 #[test]
+fn the_dos_target_is_the_measuring_stick_and_says_so() {
+    let temp = Temp::new("dos16");
+    let source = temp.write(
+        "t.c",
+        "int add(int a, int b) { return a + b; }
+",
+    );
+    let out = temp.path().join("t.obj");
+    let output = run(xcc()
+        .arg("--target=dos16")
+        .arg("-c")
+        .arg(&source)
+        .arg("-o")
+        .arg(&out));
+    if std::env::var_os("BCC20_LIB").is_none() && !output.status.success() {
+        // The library is an opt-in dependency of this test's machine: without it the command
+        // says which one it wanted, which is the part this test can always check.
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            stderr(&output).contains("needs libbcc20"),
+            "{}",
+            stderr(&output)
+        );
+        return;
+    }
+    assert!(output.status.success(), "{}", stderr(&output));
+    let object = std::fs::read(&out).expect("the DOS object");
+    assert_eq!(object[0], 0x80, "an OMF record starts with its type");
+    assert!(
+        stdout(&output).contains("Borland C++"),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn the_headers_that_ship_with_the_compiler_are_found_without_a_flag() {
     let temp = Temp::new("headers");
     let source = temp.write(

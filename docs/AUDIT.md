@@ -78,6 +78,48 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M9: the measuring stick - 2026-11-16 - a 1991 compiler as an oracle, and the build tree that lied
+
+M9's item was to compare xcc against the compiler that built early-1990s DOS games, through
+borland-reborn's port of `BCC.EXE`. It is now a table.
+
+**The first attempt failed, and the failure is the interesting part.** The port's `build/` held
+objects from a **Linux** checkout - ELF, with `/usr/include/x86_64-linux-gnu` in their debug paths -
+and `make` judged them newer than the sources. It linked them into a "DLL" of 3.5 MB of zeroes and
+`ld` answered `returned 5 exit status`, with no message, twice. A `make clean` and a rebuild on this
+host's own toolchain produced a 13 MB `libbcc20.dll` in a minute. A build tree from another machine
+is not a build tree; the next person should not pay that hour again, so ADR-007 records it.
+
+**The FFI is loaded, not linked, and that is three decisions at once.** `BCC20_LIB`, else
+`libbcc20.dll` on `PATH`, through `LoadLibraryA` and `GetProcAddress`: a machine without the port
+still builds the workspace; a missing library is `None` so the comparison *says* what is missing
+instead of failing to build; and a mingw DLL cannot be linked by an MSVC-targeted crate without an
+import library that `cc` did not write. `bcc20.h` also says what the header knows and the caller
+must: "not reentrant: one compile at a time per process" - the tests take a lock, and so must a
+host.
+
+**Two object readers, one question.** The comparison needs the code size from each format: COFF's
+`.text` section for xcc, OMF's code segment for Borland. Reading OMF found a fact worth writing
+down - every record ends with a **checksum byte** whose inclusion makes the record sum to zero -
+which showed up as a `0xFC` that the LNAMES reader took for a 252-byte name. The reader stops at an
+entry that would overrun the record now, and a fixture of a real Borland object (401 bytes, 107 of
+them code) pins it, because a hand-built record set does not have a checksum in the right place.
+
+**What the stick says.** On six freestanding C89 files: **4857 bytes of 64-bit code from xcc against
+1233 bytes of 16-bit code from Borland** (aggregates 936/107, arith 1000/306, arrays 944/299,
+control 824/201, globals 240/84, switch 913/236). Some of that is the target - 64-bit code is
+bigger - and some is that Borland has register allocation and peephole optimisation and xcc has
+neither. That is M10's number to move, and it is now measured rather than assumed. Compile time is
+comparable: 72 ms against 49 ms for the six (one xcc compile each, including Cranelift).
+
+**And the corpus had to be small for an honest reason:** Borland C++ 2.0's headers are not in this
+repository (they come with the product), so a file that `#include`s anything cannot be built by
+both. Six freestanding files are what both can compile here; the corpus README says so, and says
+the rules (C89, no I/O, deterministic) that make it a comparison rather than a demo.
+
+169 unit, 23 parser, 19 CLI, 3 exe, 4 hostile, 6 C API, 5 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8 `sizeof` and the refusal count, reviewed - 2026-11-16 - two constraints skipped by one shortcut
 
 Review of `8fb9c42`: the honest refusal count, and the `sizeof(&b[0])` fix.

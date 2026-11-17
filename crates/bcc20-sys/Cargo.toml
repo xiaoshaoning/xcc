@@ -1,0 +1,12 @@
+[package]
+name = "bcc20-sys"
+description = "Borland C++ 2.0, as a library: the FFI over borland-reborn's libbcc20"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+xcc = { workspace = true }

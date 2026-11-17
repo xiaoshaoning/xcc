@@ -43,6 +43,12 @@ struct Args {
     #[arg(short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
 
+    /// Which compiler to be. `dos16` drives borland-reborn's port of Borland C++ 2.0 - the
+    /// measuring stick of PLAN.md's M9, not a second product: it writes a 16-bit DOS object for
+    /// comparison, and needs `libbcc20` on this machine.
+    #[arg(long = "target", value_enum, default_value_t = TargetArg::Win64)]
+    target: TargetArg,
+
     /// How to print diagnostics.
     #[arg(long, value_enum, default_value_t = FormatArg::Human)]
     format: FormatArg,
@@ -62,6 +68,15 @@ struct Args {
     /// C source files.
     #[arg(value_name = "FILE", required = true)]
     inputs: Vec<PathBuf>,
+}
+
+/// The two compilers this command line can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum TargetArg {
+    /// xcc itself: 64-bit COFF for Windows.
+    Win64,
+    /// The ported Borland C++ 2.0: 16-bit OMF, large model, for comparing against 1991.
+    Dos16,
 }
 
 /// The diagnostic shapes the command line offers.
@@ -102,6 +117,9 @@ fn main() -> ExitCode {
     }
     let args = Args::parse_from(full);
 
+    if args.target == TargetArg::Dos16 {
+        return dos16(&args);
+    }
     if args.explain && (args.compile_only || args.preprocess_only || args.run) {
         eprintln!("xcc: --explain is a mode of its own: no -c, -E or --run with it");
         return ExitCode::from(2);
@@ -190,6 +208,98 @@ fn main() -> ExitCode {
     }
 
     status
+}
+
+/// `--target=dos16`: hand the source to the ported Borland C++ 2.0 and write its 16-bit object.
+///
+/// The measuring stick of PLAN.md's M9: the same source through a compiler that shipped in 1991,
+/// so the front end's behaviour and the code sizes can be compared against something that was not
+/// written here. Nothing of it ships: the library is loaded where it is found, `-c` is the only
+/// mode (`BCC.EXE` is a compiler, not a linker for us), and the object it writes is the proof.
+fn dos16(args: &Args) -> ExitCode {
+    if !args.compile_only {
+        eprintln!("xcc: --target=dos16 compiles only; pass -c");
+        return ExitCode::from(2);
+    }
+    if args.preprocess_only || args.run || args.explain {
+        eprintln!("xcc: --target=dos16 takes -c alone: -E, --run and --explain are xcc's own");
+        return ExitCode::from(2);
+    }
+    let [input] = args.inputs.as_slice() else {
+        eprintln!("xcc: --target=dos16 takes one source");
+        return ExitCode::from(2);
+    };
+    let Some(compiler) = bcc20_sys::Compiler::load() else {
+        eprintln!(
+            "xcc: --target=dos16 needs libbcc20 (set BCC20_LIB or put it on PATH); it is              borland-reborn's port, and it is not here"
+        );
+        return ExitCode::from(2);
+    };
+    let name = input.display().to_string();
+    let source = match std::fs::read_to_string(input) {
+        Ok(source) => source,
+        Err(error) => {
+            eprintln!("xcc: cannot read {name}: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    // BCC's own flags: large model, optimise, and the host's `-D`/`-U`/`-I` (BCC spells them the
+    // same). The source goes in under a DOS name, uppercase, as the DOS filesystem has it.
+    let dos = format!(
+        "{}.C",
+        input
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| String::from("T"))
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .take(8)
+            .collect::<String>()
+            .to_ascii_uppercase()
+    );
+    let mut arguments: Vec<String> =
+        vec![String::from("-c"), String::from("-ml"), String::from("-O")];
+    for define in &args.defines {
+        arguments.push(format!("-D{define}"));
+    }
+    for undefine in &args.undefines {
+        arguments.push(format!("-U{undefine}"));
+    }
+    for path in &args.include_paths {
+        arguments.push(format!("-I{}", path.display()));
+    }
+    let job = bcc20_sys::Job {
+        args: arguments
+            .into_iter()
+            .chain(std::iter::once(dos.clone()))
+            .collect(),
+        files: vec![(dos.as_str(), source.as_bytes())],
+        root: None,
+        time: 0,
+        stack_limit: true,
+    };
+    let outcome = compiler.compile(&job);
+    print!("{}", outcome.console);
+    if !outcome.succeeded() {
+        return ExitCode::from(1);
+    }
+    let Some((_, object)) = outcome
+        .outputs
+        .iter()
+        .find(|(written, _)| written.ends_with(".OBJ"))
+    else {
+        eprintln!("xcc: the DOS compiler wrote no object");
+        return ExitCode::from(1);
+    };
+    let path = args
+        .output
+        .clone()
+        .unwrap_or_else(|| input.with_extension("obj"));
+    if let Err(error) = std::fs::write(&path, object) {
+        eprintln!("xcc: cannot write {}: {error}", path.display());
+        return ExitCode::from(2);
+    }
+    ExitCode::SUCCESS
 }
 
 /// `--run`: compile one source in process, call `main`, and leave with its value.

@@ -13,3 +13,4 @@ path = "src/main.rs"
 [dependencies]
 xcc.workspace = true
 clap.workspace = true
+bcc20-sys = { path = "../bcc20-sys" }

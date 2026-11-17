@@ -320,14 +320,25 @@ The first thing worth showing, and the reason the project exists.
 
 The reason `--target=dos16` stays. It is a measuring stick, not a product.
 
-- [ ] `crates/bcc20-sys`: bindgen-free hand-written FFI over `libbcc20`'s `bcc20.h`
-      (compile a job from memory, get files back).
-- [ ] `xcc-cli --target=dos16 -c -ml -O -G t.c` compiles a source with the ported
-      Borland compiler, when `libbcc20` is present.
-- [ ] A `compare` example that compiles the same files both ways and prints: time, code size,
+- [x] `crates/bcc20-sys`: bindgen-free hand-written FFI over `libbcc20`'s `bcc20.h`
+      (compile a job from memory, get files back). The library is **loaded at run time**
+      (`BCC20_LIB`, else `libbcc20.dll` on `PATH`), so a machine without the port still builds the
+      workspace and a missing library is `None` rather than a link error - which also sidesteps
+      linking a mingw DLL from an MSVC-targeted crate. It is not reentrant; the tests take a lock
+      ([ADR-007](docs/ADR-007-measuring-stick.md)).
+- [x] `xcc --target=dos16 -c t.c` compiles a source with the ported Borland compiler (large model,
+      optimised) and writes Borland's own OMF object; `-D`/`-U`/`-I` pass through because BCC spells
+      them the same, and `-E`, `--run` and `--explain` are refused because they are xcc's own.
+- [x] A `compare` example that compiles the same files both ways and prints: time, code size,
       diagnostics. This is how PLAN's successor gets its numbers, and how the front end gets
-      cross-checked against a 1991 implementation.
-- [ ] Acceptance: the comparison runs on the six-file corpus and reports a table.
+      cross-checked against a 1991 implementation: `crates/bcc20-sys/examples/compare.rs`, over
+      `crates/bcc20-sys/corpus` - six freestanding C89 files, because Borland's own headers are not
+      in this repository.
+- [x] Acceptance: the comparison runs on the six-file corpus and reports a table -
+      `crates/bcc20-sys/tests/acceptance.rs` asserts both compilers build all six and prints the
+      sizes. Measured: **4857 bytes of 64-bit code from xcc against 1233 bytes of 16-bit code from
+      Borland** on those six files. Some of that gap is the target and some is that Borland has
+      register allocation and xcc has none - which is M10's number to move.
 
 ## M10 - the quality path: our optimiser and our emitter  (XXL, the long arc)
 
