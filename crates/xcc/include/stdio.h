@@ -9,6 +9,14 @@
 
 typedef struct _iobuf FILE;
 
+/* The three streams are not variables in this C library: it hands out the descriptor for an
+ * index, and the standard names are macros over that. Declaring them as `extern FILE *stdin`
+ * would compile and then fail to link - a promise the target cannot keep. */
+FILE *__acrt_iob_func(unsigned index);
+#define stdin __acrt_iob_func(0)
+#define stdout __acrt_iob_func(1)
+#define stderr __acrt_iob_func(2)
+
 #define EOF (-1)
 #define BUFSIZ 512
 #define FOPEN_MAX 20

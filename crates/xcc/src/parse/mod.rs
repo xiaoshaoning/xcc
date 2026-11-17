@@ -1542,10 +1542,10 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        // A variadic call needs `AL` set to the vector-register count and a signature per call
-        // site: the back end can express neither (ADR-006).
+        // A floating-point argument to a variadic call needs `AL` set to the vector-register
+        // count, which is a physical register this back end cannot write (ADR-006).
         let (module, _, diagnostics) =
-            module("int p(char *, ...); int f(void) { return p(0, 1); }");
+            module("int p(const char *, ...); int f(void) { return p(\"%f\", 1.5); }");
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())
@@ -1553,7 +1553,7 @@ block0 (entry)(v0: int, v1: int):
         assert!(
             messages
                 .iter()
-                .any(|message| message.contains("not lowered yet")),
+                .any(|message| message.contains("cannot be passed")),
             "{messages:?}"
         );
         assert!(module.funcs.is_empty(), "a body with a gap is not lowered");

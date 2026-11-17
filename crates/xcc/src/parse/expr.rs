@@ -1190,21 +1190,37 @@ impl Parser<'_> {
             };
             self.error(span, format!("this function takes {takes}, {given} given"));
         }
-        // Win64 varargs - the AL count and the duplicated float registers - is M6. A call
-        // emitted with the declared arity alone does not describe it, so it is refused here,
-        // where the arguments have already been read and checked, rather than half-emitted.
+        // C99 6.5.2.2p6: an argument with no parameter type gets the *default argument
+        // promotions* - `char`, `short` and `_Bool` to `int`, `float` to `double` - and it is the
+        // promoted type that crosses the ABI. This is the one place the variadic form differs
+        // from the declared one, which is why it is done here and not in `emit_call`.
         if variadic {
-            self.not_lowered_with(
-                span,
-                "a call to a variadic function",
-                Some(
-                    "Win64 sets `AL` to the vector-register count, and gives every call site its \
-                     own signature; this back end can express neither (docs/ADR-006-varargs.md)",
-                ),
-            );
-            return Value::new(result, None, false);
+            for slot in values.iter_mut().skip(params.len()) {
+                let argument = *slot;
+                if self.types.is_error(argument.ty) {
+                    continue;
+                }
+                if self.types.is_float(argument.ty) {
+                    // Win64 says how many vector registers a variadic call uses in `AL`, a
+                    // physical register this back end cannot write; a callee that reads a float
+                    // and finds `AL` at zero reads nothing. Integers and pointers are safe: the
+                    // callee either spills its vector registers or does not, and asks for none of
+                    // our arguments either way. This refusal is the ABI, not a missing lowering
+                    // step, so it does not say "yet".
+                    let diagnostic = Diagnostic::error(
+                        "a floating-point argument to a variadic function cannot be passed",
+                    )
+                    .with_note(
+                        "Win64 passes it in a vector register and tells the callee how many to read in `AL`, a physical register this back end cannot set; integer and pointer arguments work (docs/ADR-006-varargs.md)",
+                    );
+                    self.push(diagnostic, span);
+                    return Value::new(result, None, false);
+                }
+                let promoted = self.types.promote(argument.ty);
+                *slot = self.convert(argument, promoted, span);
+            }
         }
-        self.emit_call(callee, &params, values, result, span)
+        self.emit_call(callee, &params, values, variadic, result, span)
     }
 
     /// The call itself: arguments converted to the parameter types, and the result value.
@@ -1213,6 +1229,7 @@ impl Parser<'_> {
         callee: Value,
         params: &[TypeId],
         values: Vec<Value>,
+        variadic: bool,
         result: TypeId,
         span: Span,
     ) -> Value {
@@ -1236,12 +1253,17 @@ impl Parser<'_> {
             _ => Vec::new(),
         };
         for (position, argument) in values.into_iter().enumerate() {
-            // Surplus arguments belong to a variadic call, which `call` refuses before it
-            // reaches here; a non-variadic call with too many arguments is diagnosed and
-            // its body dropped, so there is nothing left to convert.
+            // An argument past the last parameter belongs to a variadic call and has already
+            // been converted to its promoted type; a surplus argument to a non-variadic call
+            // was diagnosed, and its body dropped.
             let wanted = match params.get(position) {
                 Some(wanted) => *wanted,
-                None => continue,
+                None => {
+                    if let Some(value) = argument.cir {
+                        args.push(value);
+                    }
+                    continue;
+                }
             };
             let converted = self.convert(argument, wanted, span);
             let Some(value) = converted.cir else {
@@ -1279,7 +1301,7 @@ impl Parser<'_> {
         } else {
             Some(result)
         };
-        let called = self.emit(|builder| builder.call(callee, args, returns, span));
+        let called = self.emit(|builder| builder.call(callee, args, variadic, returns, span));
         let Some(called) = called else {
             return Value::new(result, None, false);
         };
@@ -1524,14 +1546,12 @@ impl Parser<'_> {
                     self.init_target = Some((slot, to));
                     self.offset = 0;
                     self.brace_initializer(to);
-                    Value {
-                        ty: to,
-                        constant: None,
-                        lvalue: true,
-                        cir: Some(slot),
-                        place: Some(slot),
-                        bits: None,
-                    }
+                    // The literal's *value* is the object it filled: a load for a scalar, and the
+                    // address for anything whose value is its address (ADR-004). Returning the
+                    // slot's address as if it were the value typed the value `to` while its code
+                    // was a `pointer to` - so `(int){5} + 1` added a pointer, and returning
+                    // `(char){65}` from an `int` function converted a pointer.
+                    self.read_place(to, slot, span)
                 }
                 // No body, or no room for one: the value is read for its type and dropped.
                 None => {

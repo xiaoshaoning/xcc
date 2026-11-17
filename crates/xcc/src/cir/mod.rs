@@ -269,8 +269,13 @@ pub enum Inst {
         result: Option<Value>,
         /// The function to call.
         callee: Value,
-        /// The arguments, already converted to the parameter types.
+        /// The arguments: the ones the signature declares, converted to their parameter types,
+        /// then any the variadic form adds, which `call` has already promoted.
         args: Vec<Value>,
+        /// Whether the call passes more arguments than the function declares. A variadic call has
+        /// no single signature - each call site has its own - so the back end builds one from the
+        /// arguments here rather than from the declaration (ADR-006).
+        variadic: bool,
         /// Where in the source.
         span: Span,
     },
@@ -683,6 +688,7 @@ impl<'a> Builder<'a> {
         &mut self,
         callee: Value,
         args: Vec<Value>,
+        variadic: bool,
         result: Option<TypeId>,
         span: Span,
     ) -> Option<Value> {
@@ -691,6 +697,7 @@ impl<'a> Builder<'a> {
             result: value,
             callee,
             args,
+            variadic,
             span,
         });
         value

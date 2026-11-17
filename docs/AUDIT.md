@@ -78,6 +78,53 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8: `printf` - 2026-11-16 - the blocker that was not one, and the bug it had hidden
+
+ADR-006 recorded two things Cranelift could not say, and refused every variadic call because of
+them. One of the two was wrong.
+
+**The signature per call site was already expressible.** `cranelift-module` refuses to declare one
+name with two signatures - but a `call_indirect` needs no declaration at all: it takes a signature
+and an address. So a variadic call is now an indirect call whose signature is built from *this call
+site's* arguments (`signature_of`, the ABI rules included), to the address of the function, plus
+the default argument promotions C99 6.5.2.2p6 asks for - `char`, `short` and `_Bool` to `int`,
+`float` to `double`. The front end's half is one loop and one `Convert`.
+
+**`AL` is genuinely out of reach, and now bounds instead of blocks.** What a callee does with `AL`
+is decide whether to spill its vector registers. With no floating-point argument, either decision
+is harmless: it spills registers nobody asked for, or spills nothing and reads nothing. So
+integer, character, string and pointer arguments work - which is what `printf("%d %s %x")`,
+`snprintf`, `fprintf` and `sscanf`'s input side do - and a floating-point argument is refused with
+a diagnostic that says *cannot be passed*, not *not lowered yet*, because it is the ABI rather than
+a missing step. `va_list`/`va_start`/`va_arg` stay refused: the callee's side of the same question.
+
+**Measured, not assumed.** `tests/exe.rs` compiles a program that `snprintf`s, `printf`s and
+`fprintf`s to stderr, links it against the C runtime, and compares its stdout *and* stderr byte for
+byte with clang's build of the same source through the same linker: nine bytes, `answer=42`, and
+the same line on both streams. That is M8's acceptance item, minus `%f`.
+
+**Found: the JIT panicked on a symbol it could not resolve.** `--run` on a program calling `printf`
+hit `can't resolve symbol printf` *inside cranelift-jit* - a panic in a dependency, in the host's
+process, which is exactly what CONSTRAINTS 6 forbids. The JIT now checks every address a unit
+mints against what it defines and what it was given, so the same program gets "`printf` is not
+defined in this compilation and was not given as a host symbol" before anything is compiled. The
+check has to know about *earlier* sources too - the C API's second source calls the first one's
+functions - which the API test found immediately.
+
+**Found: a scalar compound literal's value was its address.** With `printf` calls unblocked, corpus
+programs that had been refused for printing began to compile, and one of them hit a `debug_assert`
+in the parser: `(int){5} + 1` was `add` on a `pointer to int` typed as `int`, and `(char){65}`
+returned from an `int` function was a pointer conversion. The literal filled a slot and handed back
+the slot's address with the literal's type - right for an aggregate, where a value *is* its address
+(ADR-004), and wrong for a scalar, where the value is the object. `read_place` knows the difference,
+and is now what the compound-literal path returns. Four cases pinned by a JIT test (6, 65, 11, 12,
+each matching clang), and `cc60_scalar_literal.c` compiles clean. The bug is older than this
+commit: it was invisible because the programs that contain a compound literal also printed, so
+their bodies were dropped before the verifier saw them.
+
+161 unit, 22 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (376 ran, 86 refused, 0
+mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8 headers reviewed - 2026-11-16 - the LLP64 trap, in the one file that states the ABI's numbers
 
 Review of `7ed1353`: the headers that ship with the compiler.

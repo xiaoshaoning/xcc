@@ -1,7 +1,10 @@
 # ADR-006: varargs, and the two things the back end cannot say
 
-Status: accepted, 2026-11-16. Written before the code, because the first thing varargs needs is a
-decision about where the missing expressiveness lives.
+Status: accepted 2026-11-16, amended 2026-11-16. Written before the code, because the first thing
+varargs needs is a decision about where the missing expressiveness lives. **Amended the same day**
+when the second of its two blockers turned out to be expressible after all: see
+[The amendment](#the-amendment-per-call-site-signatures-via-an-indirect-call) at the end. The
+original decision is kept as written, because the reasoning that was wrong is worth remembering.
 
 ## Context
 
@@ -77,3 +80,50 @@ M8's headers will need this ADR to be overturned, not extended.
   register (`AL`). Both are one grep each; both are the whole reason this ADR exists.
 - If neither changes, the path is M10's own emitter, which owns its call sequences and can say
   `mov al, N` because it is writing the instructions.
+
+## The amendment: per-call-site signatures via an indirect call
+
+The second blocker was not a blocker. `cranelift-module` refuses to declare one name with two
+signatures - but a **`call_indirect` needs no declaration at all**: it takes a signature and an
+address. So a variadic call is lowered as:
+
+1. a signature built from the *arguments of this call site* (`signature_of`, the same function a
+   pointer call already used, ABI rules included);
+2. the address of the callee - `func_addr` of the `FuncRef` a direct call would have used, or the
+   pointer value when the callee is already one;
+3. `call_indirect`, which passes exactly those arguments and returns what the signature says.
+
+The front-end half is the default argument promotions (C99 6.5.2.2p6): `char`, `short` and `_Bool`
+to `int`, `float` to `double`, applied in `call` to the arguments past the declared parameters.
+`_Bool` is already 0/1 by comparison, and a promoted argument is one `Convert`, so nothing else
+changed.
+
+**`AL` remains out of reach, and it now bounds what works instead of blocking everything.** What
+the callee does with `AL` is decide whether to spill its vector registers into the register-save
+area. If no floating-point argument is passed, either decision is harmless: the callee spills
+registers nobody asked it for, or spills nothing and reads nothing. So:
+
+- **integer, character, string and pointer arguments work** - `printf("%d %s %x")`, `snprintf`,
+  `fprintf`, `sscanf`'s input side - and are the overwhelming majority of calls;
+- **a floating-point argument is refused** with a diagnostic that is *not* "not lowered yet": it
+  cannot be passed, because a callee that finds `AL` at zero reads nothing where the argument
+  should be. Passing it in both files (the ABI's duplicate) does not help: which of the two
+  `va_arg` reads is the callee's choice, and it is the vector one for a `double`.
+
+That refusal is honest and permanent until the back end can write a physical register. It is also
+small: a `%f` in a format string is the only thing it costs a `printf` user.
+
+**What the amendment costs.** A variadic call is an indirect call - a `func_addr` and a
+`call_indirect` instead of a direct `call` - so its callee cannot be inlined and it pays one
+indirection. At `opt_level = none` that is indistinguishable from what a direct call costs, and it
+is what every other compiler does at a call site whose signature only it knows.
+
+**Still refused: `va_list`, `va_start` and `va_arg`.** These are the callee's side of the same
+convention, and the same `AL` question decides whether a variadic function can exist in C compiled
+by xcc. `stdarg.h` refuses with a pointer to this ADR; a program that defines its own variadic
+function cannot be compiled yet, and one that calls `printf` can.
+
+**A JIT cannot be the linker.** `--run` resolves symbols when it finalizes, and a call to `printf`
+is a call to something the JIT does not have; that is a diagnostic now rather than a panic inside
+`cranelift-jit` (`back::jit` checks every address a unit mints against what it defines and what it
+was given). A program that prints is built with `-c` and linked, which is M8's acceptance path.

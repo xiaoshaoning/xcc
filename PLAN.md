@@ -240,10 +240,11 @@ The first thing worth showing, and the reason the project exists.
       are a parse-and-layout question, not an M6 one.)
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
       refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
-- [ ] Varargs (`va_list` from `stdarg.h` over the Windows ABI), `printf`-style calls.
-      Blocked on the back end, not on the front end: [ADR-006](docs/ADR-006-varargs.md) records the
-      two things Cranelift cannot say (`AL`, and a signature per call site), so this waits for
-      M10's own emitter unless the dependency grows the ability first.
+- [x] `printf`-style calls with integer, character, string and pointer arguments: the call site's
+      arguments *are* its signature, so the call is lowered indirectly with one built from them,
+      and the default argument promotions are applied first. A floating-point argument stays
+      refused - it needs `AL`, a physical register - and so do `va_list`/`va_start`/`va_arg`, which
+      are the callee's side of the same convention ([ADR-006](docs/ADR-006-varargs.md), amended).
 - [x] `long long` arithmetic including division and shifts at the edges. Settled by measurement
       rather than by decision: against `clang -O0` on this machine, a shift count at or beyond the
       width masks to the hardware's six bits in both (`(1LL << 70)` is 64 in each), and
@@ -282,9 +283,11 @@ The first thing worth showing, and the reason the project exists.
       reads as the instruction it is, and the Cranelift function follows with the virtual
       registers in it. `Compile::explain` is the same pipeline as `Compile::compile`, not a
       second one, and the back end only formats the Cranelift function when it is asked.
-- [~] Acceptance: `malloc`, `free` and `qsort` work in a program compiled by `xcc` and linked
-      against the SDK's libraries (measured, matching clang's own build); `printf` and `snprintf`
-      do not, because they are variadic (ADR-006). `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
+- [~] Acceptance: `printf`, `snprintf`, `fprintf`, `malloc`, `free`, `qsort` and
+      `fopen`/`fwrite`/`fseek`/`fgetc` work in a program compiled by `xcc` and linked against the
+      SDK's libraries - `tests/exe.rs` compares such a program's stdout *and* stderr byte for byte
+      with clang's build of the same source. A floating-point argument to `printf` is still
+      refused (ADR-006). `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
       calls it, calls a host symbol through it, and reads a diagnostic; `tests/hostile.rs` runs
       seven hostile shapes through the binary and asserts a refusal, not a crash or a hang. The
       Lua half is not done: there is no Lua on this machine, and a script nobody can run is worse

@@ -75,7 +75,9 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | floating constants, including `f`/`l` suffixes and exponents | `partial` - decimal forms are read once into the type's bits; hexadecimal constants (`0x1.8p3`) are refused, which C99 6.4.4.2 requires and this reader does not do |
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
-| a call to a variadic function (`printf`-style) | `refused` - Win64 wants `AL` set to the vector-register count and a signature per call site; this back end can express neither, so the refusal names the reason ([ADR-006](ADR-006-varargs.md)) |
+| a call to a variadic function (`printf`-style) with integer, character, string or pointer arguments | `sound` (M8): the call site's arguments are its signature, so it is lowered as an indirect call, and the default argument promotions are applied. A callee that reads `AL` finds it at whatever it was, which only matters if a floating-point argument was passed |
+| a floating-point argument to a variadic function | `refused` - Win64 passes it in a vector register and says how many in `AL`, a physical register the back end cannot write, so a callee would read nothing; the diagnostic is "cannot be passed", not "not lowered yet" ([ADR-006](ADR-006-varargs.md)) |
+| `va_list`, `va_start`, `va_arg`, defining a variadic function | `refused` - the callee's side of the same convention, and the same `AL` question ([ADR-006](ADR-006-varargs.md)); `stdarg.h` refuses with a pointer to it |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
 | `switch`, `goto`, labels | `sound` (M6): the controlling expression must be an integer, `case` values unique, one `default`, and a `goto` lowers to a jump - forward or backward, with a label on the entry block or a join given a block of its own |
 | initialisation of aggregates, static and automatic | `sound` (M6): brace lists, elision and designators, read into a frame slot or a file-scope object's bytes |

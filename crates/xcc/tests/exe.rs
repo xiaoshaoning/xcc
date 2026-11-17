@@ -110,3 +110,67 @@ int main(void) {
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(status, Some(7), "the C library answered as C says it does");
 }
+
+#[test]
+fn a_program_that_prints_links_and_prints_the_same_as_clang() {
+    // M8's acceptance item, the one ADR-006 blocked: `printf`, `snprintf` and `fprintf` with
+    // integer, character, string and pointer arguments - a variadic call whose signature only the
+    // call site knows, lowered as an indirect call. The program is a `.c` file beside this test,
+    // because the last two attempts to keep it in a string literal lost an escape each time.
+    let Some(linker) = linker() else {
+        eprintln!("no linker on this machine: the printf test is skipped");
+        return;
+    };
+    let source = include_str!("printf_acceptance.c");
+    let artifact = Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect("a variadic call compiles");
+    let dir = temp_dir("printf");
+    let object = dir.join("t.o");
+    let exe = dir.join("t.exe");
+    std::fs::write(&object, artifact.object()).expect("the object is written");
+    let link = Command::new(linker)
+        .arg("-o")
+        .arg(&exe)
+        .arg(&object)
+        .output()
+        .expect("the linker runs");
+    if !link.status.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        panic!("linking failed: {}", String::from_utf8_lossy(&link.stderr));
+    }
+
+    // The same source through clang, with the headers xcc ships, so the output is compared with
+    // a reference rather than eyeballed.
+    let source_file = dir.join("t.c");
+    std::fs::write(&source_file, source).expect("the source is written");
+    let reference = dir.join("reference.exe");
+    let built = Command::new(linker)
+        .arg("-O0")
+        .arg("-w")
+        .arg("-isystem")
+        .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../xcc/include"))
+        .arg("-o")
+        .arg(&reference)
+        .arg(&source_file)
+        .status()
+        .expect("clang runs");
+
+    let ours = Command::new(&exe)
+        .current_dir(&dir)
+        .output()
+        .expect("the program runs");
+    let theirs = built
+        .success()
+        .then(|| Command::new(&reference).current_dir(&dir).output())
+        .and_then(Result::ok);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // `answer=42` is nine characters, which is what snprintf returns - the count that *would*
+    // have been written, and the program returns it.
+    assert_eq!(ours.status.code(), Some(9), "snprintf wrote nine bytes");
+    if let Some(theirs) = theirs {
+        assert_eq!(ours.stdout, theirs.stdout, "stdout differs from clang's");
+        assert_eq!(ours.stderr, theirs.stderr, "stderr differs from clang's");
+    }
+}

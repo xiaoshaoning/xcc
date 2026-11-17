@@ -31,13 +31,15 @@ source -> preprocess -> parse -> cir (verified SSA CFG) -> Cranelift -> COFF obj
 
 Stated here rather than discovered later.
 
-- **Variadic calls are refused**, which is why `printf` is not there yet: the Win64 ABI wants `AL`
-  set to the number of vector registers used and a signature per call site, and this back end can
-  express neither ([ADR-006](docs/ADR-006-varargs.md)). `-c` and `--run` both say so rather than
-  compiling something that would crash.
-- **`printf` and `snprintf` are refused**, so a program that prints cannot be built yet; the
-  headers are there and the calls are the thing ADR-006 blocks. Of the 86 corpus programs xcc
-  refuses, 50 are this.
+- **A floating-point argument to a variadic function cannot be passed** - `printf("%f", 1.5)`.
+  Win64 passes it in a vector register and says how many in `AL`, a physical register this back end
+  cannot write, so the callee would read nothing. Integer, character, string and pointer
+  arguments work ([ADR-006](docs/ADR-006-varargs.md), amended).
+- **`va_list`, `va_start`, `va_arg`, and defining a variadic function** are refused: the callee's
+  side of the same convention, and the same `AL` question.
+- **`--run` cannot call the C library.** A JIT resolves symbols when it finalizes, so a program
+  that `printf`s is built with `-c` and linked, not run in process; the diagnostic says which
+  symbol was missing.
 - **No unwind data.** A Cranelift win64 object carries `.text` and no `.pdata`/`.xdata` (measured,
   and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
   works; *unwinding* through it - SEH, a debugger walking frames - does not.

@@ -21,6 +21,13 @@ pub struct Jit {
     module: JITModule,
     /// The name each function was declared by, so a host can ask for it later.
     names: Vec<(String, FuncId)>,
+    /// The host symbols this JIT was given, by name: what a call to something this unit does not
+    /// define may reach. A JIT resolves symbols when it finalizes, and an unresolvable one is a
+    /// panic inside `cranelift-jit`, so the check is made here where it can be a diagnostic.
+    symbols: Vec<String>,
+    /// Every name this JIT has already defined, across the sources added to it: a second source
+    /// may call the first one's functions and take the address of its objects.
+    defined: Vec<String>,
 }
 
 impl std::fmt::Debug for Jit {
@@ -71,6 +78,8 @@ impl Jit {
         Ok(Self {
             module: JITModule::new(builder),
             names: Vec::new(),
+            symbols: symbols.iter().map(|(name, _)| (*name).to_owned()).collect(),
+            defined: Vec::new(),
         })
     }
 
@@ -90,9 +99,33 @@ impl Jit {
         }
         let module: CirModule = parsed.module;
         let names = preprocessed.names().clone();
+        // A JIT has no linker: what it calls must be here already. Asking first turns a panic
+        // inside `cranelift-jit` into a diagnostic, and leaves this JIT usable for the next
+        // source instead of half-finalized.
+        let mut defined: Vec<String> = self.defined.clone();
+        defined.extend(
+            module
+                .globals
+                .iter()
+                .map(|global| global.name.clone())
+                .chain(
+                    module
+                        .funcs
+                        .iter()
+                        .map(|func| names.resolve(func.name).to_owned()),
+                ),
+        );
+        for required in required_symbols(&module) {
+            if !defined.contains(&required) && !self.symbols.contains(&required) {
+                return Err(format!(
+                    "`{required}` is not defined in this compilation and was not given as a host symbol; a JIT can only call what it has"
+                ));
+            }
+        }
         let functions =
             crate::back::lower_into(&mut self.module, &module, &names).map_err(|error| error.0)?;
         self.names.extend(functions);
+        self.defined = defined;
         self.module
             .finalize_definitions()
             .map_err(|error| format!("finalizing: {error}"))?;
@@ -107,6 +140,25 @@ impl Jit {
         let (_, id) = self.names.iter().find(|(known, _)| known == name)?;
         Some(self.module.get_finalized_function(*id))
     }
+}
+
+/// The names this unit may reach for without defining: every address it mints, which is a call
+/// to something else or a reference to someone else's storage.
+fn required_symbols(module: &CirModule) -> Vec<String> {
+    let mut required: Vec<String> = Vec::new();
+    for func in &module.funcs {
+        for block in &func.blocks {
+            for inst in &block.insts {
+                if let crate::cir::Inst::GlobalAddress { name, .. } = inst {
+                    let name = name.clone();
+                    if !required.contains(&name) {
+                        required.push(name);
+                    }
+                }
+            }
+        }
+    }
+    required
 }
 
 /// Every error in `diagnostics`, in order, as one line each.
@@ -157,6 +209,32 @@ mod tests {
         };
         assert_eq!(call("read_first"), 5);
         assert_eq!(call("read_second"), 7);
+    }
+
+    /// A compound literal's *value*: the object it filled, so a scalar is loaded and an aggregate
+    /// is its address (ADR-004). Returning the slot's address typed as the literal's type made
+    /// `(int){5} + 1` add a pointer and `(char){65}` from an `int` function convert one - which the
+    /// verifier caught once a corpus program containing one could compile.
+    #[test]
+    fn a_compound_literal_is_an_object_and_its_value_is_read_from_it() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "struct P { int a, b; };
+             int scalar(void) { return (int){5} + 1; }
+             int narrow(void) { return (char){65}; }
+             int addressed(void) { int *p; p = &(int){9}; *p = 11; return *p; }
+             int aggregate(void) { struct P p = (struct P){1, 2}; return p.a * 10 + p.b; }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("scalar"), 6);
+        assert_eq!(call("narrow"), 65);
+        assert_eq!(call("addressed"), 11);
+        assert_eq!(call("aggregate"), 12);
     }
 
     /// The headers ship with the compiler: `--run` - which gives no host files at all - can still

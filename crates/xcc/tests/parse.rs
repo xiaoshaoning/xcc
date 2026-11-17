@@ -300,13 +300,13 @@ fn what_is_not_implemented_is_said_not_guessed() {
     refuses("int a[2] = {[0 ... 1] = 3};", "not implemented yet");
     refuses("int f(void) { asm(\"nop\"); }", "`asm` is not declared");
     refuses(
-        "int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }",
-        "a call to a variadic function is not lowered yet",
+        "int printf(const char *, ...); int f(void) { return printf(\"%f\", 1.5); }",
+        "a floating-point argument to a variadic function cannot be passed",
     );
-    // ...and the *note* names the two things the back end cannot say, so a reader does not have to
-    // rediscover them. The message stays one sentence; the reason is the diagnostic's note, which
-    // a host can show apart from it (ADR-006).
-    let notes = notes("int printf(const char *, ...); int f(void) { return printf(\"x\", 1); }");
+    // ...and the *note* names the thing the back end cannot say, so a reader does not have to
+    // rediscover it. The message stays one sentence; the reason is the diagnostic's note, which a
+    // host can show apart from it (ADR-006).
+    let notes = notes("int printf(const char *, ...); int f(void) { return printf(\"%f\", 1.5); }");
     assert!(
         notes.iter().any(|note| note.contains("ADR-006")),
         "{notes:?}"
@@ -315,6 +315,18 @@ fn what_is_not_implemented_is_said_not_guessed() {
     refuses(
         "int printf(const char *, ...); int f(void) { return printf(1); }",
         "argument 1 is int, expected pointer to char",
+    );
+}
+
+#[test]
+fn a_variadic_call_passes_integers_and_refuses_floats() {
+    // ADR-006, in its new shape: the call site's own signature makes the *call* expressible, and
+    // `AL` is the only thing left - which only a floating-point argument needs.
+    parses("int p(const char *, ...); int f(void) { return p(\"%d\", 1); }");
+    parses("int p(const char *, ...); int f(void) { char c = 1; return p(\"%d\", c); }");
+    refuses(
+        "int p(const char *, ...); int f(void) { return p(\"%f\", 1.5); }",
+        "a floating-point argument to a variadic function cannot be passed",
     );
 }
 

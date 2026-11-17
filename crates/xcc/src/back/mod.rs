@@ -657,23 +657,50 @@ impl<M: Module> Lowerer<'_, M> {
                 result,
                 callee,
                 args,
+                variadic,
                 ..
             } => {
-                let args: Vec<ClValue> = args
+                let machine: Vec<ClValue> = args
                     .iter()
                     .map(|arg| value(values, *arg))
                     .collect::<Result<_, _>>()?;
+                // A variadic call has no single signature: its arguments this time *are* its
+                // signature, so one is built from them and the call is indirect - a `FuncRef`
+                // carries the declaration's signature, and a second one for the same name is an
+                // error in `cranelift-module` (ADR-006).
+                if *variadic {
+                    let params: Vec<TypeId> = args.iter().map(|arg| func.value(*arg).ty).collect();
+                    let result_ty = match result {
+                        Some(result) => func.value(*result).ty,
+                        None => self
+                            .types
+                            .fundamental("void")
+                            .ok_or_else(|| LoweringError(String::from("no void type")))?,
+                    };
+                    let signature = self.signature_of(&params, result_ty)?;
+                    let signature = builder.import_signature(signature);
+                    let address = match callees.get(callee).copied() {
+                        Some(target) => builder.ins().func_addr(ir::types::I64, target),
+                        None => value(values, *callee)?,
+                    };
+                    let call = builder.ins().call_indirect(signature, address, &machine);
+                    if let Some(result) = result {
+                        let produced = builder.inst_results(call)[0];
+                        values.insert(*result, produced);
+                    }
+                    return Ok(());
+                }
                 // A direct call: the callee's address was minted by a `GlobalAddress` in this
                 // body, so the function itself is known. Anything else is a call through a
                 // pointer, and its signature is the function type the pointer points at - the
                 // same `signature_of` the direct path uses, ABI rules and all.
                 let call = match callees.get(callee).copied() {
-                    Some(target) => builder.ins().call(target, &args),
+                    Some(target) => builder.ins().call(target, &machine),
                     None => {
                         let address = value(values, *callee)?;
                         let signature = self.signature_of_pointer(func.value(*callee).ty)?;
                         let signature = builder.import_signature(signature);
-                        builder.ins().call_indirect(signature, address, &args)
+                        builder.ins().call_indirect(signature, address, &machine)
                     }
                 };
                 if let Some(result) = result {
