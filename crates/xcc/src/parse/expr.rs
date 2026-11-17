@@ -1253,17 +1253,15 @@ impl Parser<'_> {
             _ => Vec::new(),
         };
         for (position, argument) in values.into_iter().enumerate() {
-            // An argument past the last parameter belongs to a variadic call and has already
-            // been converted to its promoted type; a surplus argument to a non-variadic call
-            // was diagnosed, and its body dropped.
-            let wanted = match params.get(position) {
-                Some(wanted) => *wanted,
-                None => {
-                    if let Some(value) = argument.cir {
-                        args.push(value);
-                    }
-                    continue;
-                }
+            // An argument past the last parameter belongs to a variadic call: it is already
+            // converted to its promoted type, so it "wants" to be itself - and the record rules
+            // below still apply to it, because a record of eight bytes or fewer crosses the ABI
+            // as an integer of its width, which is what `signature_of` has said already. A
+            // surplus argument to a non-variadic call was diagnosed, and its body dropped.
+            let wanted = match params.get(position).copied() {
+                Some(wanted) => wanted,
+                None if variadic => argument.ty,
+                None => continue,
             };
             let converted = self.convert(argument, wanted, span);
             let Some(value) = converted.cir else {
@@ -1564,7 +1562,9 @@ impl Parser<'_> {
             self.init_target = target;
             return literal;
         }
-        let Some(from) = self.unary_expression() else {
+        // C99 6.3.2.1p3: an array operand of a cast is an expression like any other, so it decays
+        // to a pointer first - `(char *)array` is a cast of the pointer, not of the array.
+        let Some(from) = self.unary_expression().map(|value| self.decay(value)) else {
             return Value::temporary(to);
         };
         let converts = self.types.is_assignable(to, from.ty)

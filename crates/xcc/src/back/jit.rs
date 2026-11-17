@@ -211,6 +211,38 @@ mod tests {
         assert_eq!(call("read_second"), 7);
     }
 
+    /// Casts C allows and the backend has to lower: an array operand decays first, a narrow
+    /// integer to a pointer widens the way an integer would, and a small record passed to a
+    /// variadic call crosses the ABI as an integer of its width - not as its address.
+    #[test]
+    fn casts_and_a_record_argument_cross_the_abi_like_clang() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "struct Small { int a, b; };
+             struct Big { int a[4]; };
+             int pointer_casts(void) {
+                 char array[4]; array[0] = 1; array[2] = 3;
+                 char *p = (char *)array;
+                 void *from_int = (void *)-1;
+                 void *from_wide = (void *)(long long)-1;
+                 return (from_int == from_wide ? 1 : 0) + (p == array ? 2 : 0) + (p[2] == 3 ? 4 : 0);
+             }
+             int record_bytes(void) {
+                 struct Small small = { 7, 8 };
+                 struct Big big = { { 10, 11, 12, 13 } };
+                 return small.a * 1000 + small.b * 100 + big.a[0] * 10 + big.a[3];
+             }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        assert_eq!(call("pointer_casts"), 7);
+        assert_eq!(call("record_bytes"), 7 * 1000 + 8 * 100 + 10 * 10 + 13);
+    }
+
     /// A compound literal's *value*: the object it filled, so a scalar is loaded and an aggregate
     /// is its address (ADR-004). Returning the slot's address typed as the literal's type made
     /// `(int){5} + 1` add a pointer and `(char){65}` from an `int` function convert one - which the

@@ -452,6 +452,22 @@ impl Parser<'_> {
         if (self.types.is_pointer(from) && wide(to)) || (wide(from) && self.types.is_pointer(to)) {
             return Some(cir::ConvertOp::Bitcast);
         }
+        // A narrower integer to a pointer is implementation-defined (6.3.2.3p5), and the machine
+        // has one answer: the value is widened into the register the way it would be widened into
+        // a wider integer - sign-extended if it is signed, zero-extended if it is not, which is
+        // what clang does with `(void *)-1`.
+        if self.types.is_pointer(to) {
+            if let Some(from_bits) = width(from) {
+                if from_bits < 64 {
+                    let signed = signed(from) && !matches!(self.types.kind(from), Type::Bool);
+                    return Some(if signed {
+                        cir::ConvertOp::SignExtend
+                    } else {
+                        cir::ConvertOp::ZeroExtend
+                    });
+                }
+            }
+        }
         if let (Some(from_bits), Some(to_bits)) = (width(from), width(to)) {
             return Some(if to_bits == from_bits {
                 cir::ConvertOp::Bitcast

@@ -78,6 +78,46 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8 varargs reviewed - 2026-11-16 - the record that crossed the ABI as its own address
+
+Review of `cd0da32`: variadic calls lowered as indirect calls, and the two bugs it exposed.
+
+**Found: a small record passed to a variadic function went in as its address.** The call-site
+signature said what the ABI says - a record of eight bytes or fewer crosses in an integer of its
+width - but the argument pushed was the record's *address*, and those agree in type only by luck:
+both are 64-bit. `printf("%d", p)` for `struct P { int a, b; }` printed the low half of a stack
+address where clang prints 1. The surplus-argument path now takes the argument's own (promoted)
+type as its "wanted" type, so the same record rules that apply to a declared parameter apply to a
+variadic one: a small record is loaded as an integer, a big one travels by reference.
+
+**Found: `(void *)-1` and `(char *)array` were refused.** Neither is varargs; both were on a test
+of `sscanf` and `%p` that the previous commit made worth writing. An array operand of a cast must
+decay first (C99 6.3.2.1p3) - `cast` called `unary_expression` and stopped, so an array arrived at
+the conversion table as an array. And a *narrow* integer to a pointer had no conversion at all: the
+table widened integers to integers and bitcast pointers to 64-bit integers, and treated everything
+else as "cannot yet". C leaves the narrowing implementation-defined (6.3.2.3p5); the machine's
+answer is to widen the value into the register as an integer would be widened - sign-extended when
+signed, which is what clang does with `(void *)-1` (`== (void *)(long long)-1`, measured).
+
+**Found: the differential runner's ratchet could fail on a busy machine.** A full `cargo test
+--workspace` had one program time out on both sides and `ran` came out one below the ratchet, which
+reads as "something refuses code that ran". A timeout on both sides is not a disagreement about a
+value: it is the machine, or a corpus program that does not terminate under either compiler. It is
+now counted as `timed_out`, printed, and added to the ratchet's side of the comparison - while a
+hang on *one* side is still a mismatch, because that is a program this compiler made diverge.
+
+Checked and sound: the promotions are applied to exactly the arguments past the declared
+parameters, and only for a variadic call; a non-variadic surplus argument still pushes nothing (its
+error already dropped the body); the call-site signature is built from the same `signature_of` a
+declared function uses, so aggregates and the hidden result pointer behave identically; `func_addr`
+on an imported `FuncRef` produces a relocation the object writer resolves, which is what makes
+`printf` link; and the JIT's symbol check runs before lowering, so a missing symbol leaves the JIT
+usable - the C API's second source still calls the first one's functions, which it now has to
+remember across sources.
+
+163 unit, 22 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (376 ran, 86 refused, 2
+skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8: `printf` - 2026-11-16 - the blocker that was not one, and the bug it had hidden
 
 ADR-006 recorded two things Cranelift could not say, and refused every variadic call because of

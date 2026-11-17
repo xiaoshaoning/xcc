@@ -43,6 +43,10 @@ struct Counts {
     refused: usize,
     /// Programs outside the subset: one `clang` will not build.
     skipped: usize,
+    /// Programs that ran out of time in *both* compilers: the machine was busy, or the program
+    /// does not terminate under either. Counted apart so a loaded machine cannot fail the ratchet,
+    /// and printed, so a silent rise is visible.
+    timed_out: usize,
 }
 
 /// What running a program came to.
@@ -229,6 +233,12 @@ fn the_corpus_runs_like_clang() {
                         counts.lock().expect("the counts").skipped += 1;
                         continue;
                     };
+                    if ours == Outcome::Hung && theirs == Outcome::Hung {
+                        // Neither finished, twice: not a disagreement about a value. A program
+                        // that hangs in one and not the other is still a mismatch below.
+                        counts.lock().expect("the counts").timed_out += 1;
+                        continue;
+                    }
                     counts.lock().expect("the counts").ran += 1;
                     let known = EXPECTED_MISMATCHES.iter().any(|(file, _)| *file == name);
                     if (ours != theirs || our_output != their_output) && !known {
@@ -252,16 +262,18 @@ fn the_corpus_runs_like_clang() {
     let mut mismatched = mismatched.into_inner().expect("the mismatches");
     mismatched.sort();
     eprintln!(
-        "differential: {} ran, {} refused, {} skipped, {} mismatched",
+        "differential: {} ran, {} refused, {} skipped, {} timed out, {} mismatched",
         counts.ran,
         counts.refused,
         counts.skipped,
+        counts.timed_out,
         mismatched.len()
     );
     assert!(
-        counts.ran >= PROGRAMS_THAT_RAN,
-        "{} programs ran, and {PROGRAMS_THAT_RAN} used to: something refuses code that ran",
-        counts.ran
+        counts.ran + counts.timed_out >= PROGRAMS_THAT_RAN,
+        "{} programs ran (and {} timed out), and {PROGRAMS_THAT_RAN} used to: something refuses          code that ran",
+        counts.ran,
+        counts.timed_out
     );
     assert!(
         mismatched.is_empty(),
