@@ -81,6 +81,19 @@ Two limits are not one: a doubling macro nests not at all, so a depth counter ca
 the token budget is what stops that one. A thread
 with a big stack is rejected: it turns a diagnosable input into an unobservable resource.
 
+**Measured (M7)**: the three holes this section named were real, and closed. `((((((...` overflowed
+the stack because the budget counted declarators, statements and constant expressions but not
+expressions, which is where parentheses, unary operators and casts recurse. A macro that fans out
+*inside an argument* ran for as long as the machine allowed, because the token budget was spent on
+the queue of tokens waiting to expand and not on the prescan of an argument. And a diagnostic in a
+200 KB line echoed the whole line, so a hundred diagnostics came out as 39 MB.
+
+**Time is not a budget.** Nothing here reads a clock, because the same source and the same options
+must give the same diagnostics (section 4) - a compilation refused on a slow machine and accepted
+on a fast one is not deterministic. Work is bounded by the token budget instead, and per token it
+is linear: measured at ~2.5 µs a token to preprocess and ~60 µs to lower, so the default million
+tokens is about a minute in the worst case and a host that needs less lowers `max_tokens`.
+
 **Check**: the constants live in one module, `Budgets` overrides them per compilation, one test
 per limit asserts the diagnostic, and the fuzz smoke test feeds deeply nested input.
 

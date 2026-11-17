@@ -892,6 +892,11 @@ impl Preprocessor<'_> {
         if raw.token.kind != TokenKind::Ident || raw.hide.contains(&raw.token.text) {
             return None;
         }
+        // The token budget is spent: every further expansion would be work whose result is thrown
+        // away, so the tokens pass through as they are and the one diagnostic stands.
+        if self.reported.contains("tokens") {
+            return None;
+        }
         if let Some(predefined) = self.predefined(raw) {
             return Some(predefined);
         }
@@ -1276,6 +1281,14 @@ impl Preprocessor<'_> {
         let mut out = Vec::new();
         self.depth += 1;
         while let Some(raw) = self.next() {
+            // An argument is prescanned in full, and a prescan can be where a hostile source does
+            // its work: `#define F(x) F(x) F(x)`-style fan-out expands *inside* an argument
+            // before the queue that is checked ever grows. So the budget is spent here too.
+            if out.len() >= self.budgets.max_tokens {
+                let span = raw.token.span;
+                self.too_many_tokens(span);
+                break;
+            }
             match self.expansion_of(&raw) {
                 Some(expansion) => self.splice_front(expansion),
                 None => out.push(raw),
@@ -1869,6 +1882,32 @@ yes
         };
         let (_, diagnostics) = run_with(&source, &budgets);
         assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].message,
+            "preprocessing produced more than 1000 tokens"
+        );
+    }
+
+    #[test]
+    fn a_macro_that_fans_out_inside_an_argument_is_stopped_too() {
+        // The queue stays short here - the growth is inside the argument that is prescanned, not
+        // in what is waiting to be expanded - so only spending the budget during a prescan stops
+        // it. Without that, ten levels of this is ten-to-the-hundredth tokens of work.
+        let mut source = String::from("#define D0(x) x x x x x x x x x x\n");
+        for step in 1..10 {
+            source.push_str(&format!(
+                "#define D{step}(x) D{}(D{}(x))\n",
+                step - 1,
+                step - 1
+            ));
+        }
+        source.push_str("D9(1)\n");
+        let budgets = Budgets {
+            max_tokens: 1_000,
+            ..Budgets::default()
+        };
+        let (_, diagnostics) = run_with(&source, &budgets);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(
             diagnostics[0].message,
             "preprocessing produced more than 1000 tokens"

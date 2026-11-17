@@ -1246,6 +1246,18 @@ impl Parser<'_> {
     fn leave_nesting(&mut self) {
         self.nesting = self.nesting.saturating_sub(1);
     }
+
+    /// Run `parse` one level deeper, and give the level back whatever it answers - the shape a
+    /// recursive rule takes so that a source nested past the budget is a diagnostic rather than a
+    /// stack overflow, without every early return inside the rule having to remember.
+    fn within_nesting<T>(&mut self, parse: impl FnOnce(&mut Self) -> Option<T>) -> Option<T> {
+        if !self.enter_nesting() {
+            return None;
+        }
+        let value = parse(self);
+        self.leave_nesting();
+        value
+    }
 }
 
 /// What the specifiers of a declaration said.

@@ -78,6 +78,54 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M7: the sandbox, and three holes it named - 2026-11-16 - hostile input measured, not assumed
+
+M7's sandbox item says a compile of hostile input "respects its budget and returns an error, not a
+panic or a hang". The budgets existed (source bytes, tokens, macro depth, include depth, object
+bytes, diagnostics). What did not exist was the evidence, so I wrote seven hostile sources and
+compiled them.
+
+**Found: `((((((...` was a stack overflow.** A hundred thousand parentheses killed the process
+(exit 127, "has overflowed its stack"). `max_nesting` was counted in declarators, statements and
+constant expressions - not in expressions, which is exactly where parentheses, unary operators and
+casts recurse. `conditional_expression` and `unary_expression` now count too, through
+`within_nesting`, which gives the level back whatever the rule answers: the alternative, an
+`enter`/`leave` pair around rules with early returns, leaks a level per early return and silently
+lowers the budget for the rest of the file - the comment on `enter_nesting` already warned about
+that shape. Measured after: parentheses, `!!!!`, `(int)(int)`, `g(g(g(`, `if (x) if (x)`,
+`{ { {` and `int ((((x))))` are all "nesting is deeper than 256" in under a second each.
+
+**Found: a macro that fans out inside an argument ran forever.** `#define D0(x) x x x x x x x x x x`
+and `#define Dn(x) D(n-1)(D(n-1)(x))` nested ten deep is ten-to-the-hundredth tokens of work. The
+token budget was checked on the queue of tokens *waiting* to expand and on the output, but a
+function-like macro prescans its argument first - and there the queue stays short while the work
+explodes. Now a prescan spends the same budget, and once it is spent `expansion_of` stops
+expanding: the one diagnostic stands and the remaining tokens pass through untouched. Measured:
+120 s of nothing became a refusal in 18 s (the 18 s is a million tokens of prescan work at the
+budget's own price, not a hang).
+
+**Found: 39 MB of diagnostics from a 200 KB file.** One diagnostic per level was not the problem -
+there were a hundred, the budget's worth. Each echoed the *whole* source line, and that line was
+200 KB: 400 KB per diagnostic, twice (the line and its caret row). The renderer now shows a window
+of at most 120 characters around the caret, with `…` where the line continues; the caret's column
+is what a reader needs, and the line number is already in the header. Measured after: 25 KB, and a
+test pins both the width and that the caret still sits under the character it is about.
+
+**What the measurements say about a time budget.** Adding one would break CONSTRAINTS 4: the same
+source refused on a slow machine and accepted on a fast one is not deterministic. So work is
+bounded by tokens, and the price per token is measured rather than guessed - about 2.5 µs to
+preprocess and 60 µs to lower, i.e. roughly a minute for the default million tokens, and a host
+that cannot afford that lowers `max_tokens`. The 60 µs is mostly Cranelift building one enormous
+block, which is M10's problem to earn back.
+
+`crates/xcc-cli/tests/hostile.rs` runs each shape through the compiled binary as a *child
+process* - a regression in the nesting budget is a stack overflow, and a test that ran the compiler
+in-process would take the harness with it instead of failing with a name. It asserts the exit code,
+the message naming the budget, and that the refusal is under a megabyte.
+
+152 unit, 20 parser, 13 CLI, 4 hostile, 6 C API, differential, crt, pp gate, fuzz, exe - green;
+fmt and clippy clean.
+
 ### M7: the C API - 2026-11-16 - five functions, and one place where `unsafe` is the job
 
 M7's headline item: `crates/xcc-capi`, a `cdylib` + `staticlib` + `rlib` that exports

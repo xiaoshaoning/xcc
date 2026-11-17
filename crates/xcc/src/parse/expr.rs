@@ -222,6 +222,13 @@ impl Parser<'_> {
     /// is part of what the expression is: `int *p = 1 ? 0 : 0;` is a null pointer only if the
     /// constant survives.
     pub(super) fn conditional_expression(&mut self) -> Option<Value> {
+        // Every way an expression nests inside another one comes through here - a parenthesised
+        // group, an argument, a subscript, an initialiser value - so this is where the budget
+        // stops a source that would recurse the stack to its end.
+        self.within_nesting(Self::conditional_expression_inner)
+    }
+
+    fn conditional_expression_inner(&mut self) -> Option<Value> {
         let condition = self.binary_expression(0)?;
         let question = self.span();
         if !self.eat("?") {
@@ -743,6 +750,12 @@ impl Parser<'_> {
     }
 
     pub(super) fn unary_expression(&mut self) -> Option<Value> {
+        // Unary operators recurse into themselves and no further expression rule does: `!!!!x`,
+        // `----x`, `(int)(int)(int)x` and their like are this function calling itself.
+        self.within_nesting(Self::unary_expression_inner)
+    }
+
+    fn unary_expression_inner(&mut self) -> Option<Value> {
         let operator = self.peek().map(|token| self.spell(token).to_owned())?;
         let span = self.span();
         match operator.as_str() {

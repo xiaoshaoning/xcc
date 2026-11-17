@@ -90,9 +90,13 @@ fn human(diagnostic: &Diagnostic, source: Option<&SourceFile>) -> String {
         if let Some(text) = source.line(position.line) {
             let width = position.line.to_string().len();
             let gutter = " ".repeat(width);
-            out.push(format!("{:>width$} | {text}", position.line));
-            let carets = " ".repeat(position.column.saturating_sub(1) as usize)
-                + &"^".repeat(span.len.max(1) as usize);
+            let (shown, caret, carets) = window(
+                text,
+                position.column.saturating_sub(1) as usize,
+                span.len.max(1) as usize,
+            );
+            out.push(format!("{:>width$} | {shown}", position.line));
+            let carets = " ".repeat(caret) + &"^".repeat(carets);
             out.push(format!("{gutter} | {carets}"));
         }
     }
@@ -101,6 +105,43 @@ fn human(diagnostic: &Diagnostic, source: Option<&SourceFile>) -> String {
         out.push(format!("= note: {note}"));
     }
     out.join("\n")
+}
+
+/// The most characters of a source line one diagnostic shows.
+///
+/// A line can be megabytes - machine-generated code often is, and a hostile source always can be -
+/// and the reader needs the caret's column, not the rest of the line. A window also keeps a
+/// hundred diagnostics at a hundred lines instead of forty million, which is the difference
+/// between reporting a refusal and burying the host in it.
+const LINE_WIDTH: usize = 120;
+
+/// A window of `text` holding `caret`, at most [`LINE_WIDTH`] characters: what it shows, where the
+/// caret sits in it, and how many carets fit. `…` at either end says the line continues.
+fn window(text: &str, caret: usize, carets: usize) -> (String, usize, usize) {
+    let chars: Vec<char> = text.chars().collect();
+    let caret = caret.min(chars.len());
+    let carets = carets.min(chars.len().saturating_sub(caret)).max(1);
+    if chars.len() <= LINE_WIDTH {
+        return (text.to_owned(), caret, carets);
+    }
+    // A third of the window before the caret, the rest after: enough context to recognise the
+    // expression, all of it on screen.
+    let mut start = caret.saturating_sub(LINE_WIDTH / 3);
+    let mut end = start + LINE_WIDTH;
+    if end > chars.len() {
+        end = chars.len();
+        start = end.saturating_sub(LINE_WIDTH);
+    }
+    let mut shown = String::new();
+    if start > 0 {
+        shown.push('…');
+    }
+    shown.extend(&chars[start..end]);
+    if end < chars.len() {
+        shown.push('…');
+    }
+    let offset = usize::from(start > 0) + (caret - start);
+    (shown, offset, carets.min(end - caret).max(1))
 }
 
 #[cfg(test)]
@@ -190,6 +231,37 @@ mod tests {
             .with_file("t.c")
             .with_span(Span::new(9999, 9999));
         assert!(render(&diagnostic, Some(&source), Format::Human).contains("error: x"));
+    }
+
+    #[test]
+    fn a_line_too_long_to_show_is_a_window_around_the_caret() {
+        // Machine-generated code has lines like this and a hostile source has worse: a hundred
+        // diagnostics must not become a hundred copies of a megabyte.
+        let line = format!("int x = {}0;", "1 + ".repeat(4_000));
+        let source = SourceFile::new("long.c", &line);
+        let at = line.find("0;").expect("the last term") as u32;
+        let diagnostic = Diagnostic::error("this one")
+            .with_file("long.c")
+            .with_span(Span::new(at, 1));
+        let rendered = render(&diagnostic, Some(&source), Format::Human);
+
+        for shown in rendered.lines() {
+            assert!(
+                shown.chars().count() <= LINE_WIDTH + 16,
+                "a window, not the whole line: {} characters",
+                shown.chars().count()
+            );
+        }
+        assert!(rendered.contains('…'), "the line says it continues");
+
+        // And the caret still sits under what the diagnostic is about: the window moved, the
+        // caret moved with it.
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 3, "{rendered}");
+        let shown = lines[1].split_once(" | ").expect("a gutter").1;
+        let carets = lines[2].split_once(" | ").expect("a gutter").1;
+        let column = carets.find('^').expect("a caret");
+        assert_eq!(shown.chars().nth(column), Some('0'), "{rendered}");
     }
 
     #[test]

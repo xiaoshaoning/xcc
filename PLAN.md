@@ -263,8 +263,15 @@ The first thing worth showing, and the reason the project exists.
       an opaque handle, and a `xcc.h`. It is the one crate where `unsafe` lives; a failure is a
       message on the handle rather than a return code to decode, and a panic inside the compiler
       reaches the host as one of those messages instead of an abort.
-- [ ] Sandbox: no filesystem access unless given a resolver, memory and time budgets per
-      compile, recursion limits, `#[forbid(unsafe_code)]` everywhere else.
+- [x] Sandbox: no filesystem access unless given a resolver (`Includes` is a trait, and `Jit`
+      passes none), memory budgets per compile (`Budgets`: source bytes, tokens, object bytes,
+      diagnostics), and recursion limits. This item is what turned three of the four holes up:
+      expressions were not counted against the nesting budget (a stack overflow), a macro fanning
+      out inside an argument was outside the token budget (an unbounded hang), and the renderer
+      echoed whole source lines (39 MB of diagnostics from a 200 KB file). Work is bounded by
+      tokens rather than by a clock, because a compilation refused on a slow machine and accepted
+      on a fast one breaks determinism - [CONSTRAINTS](docs/CONSTRAINTS.md) 4 and 5 record the
+      measurements.
 - [ ] Deterministic output: pinned clock, stable symbol order, reproducible objects.
 - [ ] `--explain`: why this instruction, which registers were used - borrowed from
       borland-reborn's port, where it turned out to be the most useful debugging aid.
