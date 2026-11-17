@@ -78,6 +78,46 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M10: the harness compiles both lowerings - 2026-11-16 - and the plan's number against clang
+
+M10's fourth item: "a differential harness that compiles with both lowerings and compares behaviour,
+so moving work between them is safe". It is the *same* test as the corpus gate, not a second one:
+`crates/xcc-cli/tests/differential.rs` now compiles and runs every corpus program at
+`--opt-level=0`, at `--opt-level=1`, and with `clang -O0`, and every *pair* of the three answers must
+agree on the exit code and on stdout.
+
+Three details that decided the shape:
+
+- **Three answers, every pair compared.** Comparing each lowering with clang and stopping there would
+  miss the case the item exists for: two lowerings that agree with each other and disagree with C.
+  The pairwise loop says "opt-level=0 against opt-level=1" in the message when that pair is the one
+  that moved, which is the sentence a reader needs.
+- **A refusal counts as an answer.** A program one level compiles and the other refuses is reported
+  as a mismatch naming which way round it is - the failure a compiler is most likely to have first,
+  and the one an exit-code comparison alone would hide as "both fine".
+- **It replaced work rather than adding it.** The extra lowering costs 18% of the test's time (184 s
+  against 156 s) because the corpus is already spread over cores; a second copy of the loop would
+  have cost the full time again and drifted from the first.
+
+**Measured: 412 programs agree across all three, 8 are refused at both levels, 0 mismatched.**
+
+**And the number the plan's acceptance asks for.** With the stick in place, the same six files:
+
+| | x64 bytes | against clang -O2 |
+|---|---:|---:|
+| Borland C++ 2.0 (16-bit) | 1233 | - |
+| `clang -O2` | 1037 | 1.00x |
+| xcc `--opt-level=1` | 1981 | **1.91x** |
+| xcc `--opt-level=0` | 3281 | 3.16x |
+
+So the level-1 path is within **1.9x** of `clang -O2` on this corpus, with every result checked
+against the same program built by clang - the plan's acceptance has a number to state now, and it
+does not flatter the compiler.
+
+174 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### mem2reg with parameters reviewed - 2026-11-16 - the quadratic that was hiding behind a comment
 
 Review of `915dd96`: block parameters in `mem2reg`, and the dominator order the back end needed.

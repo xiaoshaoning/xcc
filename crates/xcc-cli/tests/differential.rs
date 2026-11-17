@@ -156,11 +156,14 @@ fn again_if_hung<T>(mut attempt: impl FnMut() -> Option<(Outcome, T)>) -> Option
     attempt()
 }
 
-/// The program compiled by xcc and run in process, or `None` when xcc refused it - which is how a
-/// refusal is told from a program that exits: the refusal is a diagnostic on stderr.
-fn xcc_runs(source: &Path) -> Option<(Outcome, Vec<u8>)> {
+/// The program compiled by xcc at `opt_level` and run in process, or `None` when xcc refused it -
+/// which is how a refusal is told from a program that exits: the refusal is a diagnostic on stderr.
+fn xcc_runs(source: &Path, opt_level: u8) -> Option<(Outcome, Vec<u8>)> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xcc"));
-    command.arg("--run").arg(source);
+    command
+        .arg("--run")
+        .arg(format!("--opt-level={opt_level}"))
+        .arg(source);
     let (outcome, out, err) = run(command);
     if err.is_empty() {
         Some((outcome, out))
@@ -230,10 +233,22 @@ fn the_corpus_runs_like_clang() {
                         .expect("a file name")
                         .to_string_lossy()
                         .into_owned();
-                    let ours = again_if_hung(|| xcc_runs(path));
+                    // Both lowerings, because `--opt-level=1` is a path a host picks and the plan
+                    // asks for a harness that compiles with both: one that disagrees with the
+                    // other is a bug in whichever moved the code, whether or not clang notices.
+                    let plain = again_if_hung(|| xcc_runs(path, 0));
+                    let optimised = again_if_hung(|| xcc_runs(path, 1));
                     let theirs = again_if_hung(|| clang_runs(path, &exe));
                     let built_by_clang = theirs.is_some();
-                    let (Some((ours, our_output)), Some((theirs, their_output))) = (ours, theirs)
+                    if plain.is_some() != optimised.is_some() {
+                        mismatched.lock().expect("the mismatches").push(format!(
+                            "{name}: xcc compiled it at {}, and not at {}",
+                            if plain.is_some() { 0 } else { 1 },
+                            if plain.is_some() { 1 } else { 0 }
+                        ));
+                        continue;
+                    }
+                    let (Some((ours, our_output)), Some((theirs, their_output))) = (plain, theirs)
                     else {
                         // One of them would not build it. Which one matters: a program `clang`
                         // cannot build is outside the subset - the corpus holds programs that are
@@ -248,6 +263,7 @@ fn the_corpus_runs_like_clang() {
                         }
                         continue;
                     };
+                    let (optimised, optimised_output) = optimised.expect("both compiled");
                     if ours == Outcome::Hung && theirs == Outcome::Hung {
                         // Neither finished, twice: not a disagreement about a value. A program
                         // that hangs in one and not the other is still a mismatch below.
@@ -256,16 +272,33 @@ fn the_corpus_runs_like_clang() {
                     }
                     counts.lock().expect("the counts").ran += 1;
                     let known = EXPECTED_MISMATCHES.iter().any(|(file, _)| *file == name);
-                    if (ours != theirs || our_output != their_output) && !known {
-                        let mut note = format!("{name}: xcc {ours}, clang {theirs}");
-                        if our_output != their_output {
-                            note.push_str(&format!(
-                                ", output {:?} against {:?}",
-                                String::from_utf8_lossy(&our_output),
-                                String::from_utf8_lossy(&their_output)
-                            ));
+                    // Three answers, and every pair of them must be the same one: the two
+                    // lowerings, and the compiler this project is defined against.
+                    let answers: [(&str, &Outcome, &Vec<u8>); 3] = [
+                        ("opt-level=0", &ours, &our_output),
+                        ("opt-level=1", &optimised, &optimised_output),
+                        ("clang", &theirs, &their_output),
+                    ];
+                    if !known {
+                        for left in 0..answers.len() {
+                            for right in left + 1..answers.len() {
+                                let (a_name, a_outcome, a_output) = answers[left];
+                                let (b_name, b_outcome, b_output) = answers[right];
+                                if a_outcome == b_outcome && a_output == b_output {
+                                    continue;
+                                }
+                                let mut note =
+                                    format!("{name}: {a_name} {a_outcome}, {b_name} {b_outcome}");
+                                if a_output != b_output {
+                                    note.push_str(&format!(
+                                        ", output {:?} against {:?}",
+                                        String::from_utf8_lossy(a_output),
+                                        String::from_utf8_lossy(b_output)
+                                    ));
+                                }
+                                mismatched.lock().expect("the mismatches").push(note);
+                            }
                         }
-                        mismatched.lock().expect("the mismatches").push(note);
                     }
                 }
                 let _ = std::fs::remove_file(&exe);
