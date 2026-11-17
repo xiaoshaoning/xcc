@@ -59,6 +59,38 @@ pub struct Explained {
     pub clif: String,
 }
 
+/// Every block, each after the blocks that dominate it: preorder of the dominator tree, then any
+/// block the entry cannot reach.
+fn dominator_order(func: &Func) -> Vec<Block> {
+    let tree = func.dominator_tree();
+    let mut children: HashMap<Block, Vec<Block>> = HashMap::new();
+    for (index, parent) in tree.iter().enumerate() {
+        if let Some(parent) = parent {
+            children
+                .entry(*parent)
+                .or_default()
+                .push(Block(index as u32));
+        }
+    }
+    let mut order = Vec::new();
+    let mut stack = vec![func.entry];
+    while let Some(block) = stack.pop() {
+        order.push(block);
+        for child in children.get(&block).into_iter().flatten().rev() {
+            stack.push(*child);
+        }
+    }
+    // A block nothing dominates (an orphan the parser made and never filled) still has to be
+    // lowered: it is in the function, and the back end fills it with `unreachable`.
+    for (index, _) in func.blocks.iter().enumerate() {
+        let block = Block(index as u32);
+        if !order.contains(&block) {
+            order.push(block);
+        }
+    }
+    order
+}
+
 /// What lowering a translation unit produced.
 #[derive(Debug)]
 pub struct Lowered {
@@ -362,8 +394,13 @@ impl<M: Module> Lowerer<'_, M> {
 
         // Blocks first, so a jump can name one that is filled later.
         let mut blocks: HashMap<Block, ir::Block> = HashMap::new();
-        for (index, block) in func.blocks.iter().enumerate() {
-            let handle = Block(index as u32);
+        // Blocks in dominator-tree order, not in the order the parser made them: a use may name a
+        // value defined in a block that comes *later* in that order and still dominates it - a
+        // loop's join block is made before its body - and this lowering maps a value when it
+        // lowers the block that defines it. Preorder of the dominator tree is the order SSA
+        // guarantees: every block after the ones that dominate it.
+        for handle in dominator_order(func) {
+            let block = &func.blocks[handle.0 as usize];
             let translated = builder.create_block();
             let params: Vec<ir::Type> = block
                 .params
@@ -397,8 +434,10 @@ impl<M: Module> Lowerer<'_, M> {
             }
         }
 
-        for (index, block) in func.blocks.iter().enumerate() {
-            let handle = Block(index as u32);
+        // Same order as the block creation above: a use is lowered after the block that defines
+        // it, which the parser's own order does not promise (a loop's join block is made first).
+        for handle in dominator_order(func) {
+            let block = &func.blocks[handle.0 as usize];
             if handle != func.entry {
                 builder.switch_to_block(blocks[&handle]);
             }

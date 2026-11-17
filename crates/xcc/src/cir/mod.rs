@@ -1161,6 +1161,32 @@ impl Func {
         }
     }
 
+    /// The immediate dominator of every block: the closest block that dominates it, or `None` for
+    /// the entry. A pass that places block parameters (mem2reg) needs the tree, not just the
+    /// relation.
+    pub(crate) fn dominator_tree(&self) -> Vec<Option<Block>> {
+        let dominators = self.dominators();
+        // How many blocks dominate each one: depth in the tree, which is how "closest" is decided.
+        let depth: Vec<usize> = (0..self.blocks.len())
+            .map(|block| {
+                (0..self.blocks.len())
+                    .filter(|other| dominators[block][*other])
+                    .count()
+            })
+            .collect();
+        (0..self.blocks.len())
+            .map(|block| {
+                if Block(block as u32) == self.entry {
+                    return None;
+                }
+                (0..self.blocks.len())
+                    .filter(|other| *other != block && dominators[block][*other])
+                    .max_by_key(|other| depth[*other])
+                    .map(|other| Block(other as u32))
+            })
+            .collect()
+    }
+
     /// Whether every path from the entry to `of` passes through `through`.
     ///
     /// The verifier asks this about every use, and a pass asks it before replacing a load with the

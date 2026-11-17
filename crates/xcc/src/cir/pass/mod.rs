@@ -41,7 +41,7 @@ pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, 
     let mut changes = Changes::default();
     for func in &mut module.funcs {
         let before = mem2reg::count_memory(func);
-        changes.slots += mem2reg::run(func);
+        changes.slots += mem2reg::run(func, &module.types);
         let after = mem2reg::count_memory(func);
         changes.memory += before.saturating_sub(after);
         if let Err(broken) = func.verify(&module.types) {
@@ -103,19 +103,26 @@ mod tests {
 
     #[test]
     fn a_slot_whose_address_escapes_stays_memory() {
-        // `&x` is visible to whoever gets it: the address is not the pass's to remove.
+        // `&x` is visible to whoever gets it - `f` may write through it - so x's store and load
+        // stay. (`q` is a different slot, and promoting it is what turns `f(q)` into `f(&x)`.)
         let (text, _) =
-            promoted("int f(int *p); int g(void) { int x; int *q = &x; return f(q) + x; }");
+            promoted("int f(int *p); int g(void) { int x; x = 1; int *q = &x; return f(q) + x; }");
         assert!(text.contains("slot"), "{text}");
         assert!(text.contains("store"), "{text}");
+        assert!(text.contains("load"), "{text}");
     }
 
     #[test]
-    fn a_slot_written_twice_stays_memory() {
-        // Two stores meet in a block parameter, which this pass does not build yet: `i` in a loop
-        // is the case, and it stays as it is rather than being half-promoted.
-        let (text, _) = promoted("int f(int n) { int i; int s = 0; for (i = 0; i < n; i = i + 1) { s = s + i; } return s; }");
-        assert!(text.contains("load"), "{text}");
+    fn a_slot_written_in_a_loop_becomes_a_block_parameter() {
+        // The case the first version of this pass left alone: two stores meet at the loop's
+        // header, and the classic construction puts a parameter there. Nothing of the loop's
+        // counter or accumulator is memory afterwards.
+        let (text, _) = promoted(
+            "int f(int n) { int i; int s = 0; for (i = 0; i < n; i = i + 1) { s = s + i; } return s; }",
+        );
+        assert!(!text.contains("slot"), "{text}");
+        assert!(!text.contains("load"), "{text}");
+        assert!(text.contains("add int"), "{text}");
     }
 
     #[test]

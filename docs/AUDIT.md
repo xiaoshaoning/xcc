@@ -78,6 +78,42 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M10: mem2reg with block parameters - 2026-11-16 - the dataflow that could not see a loop, and the lowering order that had never been tested
+
+`mem2reg` promoted only slots written once, which left every loop counter and accumulator in memory -
+`arrays.c` spent 43% of its instructions on loads and stores, `control.c` 42%. The classic
+construction is in now: block parameters where the iterated dominance frontier of the store blocks
+says values meet, and a rename walk that gives each load the value of the last store that dominates
+it.
+
+**The first attempt was a dataflow fixpoint, and a loop killed it.** For each block, "the value on
+entry" was the value all its predecessors agree on - which cannot compute a loop header: the header's
+value depends on the back edge's, which depends on the header's. It converged, to the answer "no
+value anywhere", and `int f(int n) { for (i = 0; i < n; i = i + 1) ... }` ended up with its parameter
+still in memory. Renaming along the dominator tree is the answer, and the reason the classic
+algorithm is written that way; the walk is iterative (an explicit `Enter`/`Leave` stack) because a
+function with ten thousand blocks is a real function and the host's stack is not the compiler's.
+
+**The second attempt found a bug that predates it.** With parameters feeding themselves around a
+loop, the lowering failed with "a value has no Cranelift value": the back end lowered blocks in the
+order the parser made them, and the parser makes a loop's join block *before* its body - so a use
+could name a value whose defining block had not been lowered yet. Nothing in `cir` promised
+creation order, and nothing had tested it until block parameters made a use cross a block boundary
+backwards. The back end lowers in **dominator-tree preorder** now, which is the order SSA guarantees.
+
+**Measured on the six-file corpus, after:**
+
+| | x64 bytes | vs Borland (1233) |
+|---|---:|---:|
+| before mem2reg | 4857 | 3.9x |
+| mem2reg, one store | 3822 | 3.1x |
+| mem2reg with parameters, `--opt-level=0` | 3281 | 2.7x |
+| the same at `--opt-level=1` | 1981 | **1.6x** |
+
+The differential runner is unchanged at 412 ran, 8 refused, 0 mismatched - including the loop and
+switch programs whose parameters are new. 174 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API,
+4 bcc20-sys, crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### `--opt-level` reviewed - 2026-11-16 - one decision printed three times
 
 Review of `4ec8352`: the opt-level flag and the numbers behind it.
