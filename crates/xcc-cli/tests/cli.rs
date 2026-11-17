@@ -66,13 +66,7 @@ fn help_is_offered() {
 #[test]
 fn explain_says_what_each_instruction_was_for() {
     let temp = Temp::new("explain");
-    let source = temp.write(
-        "t.c",
-        "int f(char a, char b) {
-    return a + b;
-}
-",
-    );
+    let source = temp.write("t.c", "int f(char a, char b) {\n    return a + b;\n}\n");
     let output = run(xcc().arg("--explain").arg(&source));
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output);
@@ -92,15 +86,38 @@ fn explain_says_what_each_instruction_was_for() {
 #[test]
 fn explain_is_a_mode_and_says_so_when_given_another() {
     let temp = Temp::new("explain-mode");
-    let source = temp.write(
-        "t.c",
-        "int f(void) { return 1; }
-",
-    );
+    let source = temp.write("t.c", "int f(void) { return 1; }\n");
     let output = run(xcc().arg("--explain").arg("-c").arg(&source));
     assert_eq!(output.status.code(), Some(2));
     assert!(
         stderr(&output).contains("--explain is a mode of its own"),
+        "{}",
+        stderr(&output)
+    );
+    // `-o` is not part of that mode either: accepting it and writing nothing would be a promise
+    // this mode cannot keep.
+    let output = run(xcc()
+        .arg("--explain")
+        .arg("-o")
+        .arg(temp.path().join("o.obj"))
+        .arg(&source));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("has nothing to name"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn explain_a_source_that_does_not_compile_reports_its_errors_and_no_explanation() {
+    let temp = Temp::new("explain-bad");
+    let source = temp.write("t.c", "int f(void) { return nope; }\n");
+    let output = run(xcc().arg("--explain").arg(&source));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stdout(&output).is_empty(), "{}", stdout(&output));
+    assert!(
+        stderr(&output).contains("`nope` is not declared"),
         "{}",
         stderr(&output)
     );
@@ -113,15 +130,14 @@ fn the_same_source_writes_the_same_bytes() {
     let temp = Temp::new("deterministic");
     let source = temp.write(
         "t.c",
-        "struct Point { int x, y; };
-         static char greeting[] = \"hello, world\";
-         int counter;
-         int distance(struct Point p) { return p.x * p.x + p.y * p.y; }
-         int add(int a, int b) { return a + b; }
-         char *say(void) { return greeting; }
-         double half(double x) { return x / 2; }
-         int main(void) { struct Point p = { 3, 4 }; return distance(p) + add(counter, 1); }
-",
+        "struct Point { int x, y; };\n\
+         static char greeting[] = \"hello, world\";\n\
+         int counter;\n\
+         int distance(struct Point p) { return p.x * p.x + p.y * p.y; }\n\
+         int add(int a, int b) { return a + b; }\n\
+         char *say(void) { return greeting; }\n\
+         double half(double x) { return x / 2; }\n\
+         int main(void) { struct Point p = { 3, 4 }; return distance(p) + add(counter, 1); }\n",
     );
     let mut bytes = Vec::new();
     for attempt in 0..2 {

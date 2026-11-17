@@ -78,6 +78,39 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### `--explain` reviewed - 2026-11-16 - a mode that quietly ignored what it was given
+
+Review of `9a3e4ff`: the explanation, and the README rewrite that came with it.
+
+**Found: `--explain -o out.obj` wrote nothing and said nothing.** The mode conflict check covered
+`-c`, `-E` and `--run`, and `-o` slipped past it: a host that asked for an explanation *and* an
+object got an explanation, exit 0, and no file. Accepting a request and silently not doing it is the
+one thing a seven-function command line should never do, and this file refuses the same shape three
+lines above (`--run` with `-D`/`-U`/`-I`). It says so now: `--explain writes no object, so -o has
+nothing to name`.
+
+**Found: `run` returned a tuple whose halves each caller discarded.** `compile` wanted the artefact
+and `explain` wanted the text, and both read `result.0`/`result.1`. A named `Outcome` says which
+half is which at both call sites and costs one struct.
+
+**Found: two tests were compiling C containing literal newlines.** Four `temp.write` calls had been
+written by a patch script that turned `
+` into a real line break inside the string. Rust accepts
+it, so nothing failed - but a test whose C source is three lines of half-indented Rust string is a
+test that will be misread, and one of them had already lost a `;` when I retyped it (the
+determinism test's `struct Point` declaration), which the suite caught immediately. The escapes are
+what they should be now.
+
+**Checked and sound:** the `explained` vector is only built when asked (a normal compile formats no
+Cranelift function); `Lowered::bytes` and the explanation come out of one lowering pass, so the two
+views cannot disagree about what was compiled; a source with no functions explains to nothing, which
+is what it should be, and a source that does not compile explains nothing and reports its
+diagnostics *and* exits 1; the module's stated limit - a `Span` has no file, so an included file's
+instructions are listed without a line - is a limit of `Span`, not of this code, and M8 owns it.
+
+156 unit, 21 parser, 17 CLI, 4 hostile, 6 C API, differential, crt, pp gate, fuzz, exe - green;
+fmt and clippy clean.
+
 ### M7: `--explain`, and a README that had stopped being true - 2026-11-16 - the front page said M4
 
 M7's last item, and the documentation audit that came with it.

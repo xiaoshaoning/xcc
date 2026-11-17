@@ -45,8 +45,9 @@ Stated here rather than discovered later.
 - **`static` is not distinguished from external** yet: every object claims external linkage, which
   is wrong for a `static` and harmless only because nothing reads the flag.
 - **Refused with one diagnostic each**: `_Complex`, `#pragma pack`, `#include_next`, a file-scope
-  pointer initialised from a literal, a struct value inside a brace list, and a bitfield's address.
-  [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) is the line-by-line answer.
+  pointer initialised from a literal, and a struct value inside a brace list.
+  [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) is the line-by-line answer, including the refusals
+  that C itself asks for - the address of a bitfield, an array assigned to another array.
 - **No optimiser.** `cir` is SSA from the first instruction, so `mem2reg` and friends are passes
   on this shape rather than a rewrite of it (M10).
 

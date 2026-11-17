@@ -106,6 +106,10 @@ fn main() -> ExitCode {
         eprintln!("xcc: --explain is a mode of its own: no -c, -E or --run with it");
         return ExitCode::from(2);
     }
+    if args.explain && args.output.is_some() {
+        eprintln!("xcc: --explain writes no object, so -o has nothing to name");
+        return ExitCode::from(2);
+    }
     if !args.compile_only && !args.preprocess_only && !args.run && !args.explain {
         eprintln!("xcc: linking is not implemented yet (PLAN.md, M5); pass -c to compile only");
         return ExitCode::from(2);

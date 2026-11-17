@@ -31,6 +31,16 @@ impl Artifact {
     }
 }
 
+/// What one compilation produced: the object, and - when the caller asked to be told - what each
+/// function became.
+///
+/// A struct rather than a tuple because the two callers each want one half, and `result.1` at a
+/// call site says nothing about which half that is.
+struct Outcome {
+    artifact: Artifact,
+    explanation: Option<String>,
+}
+
 /// One compilation, owning all of its state.
 ///
 /// No state is shared between compilations: two `Compile`s can run on two threads, and a host
@@ -98,8 +108,7 @@ impl Compile {
     /// Takes `&mut self` although nothing is kept yet: the preprocessor's arenas and interner
     /// arrive with M2, and callers should not have to change because of it.
     pub fn compile(&mut self, name: &str, source: &str) -> Result<Artifact, Diagnostics> {
-        let (artifact, _) = self.run(name, source, false)?;
-        Ok(artifact)
+        Ok(self.run(name, source, false)?.artifact)
     }
 
     /// Compile `source`, and say what each function became: the C-level instruction next to the
@@ -108,18 +117,15 @@ impl Compile {
     /// This is `--explain`, and it is the same pipeline as [`Compile::compile`]: a second way to
     /// ask one compilation what it did, not a second compilation.
     pub fn explain(&mut self, name: &str, source: &str) -> Result<String, Diagnostics> {
-        let (_, explained) = self.run(name, source, true)?;
-        Ok(explained.unwrap_or_default())
+        Ok(self
+            .run(name, source, true)?
+            .explanation
+            .unwrap_or_default())
     }
 
     /// One compilation. `explain` asks the back end to keep what each function became, which
     /// costs the formatting of every function and nothing else.
-    fn run(
-        &mut self,
-        name: &str,
-        source: &str,
-        explain: bool,
-    ) -> Result<(Artifact, Option<String>), Diagnostics> {
+    fn run(&mut self, name: &str, source: &str, explain: bool) -> Result<Outcome, Diagnostics> {
         let mut diagnostics = Vec::new();
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
@@ -162,7 +168,10 @@ impl Compile {
             }
         };
         let items = truncate_diagnostics(diagnostics, &self.options);
-        Ok((Artifact::new(object, items), explained))
+        Ok(Outcome {
+            artifact: Artifact::new(object, items),
+            explanation: explained,
+        })
     }
 }
 
