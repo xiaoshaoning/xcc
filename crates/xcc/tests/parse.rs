@@ -319,6 +319,23 @@ fn what_is_not_implemented_is_said_not_guessed() {
 }
 
 #[test]
+fn an_unevaluated_address_still_obeys_what_address_of_allows() {
+    // C99 6.5.3.4p2 says `sizeof` does not evaluate its operand; 6.5.3.2p1 says what `&` may be
+    // applied to. The second is a rule about types, so it holds inside `sizeof` too: the first
+    // two are refusals clang makes in the same words, and the third is the hole they came from.
+    refuses(
+        "int f(void) { return (int)sizeof(&5); }",
+        "`&` needs something it can take the address of",
+    );
+    refuses(
+        "struct S { int a : 3; }; int f(void) { struct S s; return (int)sizeof(&s.a); }",
+        "the address of a bitfield cannot be taken",
+    );
+    parses("int f(void) { int x = 1; return (int)sizeof(&x); }");
+    parses("int f(void) { int b[2][3]; return (int)sizeof(&b[0]); }");
+}
+
+#[test]
 fn a_variadic_call_passes_integers_and_refuses_floats() {
     // ADR-006, in its new shape: the call site's own signature makes the *call* expressible, and
     // `AL` is the only thing left - which only a floating-point argument needs.

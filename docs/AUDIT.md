@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8 `sizeof` and the refusal count, reviewed - 2026-11-16 - two constraints skipped by one shortcut
+
+Review of `8fb9c42`: the honest refusal count, and the `sizeof(&b[0])` fix.
+
+**Found: the fix skipped `&`'s constraints along with its code.** Making an unevaluated `&` answer
+its pointer type was right for the *place* - which may need arithmetic nothing will run - but the
+early return came before the lvalue check, so `sizeof(&5)` was accepted in silence where clang says
+"cannot take the address of an rvalue". Two different questions had been asked in one place: *is
+this the right kind of operand* (a fact about its type, which holds whether or not the operand is
+evaluated) and *can I find its address* (a fact about the code, which does not). The first is
+checked first now, always; the second is skipped when nothing is evaluating.
+
+**Found: a bitfield's descriptor was dropped whenever no address could be emitted.** `read_bitfield`
+and `member_access` both returned a code-less value with `bits: None` on the way out of a path where
+`emit` had nothing to say - so `sizeof(&s.a)` was accepted as well, where clang says "address of
+bit-field requested" (C99 6.5.3.2p1). The place and the bits are *facts about the member*, not about
+the code, which is what a write needs to merge into the right bits and what `&` needs to refuse; both
+now travel with the value on every path, and only the code is optional. `read_bitfield` writes the
+value once instead of five times, which is how it had drifted.
+
+**Measured after: 412 ran, 8 refused** (was 411/9). `cc53_ptrrow2.c` - the program made entirely of
+`&a[0]` expressions - moved from refused to running and agreeing. The eight that are left are: a
+file-scope pointer to a string literal (ADR-004), four floating-point arguments to variadic calls
+(ADR-006), and three *deliberately invalid* initialiser programs that clang merely warns about. The
+runner prints their names now, so the shrinking set is visible rather than a number.
+
+168 unit, 23 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (412 ran, 8 refused, 44
+skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8: the refusal count was flattering the compiler - 2026-11-16 - and a `sizeof` that crashed
 
 The differential runner asked xcc first and counted a refusal without asking whether `clang` could

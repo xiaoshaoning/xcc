@@ -32,12 +32,12 @@ const EXPECTED_MISMATCHES: &[(&str, &str)] = &[];
 /// How many programs ran when this was last measured. A ratchet: it goes up when a gap closes
 /// (headers, `printf`) and never down, because a drop means something that used to run is now
 /// refused, which is the regression this test exists to catch.
-const PROGRAMS_THAT_RAN: usize = 411;
+const PROGRAMS_THAT_RAN: usize = 412;
 
 /// How many programs xcc refused and `clang` built, when this was last measured. A ratchet in the
 /// other direction: the gap may shrink, and never grow. Which programs they are, and why each is
 /// refused, is `crates/xcc/tests/parse.rs`'s table - this only counts them.
-const AT_MOST_REFUSED: usize = 9;
+const AT_MOST_REFUSED: usize = 8;
 
 /// How the subset split.
 #[derive(Default)]
@@ -209,10 +209,12 @@ fn the_corpus_runs_like_clang() {
     let workers = std::thread::available_parallelism().map_or(4, |count| count.get());
     let next = AtomicUsize::new(0);
     let counts = Mutex::new(Counts::default());
+    let refused: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let mismatched: Mutex<Vec<String>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for worker in 0..workers {
-            let (files, next, counts, mismatched) = (&files, &next, &counts, &mismatched);
+            let (files, next, counts, mismatched, refused) =
+                (&files, &next, &counts, &mismatched, &refused);
             scope.spawn(move || {
                 let exe = std::env::temp_dir().join(format!(
                     "xcc-differential-{}-{worker}.exe",
@@ -242,6 +244,7 @@ fn the_corpus_runs_like_clang() {
                             counts.lock().expect("the counts").skipped += 1;
                         } else {
                             counts.lock().expect("the counts").refused += 1;
+                            refused.lock().expect("the refusals").push(name.clone());
                         }
                         continue;
                     };
@@ -281,6 +284,12 @@ fn the_corpus_runs_like_clang() {
         counts.timed_out,
         mismatched.len()
     );
+    if !refused.lock().expect("the refusals").is_empty() {
+        eprintln!(
+            "differential: refused what clang builds: {}",
+            refused.lock().expect("the refusals").join(", ")
+        );
+    }
     assert!(
         counts.refused <= AT_MOST_REFUSED,
         "{} programs are refused that clang builds, and {AT_MOST_REFUSED} used to be: something          refuses code it used to compile",

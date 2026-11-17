@@ -833,20 +833,23 @@ impl Parser<'_> {
                     self.error(span, "the address of a bitfield cannot be taken");
                     return Some(Value::temporary(self.types.error()));
                 }
-                // `sizeof(&x)` asks for a *type*: the operand is not evaluated (C99 6.5.3.4p2),
-                // and a place may need code that nothing will run - `b[0]` of an array in a
-                // frame, whose address is arithmetic on a slot. So an unevaluated `&` is its
-                // pointer type and no value, which is all the caller can ask about.
+                // C99 6.5.3.2p1: the operand must be an lvalue. That is a fact about its *type*,
+                // so `sizeof(&x)` is bound by it whether or not the operand is evaluated - which
+                // is what separates this check from the place below.
+                if !value.lvalue {
+                    self.error(span, "`&` needs something it can take the address of");
+                    return Some(Value::temporary(self.types.error()));
+                }
                 let pointer = self.types.pointer(value.ty);
+                // `sizeof(&x)` asks for a *type*: the operand is not evaluated (C99 6.5.3.4p2),
+                // and a place may need code nothing will run - `b[0]` of an array in a frame,
+                // whose address is arithmetic on a slot. So an unevaluated `&` is its pointer
+                // type and no value, which is all its caller can ask about.
                 if self.unevaluated {
                     return Some(Value::new(pointer, None, false));
                 }
                 let Some(place) = value.place else {
-                    if value.lvalue {
-                        self.not_lowered(span, "the address of this kind of place");
-                    } else {
-                        self.error(span, "`&` needs something it can take the address of");
-                    }
+                    self.not_lowered(span, "the address of this kind of place");
                     return Some(Value::temporary(self.types.error()));
                 };
                 let mut result = Value::new(pointer, None, false);
@@ -1470,7 +1473,21 @@ impl Parser<'_> {
         let Some(address) =
             self.address_within(base_address, aggregate_ty, offset as usize, member_ty, span)
         else {
-            return Value::new(member_ty, None, true);
+            // No address this can emit - nothing is emitting, or it is dead code. The member is
+            // still the member: its place and, for a bitfield, its bits are what a reader of the
+            // type needs, and `&` refuses a bitfield on the strength of them alone (C99
+            // 6.5.3.2p1), evaluated or not.
+            return match bitfield {
+                Some(bits) => Value {
+                    ty: member_ty,
+                    constant: None,
+                    lvalue: true,
+                    cir: None,
+                    place: None,
+                    bits: Some(bits),
+                },
+                None => Value::new(member_ty, None, true),
+            };
         };
         match bitfield {
             None => self.read_place(member_ty, address, span),
@@ -1489,52 +1506,45 @@ impl Parser<'_> {
         (start, width): (u8, u8),
         span: Span,
     ) -> Value {
+        // The place and the bits are facts about the member, not about the code: they are what
+        // tells `&` it is looking at a bitfield - which C99 6.5.3.2p1 forbids, evaluated or not -
+        // and what a write needs to merge into the right bits. So every way out of this function
+        // carries them, and only the value itself is optional.
+        let field = |cir: Option<cir::Value>| Value {
+            ty,
+            constant: None,
+            lvalue: true,
+            cir,
+            place: Some(address),
+            bits: Some((start, width)),
+        };
         let signed = matches!(self.types.kind(ty), Type::Int { signed: true, .. });
         // Arithmetic shifts for a signed field, logical ones for an unsigned field: the
         // working type's signedness is what decides which `Shr` the back end picks.
         let wide = self.types.integer_with(signed, 64);
-        let unit = self.emit(|builder| builder.load(address, ty, span));
-        let Some(unit) = unit else {
-            return Value::new(ty, None, true);
+        let Some(unit) = self.emit(|builder| builder.load(address, ty, span)) else {
+            return field(None);
         };
-        let unit = self.convert(Value::code(ty, unit), wide, span);
-        let Some(unit) = unit.cir else {
-            return Value::new(ty, None, true);
+        let Some(unit) = self.convert(Value::code(ty, unit), wide, span).cir else {
+            return field(None);
         };
         let step = |parser: &mut Self, op: cir::BinOp, left: cir::Value, amount: i64| {
             let amount = parser.constant_of(wide, amount, span);
             let amount = amount.cir?;
             parser.emit(|builder| builder.binary(op, left, amount, wide, span))
         };
-        let extracted = if signed {
+        let Some(extracted) = (if signed {
             // The sign bit is put at the top and shifted back down: the result is
             // sign-extended from the field's own width.
-            let up = step(self, cir::BinOp::Shl, unit, i64::from(64 - start - width));
-            let Some(up) = up else {
-                return Value::new(ty, None, true);
-            };
-            let Some(down) = step(self, cir::BinOp::Shr, up, i64::from(64 - width)) else {
-                return Value::new(ty, None, true);
-            };
-            down
+            step(self, cir::BinOp::Shl, unit, i64::from(64 - start - width))
+                .and_then(|up| step(self, cir::BinOp::Shr, up, i64::from(64 - width)))
         } else {
-            let Some(down) = step(self, cir::BinOp::Shr, unit, i64::from(start)) else {
-                return Value::new(ty, None, true);
-            };
-            let Some(masked) = step(self, cir::BinOp::And, down, field_mask(width) as i64) else {
-                return Value::new(ty, None, true);
-            };
-            masked
+            step(self, cir::BinOp::Shr, unit, i64::from(start))
+                .and_then(|down| step(self, cir::BinOp::And, down, field_mask(width) as i64))
+        }) else {
+            return field(None);
         };
-        let extracted = self.convert(Value::code(wide, extracted), ty, span);
-        Value {
-            ty,
-            constant: None,
-            lvalue: true,
-            cir: extracted.cir,
-            place: Some(address),
-            bits: Some((start, width)),
-        }
+        field(self.convert(Value::code(wide, extracted), ty, span).cir)
     }
 
     pub(super) fn cast(&mut self, to: TypeId, span: Span) -> Value {
