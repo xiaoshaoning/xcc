@@ -64,6 +64,39 @@ fn help_is_offered() {
 }
 
 #[test]
+fn the_same_source_writes_the_same_bytes() {
+    // CONSTRAINTS 4: same source, same options, same object. Two *processes*, because that is what
+    // catches an order that came from a hash map's iteration or from an address.
+    let temp = Temp::new("deterministic");
+    let source = temp.write(
+        "t.c",
+        "struct Point { int x, y; };
+         static char greeting[] = \"hello, world\";
+         int counter;
+         int distance(struct Point p) { return p.x * p.x + p.y * p.y; }
+         int add(int a, int b) { return a + b; }
+         char *say(void) { return greeting; }
+         double half(double x) { return x / 2; }
+         int main(void) { struct Point p = { 3, 4 }; return distance(p) + add(counter, 1); }
+",
+    );
+    let mut bytes = Vec::new();
+    for attempt in 0..2 {
+        let out = temp.path().join(format!("t{attempt}.obj"));
+        let output = run(xcc().arg("-c").arg(&source).arg("-o").arg(&out));
+        assert!(output.status.success(), "{}", stderr(&output));
+        bytes.push(std::fs::read(&out).expect("the object"));
+    }
+    assert_eq!(
+        bytes[0],
+        bytes[1],
+        "two compilations of one source disagree: {} vs {} bytes",
+        bytes[0].len(),
+        bytes[1].len()
+    );
+}
+
+#[test]
 fn diagnostics_go_to_stderr_in_the_asked_for_format() {
     let temp = Temp::new("format");
     let source = temp.write("t.c", "int x = ;\n");

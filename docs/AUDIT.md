@@ -78,6 +78,29 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M7: the same source writes the same bytes - 2026-11-16 - the test CONSTRAINTS promised
+
+CONSTRAINTS 4 has promised since M1 that "a test compiles the same source twice and compares byte
+for byte, and it runs on every platform in CI". There was no such test; there is now, and it found
+not a bug but the absence of evidence for a claim the repo had been making for five milestones.
+
+Two *processes*, not two calls in one: Rust randomises a `HashMap`'s iteration order per process,
+so a same-process test would pass while the object written by the next run differed. The program
+compiled is deliberately broad - a struct, a string array, a tentative definition, a float, a
+function taking and returning an aggregate - because each of those goes through a different table
+in the object writer, and it is the tables a hash order would leak out of.
+
+It passes, which is the useful part: symbol order, section order and relocation order were already
+sorted, `Options::stamp` already defaults to the epoch so `__DATE__` cannot read a clock, and the
+claim now has a check behind it rather than a sentence.
+
+M7's acceptance is half done and says so: the Python host runs (`tests/host.py`), the hostile shapes
+run (`tests/hostile.rs`), and the Lua half is not written, because there is no Lua on this machine
+and a script nobody can run is worse evidence than none.
+
+152 unit, 20 parser, 14 CLI, 4 hostile, 6 C API, differential, crt, pp gate, fuzz, exe - green;
+fmt and clippy clean.
+
 ### M7: the sandbox, and three holes it named - 2026-11-16 - hostile input measured, not assumed
 
 M7's sandbox item says a compile of hostile input "respects its budget and returns an error, not a

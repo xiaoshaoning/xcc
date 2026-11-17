@@ -272,12 +272,17 @@ The first thing worth showing, and the reason the project exists.
       tokens rather than by a clock, because a compilation refused on a slow machine and accepted
       on a fast one breaks determinism - [CONSTRAINTS](docs/CONSTRAINTS.md) 4 and 5 record the
       measurements.
-- [ ] Deterministic output: pinned clock, stable symbol order, reproducible objects.
+- [x] Deterministic output: pinned clock (`Options::stamp` is the epoch unless a host sets it),
+      stable symbol order, reproducible objects - `the_same_source_writes_the_same_bytes` compiles
+      one program in two *processes* and compares the objects byte for byte, which is what catches
+      an order that came from a hash map or an address.
 - [ ] `--explain`: why this instruction, which registers were used - borrowed from
       borland-reborn's port, where it turned out to be the most useful debugging aid.
-- [ ] Acceptance: a Python (ctypes) and a Lua (FFI) host each compile a snippet at runtime and
-      call it; a compile of hostile input respects its budget and returns an error, not a
-      panic or a hang.
+- [~] Acceptance: `tests/host.py` is a Python ctypes host that compiles a snippet at run time,
+      calls it, calls a host symbol through it, and reads a diagnostic; `tests/hostile.rs` runs
+      seven hostile shapes through the binary and asserts a refusal, not a crash or a hang. The
+      Lua half is not done: there is no Lua on this machine, and a script nobody can run is worse
+      evidence than none - the ABI is the same for any FFI, and the Python host is the proof of it.
 
 ## M8 - runtime and headers  (M)
 
