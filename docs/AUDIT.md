@@ -78,6 +78,43 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### mem2reg reviewed - 2026-11-16 - a field that counted the wrong thing, and a pass that could be slower than the compiler
+
+Review of `cc49f70`: the first M10 pass.
+
+**Found: `Changes.slots` counted loads and stores, not slots.** `mem2reg::run` answered how many
+memory instructions it removed and the caller stored that in a field called `slots`; the test then
+asserted the wrong number (4 slots for two slots), which is how a lie in a statistic becomes a
+expectation. `run` answers the slot count now, `memory` is derived from the before/after it always
+was, and `Changes.promoted` - never written by anything - is gone.
+
+**Found: the pass could be quadratic where the compiler must not be.** `used_values` and the escape
+set were `Vec`s searched with `contains` per operand: a 100k-instruction function - which hostile
+input can produce and the token budget allows - would have been 10^10 comparisons inside a pass that
+runs on *every* compile. Both are `HashSet`s now. This is the kind of thing that only shows up on
+input nobody writes by hand, which is the reason CONSTRAINTS 5 exists.
+
+**Found: two call sites ran the passes and checked the result themselves.** `compile.rs` and
+`jit.rs` each called `optimise` and then looped over functions to verify - the same six lines twice,
+with different wording, and a third future caller to keep in step. `optimise` answers
+`Result<Changes, (Symbol, Broken)>` now: it runs the passes, verifies after each function, and names
+what broke. A caller maps the error to its own words and nothing else. The check also stopped being
+a `debug_assert` in the compile path: a pass that breaks a function in a release build produced a
+*wrong program*, which is the one thing a pass must never do.
+
+**Checked and sound:** the promoted value always *dominates* every use it replaces (that is the
+premise of the substitution, and the verifier checks it independently); a slot's removal takes its
+bitcast chain, its one store and every load with it, and only when every load was replaced - the
+bug that made `v3` undefined was exactly a slot removed while a load survived; the offset-0 fast
+path in `address_within` keeps the *type* of the address it returns, and every caller passes a base
+typed `pointer to <object>`; and the six corpus files still agree with clang, as do all 412 programs
+the differential runner executes.
+
+Measured again after the changes: **3822 bytes** of x64 on the six files (4857 before the pass),
+55 ms to compile them (72 before), Borland's 1233 unchanged. 173 unit, 23 parser, 19 CLI, 3 exe,
+4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8 refused, 0 mismatched), crt, pp gate,
+fuzz - green; fmt and clippy clean.
+
 ### M10: mem2reg - 2026-11-16 - 21% smaller, and the four bugs that got it there
 
 M10's first item, and the one the measuring stick said mattered most: the front end writes every

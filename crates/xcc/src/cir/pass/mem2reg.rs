@@ -21,11 +21,11 @@
 //! different design: dominance frontiers, the classic algorithm. Writing the ceiling down keeps it
 //! from being mistaken for the whole of mem2reg.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::super::{Block, Func, Inst, Value};
 
-/// Promote what this function allows. Answers how many loads and stores went away.
+/// Promote what this function allows. Answers how many stack slots were removed.
 pub fn run(func: &mut Func) -> usize {
     // A load nobody reads is not a read: the front end emits one to evaluate an assignment's
     // target, and treating it as a use vetoes every `int s; s = f();` in the corpus.
@@ -130,7 +130,6 @@ pub fn run(func: &mut Func) -> usize {
     };
     let final_map: HashMap<Value, Value> =
         replace.keys().map(|load| (*load, resolve(*load))).collect();
-    let before = count_memory(func);
     func.rewrite_values(&mut |value| final_map.get(&value).copied().unwrap_or(value));
     for block in &mut func.blocks {
         // A load whose result was replaced computes nothing anyone reads; a store to a promoted
@@ -148,12 +147,12 @@ pub fn run(func: &mut Func) -> usize {
             _ => true,
         });
     }
-    before - count_memory(func)
+    stores.len()
 }
 
 /// The values something reads: a load whose result is not here is dead.
-fn used_values(func: &Func) -> Vec<Value> {
-    let mut used: Vec<Value> = Vec::new();
+fn used_values(func: &Func) -> HashSet<Value> {
+    let mut used: HashSet<Value> = HashSet::new();
     for block in &func.blocks {
         for inst in &block.insts {
             used.extend(inst.operands());
@@ -205,8 +204,8 @@ fn address_chains(func: &Func) -> HashMap<Value, Value> {
 }
 
 /// The slots whose address is used for anything but a load, a store, or the next bitcast.
-fn escaping_slots(func: &Func, chains: &HashMap<Value, Value>) -> Vec<Value> {
-    let mut escaped: Vec<Value> = Vec::new();
+fn escaping_slots(func: &Func, chains: &HashMap<Value, Value>) -> HashSet<Value> {
+    let mut escaped: HashSet<Value> = HashSet::new();
     for block in &func.blocks {
         for inst in &block.insts {
             // Which operands of what may name a slot's address: a load's address, a store's
@@ -223,8 +222,8 @@ fn escaping_slots(func: &Func, chains: &HashMap<Value, Value>) -> Vec<Value> {
                     Inst::Convert { result, .. } => chains.get(result).copied() == Some(slot),
                     _ => false,
                 };
-                if !fine && !escaped.contains(&slot) {
-                    escaped.push(slot);
+                if !fine {
+                    escaped.insert(slot);
                 }
             }
         }
@@ -236,7 +235,7 @@ fn escaping_slots(func: &Func, chains: &HashMap<Value, Value>) -> Vec<Value> {
 fn single_stores(
     func: &Func,
     chains: &HashMap<Value, Value>,
-    escapes: &[Value],
+    escapes: &HashSet<Value>,
 ) -> HashMap<Value, (Value, Block, usize)> {
     let mut stores: HashMap<Value, (Value, Block, usize)> = HashMap::new();
     let mut doubled: Vec<Value> = Vec::new();

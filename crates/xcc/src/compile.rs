@@ -149,23 +149,22 @@ impl Compile {
         }
 
         // The passes, before either lowering sees the module: one `cir` in, one optimized `cir`
-        // out, so an object and a JIT run the same code (M10).
+        // out, so an object and a JIT run the same code (M10). A pass that breaks a function is a
+        // compiler bug, so it says so rather than blaming the source.
         let mut module = parsed.module;
-        let _changes = crate::cir::pass::optimise(&mut module);
-        debug_assert!(
-            module
-                .funcs
-                .iter()
-                .all(|func| func.verify(&module.types).is_ok()),
-            "a pass must leave every function verifying: {}",
-            module
-                .funcs
-                .iter()
-                .filter_map(|func| func.verify(&module.types).err())
-                .map(|broken| broken.message)
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
+        if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "internal: a pass broke `{}`: {}",
+                    preprocessed.names().resolve(function),
+                    broken.message
+                ))
+                .with_file(name)
+                .with_span(Span::at(0)),
+            );
+            let items = truncate_diagnostics(diagnostics, &self.options);
+            return Err(Diagnostics::new(items, sources));
+        }
 
         // A module with no function is a translation unit of declarations only: nothing to
         // lower, and an object is still what the caller asked for.

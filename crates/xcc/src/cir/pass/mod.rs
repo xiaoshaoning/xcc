@@ -12,7 +12,7 @@
 
 pub mod mem2reg;
 
-use super::Module;
+use super::{Broken, Module};
 
 /// What the passes changed, for a caller that wants to print it (`--explain`, the tests).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -21,8 +21,6 @@ pub struct Changes {
     pub memory: usize,
     /// Stack slots removed because nothing was left in them.
     pub slots: usize,
-    /// Values that replaced a load.
-    pub promoted: usize,
 }
 
 impl Changes {
@@ -32,16 +30,25 @@ impl Changes {
     }
 }
 
-/// Run every pass over every function.
-pub fn optimise(module: &mut Module) -> Changes {
+/// Run every pass over every function, and check that each one left a function the verifier
+/// accepts.
+///
+/// The check is here, not at the call sites, because a pass that breaks a function is a compiler
+/// bug wherever it is run from - and a caller that forgot to look would get a wrong program
+/// instead of a message. `Broken` names the function and the value, which is what makes a broken
+/// pass debuggable at all.
+pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, Broken)> {
     let mut changes = Changes::default();
     for func in &mut module.funcs {
         let before = mem2reg::count_memory(func);
         changes.slots += mem2reg::run(func);
         let after = mem2reg::count_memory(func);
         changes.memory += before.saturating_sub(after);
+        if let Err(broken) = func.verify(&module.types) {
+            return Err((func.name, broken));
+        }
     }
-    changes
+    Ok(changes)
 }
 
 #[cfg(test)]
@@ -59,14 +66,13 @@ mod tests {
         let preprocessed = preprocess(&file, &options, &());
         let mut parsed = crate::parse::parse(&preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let changes = optimise(&mut parsed.module);
-        for func in &parsed.module.funcs {
-            assert_eq!(
-                func.verify(&parsed.module.types),
-                Ok(()),
-                "the passes must leave a function verifying"
-            );
-        }
+        let changes = optimise(&mut parsed.module).unwrap_or_else(|(function, broken)| {
+            panic!(
+                "the passes broke `{}`: {}",
+                preprocessed.names().resolve(function),
+                broken.message
+            )
+        });
         (dump(&parsed.module, preprocessed.names()), changes)
     }
 
@@ -81,8 +87,9 @@ mod tests {
         assert!(text.contains("add int"), "{text}");
         // Two slots, one per parameter, each with a store and a load: four instructions.
         assert_eq!(changes.memory, 4, "{changes:?}");
-        // `slots` counts the stack slots the same run removed, not a second measure of memory.
-        assert_eq!(changes.slots, 4, "{changes:?}");
+        // Two slots, one per parameter: the field counts slots, and `memory` the loads and
+        // stores that went with them.
+        assert_eq!(changes.slots, 2, "{changes:?}");
     }
 
     #[test]

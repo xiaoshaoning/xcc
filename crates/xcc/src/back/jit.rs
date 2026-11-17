@@ -128,15 +128,12 @@ impl Jit {
         let names = preprocessed.names().clone();
         // The passes run here, in the one place both lowerings come from: `--run` and an object
         // are the same `cir`, so a pass that helps one helps the other.
-        let _changes = crate::cir::pass::optimise(&mut module);
-        for func in &module.funcs {
-            if let Err(broken) = func.verify(&module.types) {
-                return Err(format!(
-                    "the passes broke `{}`: {}",
-                    names.resolve(func.name),
-                    broken.message
-                ));
-            }
+        if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
+            return Err(format!(
+                "the passes broke `{}`: {}",
+                names.resolve(function),
+                broken.message
+            ));
         }
         // A JIT has no linker: what it calls must be here already. Asking first turns a panic
         // inside `cranelift-jit` into a diagnostic, and leaves this JIT usable for the next
