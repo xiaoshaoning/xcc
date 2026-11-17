@@ -127,6 +127,34 @@ fn explain_a_source_that_does_not_compile_reports_its_errors_and_no_explanation(
 }
 
 #[test]
+fn an_opt_level_this_back_end_does_not_have_is_refused_as_the_callers_mistake() {
+    let temp = Temp::new("opt-level");
+    let source = temp.write(
+        "t.c",
+        "int f(void) { return 1; }
+",
+    );
+    let output = run(xcc().arg("-c").arg("--opt-level=3").arg(&source));
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let message = stderr(&output);
+    assert!(
+        message.contains("needs this compiler's own back end"),
+        "{message}"
+    );
+    assert!(!message.contains("internal"), "{message}");
+    // And the levels it does have compile.
+    for level in ["0", "1"] {
+        let output = run(xcc()
+            .arg("-c")
+            .arg(format!("--opt-level={level}"))
+            .arg(&source)
+            .arg("-o")
+            .arg(temp.path().join(format!("t{level}.obj"))));
+        assert!(output.status.success(), "{level}: {}", stderr(&output));
+    }
+}
+
+#[test]
 fn the_dos_target_is_the_measuring_stick_and_says_so() {
     let temp = Temp::new("dos16");
     let source = temp.write(

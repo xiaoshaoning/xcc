@@ -69,17 +69,30 @@ pub struct Lowered {
     pub explained: Vec<Explained>,
 }
 
+/// How hard the back end works, as Cranelift spells it: `None` for an opt level this back end
+/// does not have.
+fn cranelift_opt_level(level: u8) -> Result<&'static str, LoweringError> {
+    match level {
+        0 => Ok("none"),
+        1 => Ok("speed"),
+        _ => Err(LoweringError(format!(
+            "opt level {level} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
+        ))),
+    }
+}
+
 /// Lower a translation unit to an object file, keeping what each function became when `explain`
 /// is set.
 pub fn object(
     module: &CirModule,
     names: &crate::intern::Interner,
     explain: bool,
+    opt_level: u8,
 ) -> Result<Lowered, LoweringError> {
     let mut flags = settings::builder();
     // The host's own feature set, so a JIT and an object cannot disagree about what runs.
     flags
-        .set("opt_level", "none")
+        .set("opt_level", cranelift_opt_level(opt_level)?)
         .map_err(|error| LoweringError(error.to_string()))?;
     // A frame larger than a page must touch its guard pages as it allocates them, or a stack
     // overflow silently overwrites whatever is below. Inline, so no `__chkstk` import (ADR-005).
@@ -847,7 +860,7 @@ mod tests {
         let preprocessed = preprocess(&file, &options, &());
         let parsed = crate::parse::parse(&preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        object(&parsed.module, preprocessed.names(), false)
+        object(&parsed.module, preprocessed.names(), false, 0)
             .expect("lowering works")
             .bytes
     }

@@ -151,7 +151,23 @@ impl Compile {
         // The passes, before either lowering sees the module: one `cir` in, one optimized `cir`
         // out, so an object and a JIT run the same code (M10). A pass that breaks a function is a
         // compiler bug, so it says so rather than blaming the source.
+        // A level this back end does not have is the caller's mistake, and it is reported as one:
+        // the back end's own refusal would arrive as an internal error, which blames the compiler
+        // for a number it was handed.
+        if self.options.opt_level > 1 {
+            let level = self.options.opt_level;
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "opt level {level} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
+                ))
+                .with_file(name)
+                .with_span(Span::at(0)),
+            );
+            let items = truncate_diagnostics(diagnostics, &self.options);
+            return Err(Diagnostics::new(items, sources));
+        }
         let mut module = parsed.module;
+        let opt_level = self.options.opt_level;
         if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
             diagnostics.push(
                 Diagnostic::error(format!(
@@ -172,7 +188,7 @@ impl Compile {
         let object = if module.funcs.is_empty() {
             Vec::new()
         } else {
-            match crate::back::object(&module, preprocessed.names(), explain) {
+            match crate::back::object(&module, preprocessed.names(), explain, opt_level) {
                 Ok(lowered) => {
                     explained =
                         explain.then(|| crate::explain::render(&lowered.explained, &sources));

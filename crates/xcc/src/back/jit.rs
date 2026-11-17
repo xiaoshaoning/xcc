@@ -58,11 +58,17 @@ impl Jit {
     /// machine's own C runtime here - `printf`, `malloc`, `qsort` and the rest
     /// (`back::crt`). No host symbols, so no contract to keep: this is the safe way in.
     pub fn new() -> Result<Self, String> {
+        Self::with_opt_level(0)
+    }
+
+    /// A JIT that works on the code as hard as `opt_level` says: the same numbers as
+    /// [`crate::Options::opt_level`].
+    pub fn with_opt_level(opt_level: u8) -> Result<Self, String> {
         // SAFETY: no host symbols are given; the C runtime's are the machine's own and outlive
         // every JIT.
         #[allow(unsafe_code)]
         unsafe {
-            Self::with_symbols(&[])
+            Self::build(&[], opt_level)
         }
     }
 
@@ -75,6 +81,12 @@ impl Jit {
     /// are taken here because Cranelift's builder takes them at construction and nowhere else.
     #[allow(unsafe_code)]
     pub unsafe fn with_symbols(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+        Self::build(symbols, 0)
+    }
+
+    /// The one place a JIT is made: what it may call, and how hard it works.
+    #[allow(unsafe_code)]
+    unsafe fn build(symbols: &[(&str, *const u8)], opt_level: u8) -> Result<Self, String> {
         // The C runtime first, then the host's symbols: a host that gives a name the runtime also
         // has means its own function, which is what a host passing `write` or `open` expects.
         let runtime = crate::back::crt::symbols();
@@ -87,8 +99,17 @@ impl Jit {
         table.extend(symbols.iter().map(|(name, address)| (*name, *address)));
         let symbols = &table[..];
         let mut flags = settings::builder();
+        let level = match opt_level {
+            0 => "none",
+            1 => "speed",
+            other => {
+                return Err(format!(
+                    "opt level {other} needs this compiler's own back end"
+                ))
+            }
+        };
         flags
-            .set("opt_level", "none")
+            .set("opt_level", level)
             .map_err(|error| error.to_string())?;
         let flags = settings::Flags::new(flags);
         let isa = cranelift_native::builder()
@@ -406,6 +427,35 @@ int twice(int x) { return host_double(x); }",
         let address = jit.function("twice").expect("the function is there");
         let twice: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
         assert_eq!(twice(21), 42);
+    }
+
+    /// The optimiser is Cranelift's, not ours, so the test it needs is the one a second lowering
+    /// always needs: the same program, both levels, the same answers. The corpus says the same
+    /// over 414 programs; this keeps it true where a change is noticed first.
+    #[test]
+    fn an_optimised_compile_answers_the_same_as_a_plain_one() {
+        let source = "int fib(int n) { int a = 0, b = 1, i; for (i = 0; i < n; i = i + 1) { int t = a + b; a = b; b = t; } return a; }
+                      int loops(int n) { int total = 0; int i; for (i = 0; i < n; i = i + 1) { total = total + i * 3; } return total; }
+                      struct P { int x, y; };
+                      int aggregate(void) { struct P p = { 7, 8 }; struct P q = p; return q.x * 10 + q.y; }";
+        let mut plain = Jit::new().expect("a JIT");
+        let mut optimised = Jit::with_opt_level(1).expect("a JIT");
+        plain.add_source(source).expect("it compiles");
+        optimised.add_source(source).expect("it compiles");
+        for name in ["fib", "loops", "aggregate"] {
+            let call = |jit: &Jit, argument: i32| -> i32 {
+                let address = jit.function(name).expect("the function is there");
+                let function: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
+                function(argument)
+            };
+            for argument in [0, 1, 5, 12] {
+                assert_eq!(
+                    call(&plain, argument),
+                    call(&optimised, argument),
+                    "{name}({argument})"
+                );
+            }
+        }
     }
 
     /// `sizeof` asks for a type, and `&` of a place that needs arithmetic to find - a row of an

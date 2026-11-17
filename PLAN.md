@@ -362,8 +362,14 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       Borland-style score-based allocator later), jump shortening, jump tables for `switch`.
 - [ ] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe.
-- [ ] `--opt-level` picks the lowering: `0`/`1` Cranelift (compile speed), `2`/`3` ours (code
+- [~] `--opt-level` picks the lowering: `0`/`1` Cranelift (compile speed), `2`/`3` ours (code
       quality), with numbers in `docs/COMPARISON.md` style rather than claims.
+      **`0` and `1` are there**: `0` leaves Cranelift at `opt_level=none`, `1` turns its optimiser
+      on, and `2`/`3` are refused as the caller's mistake because our own back end is not written -
+      a number never means two things. Measured on the six-file corpus: **3822 bytes of x64 at `0`,
+      2459 at `1`** (55 ms against 180), which takes the gap the measuring stick reports from 3.1x
+      to **2.0x**. All 414 corpus programs that run agree between the two levels, and a JIT test
+      keeps it that way.
 - [ ] Acceptance: on a named benchmark set, `--opt-level=2` beats `back-cranelift` on runtime and
       stays within a stated factor of `clang -O2`, with every result checked against the same
       program built by clang.

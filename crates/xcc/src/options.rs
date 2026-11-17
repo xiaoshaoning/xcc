@@ -97,6 +97,13 @@ pub struct Options {
     pub defines: Vec<String>,
     /// Macros undefined after those defines are installed.
     pub undefines: Vec<String>,
+    /// How hard the back end works over the code: `0` none (the default - compile fast), `1`
+    /// speed. The plan's levels 2 and 3 are *this compiler's own* lowering, which is M10's long
+    /// half and not written: asking for one is refused rather than quietly served by Cranelift, so
+    /// a number never means two things.
+    ///
+    /// Measured on the six-file corpus: level 1 takes 3822 bytes of x64 to 2459, and 55 ms to 180.
+    pub opt_level: u8,
     /// What `__DATE__` and `__TIME__` say. The epoch by default, so a compilation that sets no
     /// stamp is still deterministic - and nothing downstream has to decide what "unset" means.
     pub stamp: Stamp,

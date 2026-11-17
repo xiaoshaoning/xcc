@@ -5,7 +5,7 @@
 //! the front end gets checked against a 1991 implementation, and how the plan's successor argues
 //! about code size instead of guessing.
 //!
-//!     cargo run -p bcc20-sys --example compare -- [FILE.c]...
+//!     cargo run -p bcc20-sys --example compare -- [--opt-level=N] [FILE.c]...
 //!
 //! Without files it compiles `corpus/*.c`. `BCC20_LIB` names `libbcc20.dll` when it is not on
 //! `PATH`; without the library the xcc column is still printed, and the reason the other one is
@@ -19,7 +19,19 @@ use bcc20_sys::{Compiler, Job};
 use xcc::{Compile, Options};
 
 fn main() {
-    let mut files: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // `--opt-level=N` for xcc's half; Borland's is always the same compiler.
+    let mut opt_level = 0u8;
+    let mut files: Vec<PathBuf> = Vec::new();
+    for argument in std::env::args().skip(1) {
+        if let Some(level) = argument.strip_prefix("--opt-level=") {
+            opt_level = level.parse().unwrap_or_else(|_| {
+                eprintln!("compare: --opt-level wants a number");
+                std::process::exit(2);
+            });
+            continue;
+        }
+        files.push(PathBuf::from(argument));
+    }
     if files.is_empty() {
         files = corpus();
     }
@@ -54,7 +66,11 @@ fn main() {
 
         // xcc: what this compiler writes today.
         let started = Instant::now();
-        let artifact = Compile::new(Options::default()).compile(&name, &source);
+        let options = Options {
+            opt_level,
+            ..Options::default()
+        };
+        let artifact = Compile::new(options).compile(&name, &source);
         let elapsed = started.elapsed().as_micros();
         let (our_code, our_errors) = match &artifact {
             Ok(artifact) => (coff_text(artifact.object()).unwrap_or(0), 0),

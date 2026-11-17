@@ -78,6 +78,35 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M10: `--opt-level`, and the measurement that made it worth a flag - 2026-11-16
+
+M10's `--opt-level` line, and the lesson that came before writing it.
+
+**First I measured what a pass would buy, and the answer was nothing.** After `mem2reg` the six-file
+corpus has **zero** instructions whose result is unused, so a dead-code pass had nothing to remove -
+a fact worth having before building one. The plan's next item could have been DCE and it would have
+been forty lines of measured nothing.
+
+**Then I flipped one string.** The back end has always lowered with Cranelift's `opt_level=none`,
+chosen in M4 for compile speed. Setting it to `speed` and re-measuring took the six files from 3822
+to **2459 bytes** and the gap to Borland from 3.1x to **2.0x**, for 55 ms -> 180 ms of compile time.
+That is the largest single result in M10 so far and it is one line, which is exactly why it is a
+*flag* and not a new default: `0` compiles fastest and is what the differential runner and CI use,
+`1` buys the code size, and the number a caller passes means what it says.
+
+**`2` and `3` are refused, as the caller's mistake.** They are this compiler's own back end in the
+plan, which is not written. Serving them from Cranelift would make one number mean two things, and
+routing the refusal through the back end's error made it arrive as `internal:` - a compiler bug
+message for a number the caller chose. It is a source diagnostic now, with no `internal` in it.
+
+**Soundness, measured rather than assumed:** all **414** corpus programs that run under one level run
+under the other with the same exit code and the same output, and the same 50 are refused at both. A
+JIT test compiles three programs at both levels and compares their answers, so the property is
+checked where a change is noticed first.
+
+173 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### mem2reg reviewed - 2026-11-16 - a field that counted the wrong thing, and a pass that could be slower than the compiler
 
 Review of `cc49f70`: the first M10 pass.
