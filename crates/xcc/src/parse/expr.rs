@@ -1794,6 +1794,7 @@ impl Parser<'_> {
     /// so the block is parsed without pushing a scope of its own.
     pub(super) fn function_body(&mut self, name: Option<Symbol>, result: TypeId) {
         self.function_result = Some(result);
+        self.current_function = name;
         self.loops = 0;
         self.switches.clear();
         self.labels.clear();

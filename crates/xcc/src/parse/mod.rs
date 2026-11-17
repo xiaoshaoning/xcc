@@ -54,6 +54,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         nesting: 0,
         function_result: None,
         loops: 0,
+        current_function: None,
         switches: Vec::new(),
         labels: HashMap::new(),
         label_blocks: HashMap::new(),
@@ -210,8 +211,11 @@ struct Parser<'a> {
     nesting: usize,
     /// What the function being read returns, while its body is being read.
     function_result: Option<TypeId>,
-    /// How many loops surround the statement being read: `break` and `continue` need one.
+    /// How many loops surround the statement being read: `continue` needs one.
     loops: usize,
+    /// The function whose body is being read, for the one thing that needs its name: a `static`
+    /// local's object is named for the function that declares it.
+    current_function: Option<Symbol>,
     /// The `switch`es being read, innermost last, each with the `case` values it already has.
     switches: Vec<Switch>,
     /// The labels defined in the function being read, function-scoped (C99 6.2.1p4), and the
@@ -265,9 +269,13 @@ struct Parser<'a> {
     unevaluated: bool,
     /// How many string literals have been given an anonymous global: `.str0`, `.str1`, ...
     literals: u32,
-    /// Where `break` and `continue` go, innermost last: the block after the loop, and the block
-    /// the next iteration starts at.
-    targets: Vec<(cir::Block, cir::Block)>,
+    /// Where `break` leaves and, for a loop, where `continue` goes: innermost last.
+    ///
+    /// One stack, because `break` leaves whichever of a loop and a `switch` is nearer, and two
+    /// stacks cannot say which that is - the bug that made `break` inside a `switch` inside a
+    /// `for` leave the *loop*. A `switch` pushes its exit with no continue target, and
+    /// `continue` finds the nearest entry that has one.
+    targets: Vec<(cir::Block, Option<cir::Block>)>,
 }
 
 impl Parser<'_> {
@@ -529,7 +537,11 @@ impl Parser<'_> {
             if object && !self.object_fits(ty) {
                 object = false;
             }
-            if object && self.in_body() {
+            // A `static` local is not in the frame: it has static storage duration, one object
+            // for the whole run, initialised once (C99 6.2.4p3), so it is handled with the
+            // initialiser below as a global of its own.
+            let static_local = object && self.in_body() && specs.is_static;
+            if object && self.in_body() && !static_local {
                 // A local variable is a slot in the function's frame (ADR-002 invariant 3).
                 if let Some(name) = name {
                     let pointer = self.pointer_to(ty);
@@ -550,8 +562,17 @@ impl Parser<'_> {
                     self.define_global(name, ty, None, span);
                 }
             }
+            if static_local {
+                if let Some(name) = name {
+                    let span = self.span();
+                    self.static_local(name, ty, span);
+                } else if self.eat("=") {
+                    // No name to give it: read the initialiser for its own mistakes.
+                    self.initializer(ty);
+                }
+            }
             // An initialiser: only a constant expression, for now.
-            if self.eat("=") {
+            else if self.eat("=") {
                 let span = self.span();
                 if self.in_body() || !object {
                     // A local has a slot, so its initialiser becomes stores into the frame. An
@@ -706,6 +727,43 @@ impl Parser<'_> {
         }
     }
 
+    /// A `static` local: one object for the whole run, in the data section.
+    ///
+    /// C99 6.2.4p3 gives it static storage duration and 6.7.8p10 makes its initialiser a constant
+    /// one, so it is a global in everything but name - and its name is `<function>.<variable>`,
+    /// which no C identifier can spell, so two functions may each have their own `static int n`
+    /// (6.2.2p3). The local name means its *address* inside the body, which is what a frame slot
+    /// would have been too, so nothing else in the parser changes.
+    fn static_local(&mut self, name: Symbol, ty: TypeId, span: Span) {
+        let mangled = match self.current_function {
+            Some(function) => format!("{}.{}", self.spell_of(function), self.spell_of(name)),
+            None => self.spell_of(name).to_owned(),
+        };
+        // The initialiser, or zeroes: a static object with none holds zero (C99 6.7.8p10), and
+        // the data section must carry those bytes rather than the frame's leftovers.
+        let init = if self.eat("=") {
+            self.initializer_bytes(ty)
+        } else {
+            self.types.size_of(ty).map(|size| vec![0u8; size as usize])
+        };
+        let Some(init) = init else {
+            return;
+        };
+        self.globals.push(cir::Global {
+            name: mangled.clone(),
+            ty,
+            defined: true,
+            init: Some(init),
+            external: false,
+            span,
+        });
+        let pointer = self.pointer_to(ty);
+        let address = self.emit(|builder| builder.global_address(mangled.clone(), pointer, span));
+        if let (Some(address), Some(entry)) = (address, self.symbols.here_mut(name)) {
+            entry.storage = Some(address);
+        }
+    }
+
     /// The bytes a file-scope initialiser gives an object of type `ty`, or `None` when a value
     /// in it is not something this can write.
     ///
@@ -768,6 +826,9 @@ impl Parser<'_> {
                 "typedef" | "extern" | "static" | "auto" | "register" => {
                     if word == "typedef" {
                         specs.is_typedef = true;
+                    }
+                    if word == "static" {
+                        specs.is_static = true;
                     }
                     self.at += 1; // a storage class is not part of the type
                 }
@@ -1322,6 +1383,9 @@ impl Parser<'_> {
 struct Specifiers {
     ty: Option<TypeId>,
     is_typedef: bool,
+    /// Whether `static` was one of the specifiers: inside a function that means storage duration
+    /// and not linkage, which is the one place the word changes what a declaration *is*.
+    is_static: bool,
     /// Whether the specifiers named a tag (`enum E { ... }`), which C lets stand alone as a
     /// declaration that declares nothing.
     declares_tag: bool,

@@ -21,10 +21,11 @@ pub struct Jit {
     module: JITModule,
     /// The name each function was declared by, so a host can ask for it later.
     names: Vec<(String, FuncId)>,
-    /// The host symbols this JIT was given, by name: what a call to something this unit does not
-    /// define may reach. A JIT resolves symbols when it finalizes, and an unresolvable one is a
-    /// panic inside `cranelift-jit`, so the check is made here where it can be a diagnostic.
-    symbols: Vec<String>,
+    /// What a call to something this unit does not define may reach: the C runtime's functions and
+    /// the host's, by name and address. A JIT resolves symbols when it finalizes, and an
+    /// unresolvable one is a panic inside `cranelift-jit`, so the check is made against this where
+    /// it can be a diagnostic.
+    symbols: Vec<(String, *const u8)>,
     /// Every name this JIT has already defined, across the sources added to it: a second source
     /// may call the first one's functions and take the address of its objects.
     defined: Vec<String>,
@@ -44,9 +45,14 @@ impl std::fmt::Debug for Jit {
 }
 
 impl Jit {
-    /// A JIT with no host symbols: the common case.
+    /// A JIT that can call the C runtime: the common case.
+    ///
+    /// A JIT is not a linker, so the functions `crates/xcc/include` declares are resolved to the
+    /// machine's own C runtime here - `printf`, `malloc`, `qsort` and the rest
+    /// (`back::crt`). No host symbols, so no contract to keep: this is the safe way in.
     pub fn new() -> Result<Self, String> {
-        // No symbols, so no contract to keep: this is the safe way in.
+        // SAFETY: no host symbols are given; the C runtime's are the machine's own and outlive
+        // every JIT.
         #[allow(unsafe_code)]
         unsafe {
             Self::with_symbols(&[])
@@ -62,6 +68,17 @@ impl Jit {
     /// are taken here because Cranelift's builder takes them at construction and nowhere else.
     #[allow(unsafe_code)]
     pub unsafe fn with_symbols(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
+        // The C runtime first, then the host's symbols: a host that gives a name the runtime also
+        // has means its own function, which is what a host passing `write` or `open` expects.
+        let runtime = crate::back::crt::symbols();
+        let mut table: Vec<(&str, *const u8)> = Vec::with_capacity(runtime.len() + symbols.len());
+        for (name, address) in &runtime {
+            if !symbols.iter().any(|(given, _)| given == name) {
+                table.push((name, *address));
+            }
+        }
+        table.extend(symbols.iter().map(|(name, address)| (*name, *address)));
+        let symbols = &table[..];
         let mut flags = settings::builder();
         flags
             .set("opt_level", "none")
@@ -78,7 +95,10 @@ impl Jit {
         Ok(Self {
             module: JITModule::new(builder),
             names: Vec::new(),
-            symbols: symbols.iter().map(|(name, _)| (*name).to_owned()).collect(),
+            symbols: symbols
+                .iter()
+                .map(|(name, address)| ((*name).to_owned(), *address))
+                .collect(),
             defined: Vec::new(),
         })
     }
@@ -116,7 +136,8 @@ impl Jit {
                 ),
         );
         for required in required_symbols(&module) {
-            if !defined.contains(&required) && !self.symbols.contains(&required) {
+            let given = self.symbols.iter().any(|(name, _)| *name == required);
+            if !defined.contains(&required) && !given {
                 return Err(format!(
                     "`{required}` is not defined in this compilation and was not given as a host symbol; a JIT can only call what it has"
                 ));
@@ -130,6 +151,20 @@ impl Jit {
             .finalize_definitions()
             .map_err(|error| format!("finalizing: {error}"))?;
         Ok(())
+    }
+
+    /// The address of a function this JIT did not compile: one of the C runtime's, or one the host
+    /// gave it. `None` when the machine has no such function.
+    ///
+    /// A host needs this for the one function that is not a library call: leaving the process. The
+    /// C runtime's `exit` flushes the stdio buffers a compiled `printf` filled, and a host that
+    /// called its own process exit instead would lose them - which is why the CLI's `--run` asks
+    /// this JIT rather than the Rust runtime.
+    pub fn runtime(&self, name: &str) -> Option<*const u8> {
+        self.symbols
+            .iter()
+            .find(|(known, _)| known == name)
+            .map(|(_, address)| *address)
     }
 
     /// The address of a function compiled here.
@@ -346,6 +381,59 @@ int twice(int x) { return host_double(x); }",
         let address = jit.function("twice").expect("the function is there");
         let twice: extern "C" fn(i32) -> i32 = unsafe { std::mem::transmute(address) };
         assert_eq!(twice(21), 42);
+    }
+
+    /// Three things that were wrong together and are wrong on their own: a `goto` back to a label
+    /// that is not the first statement of its block, a local with static storage duration, and a
+    /// `break` inside a `switch` inside a loop.
+    #[test]
+    fn a_label_starts_a_block_a_static_local_is_an_object_and_break_leaves_the_switch() {
+        let mut jit = Jit::new().expect("a JIT");
+        jit.add_source(
+            "int backwards(void) {
+                 int i = 0;
+                 goto skip;
+                 i = 99;
+             skip:
+                 i = 0;
+             again:
+                 i = i + 1;
+                 if (i < 3) { goto again; }
+                 return i;
+             }
+             int counter(void) { static int n = 0; n = n + 1; return n; }
+             int other(void) { static int n = 100; n = n + 2; return n; }
+             int zeroed(void) { static int m; m = m + 5; return m; }
+             int innermost(void) {
+                 int k, n = 0;
+                 for (k = 1; k <= 3; k = k + 1) {
+                     switch (k) {
+                     case 1: n = n + 10;
+                     case 2: n = n + 100; break;
+                     default: n = n + 1000; break;
+                     case 3: n = n + 7;
+                     }
+                     n = n + 1;
+                 }
+                 return n;
+             }",
+        )
+        .expect("it compiles");
+        let call = |name: &str| -> i32 {
+            let address = jit.function(name).expect("the function is there");
+            let function: extern "C" fn() -> i32 = unsafe { std::mem::transmute(address) };
+            function()
+        };
+        // A label is a block of its own: the jump back must not re-run `i = 0`.
+        assert_eq!(call("backwards"), 3);
+        // Two functions, two objects, and a static with no initialiser is zero on the first call.
+        assert_eq!(call("counter"), 1);
+        assert_eq!(call("counter"), 2);
+        assert_eq!(call("other"), 102);
+        assert_eq!(call("zeroed"), 5);
+        assert_eq!(call("zeroed"), 10);
+        // k = 1 falls 10 + 100, then one; k = 2 adds 100, then one; k = 3 adds 7, then one.
+        assert_eq!(call("innermost"), 111 + 101 + 8);
     }
 
     /// `switch`, as the values it must produce: the arms, `break`, `default`, and C's

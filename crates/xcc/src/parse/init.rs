@@ -387,7 +387,11 @@ impl Parser<'_> {
             return;
         }
         let at = self.offset;
-        if value.constant.is_none() || value.cir.is_some() {
+        // What the bytes need is a constant, not silence: inside a body a constant *also* emits an
+        // instruction (nothing else has a value there), and that instruction being unused is no
+        // reason to refuse the bytes - which is what a `static` local's initialiser needs, and a
+        // file-scope one has code-free values only because nothing is emitting yet.
+        if value.constant.is_none() {
             self.bytes = None;
             return;
         }

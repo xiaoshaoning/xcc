@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+pub mod crt;
+
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, MemFlags, Signature, UserFuncName, Value as ClValue,
 };

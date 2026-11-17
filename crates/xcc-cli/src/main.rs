@@ -236,6 +236,15 @@ fn run(args: &Args) -> ExitCode {
     let main: extern "C" fn(i32, *const *const u8) -> i32 = unsafe { std::mem::transmute(address) };
     let argv = [name.as_ptr(), std::ptr::null()];
     let status = main(1, argv.as_ptr());
+    // Leave through the C runtime's own `exit`, the one the compiled code used: it flushes the
+    // stdio buffers `printf` filled and runs the at-exit handlers. `std::process::exit` calls
+    // `ExitProcess` and loses every buffered byte, which is why a program whose output goes to a
+    // pipe would print nothing - the same reason ADR-005's crt exists for a linked `.exe`.
+    if let Some(address) = jit.runtime("exit") {
+        // SAFETY: the C runtime's `exit` has this signature and does not return.
+        let exit: extern "C" fn(i32) -> ! = unsafe { std::mem::transmute(address) };
+        exit(status);
+    }
     std::process::exit(status)
 }
 

@@ -163,15 +163,6 @@ impl Parser<'_> {
     }
 
     /// Whether a block already ends, so it is not given a second terminator.
-    /// Whether a `goto` may target `block`: not the entry block (Cranelift forbids jumping to it)
-    /// and not a block with parameters (a `goto` has no values to give them). A label sitting on
-    /// either gets a block of its own, and the code above it jumps there.
-    fn can_be_a_label(&self, block: cir::Block) -> bool {
-        self.body.as_ref().is_some_and(|body| {
-            block != body.func.entry && body.func.block(block).params.is_empty()
-        })
-    }
-
     fn terminated(&self, block: cir::Block) -> bool {
         self.body
             .as_ref()
@@ -260,7 +251,7 @@ impl Parser<'_> {
             return;
         };
         self.switch_to(body_block);
-        self.targets.push((exit, test));
+        self.targets.push((exit, Some(test)));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -289,7 +280,7 @@ impl Parser<'_> {
         };
         self.jump(body_block, span);
         self.switch_to(body_block);
-        self.targets.push((exit, test));
+        self.targets.push((exit, Some(test)));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -408,7 +399,7 @@ impl Parser<'_> {
             self.jump(test, span);
         }
         self.switch_to(body_block);
-        self.targets.push((exit, step));
+        self.targets.push((exit, Some(step)));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -431,15 +422,15 @@ impl Parser<'_> {
             self.error(span, "`continue` outside a loop");
         }
         if self.in_body() {
-            if let Some((stop, next)) = self.targets.last().copied() {
-                let target = if is_break { stop } else { next };
+            // `break` leaves the innermost loop *or* `switch`; `continue` skips to the nearest
+            // loop, which is why a switch's entry has no continue target.
+            let target = if is_break {
+                self.targets.last().map(|(stop, _)| *stop)
+            } else {
+                self.targets.iter().rev().find_map(|(_, next)| *next)
+            };
+            if let Some(target) = target {
                 self.jump(target, span);
-            } else if is_break {
-                // No loop around it, so `break` belongs to the innermost `switch` - and
-                // `continue` does not, which is why a switch pushes no loop target.
-                if let Some(exit) = self.switches.last().and_then(|switch| switch.exit) {
-                    self.jump(exit, span);
-                }
             }
         }
         if !self.eat(";") {
@@ -542,11 +533,14 @@ impl Parser<'_> {
             test,
             ..Switch::default()
         });
-        let (Some(_exit), Some(test)) = (exit, test) else {
+        let (Some(exit), Some(test)) = (exit, test) else {
             self.statement();
             self.switches.pop();
             return;
         };
+        // A `break` inside the switch leaves through this block, and it is nearer than any loop
+        // around the switch - which is what pushing it on the same stack says.
+        self.targets.push((exit, None));
         self.jump(test, span);
         // Statements before the first `case` are unreachable in C, and get a block to be
         // unreachable in rather than the comparison block.
@@ -554,6 +548,7 @@ impl Parser<'_> {
             self.switch_to(stray);
         }
         self.statement();
+        self.targets.pop();
         let switch = self.switches.pop().expect("the switch being read");
         self.emit_switch_chain(&switch, span);
         // Whatever comes after the switch belongs to the exit block: without this, trailing
@@ -697,21 +692,19 @@ impl Parser<'_> {
                 format!("this function already has a label `{spelled}`"),
             );
         }
-        // Where the label's code starts: the block a `goto` ahead of it made, else the block
-        // the code above is in - unless that block has already ended, in which case the label
-        // needs a fresh one for a later `goto` to reach.
+        // Where the label's code starts: the block a `goto` ahead of it made, else a new one that
+        // the code above falls into.
+        //
+        // A new block even when the code above is still going, because a label must be the *first*
+        // instruction of its block: a `goto` back to a label in the middle of a block re-runs
+        // everything before it, and `i = 0; again: i = i + 1; goto again;` then never ends. That
+        // was a real loop, not a hypothetical one (corpus `cc50_corners.c`).
         let target = match self.label_blocks.get(&name).copied() {
             Some(block) => block,
-            None => match self
-                .current_block()
-                .filter(|block| !self.terminated(*block) && self.can_be_a_label(*block))
-            {
-                Some(current) => current,
-                None => match self.new_block(span) {
-                    Some(block) => block,
-                    // No body: nothing to label.
-                    None => return,
-                },
+            None => match self.new_block(span) {
+                Some(block) => block,
+                // No body: nothing to label.
+                None => return,
             },
         };
         self.label_blocks.insert(name, target);

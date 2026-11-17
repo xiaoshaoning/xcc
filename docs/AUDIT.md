@@ -78,6 +78,50 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8: `--run` gets the C library, and four bugs the ratchet had been hiding - 2026-11-16
+
+The JIT resolves symbols when it finalizes, so `--run` could not call the C library - and the
+differential runner, which runs programs in process, could not see the 35 programs that `printf`
+had just unblocked. `back::crt` looks the C runtime's own functions up by name, and the ratchet went
+**376 -> 411 ran, 86 -> 51 refused**. Four real bugs came out of it, all older than this commit,
+none reachable while those programs were refused.
+
+**Static locals were ordinary locals.** `static int n = 0;` inside a function got a frame slot, so
+it was re-initialised on every call and two functions' `static int n` were one variable. C99 6.2.4p3
+gives it static storage duration: it is a global named `<function>.<variable>` (a name no C
+identifier can spell), initialised from its constant initialiser or zero-filled, and the local name
+means its *address*. One branch in `declaration`, one helper, and the initialiser walker learned
+that a constant inside a body *also* emits an instruction - which is no reason to refuse its bytes
+(that was the second half: the bytes path refused every value with code, which only file-scope
+values never had).
+
+**A label in the middle of a block re-ran the block.** `label_statement` reused the block the code
+above was in when it was still open, so in `i = 0; again: i = i + 1; if (i < 3) goto again;` the
+back-jump restarted at `i = 0` - an infinite loop. A label must be the *first* instruction of its
+block; every label now gets a block of its own and the code above falls into it.
+
+**`break` inside a `switch` inside a loop left the loop.** Two stacks (`targets` for loops,
+`switches` for switches) cannot say which construct is nearer, and `loop_control` asked the loop
+first. There is one stack now: a loop pushes `(exit, Some(continue target))` and a switch pushes
+`(exit, None)`, so `break` takes the top and `continue` finds the nearest entry with a continue
+target. The `Switch` stack keeps the arms and the case values, which is a different question.
+
+**And `--run` lost buffered output.** `std::process::exit` calls `ExitProcess`, which discards
+every byte `printf` has buffered - a program whose output goes to a pipe printed nothing, which is
+also why three corpus programs' mismatches read `output "" against "6 6 6"`. The CLI now leaves
+through the *same* runtime's `exit`, which flushes stdio and runs at-exit handlers: the reason
+ADR-005's crt exists for a linked `.exe`, in five lines for an in-process run.
+
+**One CRT, not two.** The first version of `crt` took each name from whichever of `ucrtbase` and
+`msvcrt` answered first - which loads two heaps and two sets of stdio buffers into one process, so a
+block from one `malloc` freed by the other's `free` is the corruption that gives C runtimes their
+reputation. It loads exactly one library now (the classic one, which exports `printf` under its own
+name; the UCRT offers it as an inline wrapper), and a name it lacks is absent, which `--run` says
+plainly. `snprintf` is one such name - no Windows C runtime exports it - and a linked build has it.
+
+166 unit, 22 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (411 ran, 51 refused, 2
+skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8 varargs reviewed - 2026-11-16 - the record that crossed the ABI as its own address
 
 Review of `cd0da32`: variadic calls lowered as indirect calls, and the two bugs it exposed.
