@@ -37,9 +37,11 @@ Stated here rather than discovered later.
   arguments work ([ADR-006](docs/ADR-006-varargs.md), amended).
 - **`va_list`, `va_start`, `va_arg`, and defining a variadic function** are refused: the callee's
   side of the same convention, and the same `AL` question.
-- **`--run` cannot call the C library.** A JIT resolves symbols when it finalizes, so a program
-  that `printf`s is built with `-c` and linked, not run in process; the diagnostic says which
-  symbol was missing.
+- **`--run` calls a subset of the C library.** A JIT is not a linker, so it resolves the C
+  runtime's own functions itself - `printf`, `malloc`, `qsort`, `fopen` and the rest - from one
+  library (the classic runtime, which exports the `printf` family under its own names). What that
+  library does not export is absent: `snprintf`, and the `stdin`/`stdout`/`stderr` accessor, work
+  in a linked build and not in process. A name that cannot be resolved is a diagnostic naming it.
 - **No unwind data.** A Cranelift win64 object carries `.text` and no `.pdata`/`.xdata` (measured,
   and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
   works; *unwinding* through it - SEH, a debugger walking frames - does not.

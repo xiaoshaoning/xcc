@@ -740,13 +740,18 @@ impl Parser<'_> {
             None => self.spell_of(name).to_owned(),
         };
         // The initialiser, or zeroes: a static object with none holds zero (C99 6.7.8p10), and
-        // the data section must carry those bytes rather than the frame's leftovers.
-        let init = if self.eat("=") {
+        // the data section must carry those bytes rather than the frame's leftovers. An
+        // initialiser this cannot write has already said so, and the object still gets its bytes:
+        // a use of the name afterwards must not become a second, internal complaint about a
+        // symbol the compiler never made.
+        let written = if self.eat("=") {
             self.initializer_bytes(ty)
         } else {
-            self.types.size_of(ty).map(|size| vec![0u8; size as usize])
+            None
         };
-        let Some(init) = init else {
+        let Some(init) =
+            written.or_else(|| self.types.size_of(ty).map(|size| vec![0u8; size as usize]))
+        else {
             return;
         };
         self.globals.push(cir::Global {

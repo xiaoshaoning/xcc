@@ -31,6 +31,13 @@ pub struct Jit {
     defined: Vec<String>,
 }
 
+// SAFETY: what stops `Jit` being `Send` on its own is the C runtime's function addresses, which
+// are process-global, immutable for the life of the process, and carry no ownership. Everything
+// else in it - the module, the name table - is `Send` already, so moving a `Jit` to another thread
+// is sound; sharing one is not, and this does not add `Sync`.
+#[allow(unsafe_code)]
+unsafe impl Send for Jit {}
+
 impl std::fmt::Debug for Jit {
     /// Cranelift's module has no `Debug` of its own; what a reader wants is which functions are
     /// in it.
@@ -349,6 +356,15 @@ mod tests {
         // The ABI is LLP64: `long` is 32 bits while `long long`, `size_t` and a pointer are 64.
         // `limits.h` says the same thing, which is why it is pinned here rather than trusted.
         assert_eq!(call("limits"), 1 + 2 + 4 + 8 + 16);
+    }
+
+    /// A `Jit` can be moved to another thread (it holds process-global function addresses and a
+    /// module of its own), which a host that builds at startup and runs on a worker relies on.
+    /// Nothing can be added to it that is not, without this failing to compile.
+    #[test]
+    fn a_jit_can_be_moved_to_another_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Jit>();
     }
 
     /// A function calling another one in the same unit, through the address the emitter mints.

@@ -306,10 +306,11 @@ The first thing worth showing, and the reason the project exists.
 - [ ] Decide the libc story: import UCRT (`ucrtbase.dll`, `kernel32.dll`) from our own import
       libraries, so no MSYS/mingw and no SDK headers are needed to compile; linking a final
       `.exe` still uses `lld-link` and the SDK's `.lib` files.
-      *Partly there*: a program including our headers and calling `malloc`, `free` and `qsort`
-      compiles with `xcc -c`, links with `clang`, and exits with what clang's own build exits
-      with. What is missing is the import libraries of our own, so that the link needs no
-      toolchain beyond `lld-link`.
+      *Partly there*: a program including our headers and calling `malloc`, `free`, `qsort`,
+      `fopen` and `printf` compiles with `xcc -c`, links with `clang`, and behaves as clang's own
+      build does; and `--run` resolves those same functions from the machine's C runtime, so an
+      in-process program calls the library too (`back::crt`). What is missing is the import
+      libraries of our own, so that the link needs no toolchain beyond `lld-link`.
 - [ ] `-nostdlib` freestanding mode: no headers, no UCRT, our own entry - for embedding and
       for kernels/firmware-shaped code.
 - [ ] Acceptance: `printf`, `malloc`, `fopen`/`fread`, `qsort`, `snprintf` work in a program

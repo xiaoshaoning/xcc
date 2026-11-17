@@ -78,6 +78,42 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### M8 `--run` and the C library, reviewed - 2026-11-16 - a JIT that could no longer be moved
+
+Review of `59c439f`: the C runtime for `--run`, static locals, the label-block fix, the `break`
+stack, and the exit through the runtime.
+
+**Found: `Jit` stopped being `Send`.** Storing the runtime's addresses as `*const u8` removed the
+auto `Send`, so a host that built a JIT at startup and moved it to a worker no longer compiled -
+the "one `Jit` per thread, no global state" property the module has advertised since M4. The
+addresses are process-global and immutable and carry no ownership, so `unsafe impl Send` says what
+is true, with a note on why it is sound and why it is not `Sync`; a test is now a compile-time
+guard, so a future field cannot quietly take the property away.
+
+**Found: a diagnosed static initialiser produced a second, internal error.** When a `static`
+local's initialiser could not be written, `static_local` gave up before creating the object, so the
+name had no storage and every later use of it fell into the file-scope path and minted a
+`GlobalAddress` for a symbol the compiler had never made: `internal: `n` is not declared here`, on
+top of the real diagnostic. The object is created with zeroes now - the initialiser's own error is
+the only one - which is what "one diagnostic per mistake" means.
+
+**Found: the README said `--run` cannot call the C library**, which stopped being true in the same
+commit that made it able to. It says what it can and cannot: one library, the `printf` family
+included, `snprintf` and the stream accessor excluded (the classic runtime exports neither), and a
+missing name is a diagnostic that names it.
+
+**Checked and sound:** the `crt` list against the headers, mechanically - every function the
+twelve headers declare is in it, with no name left behind; the `targets` stack is pushed and popped
+on every path a switch can leave by, so a `break` outside a body is still refused rather than
+aimed at nothing; `continue` finds the nearest entry with a continue target, which is what a
+`do`-`while` needs (`test`, not `body`); a label now always gets a block, including the label at the
+top of a function, where the entry block cannot be a target; and the `init.rs` change - accepting a
+constant that also has code - is only reachable where `self.bytes` is set, which is the
+file-scope and static-local paths.
+
+167 unit, 22 parser, 18 CLI, 3 exe, 4 hostile, 6 C API, differential (411 ran, 51 refused, 2
+skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M8: `--run` gets the C library, and four bugs the ratchet had been hiding - 2026-11-16
 
 The JIT resolves symbols when it finalizes, so `--run` could not call the C library - and the
