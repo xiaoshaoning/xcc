@@ -123,6 +123,9 @@ pub(crate) enum Op {
     },
     /// The address of a frame slot: `lea`.
     LocalAddress { dst: VReg, offset: i32 },
+    /// The address of an object in the data section, by its link name: `lea` with a displacement the
+    /// object file's relocation fills in. Also how a string literal's address is taken.
+    DataAddress { dst: VReg, symbol: String },
     /// Read eight bytes of a frame slot, which is how a block parameter arrives.
     LoadLocal { dst: VReg, offset: i32 },
     /// Write eight bytes of a frame slot, which is how an edge passes them.
@@ -212,6 +215,7 @@ impl Op {
             Op::Const { dst, .. }
             | Op::Incoming { dst, .. }
             | Op::LocalAddress { dst, .. }
+            | Op::DataAddress { dst, .. }
             | Op::LoadLocal { dst, .. }
             | Op::LoadMemory { dst, .. }
             | Op::Binary { dst, .. }
@@ -231,6 +235,7 @@ impl Op {
             Op::Const { .. }
             | Op::Incoming { .. }
             | Op::LocalAddress { .. }
+            | Op::DataAddress { .. }
             | Op::LoadLocal { .. } => Vec::new(),
             Op::StoreLocal { src, .. } => vec![*src],
             Op::LoadMemory { base, .. } => vec![*base],
@@ -331,19 +336,45 @@ pub(crate) fn object(
     module: &crate::cir::Module,
     names: &crate::intern::Interner,
 ) -> Result<Vec<u8>, NotYet> {
-    if !module.globals.is_empty() {
-        let span = module
-            .funcs
-            .first()
-            .map(|func| func.entry_span())
-            .unwrap_or(Span::at(0));
-        return Err(NotYet {
-            message: "a translation unit with global objects".into(),
-            span,
-        });
-    }
     let functions = lower::lower(module, names)?;
-    Ok(coff::write(&functions))
+    Ok(coff::write(&functions, &data_section(module)))
+}
+
+/// The objects in the data section: their bytes, laid out in the order the module holds them, each
+/// at its type's alignment, with the name of every one and where it starts. A global that is only
+/// declared is not laid out at all: it is a name the linker resolves, and the object says so.
+fn data_section(module: &crate::cir::Module) -> coff::Data {
+    let mut data = coff::Data::default();
+    for global in &module.globals {
+        let Some(bytes) = laid_out(&module.types, global) else {
+            data.undefined.push(global.name.clone());
+            continue;
+        };
+        let align = module.types.align_of(global.ty).unwrap_or(1).max(1) as usize;
+        while data.bytes.len() % align != 0 {
+            data.bytes.push(0);
+        }
+        data.symbols.push(coff::DataSymbol {
+            name: global.name.clone(),
+            offset: data.bytes.len() as u32,
+            external: global.external,
+        });
+        data.bytes.extend_from_slice(&bytes);
+    }
+    data
+}
+
+/// The bytes a global is initialised with: what the front end wrote, or as many zeroes as its type
+/// takes, because a defined object with no initialiser holds zero (C99 6.7.8p10).
+fn laid_out(types: &crate::types::Types, global: &crate::cir::Global) -> Option<Vec<u8>> {
+    if !global.defined {
+        return None;
+    }
+    if let Some(init) = &global.init {
+        return Some(init.clone());
+    }
+    let size = types.size_of(global.ty)? as usize;
+    Some(vec![0; size])
 }
 
 #[cfg(test)]

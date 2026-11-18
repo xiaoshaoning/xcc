@@ -14,7 +14,7 @@
 //!   slot has one offset for the whole function, which is why an offset in this file is relative
 //!   to the frame body and the encoder adds the shadow space and the saved registers once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{BlockTerm, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
@@ -26,17 +26,25 @@ pub(crate) fn lower(
     module: &Module,
     names: &crate::intern::Interner,
 ) -> Result<Vec<MachineFunction>, NotYet> {
-    let mut functions = Vec::new();
+    // Which names are functions: taking a function's *address* as a value needs a call through a
+    // pointer, which this back end does not lower, while taking an object's address is one `lea`.
+    let functions: HashSet<String> = module
+        .funcs
+        .iter()
+        .map(|func| names.resolve(func.name).to_owned())
+        .collect();
+    let mut lowered = Vec::new();
     for func in &module.funcs {
-        functions.push(lower_function(func, &module.types, names)?);
+        lowered.push(lower_function(func, &module.types, names, &functions)?);
     }
-    Ok(functions)
+    Ok(lowered)
 }
 
 fn lower_function(
     func: &Func,
     types: &Types,
     names: &crate::intern::Interner,
+    functions: &HashSet<String>,
 ) -> Result<MachineFunction, NotYet> {
     let mut lowerer = FunctionLowering {
         types,
@@ -48,6 +56,7 @@ fn lower_function(
         param_offsets: Vec::new(),
         frame_bytes: 0,
         returned: Vec::new(),
+        functions,
         direct_calls: HashMap::new(),
     };
     lowerer.run(func)?;
@@ -84,6 +93,8 @@ struct FunctionLowering<'a> {
     frame_bytes: i32,
     /// The values a `return` hands back.
     returned: Vec<VReg>,
+    /// The names this module defines functions for.
+    functions: &'a HashSet<String>,
     /// Values that are the function a call names directly, so no address is ever materialised for
     /// them: `call rel32` needs a symbol, not a pointer.
     direct_calls: HashMap<Value, String>,
@@ -436,10 +447,18 @@ impl FunctionLowering<'_> {
                     // Read only as the callee of a call: the call names the symbol and no address
                     // is ever materialised, so this value is defined by being left out. Nothing
                     // reads it, so it never needs a register or a slot.
-                } else {
+                } else if self.functions.contains(name) {
+                    // A function's address as a value is a call through a pointer, which this back
+                    // end has not learnt; an object's address is one `lea`.
                     return Err(NotYet {
-                        message: format!("the address of `{name}` as a value"),
+                        message: format!("the address of the function `{name}` as a value"),
                         span,
+                    });
+                } else {
+                    let dst = self.reg_for(*result);
+                    ops.push(Op::DataAddress {
+                        dst,
+                        symbol: name.clone(),
                     });
                 }
             }

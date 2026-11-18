@@ -230,6 +230,21 @@ impl Encoder<'_> {
                 self.canonicalise(register, *size, *signed);
                 self.write(*dst, register);
             }
+            Op::DataAddress { dst, symbol } => {
+                // `lea dst, [rip + disp32]`: the displacement is a relocation, because the linker
+                // decides where the data section goes.
+                let register = self.destination(*dst);
+                self.prefix_w(register, Reg(0));
+                self.byte(0x8D);
+                // mod = 00, r/m = 101 says "relative to the next instruction" with no base register.
+                self.byte(((register.0 & 7) << 3) | 0b101);
+                self.relocations.push(Relocation {
+                    offset: self.code.len() as u32,
+                    symbol: symbol.clone(),
+                });
+                self.bytes(&[0, 0, 0, 0]);
+                self.write(*dst, register);
+            }
             Op::LocalAddress { dst, offset } => {
                 let register = self.destination(*dst);
                 self.lea(register, self.body_base + offset);

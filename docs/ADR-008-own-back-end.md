@@ -81,8 +81,8 @@ arguments and an integer or `void` result; recursion.
 
 ## What it refuses, and why that is the design
 
-Floating point; indirect calls and taking a function's address; aggregates by value; global objects
-(no `.data` yet); more than four arguments; `va_arg`. Each is a `NotYet` with a span, so the
+Floating point; indirect calls and taking a function's address; aggregates by value; more than four
+arguments; `va_arg`. Each is a `NotYet` with a span, so the
 refusal reads like the two hundred other refusals in this compiler and a program never runs
 *differently* from the same program at level 0 - it either agrees or does not compile.
 
@@ -106,6 +106,10 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 **5.2x Cranelift and 6.5x clang**. That is the honest state of a first slice: correct, and large,
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
+
+**Globals came next, and they were coverage rather than size:** a `.data` section, each object at its
+type's alignment, and `lea` with a `REL32` relocation for its address. 302 of the corpus became 383,
+because most of what the back end refused was simply a program with an object in it.
 
 **The fourth round took it to 30 564 bytes**, and its other half was a measurement worth keeping: the
 plan predicted that canonicalising lazily, at the operations that read a value's upper bits, would

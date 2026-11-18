@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 162 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 302;
+/// 81 the back end still refuses are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 383;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -113,6 +113,27 @@ fn the_constructs_the_slice_lowers_behave() {
             "an early return before the value returned later",
             "int f(int c, int a) { int ok = c == 0; int v = a + 1; if (ok) return 1; return v; } int main(void) { return f(1, 4) == 5 ? 0 : 1; }",
             0,
+        ),
+        (
+            // The data section: a global object, read through a relocation.
+            "a global object",
+            "int g = 5; int main(void) { g = g + 37; return g; }",
+            42,
+        ),
+        (
+            "a static local, which is a global in everything but name",
+            "int bump(void) { static int n; n = n + 20; return n; } int main(void) { bump(); return bump(); }",
+            40,
+        ),
+        (
+            "an initialised array in the data section",
+            "int a[4] = {10, 20, 30, 40}; int main(void) { return a[0] + a[3]; }",
+            50,
+        ),
+        (
+            "a string literal's bytes",
+            "int main(void) { char *s = \"hello\"; return s[1]; }",
+            101,
         ),
         (
             "a loop, which becomes block parameters",

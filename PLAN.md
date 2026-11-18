@@ -421,6 +421,16 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       What did land is the other half: **a returned value lives in `rax`** when nothing in its life
       writes that register (a comparison, a division, a call, or a spilled result), so the copy at
       the return does not exist; a register that ends up empty is no longer saved either.
+- [x] `back-x64` **globals**: a `.data` section in the object, each object laid out at its type's
+      alignment, and `lea reg, [rip + disp32]` with a relocation for its address. **302 -> 383 of the
+      464 corpus programs** now compile through this back end, link, run and agree with Cranelift's
+      lowering; the 81 left are 13 floating-point programs, 13 that pass more than four arguments, and
+      the rest are gaps in the front end or in ADR-004 (a pointer initialised from a string literal),
+      not in the back end. A global, a `static` local and an initialised array are hand-written cases
+      in `tests/x64.rs` beside the corpus ratchet.
+      What is *not* here: a function's address as a value (a call through a pointer), and a `.data`
+      section that is separate from a read-only one - string literals sit in `.data`, writable, which
+      is correct and not what a linker's `--dynamicbase` would prefer.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.
