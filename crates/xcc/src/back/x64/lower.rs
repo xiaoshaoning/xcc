@@ -66,10 +66,24 @@ fn lower_function(
             .iter()
             .any(|inst| matches!(inst, Inst::Call { .. }))
     });
+    // The widest call decides how much outgoing room the frame needs; a call with four arguments
+    // needs none, because they all go in registers.
+    let widest_call = func
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match inst {
+            Inst::Call { args, .. } => Some(args.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let outgoing_slots = widest_call.saturating_sub(ARGUMENT_COUNT);
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
         returned: lowerer.returned,
+        outgoing_slots: outgoing_slots as u8,
         param_count: func.params().len(),
         makes_call,
         blocks: lowerer.blocks,
@@ -140,16 +154,6 @@ impl FunctionLowering<'_> {
             }
         }
         self.frame_bytes = offset;
-
-        if func.params().len() > ARGUMENT_COUNT {
-            return Err(NotYet {
-                message: format!(
-                    "a function with {} parameters: this back end passes four and has not learnt the stack",
-                    func.params().len()
-                ),
-                span: func.entry_span(),
-            });
-        }
 
         // The entry block's parameters are the arguments.
         let entry = func.entry;
@@ -474,12 +478,6 @@ impl FunctionLowering<'_> {
                         span,
                     });
                 };
-                if args.len() > ARGUMENT_COUNT {
-                    return Err(NotYet {
-                        message: format!("a call with {} arguments", args.len()),
-                        span,
-                    });
-                }
                 let args: Vec<VReg> = args.iter().map(|arg| self.reg_for(*arg)).collect();
                 let dst = result.map(|result| self.reg_for(result));
                 let size = match result {

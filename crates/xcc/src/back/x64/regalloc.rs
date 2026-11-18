@@ -144,7 +144,11 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
                 let register = *register;
                 free.retain(|other| *other != register);
                 locations[interval.reg.0 as usize] = Location::Register(register);
-                if func.makes_call && !saved.contains(&register) {
+                // Every callee-saved register this function touches has to be preserved, whether
+                // it calls anything or not. A leaf usually allocates none of them - its set is the
+                // caller-saved one - but it does when it takes more than two arguments, and then
+                // the saves are what keep its caller's values alive.
+                if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                     saved.push(register);
                 }
                 active.push(interval);
@@ -179,7 +183,7 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         } else {
             let register = free.remove(0);
             locations[interval.reg.0 as usize] = Location::Register(register);
-            if func.makes_call && !saved.contains(&register) {
+            if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                 saved.push(register);
             }
             active.push(interval);

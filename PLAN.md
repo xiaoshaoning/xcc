@@ -431,6 +431,19 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       What is *not* here: a function's address as a value (a call through a pointer), and a `.data`
       section that is separate from a read-only one - string literals sit in `.data`, writable, which
       is correct and not what a linker's `--dynamicbase` would prefer.
+- [x] `back-x64` **stack arguments**: the fifth argument onwards goes in the caller's outgoing area,
+      above the shadow space, where a callee reads it at `[rsp + frame + 40]` - the forty being the
+      shadow space and the return address. The frame's layout is now shadow, outgoing slots, saved
+      registers, the lowering's frame, spills, staging, and the widest call in a function decides how
+      many slots there are. **383 -> 396 of the 464 corpus programs** compile, link, run and agree.
+      **The work found an older bug**, which is the part worth keeping: a leaf function with three or
+      more arguments cannot use caller-saved registers (moving the first argument into `r8` would
+      destroy a later one), so it takes the callee-saved set - and the allocator only recorded saves
+      when a function *called something*, which a leaf does not. It clobbered `rbx`, `rsi`, `rdi` and
+      `r12`-`r15` without preserving any, and its caller's values died at the call. The save list is
+      now "every callee-saved register touched", which is what the ABI asks for and needs no
+      knowledge of whether a call happens; a leaf usually touches none because its set is
+      caller-saved.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.

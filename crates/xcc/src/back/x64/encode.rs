@@ -57,7 +57,10 @@ const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8)
 
 /// Encode one function.
 pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encoded {
-    let body_base = 32 + allocation.saved.len() as i32 * 8;
+    let outgoing_base = 32;
+    let outgoing_bytes = i32::from(func.outgoing_slots) * 8;
+    let saved_base = outgoing_base + outgoing_bytes;
+    let body_base = saved_base + allocation.saved.len() as i32 * 8;
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
     let raw = staging_base + if func.makes_call { 32 } else { 0 };
@@ -68,7 +71,8 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let frameless = !func.makes_call
         && allocation.spill_bytes == 0
         && func.frame_bytes == 0
-        && allocation.saved.is_empty();
+        && allocation.saved.is_empty()
+        && outgoing_bytes == 0;
     // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
     // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
     let frame = if frameless {
@@ -86,6 +90,9 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         body_base,
         spill_base,
         staging_base,
+        outgoing_base,
+        outgoing_bytes,
+        saved_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
         scratches: Vec::new(),
@@ -166,6 +173,13 @@ struct Encoder<'a> {
     fixups: Vec<Fixup>,
     labels: Vec<Option<usize>>,
     allocation: &'a Allocation,
+    /// Where the outgoing argument slots start, from `rsp`: above the shadow space, where a callee
+    /// reads its fifth argument.
+    outgoing_base: i32,
+    /// How many bytes those slots take, which everything after them is displaced by.
+    outgoing_bytes: i32,
+    /// Where the saved registers start, from `rsp`: after the outgoing slots.
+    saved_base: i32,
     /// Where the lowering's frame starts, from `rsp`: after the shadow space and the saved
     /// registers. Meaningful whether or not the function has a frame, because a frame of nothing puts
     /// it where the shadow space ends.
@@ -193,14 +207,15 @@ impl Encoder<'_> {
         }
         let saved = self.allocation.saved.clone();
         for (index, register) in saved.iter().enumerate() {
-            self.mov_memory_from_reg(32 + index as i32 * 8, *register);
+            self.mov_memory_from_reg(self.saved_base + index as i32 * 8, *register);
         }
     }
 
     fn epilogue(&mut self) {
         let saved = self.allocation.saved.clone();
+        let saved_base = self.saved_base;
         for (index, register) in saved.iter().enumerate() {
-            self.mov_reg_from_memory(*register, 32 + index as i32 * 8);
+            self.mov_reg_from_memory(*register, saved_base + index as i32 * 8);
         }
         if self.frame != 0 {
             self.add_rsp(self.frame);
@@ -226,7 +241,15 @@ impl Encoder<'_> {
                 // Straight into the register (or spill) the value lives in: the argument arrives in
                 // one register and is canonicalised where it is going, not in `rax` and then moved.
                 let register = self.destination(*dst);
-                self.mov_reg(register, ARGUMENT_REGISTERS[usize::from(*index)]);
+                let position = usize::from(*index);
+                if let Some(argument) = ARGUMENT_REGISTERS.get(position) {
+                    self.mov_reg(register, *argument);
+                } else {
+                    // The fifth argument onwards was pushed by the caller: it sits above the shadow
+                    // space, and the return address above that, so it is `rsp + frame + 40` here.
+                    let offset = self.frame + 40 + 8 * (position - ARGUMENT_REGISTERS.len()) as i32;
+                    self.mov_reg_from_memory(register, offset);
+                }
                 self.canonicalise(register, *size, *signed);
                 self.write(*dst, register);
             }
@@ -348,17 +371,33 @@ impl Encoder<'_> {
                 // the way first, which the staging area does; when no two of them collide - the
                 // common case, and the only one for a call with one argument - each goes straight
                 // to its register.
+                // The arguments beyond the fourth go to the outgoing slots, and they go first: a
+                // slot write cannot disturb a register, while a register move could disturb a value
+                // that has not been stored yet.
+                for (index, argument) in args.iter().enumerate().skip(ARGUMENT_REGISTERS.len()) {
+                    let value = self.read(*argument);
+                    let offset = self.outgoing_base + 8 * (index - ARGUMENT_REGISTERS.len()) as i32;
+                    self.mov_memory_from_reg(offset, value);
+                    self.release();
+                }
                 if self.arguments_collide(args) {
-                    for (index, arg) in args.iter().enumerate() {
+                    // Only the register arguments are staged; the rest are already in the outgoing
+                    // slots, which no register move can disturb.
+                    let register_arguments = args.len().min(ARGUMENT_REGISTERS.len());
+                    for (index, arg) in args.iter().enumerate().take(register_arguments) {
                         let register = self.read(*arg);
                         self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
                         self.release();
                     }
-                    for (index, target) in ARGUMENT_REGISTERS.iter().enumerate().take(args.len()) {
+                    for (index, target) in ARGUMENT_REGISTERS
+                        .iter()
+                        .enumerate()
+                        .take(register_arguments)
+                    {
                         self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
                     }
                 } else {
-                    for (index, arg) in args.iter().enumerate() {
+                    for (index, arg) in args.iter().enumerate().take(ARGUMENT_REGISTERS.len()) {
                         self.read_into(*arg, ARGUMENT_REGISTERS[index]);
                     }
                 }

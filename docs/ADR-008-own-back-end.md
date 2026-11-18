@@ -81,8 +81,7 @@ arguments and an integer or `void` result; recursion.
 
 ## What it refuses, and why that is the design
 
-Floating point; indirect calls and taking a function's address; aggregates by value; more than four
-arguments; `va_arg`. Each is a `NotYet` with a span, so the
+Floating point; indirect calls and taking a function's address; aggregates by value; `va_arg`. Each is a `NotYet` with a span, so the
 refusal reads like the two hundred other refusals in this compiler and a program never runs
 *differently* from the same program at level 0 - it either agrees or does not compile.
 
@@ -106,6 +105,12 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 **5.2x Cranelift and 6.5x clang**. That is the honest state of a first slice: correct, and large,
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
+
+**Stack arguments came next:** the fifth argument onwards in the caller's outgoing area above the
+shadow space, which took another thirteen corpus programs. It also surfaced a bug from the leaf work:
+a function with three arguments cannot allocate caller-saved registers, so it takes the callee-saved
+set - and the saves were only recorded when a function called something. The rule is now the ABI's
+rule (every callee-saved register touched), which needs no knowledge of calls at all.
 
 **Globals came next, and they were coverage rather than size:** a `.data` section, each object at its
 type's alignment, and `lea` with a `REL32` relocation for its address. 302 of the corpus became 383,

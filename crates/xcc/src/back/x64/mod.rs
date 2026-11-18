@@ -100,8 +100,9 @@ impl MachineFunction {
     }
 }
 
-/// How many integer arguments Win64 passes in registers. One place, because two modules need the
-/// number: the encoder names the registers, and the lowering refuses what will not fit.
+/// How many integer arguments Win64 passes in registers. One place, because every module needs the
+/// number: the encoder names the registers and reads the rest from the stack, and the register plan
+/// keeps the argument registers out of the allocatable set for a function that takes more.
 pub(crate) const ARGUMENT_COUNT: usize = 4;
 
 /// A virtual register: one per value, and one per temporary this back end needs.
@@ -114,9 +115,11 @@ pub(crate) struct VReg(pub u32);
 pub(crate) enum Op {
     /// A 64-bit constant, already canonical for its C type.
     Const { dst: VReg, value: u64 },
-    /// An argument, as it arrives in the register Win64 gives that position.
+    /// An argument: the first four arrive in the registers Win64 gives those positions, and the rest
+    /// in the caller's outgoing area, above the shadow space.
     Incoming {
         dst: VReg,
+        /// Its position in the parameter list, from zero.
         index: u8,
         size: u8,
         signed: bool,
@@ -313,6 +316,11 @@ pub(crate) struct MachineFunction {
     pub name: String,
     /// Bytes of frame the lowering needed, block parameters included; spills are added after.
     pub frame_bytes: i32,
+    /// How many argument *slots* the widest call in this function pushes on the stack: everything
+    /// beyond the fourth, eight bytes each. The frame has to make room for them above the shadow
+    /// space, because a callee reads its fifth argument at `[rsp + 40]` once its own frame is
+    /// subtracted - the shadow space and the return address above it.
+    pub outgoing_slots: u8,
     /// The values this function returns: the ones a `return` hands back, which have to end up in
     /// `rax` and are worth keeping there.
     pub returned: Vec<VReg>,

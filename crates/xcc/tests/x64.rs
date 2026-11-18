@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 81 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 383;
+/// 68 the back end still refuses are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 396;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -134,6 +134,25 @@ fn the_constructs_the_slice_lowers_behave() {
             "a string literal's bytes",
             "int main(void) { char *s = \"hello\"; return s[1]; }",
             101,
+        ),
+        (
+            // Arguments past the fourth go on the stack: the caller leaves room above the shadow
+            // space and the callee reads them there.
+            "five arguments, so the fifth is on the stack",
+            "int five(int a, int b, int c, int d, int e) { return e - a; } int main(void) { return five(1, 2, 3, 4, 9) + 0; }",
+            8,
+        ),
+        (
+            "seven arguments",
+            "int seven(int a, int b, int c, int d, int e, int f, int g) { return a + g; } int main(void) { return seven(10, 1, 2, 3, 4, 5, 32); }",
+            42,
+        ),
+        (
+            // A leaf that cannot use caller-saved registers (three arguments is more than two) has
+            // to preserve the callee-saved ones it touches, or the caller's values die at the call.
+            "a three-argument leaf called twice, with values kept across both",
+            "int three(int a, int b, int c) { return a + b + c; } int main(void) { int x = three(1, 2, 3); int y = three(4, 5, 6); return x + y; }",
+            21,
         ),
         (
             "a loop, which becomes block parameters",
