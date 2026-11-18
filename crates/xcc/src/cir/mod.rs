@@ -1358,8 +1358,9 @@ impl Func {
     }
 }
 
-/// Every value a terminator reads.
-fn term_operands(term: &Term) -> Vec<Value> {
+/// Every value a terminator reads. One definition, because the verifier, the passes and the back
+/// ends all have to agree on what "the operands of a terminator" are.
+pub(crate) fn term_operands(term: &Term) -> Vec<Value> {
     match term {
         Term::Return { value, .. } => value.iter().copied().collect(),
         Term::Jump { args, .. } => args.clone(),

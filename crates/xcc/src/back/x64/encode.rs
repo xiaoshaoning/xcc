@@ -44,8 +44,8 @@ pub(crate) struct Encoded {
 const LEFT: Reg = Reg(10); // r10
 const RIGHT: Reg = Reg(11); // r11
 
-/// The registers the four integer arguments arrive in.
-const ARGUMENT_REGISTERS: [Reg; 4] = [Reg(1), Reg(2), Reg(8), Reg(9)]; // rcx, rdx, r8, r9
+/// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
+const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
 
 /// Encode one function.
 pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encoded {

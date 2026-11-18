@@ -16,6 +16,8 @@
 //! splitting it is the ceiling here - a split would keep the hot part in a register - and it is the
 //! next thing to do when the code size this produces starts to matter.
 
+use std::collections::HashSet;
+
 use super::{BlockTerm, MachineFunction, VReg};
 
 /// A machine register, by the number x86-64 encoding gives it.
@@ -56,7 +58,9 @@ pub(crate) const ALLOCATABLE: [Reg; 7] = [
 /// What allocation decided for one function.
 #[derive(Debug)]
 pub(crate) struct Allocation {
-    /// Where each virtual register lives, by its index.
+    /// Where each virtual register lives, by its index. A value that nothing reads - the address of
+    /// a function whose only use is the call that names it - has no interval, so its entry here is
+    /// meaningless and must not be read.
     pub locations: Vec<Location>,
     /// The callee-saved registers used, in the order the prologue saves them.
     pub saved: Vec<Reg>,
@@ -195,30 +199,25 @@ impl Positions {
                 value_count = value_count.max(operand.0 as usize + 1);
             }
         }
+        // A block's uses are the values it reads before defining them. Every value is defined once,
+        // so "defined anywhere in this block" is enough - and it is asked once per block rather than
+        // once per operand, which is the difference between linear and quadratic in the size of a
+        // block.
         let uses = func
             .blocks
             .iter()
             .map(|block| {
+                let defined: HashSet<VReg> =
+                    block.ops.iter().filter_map(|op| op.defined()).collect();
+                let mut seen: HashSet<VReg> = HashSet::new();
                 let mut uses = Vec::new();
-                for op in &block.ops {
-                    // An operand is a use unless this block defined it earlier; every value is
-                    // defined once, so "defined in this block" is enough.
-                    for operand in op.operands() {
-                        let defined_here = block
-                            .ops
-                            .iter()
-                            .any(|other| other.defined() == Some(operand));
-                        if !defined_here && !uses.contains(&operand) {
-                            uses.push(operand);
-                        }
-                    }
-                }
-                for operand in block.term.operands() {
-                    let defined_here = block
-                        .ops
-                        .iter()
-                        .any(|other| other.defined() == Some(operand));
-                    if !defined_here && !uses.contains(&operand) {
+                for operand in block
+                    .ops
+                    .iter()
+                    .flat_map(|op| op.operands())
+                    .chain(block.term.operands())
+                {
+                    if !defined.contains(&operand) && seen.insert(operand) {
                         uses.push(operand);
                     }
                 }

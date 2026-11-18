@@ -105,6 +105,55 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### back-x64, the first slice, reviewed - 2026-11-16 - one real defect, and four copies of one fact
+
+Review of `a62d820`.
+
+**Found: a function's address read by anything besides a call was silently lowered to zero.** The
+direct-call path recorded every `GlobalAddress` used as a callee, then emitted a placeholder `0` for
+that value so it had a definition. If the same address was also compared, stored, or passed
+somewhere, that `0` became the program's address - a call through zero, or `f != 0` answering false,
+with no diagnostic. The rule is now "a direct call when *every* read of the address is a call that
+names it", and anything else refuses with a span. The first attempt at the fix ("exactly one read")
+was too strict and cost a corpus program that calls the same pointer twice; the corpus ratchet said
+so in one run, which is the harness paying for itself again. Two tests pin both sides:
+`a_function_address_that_never_escapes_is_still_a_direct_call` (a promoted pointer is still direct)
+and `a_function_address_read_as_a_value_is_refused` (both escape shapes refuse, and level 0 accepts
+them, so the test cannot pass by proving nothing).
+
+**The same fact in four places.** The number of integer argument registers was a table in `lower.rs`,
+a table in `encode.rs`, a `len()` check, and a field on `MachineFunction` that nothing read (with an
+`#[allow(dead_code)]` explaining that it "keeps the table in one place" - it kept it in two). There
+is now one `ARGUMENT_COUNT` in the module that owns the ABI shape, the encoder's table is sized by
+it, and the lowering's check asks it. The dead field, the dead `Placed::code_len`, and the dead
+`params` field went with it.
+
+**A quadratic in the allocator.** `Positions::new` asked "did this block define this operand?" by
+scanning the block's instructions, once per operand: O(ops²) per block, on input a hostile program
+controls. It is one `HashSet` per block now. This is the same shape of bug the previous review found
+in `mem2reg`'s escape set; it is worth naming twice because a compiler's own data structures are
+where the budgets do not reach.
+
+**A comment that said the opposite of the code.** The module header claimed "the encoder never sees a
+virtual register at all". It does - through `Allocation::location` - and what it never sees is an
+*unallocated* one. Corrected, along with `Allocation`'s own doc, which now says that a value nothing
+reads (a call target's address) has no interval and its entry there must not be read.
+
+**Checked and sound:** the entry block's parameters no longer reserve frame slots that no edge can
+write (nothing can jump to the entry block); `term_operands` is now `cir`'s one definition of "the
+values a terminator reads", used by the verifier, the passes and this back end rather than copied a
+fourth time; the frame's alignment rule (`round_up(...) + 8`) is right for a call from any frame
+size; and the eleven encoder sites that name a register field were re-read against the REX bit each
+one sets.
+
+**Measured after the review: 302 corpus programs agree through both back ends, 162 refused, 0
+wrong** - the same numbers, with one defect that no corpus program happened to exercise now refused
+instead of miscompiled.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### M10: the harness compiles both lowerings - 2026-11-16 - and the plan's number against clang
 
 M10's fourth item: "a differential harness that compiles with both lowerings and compares behaviour,

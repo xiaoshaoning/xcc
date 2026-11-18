@@ -180,6 +180,71 @@ fn the_constructs_the_slice_lowers_behave() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// A call through a function pointer whose value never escapes is not a gap: `mem2reg` promotes the
+/// variable, the callee becomes the function's own address, and the call is direct. It is worth a
+/// test because the direct-call path is the one that could drop the address.
+#[test]
+fn a_function_address_that_never_escapes_is_still_a_direct_call() {
+    let Some(_) = linker() else {
+        eprintln!("no linker on this machine: the own back end's tests are skipped");
+        return;
+    };
+    let dir = temp_dir("address-direct");
+    let source = "int f(void) { return 7; } int main(void) { int (*p)(void) = f; return p(); }";
+    let ran = build_and_run(source, 2, &dir, "direct");
+    let _ = std::fs::remove_dir_all(&dir);
+    let ran = ran.expect("a call the lowering can see through compiles");
+    assert_eq!(
+        ran.status,
+        Some(7),
+        "the call went to the function it names"
+    );
+}
+
+/// Everywhere else, an address this back end cannot make is a gap, and a gap must be refused: the
+/// one way it could go wrong silently is the direct-call path deciding the call is the only reader
+/// of an address something else reads too, and calling through zero.
+#[test]
+fn a_function_address_read_as_a_value_is_refused() {
+    let Some(_) = linker() else {
+        eprintln!("no linker on this machine: the own back end's tests are skipped");
+        return;
+    };
+    let dir = temp_dir("address");
+    let programs = [
+        (
+            "compared with something",
+            "int f(void) { return 7; } int main(void) { return f != 0; }",
+        ),
+        (
+            "passed to another function",
+            "int f(void) { return 7; } int g(int (*p)(void)) { return p(); } int main(void) { return g(f); }",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, source) in programs {
+        if let Some(ran) = build_and_run(source, 2, &dir, "address") {
+            wrong.push(format!("{what}: compiled and exited with {:?}", ran.status));
+        }
+        // The other lowering must accept it: a program level 0 refuses too is no evidence of this
+        // back end's discipline.
+        if build_and_run(source, 0, &dir, "address").is_none() {
+            wrong.push(format!(
+                "{what}: level 0 refused it too, so this proves nothing"
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        wrong.is_empty(),
+        "{}",
+        wrong.join(
+            "
+"
+        )
+    );
+}
+
 #[test]
 fn the_corpus_agrees_through_both_back_ends() {
     let Some(_) = linker() else {

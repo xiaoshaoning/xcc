@@ -16,7 +16,8 @@
 //!   callee-saved registers are allocated, so a value is safe across a call for free; the ceiling
 //!   that buys (seven registers, and a spill for the eighth) is written down rather than hidden.
 //! - [`encode`] is the assembler: x86-64 machine code for the closed set of operations above, with
-//!   the two passes a jump needs.
+//!   the two passes a jump needs. It reads an operation's virtual registers through the allocation,
+//!   so the only registers it names are the allocation's and its own scratch.
 //! - [`coff`] is the object file: one `.text`, function symbols, and the relocations a call needs.
 //! - this file is the seam: refusal type, the entry point, and the tests that say the seam fits.
 
@@ -44,6 +45,10 @@ impl std::fmt::Display for NotYet {
         f.write_str(&self.message)
     }
 }
+
+/// How many integer arguments Win64 passes in registers. One place, because two modules need the
+/// number: the encoder names the registers, and the lowering refuses what will not fit.
+pub(crate) const ARGUMENT_COUNT: usize = 4;
 
 /// A virtual register: one per value, and one per temporary this back end needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -228,18 +233,12 @@ pub(crate) struct MachineBlock {
 pub(crate) struct MachineFunction {
     /// Its link name.
     pub name: String,
-    /// How many arguments it takes, which the encoder uses to save what the caller expects.
-    pub params: usize,
     /// Bytes of frame the lowering needed, block parameters included; spills are added after.
     pub frame_bytes: i32,
     /// The blocks, in layout order.
     pub blocks: Vec<MachineBlock>,
     /// Where each block's parameters start, in the same order.
     pub param_offsets: Vec<i32>,
-    /// Which register a parameter arrives in, by position.
-    #[allow(dead_code)]
-    // the encoder spells the four registers; this keeps the table in one place
-    pub arg_register: fn(u8) -> u8,
 }
 
 /// Lower a whole translation unit to a COFF object, or say what is not lowered.

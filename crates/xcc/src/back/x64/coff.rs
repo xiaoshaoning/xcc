@@ -27,7 +27,6 @@ const FUNCTION: u16 = 0x20;
 struct Placed {
     name: String,
     start: u32,
-    code_len: u32,
     relocations: Vec<Relocation>,
 }
 
@@ -41,7 +40,6 @@ pub(crate) fn write(functions: &[MachineFunction]) -> Vec<u8> {
         placed.push(Placed {
             name: function.name.clone(),
             start: text.len() as u32,
-            code_len: encoded.code.len() as u32,
             relocations: encoded.relocations,
         });
         text.extend_from_slice(&encoded.code);

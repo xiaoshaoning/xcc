@@ -16,12 +16,9 @@
 
 use std::collections::HashMap;
 
-use super::{BlockTerm, MachineBlock, MachineFunction, NotYet, Op, VReg};
+use super::{BlockTerm, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
 use crate::types::{Type, TypeId, Types};
-
-/// The Win64 registers that carry the first four integer arguments.
-const ARGUMENTS: [u8; 4] = [0, 1, 2, 3];
 
 /// Lower one translation unit. A function this slice cannot lower refuses with the reason and the
 /// place, rather than producing something that runs differently from the same code at level 0.
@@ -34,11 +31,6 @@ pub(crate) fn lower(
         functions.push(lower_function(func, &module.types, names)?);
     }
     Ok(functions)
-}
-
-/// The register a parameter arrives in.
-pub(crate) fn argument_register(index: u8) -> u8 {
-    ARGUMENTS[usize::from(index)]
 }
 
 fn lower_function(
@@ -58,16 +50,12 @@ fn lower_function(
         direct_calls: HashMap::new(),
     };
     lowerer.run(func)?;
-    let mut machine = MachineFunction {
+    Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
-        params: func.params().len(),
-        frame_bytes: 0,
+        frame_bytes: lowerer.frame_bytes,
         blocks: lowerer.blocks,
         param_offsets: lowerer.param_offsets,
-        arg_register: argument_register,
-    };
-    machine.frame_bytes = lowerer.frame_bytes;
-    Ok(machine)
+    })
 }
 
 /// The values of one function, the frame slots they use, and the blocks being filled.
@@ -91,16 +79,26 @@ struct FunctionLowering<'a> {
 
 impl FunctionLowering<'_> {
     fn run(&mut self, func: &Func) -> Result<(), NotYet> {
-        // A call whose callee is the address of a global function is a direct call. Found before
-        // anything is lowered, so the address itself can be left out of the machine form.
+        // A call whose callee is the address of a global function is a direct call, and the address
+        // itself is then left out of the machine form - which is sound only when *every* read of it
+        // is a call naming it. A value read anywhere else needs an address this back end has not
+        // learnt to make, so it is refused rather than quietly made zero.
+        let mut reads = self.read_counts(func);
+        let mut callee_reads: HashMap<Value, usize> = HashMap::new();
         for block in &func.blocks {
             for inst in &block.insts {
-                let Inst::Call { callee, .. } = inst else {
-                    continue;
-                };
-                if let Some(Inst::GlobalAddress { name, .. }) = self.defining(func, *callee) {
-                    self.direct_calls.insert(*callee, name.clone());
+                if let Inst::Call { callee, .. } = inst {
+                    *callee_reads.entry(*callee).or_default() += 1;
                 }
+            }
+        }
+        for (callee, count) in callee_reads {
+            if reads.get(&callee).copied().unwrap_or(0) != count {
+                continue; // read by something besides the call
+            }
+            if let Some(Inst::GlobalAddress { name, .. }) = self.defining(func, callee) {
+                self.direct_calls.insert(callee, name.clone());
+                reads.remove(&callee);
             }
         }
         // The layout: blocks after the ones that dominate them, so a branch's target is in the
@@ -112,11 +110,15 @@ impl FunctionLowering<'_> {
         let mut offset = 0;
         for (block, _) in self.ordered_blocks() {
             self.param_offsets.push(offset);
-            offset += 8 * func.block(block).params.len() as i32;
+            // The entry block's parameters came from registers, and nothing can jump to the entry
+            // block, so its slots would be written by no edge and read by no instruction.
+            if block != func.entry {
+                offset += 8 * func.block(block).params.len() as i32;
+            }
         }
         self.frame_bytes = offset;
 
-        if func.params().len() > ARGUMENTS.len() {
+        if func.params().len() > ARGUMENT_COUNT {
             return Err(NotYet {
                 message: format!(
                     "a function with {} parameters: this back end passes four and has not learnt the stack",
@@ -174,6 +176,27 @@ impl FunctionLowering<'_> {
         let mut pairs: Vec<(Block, usize)> = self.order.iter().map(|(b, i)| (*b, *i)).collect();
         pairs.sort_by_key(|(_, index)| *index);
         pairs
+    }
+
+    /// How many times each value is read, instructions and terminators together.
+    fn read_counts(&self, func: &Func) -> HashMap<Value, usize> {
+        let mut counts: HashMap<Value, usize> = HashMap::new();
+        let count = |value: Value, counts: &mut HashMap<Value, usize>| {
+            *counts.entry(value).or_default() += 1;
+        };
+        for block in &func.blocks {
+            for inst in &block.insts {
+                for operand in inst.operands() {
+                    count(operand, &mut counts);
+                }
+            }
+            if let Some(term) = &block.term {
+                for operand in crate::cir::term_operands(term) {
+                    count(operand, &mut counts);
+                }
+            }
+        }
+        counts
     }
 
     /// The instruction that defines `value`, if this function defines it.
@@ -398,10 +421,9 @@ impl FunctionLowering<'_> {
             }
             Inst::GlobalAddress { result, name, .. } => {
                 if self.direct_calls.contains_key(result) {
-                    // Used only as the callee of a call: the call names the symbol, and no address
-                    // is materialised. Give it a register anyway so its definition exists.
-                    let dst = self.reg_for(*result);
-                    ops.push(Op::Const { dst, value: 0 });
+                    // Read only as the callee of a call: the call names the symbol and no address
+                    // is ever materialised, so this value is defined by being left out. Nothing
+                    // reads it, so it never needs a register or a slot.
                 } else {
                     return Err(NotYet {
                         message: format!("the address of `{name}` as a value"),
@@ -421,7 +443,7 @@ impl FunctionLowering<'_> {
                         span,
                     });
                 };
-                if args.len() > ARGUMENTS.len() {
+                if args.len() > ARGUMENT_COUNT {
                     return Err(NotYet {
                         message: format!("a call with {} arguments", args.len()),
                         span,
