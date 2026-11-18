@@ -105,6 +105,44 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### the data section, reviewed - 2026-11-16 - a section that was writable and not readable
+
+Review of `5b268bd`.
+
+**Found: the data section's flags left out `IMAGE_SCN_MEM_READ`.** `DATA_FLAGS` was
+`0x0050_0040 | 0x8000_0000` - initialized data, aligned to sixteen, writable - and the read flag was
+not there. Nothing failed, because a linker maps an object's data section read-write whatever the
+object says, and the 383-program ratchet read every global it compiled. That is the shape of defect
+this review exists to find: a constant that is wrong, a test suite that cannot see it, and a comment
+next to it that had already stopped describing what the value meant. It is now `0xC050_0040`, and the
+comment names the flags and says why the missing one is easy to lose.
+
+**Found: "does this file have a `.data` section" was keyed on the bytes rather than on the contents.**
+`has_data` tested `!data.bytes.is_empty()`, so a defined object of no bytes with a name would have
+produced a symbol pointing at a section the file did not contain - a malformed object rather than a
+refusal. C cannot spell such an object (the front end refuses `int a[0]`), which is why the test suite
+did not find it either; the condition now covers the symbols, and the reason is written down.
+
+**Found: a defined object of incomplete type was silently demoted to a declaration.** The helper that
+laid objects out returned `None` for "no initialiser and no size", which the caller read as "not
+defined", so the object would have vanished from the section and appeared as an undefined symbol -
+the object compiled, and the linker would have refused it in its own words. It is a `NotYet` with the
+object's span now, which is what the rest of this back end does with something it cannot express. The
+helper went with it: the two cases - initialiser, or zeroes for its type - are the loop's two arms.
+
+**Checked and sound:** the file's layout arithmetic (`header -> text -> padding -> relocations -> data
+-> symbols`) matches the section headers' pointers, which `objdump -h` confirms section by section;
+data symbols are `STATIC` for a name the source cannot spell (`.str0`, `f.n`) and `EXTERNAL` for a
+file-scope one, and both resolve through the same `REL32`; a declared-only global becomes an undefined
+symbol and never a section entry; and a function's address as a value still refuses, with the message
+now naming the function rather than just the expression.
+
+**Code size after the review: unchanged**, and the ratchet still at 383 agreeing, none wrong.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### round four, reviewed - 2026-11-16 - an invariant that held by luck, and a test whose answer I got wrong
 
 Review of `2fe2efa`.

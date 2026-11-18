@@ -14,10 +14,11 @@ use super::MachineFunction;
 const MACHINE_AMD64: u16 = 0x8664;
 /// `IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ`.
 const TEXT_FLAGS: u32 = 0x6000_0020;
-/// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE`, sixteen-byte
-/// aligned: a string literal lives here as readily as a mutable counter, and the section has to be
-/// writable for the second.
-const DATA_FLAGS: u32 = 0x0050_0040 | 0x8000_0000;
+/// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE`, aligned to sixteen
+/// bytes. A string literal lives here as readily as a mutable counter, so the section is writable for
+/// the second - and readable for both, which is the flag that is easy to leave out and that no test
+/// would notice while a linker still mapped the section read-write.
+const DATA_FLAGS: u32 = 0xC050_0040;
 /// `IMAGE_SCN_LNK_INFO`'s absence is the default for code; this is the "4-byte relative" reloc.
 const REL32: u16 = 0x0004;
 /// `IMAGE_SYM_CLASS_EXTERNAL`.
@@ -75,7 +76,10 @@ pub(crate) fn write(functions: &[MachineFunction], data: &Data) -> Vec<u8> {
 }
 
 fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
-    let has_data = !data.bytes.is_empty();
+    // A section is written when anything lives in it. Keyed on the bytes alone this would be wrong
+    // for an object of no bytes but with a name, whose symbol would then point at a section the file
+    // does not have.
+    let has_data = !data.bytes.is_empty() || !data.symbols.is_empty();
     // Section numbers are one-based and follow the header order: `.text` is 1, and `.data` is 2.
     const DATA_SECTION: u16 = 2;
     // Symbols: the sections, then the functions and objects they hold, then every name a relocation

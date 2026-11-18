@@ -337,19 +337,25 @@ pub(crate) fn object(
     names: &crate::intern::Interner,
 ) -> Result<Vec<u8>, NotYet> {
     let functions = lower::lower(module, names)?;
-    Ok(coff::write(&functions, &data_section(module)))
+    let data = data_section(module)?;
+    Ok(coff::write(&functions, &data))
 }
 
 /// The objects in the data section: their bytes, laid out in the order the module holds them, each
-/// at its type's alignment, with the name of every one and where it starts. A global that is only
-/// declared is not laid out at all: it is a name the linker resolves, and the object says so.
-fn data_section(module: &crate::cir::Module) -> coff::Data {
+/// at its type's alignment, with the name of every one and where it starts.
+///
+/// A global that is only *declared* is not laid out: it is a name the linker resolves, and the object
+/// says so with an undefined symbol. A global that is *defined* always has bytes - the initialiser the
+/// front end wrote, or as many zeroes as its type takes, because a defined object with no initialiser
+/// holds zero (C99 6.7.8p10) - so a defined object whose type has no size is a gap to report rather
+/// than an object to leave out.
+fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
     let mut data = coff::Data::default();
     for global in &module.globals {
-        let Some(bytes) = laid_out(&module.types, global) else {
+        if !global.defined {
             data.undefined.push(global.name.clone());
             continue;
-        };
+        }
         let align = module.types.align_of(global.ty).unwrap_or(1).max(1) as usize;
         while data.bytes.len() % align != 0 {
             data.bytes.push(0);
@@ -359,22 +365,21 @@ fn data_section(module: &crate::cir::Module) -> coff::Data {
             offset: data.bytes.len() as u32,
             external: global.external,
         });
-        data.bytes.extend_from_slice(&bytes);
+        match &global.init {
+            Some(init) => data.bytes.extend_from_slice(init),
+            None => {
+                let size = module.types.size_of(global.ty).ok_or_else(|| NotYet {
+                    message: format!(
+                        "a defined object of incomplete type {}",
+                        module.types.describe(global.ty)
+                    ),
+                    span: global.span,
+                })? as usize;
+                data.bytes.resize(data.bytes.len() + size, 0);
+            }
+        }
     }
-    data
-}
-
-/// The bytes a global is initialised with: what the front end wrote, or as many zeroes as its type
-/// takes, because a defined object with no initialiser holds zero (C99 6.7.8p10).
-fn laid_out(types: &crate::types::Types, global: &crate::cir::Global) -> Option<Vec<u8>> {
-    if !global.defined {
-        return None;
-    }
-    if let Some(init) = &global.init {
-        return Some(init.clone());
-    }
-    let size = types.size_of(global.ty)? as usize;
-    Some(vec![0; size])
+    Ok(data)
 }
 
 #[cfg(test)]
