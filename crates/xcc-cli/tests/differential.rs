@@ -1,8 +1,13 @@
-//! The M6 acceptance item: the corpus compiled *and run*, xcc against `clang -O0`.
+//! The M6 acceptance item: the corpus compiled *and run*, xcc against `clang -O0` - and, since
+//! M10, xcc's two lowerings against each other as well.
 //!
 //! This is the gate that asks what a program *does*, not what a compiler says about it. Every
-//! corpus program both compilers accept is run as a process - `xcc --run file.c` on one side,
-//! `clang -O0` and its executable on the other - and the exit status and stdout are compared.
+//! corpus program is run as a process three ways - `xcc --run --opt-level=0 file.c`,
+//! `xcc --run --opt-level=1 file.c`, and `clang -O0` with its executable - and every pair of the
+//! three must agree on the exit status and on stdout. Comparing only each lowering with clang
+//! would miss the case M10 exists for: two lowerings that agree with each other and disagree with
+//! C. A program one level compiles and the other refuses is a difference too.
+//!
 //! Everything is a subprocess, so a crash in one program is a result for that program and not the
 //! end of the run, and a hang is killed after a few seconds and reported as a difference.
 //!

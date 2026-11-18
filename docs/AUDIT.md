@@ -78,6 +78,33 @@ commit as its neighbours:
 The parse gate did not move: **394 of the 394** corpus programs that are neither `#include`d
 nor deliberately invalid.
 
+### the three-way harness reviewed - 2026-11-16 - three sides, and a doc that still said two
+
+Review of `6cedc70`.
+
+**Found: the module documentation still described a two-sided comparison.** The file's own header said
+"xcc --run file.c on one side, clang -O0 on the other" while the code ran three, and a reader who
+trusted the doc would have missed the case the change exists for. It says what the three sides are,
+why every *pair* is compared rather than each lowering with clang, and that a program one level
+compiles and the other refuses counts as a difference. The README's own two rows were stale in the
+same way - the optimising row stopped at the Borland comparison and did not know that `clang -O2` is
+now in the table, nor that the runner exercises both levels.
+
+**Checked and sound:** the refusal-divergence check runs before the "both refused" path, so a program
+one level accepts and the other does not is reported and cannot be counted as a legitimate refusal;
+the message names the direction ("compiled it at 0, and not at 1") because the fix depends on which
+level moved; `plain`/`optimised` are not moved into the tuple pattern until after that check, so the
+three-way comparison has all three answers; a single-sided hang is still a mismatch while a
+both-sided one is a timeout, unchanged from before; and the pairwise loop is O(1) in a three-answer
+array, so it costs nothing to read or to run.
+
+**Measured after the doc fix:** 412 ran, 8 refused, 44 skipped, 0 timed out, 0 mismatched - the same
+numbers, and the test's doc now says what it does.
+
+174 unit, 23 parser, 20 CLI, 3 exe, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### M10: the harness compiles both lowerings - 2026-11-16 - and the plan's number against clang
 
 M10's fourth item: "a differential harness that compiles with both lowerings and compares behaviour,
