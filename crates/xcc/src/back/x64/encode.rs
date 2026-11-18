@@ -61,13 +61,17 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
     let raw = staging_base + if func.makes_call { 32 } else { 0 };
-    // Eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is what a call
-    // requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
-    //
-    // A function with nothing in the frame - no locals, no spills, no saved registers, no call - has
-    // nothing to make room for and pays nothing: no `sub rsp` and no `add rsp`, which is fourteen
-    // bytes of every such function.
-    let frame = if raw == 32 && !func.makes_call {
+    // Everything `rsp` is moved for, named: a call (which needs the shadow space and the staging
+    // area), a value that did not fit in a register, a block parameter, a variable whose address
+    // escapes, and a callee-saved register this function had to keep. A function with none of them
+    // has no frame - no `sub rsp`, no `add rsp` - which is fourteen bytes of every such function.
+    let frameless = !func.makes_call
+        && allocation.spill_bytes == 0
+        && func.frame_bytes == 0
+        && allocation.saved.is_empty();
+    // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
+    // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
+    let frame = if frameless {
         0
     } else {
         (raw + 15) / 16 * 16 + 8
@@ -162,11 +166,13 @@ struct Encoder<'a> {
     fixups: Vec<Fixup>,
     labels: Vec<Option<usize>>,
     allocation: &'a Allocation,
-    /// Where the lowering's frame starts, from `rsp`.
+    /// Where the lowering's frame starts, from `rsp`: after the shadow space and the saved
+    /// registers. Meaningful whether or not the function has a frame, because a frame of nothing puts
+    /// it where the shadow space ends.
     body_base: i32,
-    /// Where spill slots start, from `rsp`.
+    /// Where spill slots start, from `rsp`; no spills, no references.
     spill_base: i32,
-    /// Where the argument staging area starts, from `rsp`.
+    /// Where the argument staging area starts, from `rsp`; unused unless the function calls.
     staging_base: i32,
     /// Which label the epilogue is at.
     epilogue: usize,

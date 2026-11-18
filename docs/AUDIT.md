@@ -105,6 +105,46 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### round three, reviewed - 2026-11-16 - a condition that hid the four things it tested
+
+Review of `43dc3db`.
+
+**Found: the frameless rule was written as an equality a reader had to decode.** `raw == 32` meant
+"nothing above the shadow space", which is true exactly when the function has no call, no spill, no
+block parameter and no local - four things, none of them named, and the `32` had to be recognised as
+the shadow space for the condition to be readable at all. It is now those four things, spelled out
+(`frameless`), and the shadow space appears once, where the frame is computed. The behaviour is
+identical and the measurement says so: 30 848 bytes either way.
+
+**Checked and sound, because these three changes each touch a data path:**
+
+- *A comparison's answer in place.* `setcc` takes a byte register, so a destination in `spl`-`dil` needs
+  a REX prefix, one in `r8`-`r15` needs its high bit in REX.B, and the widen afterwards is `movzx`
+  from the same register. The destination can also be a spill slot, in which case it is `rax`, which
+  is never allocated. And `setcc` clobbering an operand's register is safe: the comparison is that
+  operand's last use, which is why the allocator was free to give the destination that register.
+- *Direct argument moves.* The collision question is not "is an argument in another argument's
+  register" but "is any argument in a register this call is about to write, other than at its own
+  position" - which also catches a spilled argument whose register write would destroy an argument
+  still sitting there, because that argument is itself "in someone else's register" and the scan sees
+  it from its side. The direct path is a chain of `read_into`s, each at most one move, and a spilled
+  argument is read straight out of its slot.
+- *No frame at all.* A leaf with no locals and no spills cannot reference `[rsp]`: block parameters
+  and escaped variables are the lowering's frame, spills are the allocator's, and the staging area
+  belongs to a call. `ret` with `rsp` untouched is what a leaf with nothing on the stack wants, and
+  the corpus ratchet ran 302 programs through it.
+
+**Found and removed in passing:** `encode.rs` still computed whether a function makes a call, while
+`lower` had decided it a commit earlier - the previous change replaced one use of the local scan and
+left the scan itself. The reviewer's own script had failed an assertion before writing that file, and
+the assertion failure was the only thing that was noticed at the time.
+
+**Code size after the review: 30 848 bytes, unchanged**, ratchet at 302 agreeing and none wrong.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### a leaf function's registers, reviewed - 2026-11-16 - a scratch script in the repository, and two names for one set
 
 Review of `965b394`.
