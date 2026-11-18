@@ -44,6 +44,10 @@ pub(crate) enum Location {
     Spill(i32),
 }
 
+/// How many registers a function may start using without the saves outweighing the copies they
+/// coalesce.
+const CHEAP_REGISTERS: usize = 3;
+
 /// The registers this allocator may use: the callee-saved ones.
 pub(crate) const ALLOCATABLE: [Reg; 7] = [
     Reg(3),  // rbx
@@ -74,6 +78,9 @@ struct Interval {
     reg: VReg,
     start: usize,
     end: usize,
+    /// The value this one is computed from, if it is: an operation that writes a copy of an operand
+    /// costs a `mov` unless the two get the same register, and the interval can ask for it here.
+    hint: Option<VReg>,
 }
 
 /// Allocate registers for one function.
@@ -97,7 +104,10 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         // the function touches, not every one it holds at the end.
         let mut index = 0;
         while index < active.len() {
-            if active[index].end < interval.start {
+            // An interval ending at this position is read by this operation and not after it, so its
+            // register is free for the value this operation writes: x86 reads an instruction's
+            // operands before it writes the destination.
+            if active[index].end <= interval.start {
                 let other = active.remove(index);
                 free.push(location_register(locations[other.reg.0 as usize]));
             } else {
@@ -105,6 +115,26 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             }
         }
         free.sort();
+        // Coalescing: a value computed from another one takes the same register when it is free, so
+        // the `mov` that would copy it is not emitted at all.
+        if let Some(hint) = interval.hint {
+            // A register that has not been saved yet costs two `mov`s in the prologue and epilogue,
+            // and the copy it removes is one: it is worth taking only while the set is small.
+            if let Some(register) = free.iter().find(|register| {
+                self_register(&locations, hint) == Some(**register)
+                    && (saved.contains(register) || saved.len() < CHEAP_REGISTERS)
+            }) {
+                let register = *register;
+                free.retain(|other| *other != register);
+                locations[interval.reg.0 as usize] = Location::Register(register);
+                if !saved.contains(&register) {
+                    saved.push(register);
+                }
+                active.push(interval);
+                active.sort_by_key(|other| other.end);
+                continue;
+            }
+        }
         if free.is_empty() {
             // Nothing is free: the interval that runs longest loses its register, because that
             // register then covers the most instructions. A tie spills the new one, which keeps
@@ -145,6 +175,14 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         locations,
         saved,
         spill_bytes: spills * 8,
+    }
+}
+
+/// Where a value already lives, if it has been given a register.
+fn self_register(locations: &[Location], value: VReg) -> Option<Reg> {
+    match locations.get(value.0 as usize) {
+        Some(Location::Register(register)) => Some(*register),
+        _ => None,
     }
 }
 
@@ -253,6 +291,14 @@ impl Positions {
     /// A live interval per value: from its definition to its last use, or to the end of the block
     /// it is live out of.
     fn intervals(&self, func: &MachineFunction) -> Vec<Interval> {
+        let mut hints: Vec<Option<VReg>> = vec![None; self.value_count];
+        for block in &func.blocks {
+            for op in &block.ops {
+                if let (Some(dst), Some(source)) = (op.defined(), super::hint_source(op)) {
+                    hints[dst.0 as usize] = Some(source);
+                }
+            }
+        }
         let mut intervals: Vec<Option<Interval>> = vec![None; self.value_count];
         let touch =
             |reg: VReg, position: usize, defined: bool, intervals: &mut Vec<Option<Interval>>| {
@@ -269,6 +315,7 @@ impl Positions {
                             reg,
                             start: position,
                             end: position,
+                            hint: None,
                         });
                     }
                 }
@@ -300,7 +347,11 @@ impl Positions {
                 touch(*value, self.block_start[index], false, &mut intervals);
             }
         }
-        intervals.into_iter().flatten().collect()
+        let mut intervals: Vec<Interval> = intervals.into_iter().flatten().collect();
+        for interval in &mut intervals {
+            interval.hint = hints[interval.reg.0 as usize];
+        }
+        intervals
     }
 
     /// Live-in and live-out sets per block, by the textbook backwards fixpoint.

@@ -18,7 +18,16 @@
 //! (ADR-005); this one will when the slice grows a frame that large.
 
 use super::regalloc::{Allocation, Location, Reg};
-use super::{BlockTerm, MachineFunction, Op, VReg};
+use super::{BinOp, BlockTerm, MachineFunction, Op, VReg};
+
+/// Whether an operation gives the same answer with its operands swapped, which is what lets the
+/// destination's register hold either one.
+fn commutative(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Add | BinOp::Mul | BinOp::And | BinOp::Or | BinOp::Xor
+    )
+}
 
 /// A place in the text that names a symbol, which the object file resolves.
 #[derive(Debug)]
@@ -75,6 +84,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         frame,
     };
     encoder.prologue();
+    let last = func.blocks.len().saturating_sub(1);
     for (index, block) in func.blocks.iter().enumerate() {
         encoder.label(index);
         for op in &block.ops {
@@ -87,7 +97,12 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
                     encoder.mov_reg(Reg::RAX, register);
                     encoder.release();
                 }
-                encoder.jump(encoder.epilogue);
+                // The last block is followed by the epilogue: jumping there is jumping to the
+                // next instruction.
+                if index != last {
+                    let epilogue = encoder.epilogue;
+                    encoder.jump(epilogue);
+                }
             }
             BlockTerm::Jump(target) => {
                 // A jump to the block that comes next is the fall-through, which is free.
@@ -192,9 +207,12 @@ impl Encoder<'_> {
                 size,
                 signed,
             } => {
-                self.mov_reg(Reg::RAX, ARGUMENT_REGISTERS[usize::from(*index)]);
-                self.canonicalise(Reg::RAX, *size, *signed);
-                self.write(*dst, Reg::RAX);
+                // Straight into the register (or spill) the value lives in: the argument arrives in
+                // one register and is canonicalised where it is going, not in `rax` and then moved.
+                let register = self.destination(*dst);
+                self.mov_reg(register, ARGUMENT_REGISTERS[usize::from(*index)]);
+                self.canonicalise(register, *size, *signed);
+                self.write(*dst, register);
             }
             Op::LocalAddress { dst, offset } => {
                 let register = self.destination(*dst);
@@ -242,36 +260,7 @@ impl Encoder<'_> {
                 right,
                 size,
                 signed,
-            } => {
-                let left = self.read_into(*left, LEFT);
-                let right = self.read_into(*right, RIGHT);
-                match op {
-                    crate::cir::BinOp::Mul => {
-                        // imul has the destination in the register field: `imul left, right`.
-                        self.prefix_w(left, right);
-                        self.bytes(&[0x0F, 0xAF]);
-                        self.modrm(3, left.0, right);
-                    }
-                    other => {
-                        let opcode = match other {
-                            crate::cir::BinOp::Add => 0x01,
-                            crate::cir::BinOp::Sub => 0x29,
-                            crate::cir::BinOp::And => 0x21,
-                            crate::cir::BinOp::Or => 0x09,
-                            crate::cir::BinOp::Xor => 0x31,
-                            unreachable => {
-                                unreachable!("{unreachable:?} is not a binary operation")
-                            }
-                        };
-                        self.prefix_w(right, left);
-                        self.byte(opcode);
-                        self.modrm(3, right.0, left);
-                    }
-                }
-                self.canonicalise(left, *size, *signed);
-                self.write(*dst, left);
-                self.release();
-            }
+            } => self.binary(*dst, *op, *left, *right, *size, *signed),
             Op::Shift {
                 dst,
                 left,
@@ -280,22 +269,15 @@ impl Encoder<'_> {
                 left_shift,
                 size,
                 signed,
-            } => {
-                let source = self.read_into(*left, LEFT);
-                let count = self.read(*right);
-                self.mov_reg(Reg::RCX, count);
-                self.prefix_w(Reg(0), source);
-                self.byte(0xD3);
-                let extension = match (left_shift, right_signed) {
-                    (true, _) => 4,      // shl
-                    (false, true) => 7,  // sar
-                    (false, false) => 5, // shr
-                };
-                self.modrm(3, extension, source);
-                self.canonicalise(source, *size, *signed);
-                self.write(*dst, source);
-                self.release();
-            }
+            } => self.shift(
+                *dst,
+                *left,
+                *right,
+                *left_shift,
+                *right_signed,
+                *size,
+                *signed,
+            ),
             Op::Divide {
                 dst,
                 left,
@@ -303,68 +285,27 @@ impl Encoder<'_> {
                 remainder,
                 signed,
                 size,
-            } => {
-                self.read_into(*left, Reg::RAX);
-                let divisor = self.read_into(*right, LEFT);
-                if *signed {
-                    self.bytes(&[0x48, 0x99]); // cqo
-                } else {
-                    self.bytes(&[0x31, 0xD2]); // xor edx, edx
-                }
-                self.prefix_w(Reg(0), divisor);
-                self.byte(0xF7);
-                self.modrm(3, if *signed { 7 } else { 6 }, divisor);
-                let result = if *remainder { Reg::RDX } else { Reg::RAX };
-                self.canonicalise(result, *size, *signed);
-                self.write(*dst, result);
-                self.release();
-            }
+            } => self.divide(*dst, *left, *right, *remainder, *signed, *size),
             Op::Unary {
                 dst,
                 src,
                 negate,
                 size,
                 signed,
-            } => {
-                let source = self.read_into(*src, LEFT);
-                self.prefix_w(Reg(0), source);
-                self.byte(0xF7);
-                self.modrm(3, if *negate { 3 } else { 2 }, source);
-                self.canonicalise(source, *size, *signed);
-                self.write(*dst, source);
-                self.release();
-            }
+            } => self.unary(*dst, *src, *negate, *size, *signed),
             Op::Compare {
                 dst,
                 op,
                 left,
                 right,
                 signed,
-            } => {
-                let left = self.read_into(*left, LEFT);
-                let right = self.read_into(*right, RIGHT);
-                self.prefix_w(right, left);
-                self.byte(0x39); // cmp left, right
-                self.modrm(3, right.0, left);
-                // `setcc` has no 64-bit form: set the low byte of rax, then widen it to 1.
-                self.byte(0x40);
-                self.bytes(&[0x0F, 0x90 | condition_code(*op, *signed)]);
-                self.modrm(3, 0, Reg::RAX);
-                self.bytes(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
-                self.write(*dst, Reg::RAX);
-                self.release();
-            }
+            } => self.compare(*dst, *op, *left, *right, *signed),
             Op::Canonical {
                 dst,
                 src,
                 size,
                 signed,
-            } => {
-                self.read_into(*src, Reg::RAX);
-                self.canonicalise(Reg::RAX, *size, *signed);
-                self.write(*dst, Reg::RAX);
-                self.release();
-            }
+            } => self.canonical_op(*dst, *src, *size, *signed),
             Op::Call {
                 dst,
                 name,
@@ -392,6 +333,185 @@ impl Encoder<'_> {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------- operations with a shape
+
+    /// `dst = left OP right`, in the destination's own register where one of the operands is
+    /// already there. This is where most of the code size is won: the naive form moves both operands
+    /// into scratch registers and the result out again, three moves around one `add`.
+    fn binary(&mut self, dst: VReg, op: BinOp, left: VReg, right: VReg, size: u8, signed: bool) {
+        let left = self.read(left);
+        let right = self.read(right);
+        let target = self.destination(dst);
+        let target = if self.in_place(dst, left, commutative(op)) {
+            left
+        } else if commutative(op) && self.in_place(dst, right, true) {
+            right
+        } else if target != left && target != right {
+            self.mov_reg(target, left);
+            target
+        } else {
+            // The destination's own register holds the other operand and this operation does not
+            // commute, so the answer is computed elsewhere and moved back.
+            let scratch = self.scratch();
+            self.mov_reg(scratch, left);
+            scratch
+        };
+        let (accumulator, operand) = if commutative(op) && target == right {
+            (right, left)
+        } else {
+            (target, right)
+        };
+        match op {
+            BinOp::Mul => {
+                // imul puts one operand in the register field: `imul accumulator, operand`.
+                self.prefix_w(accumulator, operand);
+                self.bytes(&[0x0F, 0xAF]);
+                self.modrm(3, accumulator.0, operand);
+            }
+            other => {
+                let opcode = match other {
+                    BinOp::Add => 0x01,
+                    BinOp::Sub => 0x29,
+                    BinOp::And => 0x21,
+                    BinOp::Or => 0x09,
+                    BinOp::Xor => 0x31,
+                    unreachable => unreachable!("{unreachable:?} is not a binary operation"),
+                };
+                // `op accumulator, operand`: the accumulator is the r/m side.
+                self.prefix_w(operand, accumulator);
+                self.byte(opcode);
+                self.modrm(3, operand.0, accumulator);
+            }
+        }
+        self.canonicalise(target, size, signed);
+        self.write(dst, target);
+        self.release();
+    }
+
+    /// `dst = left << right`, or a right shift whose kind the operand's type decides. The count is
+    /// only expressible in `cl`, which is not allocated, so one move is unavoidable.
+    #[allow(clippy::too_many_arguments)] // the operation's shape *is* this long
+    fn shift(
+        &mut self,
+        dst: VReg,
+        left: VReg,
+        right: VReg,
+        left_shift: bool,
+        arithmetic: bool,
+        size: u8,
+        signed: bool,
+    ) {
+        let source = self.read(left);
+        let count = self.read(right);
+        self.mov_reg(Reg::RCX, count);
+        let target = if self.in_place(dst, source, true) {
+            source
+        } else {
+            let scratch = self.scratch();
+            self.mov_reg(scratch, source);
+            scratch
+        };
+        self.prefix_w(Reg(0), target);
+        self.byte(0xD3);
+        let extension = match (left_shift, arithmetic) {
+            (true, _) => 4,      // shl
+            (false, true) => 7,  // sar
+            (false, false) => 5, // shr
+        };
+        self.modrm(3, extension, target);
+        self.canonicalise(target, size, signed);
+        self.write(dst, target);
+        self.release();
+    }
+
+    /// `/` or `%`: `rax` holds the dividend and `rdx` the extension, so the operands are moved into
+    /// the registers x86 names rather than into ones this allocator chose.
+    fn divide(
+        &mut self,
+        dst: VReg,
+        left: VReg,
+        right: VReg,
+        remainder: bool,
+        signed: bool,
+        size: u8,
+    ) {
+        self.read_into(left, Reg::RAX);
+        let divisor = self.read_into(right, LEFT);
+        if signed {
+            self.bytes(&[0x48, 0x99]); // cqo
+        } else {
+            self.bytes(&[0x31, 0xD2]); // xor edx, edx
+        }
+        self.prefix_w(Reg(0), divisor);
+        self.byte(0xF7);
+        self.modrm(3, if signed { 7 } else { 6 }, divisor);
+        let result = if remainder { Reg::RDX } else { Reg::RAX };
+        self.canonicalise(result, size, signed);
+        self.write(dst, result);
+        self.release();
+    }
+
+    /// Unary `-` or `~`, in place when the value is already where the answer goes.
+    fn unary(&mut self, dst: VReg, src: VReg, negate: bool, size: u8, signed: bool) {
+        let source = self.read(src);
+        let target = if self.scratches.contains(&source) || self.is_in(dst, source) {
+            source
+        } else {
+            let target = self.destination(dst);
+            self.mov_reg(target, source);
+            target
+        };
+        self.prefix_w(Reg(0), target);
+        self.byte(0xF7);
+        self.modrm(3, if negate { 3 } else { 2 }, target);
+        self.canonicalise(target, size, signed);
+        self.write(dst, target);
+        self.release();
+    }
+
+    /// A comparison into a 1 or 0: `cmp` the two registers the operands already live in, then one
+    /// `setcc` and the widen that makes it an `int`.
+    fn compare(&mut self, dst: VReg, op: crate::cir::CmpOp, left: VReg, right: VReg, signed: bool) {
+        let left = self.read(left);
+        let right = self.read(right);
+        self.prefix_w(right, left);
+        self.byte(0x39); // cmp left, right
+        self.modrm(3, right.0, left);
+        // `setcc` has no 64-bit form: set the low byte of rax, then widen it to 1.
+        self.byte(0x40);
+        self.bytes(&[0x0F, 0x90 | condition_code(op, signed)]);
+        self.modrm(3, 0, Reg::RAX);
+        self.bytes(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+        self.write(dst, Reg::RAX);
+        self.release();
+    }
+
+    /// Truncate to the type's width and extend back: in place when the value is where it is going.
+    fn canonical_op(&mut self, dst: VReg, src: VReg, size: u8, signed: bool) {
+        let source = self.read(src);
+        let target = if self.scratches.contains(&source) || self.is_in(dst, source) {
+            source
+        } else {
+            let target = self.destination(dst);
+            self.mov_reg(target, source);
+            target
+        };
+        self.canonicalise(target, size, signed);
+        self.write(dst, target);
+        self.release();
+    }
+
+    /// Whether the destination's own register is `register`, so the answer can be computed in it
+    /// without a move. `commutative` says whether the operand being there is as good as the other.
+    fn in_place(&self, dst: VReg, register: Reg, _commutative: bool) -> bool {
+        self.is_in(dst, register)
+    }
+
+    /// Whether a value lives in this register.
+    fn is_in(&self, value: VReg, register: Reg) -> bool {
+        matches!(self.allocation.location(value), Location::Register(other) if other == register)
     }
 
     /// The register an operation computes its result in when the destination is memory: `rax` is

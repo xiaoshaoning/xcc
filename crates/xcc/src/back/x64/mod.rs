@@ -191,6 +191,18 @@ impl Op {
     }
 }
 
+/// The value an operation copies, if it copies one: the operand its result is computed from. The
+/// allocator uses this to put the two in one register and emit no `mov` at all.
+pub(crate) fn hint_source(op: &Op) -> Option<VReg> {
+    match op {
+        Op::Binary { left, .. } | Op::Shift { left, .. } | Op::Unary { src: left, .. } => {
+            Some(*left)
+        }
+        Op::Canonical { src, .. } => Some(*src),
+        _ => None,
+    }
+}
+
 /// How a block ends.
 #[derive(Debug, Clone)]
 pub(crate) enum BlockTerm {

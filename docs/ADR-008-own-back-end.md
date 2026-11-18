@@ -105,8 +105,15 @@ refusal reads like the two hundred other refusals in this compiler and a program
 compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 255. The slice is
 **5.2x Cranelift and 6.5x clang**. That is the honest state of a first slice: correct, and large,
 because every operation goes through scratch moves, every edge through memory, and nothing is
-coalesced or peepholed. Shrinking is the next milestone's work, and the harness to measure it
-exists.
+coalesced or peepholed.
+
+**The first shrinking round took it to 40 716 bytes** - 3.5x and 4.4x - and the measurement said
+what to do before any of it was written: 73.4% of the instructions were `mov`. Computing in the
+destination's own register when an operand is already there, and letting a computed value coalesce
+with the value it is computed from, removed a third of the bytes (11 028 instructions to 8 798, 7 235
+`mov` to 4 985) with the 302-program ratchet unchanged. Coalescing block parameters, the next item on
+the list, turned out to be 2.6% of the instruction stream and was dropped rather than written: the
+list is a prediction, and the measurement gets the last word.
 
 ## Consequences
 

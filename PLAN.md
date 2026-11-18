@@ -370,11 +370,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       calls, aggregates by value, globals, more than four arguments and `va_arg`.
       **Code size, measured, before any shrinking: 60 108 bytes across the 302 programs that
       compile, against Cranelift's 11 626 and `clang -O2`'s 9 255 - 5.2x and 6.5x.** Correct and
-      large, which is what a first slice is; shrinking is the next milestone.
-- [ ] `back-x64` shrinking, in the order the measurements will justify it: move operands in place
-      instead of through scratch registers (most of the 5.2x), coalesce block-parameter slots,
-      interval splitting in the allocator, jump shortening and jump tables for `switch`, and the
-      same passes as below but on machine code rather than `cir`.
+      large, which is what a first slice is.
+- [x] `back-x64` shrinking, round one: **60 108 -> 40 716 bytes (-32%)**, 3.5x Cranelift and 4.4x
+      `clang -O2`, with all 302 programs still agreeing. The measurement said where it was: 73.4% of
+      the instructions this back end emitted were `mov`. Two changes took a third of them. *Compute
+      in place*: an operation whose destination's register already holds an operand emits the
+      operation alone, not three moves around it (and `Incoming` canonicalises in the register the
+      value lives in rather than in `rax` and then a move). *Coalesce copies*: a value computed from
+      another asks the allocator for that value's register and takes it when it is free, so the copy
+      never exists; an interval that ends where another begins releases its register first, because
+      x86 reads an instruction's operands before it writes the destination. Instructions 11 028 ->
+      8 798, `mov` 7 235 -> 4 985.
+      **Measured and rejected:** coalescing block parameters was 2.6% of the instruction stream (94
+      parameter loads and 192 stores across the whole corpus), so it is not worth the machinery.
+- [ ] `back-x64` shrinking, round two: a leaf function has no call to survive, so it can allocate
+      caller-saved registers and save none of them (the prologue and epilogue are ~15% of the
+      remaining bytes); interval splitting in the allocator; jump shortening and jump tables for
+      `switch`; and the passes below, on machine code rather than `cir`.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the
