@@ -107,6 +107,13 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
+**The third round took it to 30 848 bytes - 2.7x and 3.3x.** It started by measuring what spills
+cost: 254 instructions across the whole corpus, which retired the premise the plan had written down.
+Counting copies instead, attributed to the encoder path that emitted each, found them in three
+places - a comparison's answer computed in `rax` and moved out, call arguments staged through memory
+when no two could collide, and an empty frame still paying for its `sub rsp`. Each was a local fix,
+and together they are a fifth of the bytes.
+
 **The second round took it to 34 632 bytes - 3.0x and 3.7x** - by noticing that a function which
 calls nothing has no callee-saved obligation at all: it allocates caller-saved registers and saves
 none. Frame discipline fell from 19.6% of the instruction stream to 3.7%. Which registers a function

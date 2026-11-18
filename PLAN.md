@@ -395,10 +395,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `r8` destroyed the third argument still sitting in it; caller-saved registers are therefore
       only allocated to functions of two arguments or fewer, which is the count whose registers
       cannot collide, and both shapes are now hand-written tests.
-- [ ] `back-x64` shrinking, round three: interval splitting instead of whole-interval spilling
-      (spills are what the corpus mostly pays for now); coalescing a spilled value with its slot;
-      jump shortening and jump tables for `switch`; and the passes below, on machine code rather
-      than `cir`.
+- [x] `back-x64` shrinking, round three: **34 632 -> 30 848 bytes (-11%)**, now **2.7x Cranelift and
+      3.3x `clang -O2`** from 5.2x and 6.5x at the slice, 302 programs still agreeing. The round
+      began by measuring what spills cost and finding **254 spill instructions in the whole corpus** -
+      the guess in the plan ("spills are what the corpus pays for") was wrong, and a pass to split
+      intervals would have bought almost nothing. Counting the copies instead, and which encoder path
+      emitted each, put the bytes where they were: a comparison's answer was computed in `rax` and
+      moved out (317 copies), call arguments were staged through memory even when no two could
+      collide, and a function with an empty frame still paid `sub rsp`/`add rsp` (fourteen bytes
+      each). All three are gone: `setcc` writes the destination's own low byte, arguments go
+      straight to their registers unless the move can destroy one that has not been read, and a
+      function with nothing in its frame has no frame.
+- [ ] `back-x64` shrinking, round four: **canonicalisation at observation points** - 914 of the
+      corpus's instructions are `movslq`/`movzbq` widening a 32-bit result, and a value only needs its
+      canonical form where one of those bits is looked at (a comparison, a division, an arithmetic
+      right shift, a widening conversion, an argument, a return); interval splitting; and the return
+      value's interval preferring `rax`, which is where 362 more copies go.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the

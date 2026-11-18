@@ -60,14 +60,18 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let body_base = 32 + allocation.saved.len() as i32 * 8;
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
-    let has_call = func
-        .blocks
-        .iter()
-        .any(|block| block.ops.iter().any(|op| matches!(op, Op::Call { .. })));
-    let raw = staging_base + if has_call { 32 } else { 0 };
+    let raw = staging_base + if func.makes_call { 32 } else { 0 };
     // Eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is what a call
     // requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
-    let frame = (raw + 15) / 16 * 16 + 8;
+    //
+    // A function with nothing in the frame - no locals, no spills, no saved registers, no call - has
+    // nothing to make room for and pays nothing: no `sub rsp` and no `add rsp`, which is fourteen
+    // bytes of every such function.
+    let frame = if raw == 32 && !func.makes_call {
+        0
+    } else {
+        (raw + 15) / 16 * 16 + 8
+    };
 
     let mut encoder = Encoder {
         code: Vec::new(),
@@ -178,7 +182,9 @@ impl Encoder<'_> {
     // ---------------------------------------------------------------- frame
 
     fn prologue(&mut self) {
-        self.sub_rsp(self.frame);
+        if self.frame != 0 {
+            self.sub_rsp(self.frame);
+        }
         let saved = self.allocation.saved.clone();
         for (index, register) in saved.iter().enumerate() {
             self.mov_memory_from_reg(32 + index as i32 * 8, *register);
@@ -190,7 +196,9 @@ impl Encoder<'_> {
         for (index, register) in saved.iter().enumerate() {
             self.mov_reg_from_memory(*register, 32 + index as i32 * 8);
         }
-        self.add_rsp(self.frame);
+        if self.frame != 0 {
+            self.add_rsp(self.frame);
+        }
         self.byte(0xC3); // ret
     }
 
@@ -315,16 +323,23 @@ impl Encoder<'_> {
                 size,
                 signed,
             } => {
-                // The arguments go through the staging area rather than straight into the
-                // argument registers: `rcx` may hold one of them while another has to go to
-                // `rcx`, and a staging area has no such cycle in it.
-                for (index, arg) in args.iter().enumerate() {
-                    let register = self.read(*arg);
-                    self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
-                    self.release();
-                }
-                for (index, target) in ARGUMENT_REGISTERS.iter().enumerate().take(args.len()) {
-                    self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
+                // An argument that is already in another argument's register has to be got out of
+                // the way first, which the staging area does; when no two of them collide - the
+                // common case, and the only one for a call with one argument - each goes straight
+                // to its register.
+                if self.arguments_collide(args) {
+                    for (index, arg) in args.iter().enumerate() {
+                        let register = self.read(*arg);
+                        self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
+                        self.release();
+                    }
+                    for (index, target) in ARGUMENT_REGISTERS.iter().enumerate().take(args.len()) {
+                        self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
+                    }
+                } else {
+                    for (index, arg) in args.iter().enumerate() {
+                        self.read_into(*arg, ARGUMENT_REGISTERS[index]);
+                    }
                 }
                 self.call(name);
                 if let Some(dst) = dst {
@@ -474,20 +489,25 @@ impl Encoder<'_> {
         self.release();
     }
 
-    /// A comparison into a 1 or 0: `cmp` the two registers the operands already live in, then one
-    /// `setcc` and the widen that makes it an `int`.
+    /// A comparison into a 1 or 0: `cmp` the two registers the operands already live in, then `setcc`
+    /// into the destination's own low byte and widen it there. The answer has no reason to pass
+    /// through `rax`, and 317 of the corpus's copies were it doing so.
     fn compare(&mut self, dst: VReg, op: crate::cir::CmpOp, left: VReg, right: VReg, signed: bool) {
         let left = self.read(left);
         let right = self.read(right);
         self.prefix_w(right, left);
         self.byte(0x39); // cmp left, right
         self.modrm(3, right.0, left);
-        // `setcc` has no 64-bit form: set the low byte of rax, then widen it to 1.
-        self.byte(0x40);
+        let target = self.destination(dst);
+        // `setcc` has no 64-bit form, and its operand is the r/m byte: a REX prefix is needed to
+        // name `spl`, `bpl`, `sil` and `dil`, and for an extended register's high bit.
+        if target.0 >= 4 {
+            self.rex_byte(Reg(0), target);
+        }
         self.bytes(&[0x0F, 0x90 | condition_code(op, signed)]);
-        self.modrm(3, 0, Reg::RAX);
-        self.bytes(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
-        self.write(dst, Reg::RAX);
+        self.modrm(3, 0, target);
+        self.canonicalise(target, 1, false);
+        self.write(dst, target);
         self.release();
     }
 
@@ -547,6 +567,22 @@ impl Encoder<'_> {
             self.scratches.push(wanted);
         }
         wanted
+    }
+
+    /// Whether moving the arguments into their registers, in order, can destroy one that has not
+    /// been read yet: an argument whose register is a *later* argument's register.
+    fn arguments_collide(&self, args: &[VReg]) -> bool {
+        args.iter().enumerate().any(|(index, arg)| {
+            match self.allocation.location(*arg) {
+                Location::Register(register) => ARGUMENT_REGISTERS
+                    .iter()
+                    .position(|target| *target == register)
+                    .is_some_and(|position| position != index),
+                // A spilled argument is read straight out of its slot into the register that needs
+                // it, so it cannot be in the way.
+                Location::Spill(_) => false,
+            }
+        })
     }
 
     /// A register for a spilled operand: the function's two scratch registers, and no third. An

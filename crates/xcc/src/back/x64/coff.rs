@@ -44,25 +44,6 @@ pub(crate) fn write(functions: &[MachineFunction]) -> Vec<u8> {
         });
         text.extend_from_slice(&encoded.code);
     }
-    if std::env::var_os("XCC_X64_STATS").is_some() {
-        let mut counts = std::collections::BTreeMap::new();
-        for function in functions {
-            for block in &function.blocks {
-                for op in &block.ops {
-                    let name = match op {
-                        super::Op::LoadLocal { .. } => "LoadLocal",
-                        super::Op::StoreLocal { .. } => "StoreLocal",
-                        super::Op::Call { .. } => "Call",
-                        super::Op::LocalAddress { .. } => "LocalAddress",
-                        super::Op::Incoming { .. } => "Incoming",
-                        _ => continue,
-                    };
-                    *counts.entry(name).or_insert(0usize) += 1;
-                }
-            }
-        }
-        eprintln!("x64 stats: {counts:?}");
-    }
     write_object(&text, &placed)
 }
 
