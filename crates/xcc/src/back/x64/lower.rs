@@ -47,6 +47,7 @@ fn lower_function(
         order: HashMap::new(),
         param_offsets: Vec::new(),
         frame_bytes: 0,
+        returned: Vec::new(),
         direct_calls: HashMap::new(),
     };
     lowerer.run(func)?;
@@ -59,6 +60,7 @@ fn lower_function(
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
+        returned: lowerer.returned,
         param_count: func.params().len(),
         makes_call,
         blocks: lowerer.blocks,
@@ -80,6 +82,8 @@ struct FunctionLowering<'a> {
     param_offsets: Vec<i32>,
     /// Bytes of frame this function uses, block parameters included.
     frame_bytes: i32,
+    /// The values a `return` hands back.
+    returned: Vec<VReg>,
     /// Values that are the function a call names directly, so no address is ever materialised for
     /// them: `call rel32` needs a symbol, not a pointer.
     direct_calls: HashMap<Value, String>,
@@ -491,7 +495,11 @@ impl FunctionLowering<'_> {
             .expect("the parser ends every block");
         Ok(match term {
             Term::Return { value, .. } => match value {
-                Some(value) => BlockTerm::Return(Some(self.reg_for(value))),
+                Some(value) => {
+                    let register = self.reg_for(value);
+                    self.returned.push(register);
+                    BlockTerm::Return(Some(register))
+                }
                 None => BlockTerm::Return(None),
             },
             Term::Jump { target, args, .. } => {

@@ -107,6 +107,12 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
+**The fourth round took it to 30 564 bytes**, and its other half was a measurement worth keeping: the
+plan predicted that canonicalising lazily, at the operations that read a value's upper bits, would
+remove most of the `movslq` instructions. It removed none - uses outnumber definitions, so it cost
+more than it saved - and was reverted with the numbers in `PLAN.md`. A returned value that avoids the
+registers `rax` is written in now lives in `rax`, which does remove the copy at the return.
+
 **The third round took it to 30 848 bytes - 2.7x and 3.3x.** It started by measuring what spills
 cost: 254 instructions across the whole corpus, which retired the premise the plan had written down.
 Counting copies instead, attributed to the encoder path that emitted each, found them in three

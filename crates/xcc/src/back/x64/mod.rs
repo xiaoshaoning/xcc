@@ -245,6 +245,13 @@ impl Op {
     }
 }
 
+/// Whether an operation writes `rax`, which is where a function returns its value, and the one
+/// register a value may not share. The three that do are the ones the instruction set fixes: a
+/// comparison's low byte, a division's dividend and high half, and a call's result.
+pub(crate) fn writes_rax(op: &Op) -> bool {
+    matches!(op, Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. })
+}
+
 /// The value an operation copies, if it copies one: the operand its result is computed from. The
 /// allocator uses this to put the two in one register and emit no `mov` at all.
 fn hint_source(op: &Op) -> Option<VReg> {
@@ -301,6 +308,9 @@ pub(crate) struct MachineFunction {
     pub name: String,
     /// Bytes of frame the lowering needed, block parameters included; spills are added after.
     pub frame_bytes: i32,
+    /// The values this function returns: the ones a `return` hands back, which have to end up in
+    /// `rax` and are worth keeping there.
+    pub returned: Vec<VReg>,
     /// How many arguments it takes. A caller-saved register may only be allocated when this is two
     /// or fewer: arguments arrive in `rcx`, `rdx`, `r8` and `r9`, and moving the first one into `r8`
     /// would destroy the third before anything had read it.

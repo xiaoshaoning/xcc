@@ -104,7 +104,7 @@ struct Interval {
 pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     let registers = func.registers();
     let allocatable = registers.allocatable;
-    let positions = Positions::new(func);
+    let mut positions = Positions::new(func);
     let intervals = positions.intervals(func);
     let mut locations = vec![Location::Register(Reg(0)); positions.value_count];
     let mut spills = 0;
@@ -186,6 +186,32 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             active.sort_by_key(|other| other.end);
         }
     }
+    // A returned value has to be in `rax` at the end, so a value that is returned and whose whole
+    // life avoids the operations that write `rax` may as well live there: the copy at the return
+    // then does not exist. `rax` is not one of the registers the scan hands out, so it is always
+    // free for this.
+    for value in &func.returned {
+        let Some((start, end)) = positions
+            .intervals_of
+            .get(value.0 as usize)
+            .copied()
+            .flatten()
+        else {
+            continue;
+        };
+        if !matches!(locations[value.0 as usize], Location::Register(_)) {
+            continue;
+        }
+        if positions.avoids_rax(func, (start, end), &locations) {
+            locations[value.0 as usize] = Location::Register(Reg::RAX);
+        }
+    }
+    // A register that no value ended up in - because its owner moved to `rax` - must not be saved.
+    saved.retain(|register| {
+        locations
+            .iter()
+            .any(|location| matches!(location, Location::Register(other) if other == register))
+    });
     // The prologue saves in a fixed order, so two runs of the compiler save in the same order.
     saved.sort();
     Allocation {
@@ -227,6 +253,10 @@ struct Positions {
     value_count: usize,
     /// What each block can go to, as block indices.
     successors: Vec<Vec<usize>>,
+    /// Which block a position belongs to, so "what happens at this position" is a lookup.
+    block_of_position: Vec<usize>,
+    /// Each value's live range, for the pass that puts returned values in `rax`.
+    intervals_of: Vec<Option<(usize, usize)>>,
 }
 
 impl Positions {
@@ -238,7 +268,7 @@ impl Positions {
             // Every operation is one position; the terminator is one more.
             position += block.ops.len() + 1;
         }
-        let block_end = func
+        let block_end: Vec<usize> = func
             .blocks
             .iter()
             .enumerate()
@@ -299,6 +329,13 @@ impl Positions {
                 } => vec![*then, *otherwise],
             })
             .collect();
+        let mut block_of_position = vec![0; block_end.last().copied().unwrap_or(1)];
+        for (index, block) in func.blocks.iter().enumerate() {
+            let span = block_start[index]..block_start[index] + block.ops.len() + 1;
+            for entry in &mut block_of_position[span] {
+                *entry = index;
+            }
+        }
         Self {
             block_start,
             block_end,
@@ -306,12 +343,15 @@ impl Positions {
             defined,
             value_count,
             successors,
+            block_of_position,
+            // filled by `intervals`, which needs the whole function
+            intervals_of: Vec::new(),
         }
     }
 
     /// A live interval per value: from its definition to its last use, or to the end of the block
     /// it is live out of.
-    fn intervals(&self, func: &MachineFunction) -> Vec<Interval> {
+    fn intervals(&mut self, func: &MachineFunction) -> Vec<Interval> {
         let mut hints: Vec<Option<VReg>> = vec![None; self.value_count];
         for block in &func.blocks {
             for op in &block.ops {
@@ -372,7 +412,40 @@ impl Positions {
         for interval in &mut intervals {
             interval.hint = hints[interval.reg.0 as usize];
         }
+        self.intervals_of = vec![None; self.value_count];
+        for interval in &intervals {
+            self.intervals_of[interval.reg.0 as usize] = Some((interval.start, interval.end));
+        }
         intervals
+    }
+
+    /// Whether the operations between two positions leave `rax` alone: none of the three that write
+    /// it, and no operation whose result was spilled - a spilled result is computed in `rax` before
+    /// it is stored.
+    fn avoids_rax(
+        &self,
+        func: &MachineFunction,
+        interval: (usize, usize),
+        locations: &[Location],
+    ) -> bool {
+        let (start, end) = interval;
+        (start..=end).all(|position| {
+            let Some(op) = self.op_at(func, position) else {
+                return true;
+            };
+            !super::writes_rax(op)
+                && op.defined().is_none_or(|result| {
+                    !matches!(locations[result.0 as usize], Location::Spill(_))
+                })
+        })
+    }
+
+    /// The operation at a position, if a position is an operation rather than a terminator.
+    fn op_at<'f>(&self, func: &'f MachineFunction, position: usize) -> Option<&'f super::Op> {
+        let block = self.block_of_position.get(position)?;
+        func.blocks[*block]
+            .ops
+            .get(position - self.block_start[*block])
     }
 
     /// Live-in and live-out sets per block, by the textbook backwards fixpoint.

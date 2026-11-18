@@ -406,11 +406,24 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       each). All three are gone: `setcc` writes the destination's own low byte, arguments go
       straight to their registers unless the move can destroy one that has not been read, and a
       function with nothing in its frame has no frame.
-- [ ] `back-x64` shrinking, round four: **canonicalisation at observation points** - 914 of the
-      corpus's instructions are `movslq`/`movzbq` widening a 32-bit result, and a value only needs its
-      canonical form where one of those bits is looked at (a comparison, a division, an arithmetic
-      right shift, a widening conversion, an argument, a return); interval splitting; and the return
-      value's interval preferring `rax`, which is where 362 more copies go.
+- [x] `back-x64` shrinking, round four: **30 848 -> 30 564 bytes**, all 302 programs still agreeing.
+      Small, and one half of the round was a loss rather than a win, which is worth recording:
+      **canonicalisation at observation points was measured and rejected.** The plan's reasoning was
+      that 914 corpus instructions widen a 32-bit result that nothing looks at, so moving the
+      canonicalisation from the definition to the few uses that read the upper bits (a comparison, a
+      division, a right shift) should remove most of them. Built, measured, reverted: **1009
+      extensions against 914, 30 940 bytes against 30 848**. Uses outnumber definitions - one value
+      feeds several consumers - so canonicalising where the value is made is cheaper than
+      canonicalising it wherever it is read, and the front end's converts are semantic rather than
+      noise. What the attempt did produce is a sharper statement of where canonical form is needed:
+      the conversion's *source* signedness decides a widening extension, the destination's a
+      truncation, and both are now written down where the encoder needs them.
+      What did land is the other half: **a returned value lives in `rax`** when nothing in its life
+      writes that register (a comparison, a division, a call, or a spilled result), so the copy at
+      the return does not exist; a register that ends up empty is no longer saved either.
+- [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
+      `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
+      copies are the return path (partly done), values crossing a call, and spills.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the
