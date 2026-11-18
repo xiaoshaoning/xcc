@@ -202,7 +202,7 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         if !matches!(locations[value.0 as usize], Location::Register(_)) {
             continue;
         }
-        if positions.avoids_rax(func, (start, end), &locations) {
+        if positions.avoids_rax(func, *value, (start, end), &locations) {
             locations[value.0 as usize] = Location::Register(Reg::RAX);
         }
     }
@@ -419,33 +419,34 @@ impl Positions {
         intervals
     }
 
-    /// Whether the operations between two positions leave `rax` alone: none of the three that write
-    /// it, and no operation whose result was spilled - a spilled result is computed in `rax` before
-    /// it is stored.
+    /// Whether everything between two positions leaves `rax` alone. Three kinds of operation write
+    /// it - a comparison, a division and a call - as does any operation whose result had to be
+    /// spilled, and as does **a return of some other value**: `return x` moves `x` into `rax`, which
+    /// would destroy a value living there. Only `value`'s own return is allowed.
     fn avoids_rax(
         &self,
         func: &MachineFunction,
+        value: VReg,
         interval: (usize, usize),
         locations: &[Location],
     ) -> bool {
         let (start, end) = interval;
         (start..=end).all(|position| {
-            let Some(op) = self.op_at(func, position) else {
-                return true;
+            let block = self.block_of_position[position];
+            let instructions = &func.blocks[block].ops;
+            let offset = position - self.block_start[block];
+            let Some(op) = instructions.get(offset) else {
+                // The position is the block's terminator.
+                return match &func.blocks[block].term {
+                    super::BlockTerm::Return(Some(returned)) => *returned == value,
+                    _ => true,
+                };
             };
             !super::writes_rax(op)
                 && op.defined().is_none_or(|result| {
                     !matches!(locations[result.0 as usize], Location::Spill(_))
                 })
         })
-    }
-
-    /// The operation at a position, if a position is an operation rather than a terminator.
-    fn op_at<'f>(&self, func: &'f MachineFunction, position: usize) -> Option<&'f super::Op> {
-        let block = self.block_of_position.get(position)?;
-        func.blocks[*block]
-            .ops
-            .get(position - self.block_start[*block])
     }
 
     /// Live-in and live-out sets per block, by the textbook backwards fixpoint.

@@ -248,7 +248,7 @@ impl Op {
 /// Whether an operation writes `rax`, which is where a function returns its value, and the one
 /// register a value may not share. The three that do are the ones the instruction set fixes: a
 /// comparison's low byte, a division's dividend and high half, and a call's result.
-pub(crate) fn writes_rax(op: &Op) -> bool {
+fn writes_rax(op: &Op) -> bool {
     matches!(op, Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. })
 }
 

@@ -108,6 +108,13 @@ fn the_constructs_the_slice_lowers_behave() {
             5,
         ),
         (
+            // A returned value may live in `rax`, the register the return uses; an earlier `return`
+            // of something else writes `rax`, and must not be allowed to destroy it.
+            "an early return before the value returned later",
+            "int f(int c, int a) { int ok = c == 0; int v = a + 1; if (ok) return 1; return v; } int main(void) { return f(1, 4) == 5 ? 0 : 1; }",
+            0,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,

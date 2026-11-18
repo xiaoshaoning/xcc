@@ -105,6 +105,46 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### round four, reviewed - 2026-11-16 - an invariant that held by luck, and a test whose answer I got wrong
+
+Review of `2fe2efa`.
+
+**Found: the `rax` preference was sound by accident.** A returned value may live in `rax`, and the
+check that decided it looked for the three operations that write `rax` - a comparison, a division, a
+call - and for a spilled result, which is computed in `rax` before it is stored. It did not look at
+**terminators**, and `return x` writes `rax` too. So a value returned late could be given `rax` while
+an earlier `return` of something else destroyed it. The check now reads the terminator as well and
+allows only the value's *own* return; the mutation that survives in the corpus is that a `Return` of
+another value is a clobber.
+
+Why no corpus program found it: every conditional branch is preceded by a comparison, so a value that
+is live across a branch has a `Compare` in its interval and the preference refuses. The unsoundness
+needs a `Return` reachable with no comparison in the interval, which today's front end cannot emit -
+which is exactly the kind of guarantee that a later change to how conditions are lowered would break
+silently. Ten lines make it not depend on that.
+
+**Found: my own test was wrong, and the compiler was right.** The program I wrote to demonstrate the
+hazard - `int f(int c, int a) { int ok = c == 0; int v = a + 1; if (ok) return 1; return v; }` called
+with `f(0, 4)` - returns `1`, not `5`, because `ok` is true when `c` is zero. The reference compiler
+said so too, and I had read "ours=1, expect 0" as evidence of a compiler bug when it was arithmetic
+in the test. The case is now `f(1, 4)`, which does take the path that returns `v`, and it sits in
+`tests/x64.rs` with the other constructs - a test whose expected value came from working the program
+out by hand instead of from the thing being tested.
+
+**Checked and sound:** `avoids_rax` is called after the scan, so it sees final spill decisions;
+`block_of_position` makes position lookup a table read rather than a scan of every block (the first
+version was O(blocks) per position, which on a function with many returns would have been O(n^3));
+`intervals_of` is filled by `intervals`, so a returned value always has a range; and the prologue's
+`saved` list is filtered after the pass, so a register whose only value moved to `rax` is no longer
+saved - the saving the move was supposed to buy.
+
+**Code size after the review: 30 564 bytes, unchanged** - the fix is a correctness guard, not a
+change of policy - with the ratchet at 302 agreeing and none wrong.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### round three, reviewed - 2026-11-16 - a condition that hid the four things it tested
 
 Review of `43dc3db`.
