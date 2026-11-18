@@ -15,6 +15,11 @@
 //! register for each use and stores it after each definition. Spilling a whole interval rather than
 //! splitting it is the ceiling here - a split would keep the hot part in a register - and it is the
 //! next thing to do when the code size this produces starts to matter.
+//!
+//! A value computed from another asks for that value's register, and gets it when it is free by the
+//! time the computation happens: the copy that would otherwise be emitted never exists. That is the
+//! whole of the coalescing here - no interference graph, no iteration - and most of the bytes it
+//! removed were copies.
 
 use std::collections::HashSet;
 
@@ -43,10 +48,6 @@ pub(crate) enum Location {
     /// In a frame slot at this offset from the frame body: the encoder moves it in and out.
     Spill(i32),
 }
-
-/// How many registers a function may start using without the saves outweighing the copies they
-/// coalesce.
-const CHEAP_REGISTERS: usize = 3;
 
 /// The registers this allocator may use: the callee-saved ones.
 pub(crate) const ALLOCATABLE: [Reg; 7] = [
@@ -118,12 +119,10 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         // Coalescing: a value computed from another one takes the same register when it is free, so
         // the `mov` that would copy it is not emitted at all.
         if let Some(hint) = interval.hint {
-            // A register that has not been saved yet costs two `mov`s in the prologue and epilogue,
-            // and the copy it removes is one: it is worth taking only while the set is small.
-            if let Some(register) = free.iter().find(|register| {
-                self_register(&locations, hint) == Some(**register)
-                    && (saved.contains(register) || saved.len() < CHEAP_REGISTERS)
-            }) {
+            if let Some(register) = free
+                .iter()
+                .find(|register| self_register(&locations, hint) == Some(**register))
+            {
                 let register = *register;
                 free.retain(|other| *other != register);
                 locations[interval.reg.0 as usize] = Location::Register(register);
@@ -178,10 +177,14 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     }
 }
 
-/// Where a value already lives, if it has been given a register.
+/// Where a value already lives, if it has been given an allocatable register.
+///
+/// The table is filled with `rax` before the scan, and a value that nothing reads keeps that
+/// filler, so the result is filtered by the allocatable set: a register this allocator can hand out
+/// is the only thing that can be coalesced with.
 fn self_register(locations: &[Location], value: VReg) -> Option<Reg> {
     match locations.get(value.0 as usize) {
-        Some(Location::Register(register)) => Some(*register),
+        Some(Location::Register(register)) if ALLOCATABLE.contains(register) => Some(*register),
         _ => None,
     }
 }

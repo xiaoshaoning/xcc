@@ -9,9 +9,12 @@
 //!   function uses, then the lowering's frame, then spill slots, then the staging area. A `ret`
 //!   undoes exactly that; there is no `rbp` and no `push`.
 //! - **Scratch registers are the calling convention's, not the allocator's.** `rax`, `rcx`, `rdx`,
-//!   `r10` and `r11` hold nothing that must survive an operation, so an operation moves a value
-//!   into one, computes, and writes it back where it lives. Only the seven allocated registers ever
-//!   hold a value across operations, and a call cannot destroy them.
+//!   `r10` and `r11` hold nothing that must survive an operation, so an operation may use one as
+//!   room to work. Only the seven allocated registers ever hold a value across operations, and a
+//!   call cannot destroy them. An operation computes in the destination's own register when an
+//!   operand is already there - which the allocator arranges often, by coalescing - so the scratch
+//!   registers are needed only for operands that live in memory and for the shapes x86 fixes
+//!   (`cl` for a shift count, `rax` and `rdx` for a division).
 //!
 //! The ceiling this slice has: a frame larger than a page does not probe the stack, so a function
 //! with a very large frame could skip past the guard page. Cranelift's back end emits the probe
@@ -343,10 +346,11 @@ impl Encoder<'_> {
     fn binary(&mut self, dst: VReg, op: BinOp, left: VReg, right: VReg, size: u8, signed: bool) {
         let left = self.read(left);
         let right = self.read(right);
+        let swaps = commutative(op);
         let target = self.destination(dst);
-        let target = if self.in_place(dst, left, commutative(op)) {
+        let target = if self.is_in(dst, left) {
             left
-        } else if commutative(op) && self.in_place(dst, right, true) {
+        } else if swaps && self.is_in(dst, right) {
             right
         } else if target != left && target != right {
             self.mov_reg(target, left);
@@ -358,7 +362,7 @@ impl Encoder<'_> {
             self.mov_reg(scratch, left);
             scratch
         };
-        let (accumulator, operand) = if commutative(op) && target == right {
+        let (accumulator, operand) = if swaps && target == right {
             (right, left)
         } else {
             (target, right)
@@ -406,7 +410,7 @@ impl Encoder<'_> {
         let source = self.read(left);
         let count = self.read(right);
         self.mov_reg(Reg::RCX, count);
-        let target = if self.in_place(dst, source, true) {
+        let target = if self.is_in(dst, source) {
             source
         } else {
             let scratch = self.scratch();
@@ -503,12 +507,6 @@ impl Encoder<'_> {
         self.release();
     }
 
-    /// Whether the destination's own register is `register`, so the answer can be computed in it
-    /// without a move. `commutative` says whether the operand being there is as good as the other.
-    fn in_place(&self, dst: VReg, register: Reg, _commutative: bool) -> bool {
-        self.is_in(dst, register)
-    }
-
     /// Whether a value lives in this register.
     fn is_in(&self, value: VReg, register: Reg) -> bool {
         matches!(self.allocation.location(value), Location::Register(other) if other == register)
@@ -552,12 +550,15 @@ impl Encoder<'_> {
         wanted
     }
 
-    /// A register for a spilled operand: `r10` first, then `r11`.
+    /// A register for a spilled operand: `r10` first, then `r11`, and no third: an operation holds
+    /// at most two, and asking for a third means it would clobber one it is still using.
     fn scratch(&mut self) -> Reg {
-        let register = if self.scratches.contains(&LEFT) {
+        let register = if !self.scratches.contains(&LEFT) {
+            LEFT
+        } else if !self.scratches.contains(&RIGHT) {
             RIGHT
         } else {
-            LEFT
+            unreachable!("an operation is holding both scratch registers already")
         };
         self.scratches.push(register);
         register

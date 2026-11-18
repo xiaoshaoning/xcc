@@ -105,6 +105,51 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### back-x64 shrinking, round one, reviewed - 2026-11-16 - a knob nobody measured, and one argument nobody read
+
+Review of `c2cb1e2`.
+
+**Found: two pieces of unrequested generality, one of which I had just written.** `CHEAP_REGISTERS`
+was a threshold in the allocator saying a hint may only claim a register that has not been saved yet
+while fewer than three registers are in use - a heuristic with a justification in a comment and no
+measurement behind it. Deleting it changed the corpus's code size by **zero bytes**, which is the
+measurement it never had: a knob nobody turns is dead code with a name. `in_place` was a method on
+the encoder taking a `_commutative` parameter it ignored, a leftover from a draft; the callers now
+ask `is_in` directly and the commutative decision lives in the one place that acts on it.
+
+**Found: a latent trap in the search for a coalescing partner.** `self_register` read the location
+table, which is filled with `rax` before the scan; a value that nothing reads keeps that filler, so
+the search could have returned `rax` as "where the hint lives". It cannot match a free register today
+because `rax` is not allocatable, but that is a property of a *different* table holding. It now
+filters by the allocatable set, and says why. The same reasoning tightened the scratch allocator: it
+used to hand back a register it was already holding when an operation asked for a third one, which
+would have clobbered a live operand. That case is unreachable by argument - no operation holds more
+than two - but it is not unreachable by construction, and `unreachable!` with the reason beats
+silently corrupting a register if a later operation is written differently.
+
+**Measured rather than assumed: the liveness pass is quadratic in live values and I left it there.**
+A synthetic function with 300 values live across 2 600 blocks takes 2.5 s in a debug build and about
+1 s in a release one, and the block budget (4096) bounds it before it can become a cliff. Written
+down instead of fixed, because the fix is a `HashSet` in a hot loop that costs readability and buys
+nothing measurable at the bound that exists.
+
+**Checked and sound:** the hint can only claim a register whose value is dead there, because an
+interval releases its register only when it ends at the position the new one starts, and x86 reads
+an instruction's operands before it writes the destination; a commutative operation may compute into
+either operand's register, a non-commutative one only into the left operand's, and the case where the
+destination's register holds the right operand of a non-commutative operation cannot collide with a
+spilled operand's scratch (argued in the review, and the `unreachable!` now states the invariant the
+argument rests on); `saved` collects registers reached by either path, so the prologue saves what the
+epilogue restores; and the module docs now describe the encoder as it is rather than the naive form
+this commit removed.
+
+**Code size after the review: 40 716 bytes, unchanged** - as it should be for a cleanup - with the
+302-program ratchet still at 302 agreeing and none wrong.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### back-x64, the first slice, reviewed - 2026-11-16 - one real defect, and four copies of one fact
 
 Review of `a62d820`.
