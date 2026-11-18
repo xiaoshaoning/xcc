@@ -172,8 +172,8 @@ impl Jit {
                 ));
             }
         }
-        let functions =
-            crate::back::lower_into(&mut self.module, &module, &names).map_err(|error| error.0)?;
+        let functions = crate::back::lower_into(&mut self.module, &module, &names)
+            .map_err(|error| error.message)?;
         self.names.extend(functions);
         self.defined = defined;
         self.module

@@ -137,13 +137,10 @@ fn an_opt_level_this_back_end_does_not_have_is_refused_as_the_callers_mistake() 
     let output = run(xcc().arg("-c").arg("--opt-level=3").arg(&source));
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     let message = stderr(&output);
-    assert!(
-        message.contains("needs this compiler's own back end"),
-        "{message}"
-    );
+    assert!(message.contains("is not written"), "{message}");
     assert!(!message.contains("internal"), "{message}");
-    // And the levels it does have compile.
-    for level in ["0", "1"] {
+    // And the levels that do exist compile: Cranelift's two, and this compiler's own back end.
+    for level in ["0", "1", "2"] {
         let output = run(xcc()
             .arg("-c")
             .arg(format!("--opt-level={level}"))

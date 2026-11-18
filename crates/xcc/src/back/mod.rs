@@ -24,24 +24,51 @@ use cranelift_module::{
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 pub mod jit;
+pub mod x64;
 
 use crate::cir::{self, BinOp, Block, CmpOp, ConvertOp, Func, Inst, Module as CirModule, Term};
 use crate::types::{Type, TypeId, Types};
 
-/// Why lowering failed. A lowering failure is a compiler bug or an unsupported target, never a
-/// diagnostic about the C source.
+/// Why lowering failed.
+///
+/// Two kinds, and the difference matters to whoever reads the diagnostic: a **bug** is the
+/// compiler's fault and says `internal:`, while a **gap** is a construct the back end has not
+/// lowered yet, and is reported like any other refusal - at the expression that asked for it.
 #[derive(Debug)]
-pub struct LoweringError(pub String);
+pub struct LoweringError {
+    /// What went wrong, in one sentence.
+    pub message: String,
+    /// The source expression, when this is a documented gap and not a bug.
+    pub not_lowered: Option<Span>,
+}
+
+impl LoweringError {
+    /// A compiler bug: something the back end was not supposed to be able to fail at.
+    fn bug(message: String) -> Self {
+        Self {
+            message,
+            not_lowered: None,
+        }
+    }
+
+    /// A construct this back end has not learnt yet.
+    pub(crate) fn not_lowered(message: String, span: Span) -> Self {
+        Self {
+            message,
+            not_lowered: Some(span),
+        }
+    }
+}
 
 impl std::fmt::Display for LoweringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl From<ModuleError> for LoweringError {
     fn from(error: ModuleError) -> Self {
-        LoweringError(format!("cranelift module: {error}"))
+        Self::bug(format!("cranelift module: {error}"))
     }
 }
 
@@ -61,7 +88,7 @@ pub struct Explained {
 
 /// Every block, each after the blocks that dominate it: preorder of the dominator tree, then any
 /// block the entry cannot reach.
-fn dominator_order(func: &Func) -> Vec<Block> {
+pub(super) fn dominator_order(func: &Func) -> Vec<Block> {
     let tree = func.dominator_tree();
     let mut children: HashMap<Block, Vec<Block>> = HashMap::new();
     for (index, parent) in tree.iter().enumerate() {
@@ -101,6 +128,17 @@ pub struct Lowered {
     pub explained: Vec<Explained>,
 }
 
+/// Which levels exist, and why one does not. Level 2 is this compiler's own back end (ADR-008); a
+/// number above it is a level nobody wrote, and saying so beats quietly serving another one.
+pub(crate) fn check_opt_level(level: u8) -> Result<(), String> {
+    match level {
+        0..=2 => Ok(()),
+        other => Err(format!(
+            "opt level {other} is not written: 0 and 1 are Cranelift's, 2 is this compiler's own back end"
+        )),
+    }
+}
+
 /// How hard the back end works, as Cranelift spells it - or why this compiler has no such level.
 ///
 /// One mapping for the three callers: the object path, the JIT (whose flags are set at
@@ -111,8 +149,12 @@ pub(crate) fn cranelift_opt_level(level: u8) -> Result<&'static str, String> {
     match level {
         0 => Ok("none"),
         1 => Ok("speed"),
+        2 => Err(
+            "opt level 2 is this compiler's own back end, which cannot be JITted yet; `--run` takes levels 0 and 1"
+                .to_string(),
+        ),
         other => Err(format!(
-            "opt level {other} needs this compiler's own back end, which is not written yet; levels 0 and 1 are Cranelift's"
+            "opt level {other} is not written: 0 and 1 are Cranelift's, 2 is this compiler's own back end"
         )),
     }
 }
@@ -125,27 +167,37 @@ pub fn object(
     explain: bool,
     opt_level: u8,
 ) -> Result<Lowered, LoweringError> {
+    // Level 2 is this compiler's own back end (ADR-008): Cranelift is not in the path at all, so a
+    // number that says "the compiler's own code" cannot quietly mean somebody else's.
+    if opt_level >= 2 {
+        let bytes = x64::object(module, names)
+            .map_err(|gap| LoweringError::not_lowered(format!("{gap}"), gap.span))?;
+        return Ok(Lowered {
+            bytes,
+            explained: Vec::new(),
+        });
+    }
     let mut flags = settings::builder();
     // The host's own feature set, so a JIT and an object cannot disagree about what runs.
     flags
         .set(
             "opt_level",
-            cranelift_opt_level(opt_level).map_err(LoweringError)?,
+            cranelift_opt_level(opt_level).map_err(LoweringError::bug)?,
         )
-        .map_err(|error| LoweringError(error.to_string()))?;
+        .map_err(|error| LoweringError::bug(error.to_string()))?;
     // A frame larger than a page must touch its guard pages as it allocates them, or a stack
     // overflow silently overwrites whatever is below. Inline, so no `__chkstk` import (ADR-005).
     flags
         .set("enable_probestack", "true")
-        .map_err(|error| LoweringError(error.to_string()))?;
+        .map_err(|error| LoweringError::bug(error.to_string()))?;
     flags
         .set("probestack_strategy", "inline")
-        .map_err(|error| LoweringError(error.to_string()))?;
+        .map_err(|error| LoweringError::bug(error.to_string()))?;
     let flags = settings::Flags::new(flags);
     let isa = cranelift_native::builder()
-        .map_err(|error| LoweringError(error.to_string()))?
+        .map_err(|error| LoweringError::bug(error.to_string()))?
         .finish(flags)
-        .map_err(|error| LoweringError(error.to_string()))?;
+        .map_err(|error| LoweringError::bug(error.to_string()))?;
     let builder = ObjectBuilder::new(isa, "xcc", default_libcall_names())?;
     let mut object = ObjectModule::new(builder);
     let mut lowerer = Lowerer {
@@ -163,7 +215,7 @@ pub fn object(
     let bytes = object
         .finish()
         .emit()
-        .map_err(|error| LoweringError(error.to_string()))?;
+        .map_err(|error| LoweringError::bug(error.to_string()))?;
     Ok(Lowered { bytes, explained })
 }
 
@@ -234,7 +286,7 @@ impl<M: Module> Lowerer<'_, M> {
                 32 => ir::types::I32,
                 64 => ir::types::I64,
                 other => {
-                    return Err(LoweringError(format!(
+                    return Err(LoweringError::bug(format!(
                         "no Cranelift type for {other}-bit int"
                     )))
                 }
@@ -243,14 +295,14 @@ impl<M: Module> Lowerer<'_, M> {
                 32 => ir::types::F32,
                 64 => ir::types::F64,
                 other => {
-                    return Err(LoweringError(format!(
+                    return Err(LoweringError::bug(format!(
                         "no Cranelift type for {other}-bit float"
                     )))
                 }
             },
             Type::Pointer(_) => ir::types::I64, // the target's word (ADR-001 decision 5)
             _other => {
-                return Err(LoweringError(format!(
+                return Err(LoweringError::bug(format!(
                     "a value of type `{}` has no machine type yet",
                     self.types.describe_with(ty, self.names)
                 )))
@@ -287,7 +339,7 @@ impl<M: Module> Lowerer<'_, M> {
         let function = self.types.pointee(pointer);
         match self.types.kind(function) {
             Type::Function { result, params, .. } => self.signature_of(params, *result),
-            _ => Err(LoweringError(
+            _ => Err(LoweringError::bug(
                 "a call of something that is not a function".to_owned(),
             )),
         }
@@ -353,10 +405,9 @@ impl<M: Module> Lowerer<'_, M> {
     /// Put a global object in the object file: its size and alignment from the C type, its
     /// bytes from the front end (ADR-004), or zeroes when the source said nothing.
     fn declare_data(&mut self, global: &crate::cir::Global) -> Result<(), LoweringError> {
-        let size = self
-            .types
-            .size_of(global.ty)
-            .ok_or_else(|| LoweringError(format!("the object `{}` has no size", global.name)))?;
+        let size = self.types.size_of(global.ty).ok_or_else(|| {
+            LoweringError::bug(format!("the object `{}` has no size", global.name))
+        })?;
         let linkage = if global.external {
             Linkage::Export
         } else {
@@ -480,7 +531,7 @@ impl<M: Module> Lowerer<'_, M> {
             .declare_function(&name, Linkage::Export, &context.func.signature)?;
         self.object
             .define_function(name, &mut context)
-            .map_err(|error| LoweringError(format!("cranelift: {error:?}")))?;
+            .map_err(|error| LoweringError::bug(format!("cranelift: {error:?}")))?;
         Ok(())
     }
 
@@ -496,7 +547,7 @@ impl<M: Module> Lowerer<'_, M> {
             values
                 .get(&v)
                 .copied()
-                .ok_or_else(|| LoweringError(String::from("a value has no Cranelift value")))
+                .ok_or_else(|| LoweringError::bug(String::from("a value has no Cranelift value")))
         };
         let pointer = ir::types::I64;
         match inst {
@@ -516,10 +567,9 @@ impl<M: Module> Lowerer<'_, M> {
                 values.insert(*result, constant);
             }
             Inst::Slot { result, ty, .. } => {
-                let size = self
-                    .types
-                    .size_of(*ty)
-                    .ok_or_else(|| LoweringError("a slot for an incomplete type".to_owned()))?;
+                let size = self.types.size_of(*ty).ok_or_else(|| {
+                    LoweringError::bug("a slot for an incomplete type".to_owned())
+                })?;
                 let slot = builder.create_sized_stack_slot(ir::StackSlotData::new(
                     ir::StackSlotKind::ExplicitSlot,
                     size as u32,
@@ -578,7 +628,7 @@ impl<M: Module> Lowerer<'_, M> {
                     (BinOp::Shr, false, true) => builder.ins().sshr(left, right),
                     (BinOp::Shr, false, false) => builder.ins().ushr(left, right),
                     (op, ..) => {
-                        return Err(LoweringError(format!(
+                        return Err(LoweringError::bug(format!(
                             "`{}` has no lowering for this type",
                             op.as_str()
                         )))
@@ -736,7 +786,7 @@ impl<M: Module> Lowerer<'_, M> {
                         None => self
                             .types
                             .fundamental("void")
-                            .ok_or_else(|| LoweringError(String::from("no void type")))?,
+                            .ok_or_else(|| LoweringError::bug(String::from("no void type")))?,
                     };
                     let signature = self.signature_of(&params, result_ty)?;
                     let signature = builder.import_signature(signature);
@@ -779,7 +829,7 @@ impl<M: Module> Lowerer<'_, M> {
                     // An object: its address is the symbol value the linker will resolve.
                     _ => {
                         let id = self.data.get(name.as_str()).copied().ok_or_else(|| {
-                            LoweringError(format!("`{name}` is not declared here"))
+                            LoweringError::bug(format!("`{name}` is not declared here"))
                         })?;
                         let address = self.object.declare_data_in_func(id, builder.func);
                         let value = builder.ins().symbol_value(ir::types::I64, address);
@@ -834,7 +884,7 @@ impl<M: Module> Lowerer<'_, M> {
             values
                 .get(&v)
                 .copied()
-                .ok_or_else(|| LoweringError(String::from("a value has no Cranelift value")))
+                .ok_or_else(|| LoweringError::bug(String::from("a value has no Cranelift value")))
         };
         match term {
             Term::Return { value: what, .. } => match what {

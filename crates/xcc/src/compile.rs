@@ -137,7 +137,7 @@ impl Compile {
         // A level this back end does not have is the caller's mistake, and it is reported as one:
         // the back end's refusal would arrive as an internal error, which blames the compiler for
         // a number it was handed. Asked first, because it is not about the source.
-        if let Err(reason) = crate::back::cranelift_opt_level(self.options.opt_level) {
+        if let Err(reason) = crate::back::check_opt_level(self.options.opt_level) {
             diagnostics.push(
                 Diagnostic::error(reason)
                     .with_file(name)
@@ -192,14 +192,22 @@ impl Compile {
                         explain.then(|| crate::explain::render(&lowered.explained, &sources));
                     lowered.bytes
                 }
+                // A gap the back end has not lowered yet is refused at the expression that asked
+                // for it, like every other thing this compiler does not do; anything else is a
+                // compiler bug and says so rather than blaming the source (CONSTRAINTS 6).
                 Err(error) => {
-                    // A lowering failure is a compiler bug, so it says so rather than blaming
-                    // the source (CONSTRAINTS 6).
-                    diagnostics.push(
-                        Diagnostic::error(format!("internal: {error}"))
+                    let diagnostic = match error.not_lowered {
+                        Some(span) => Diagnostic::error(format!(
+                            "not lowered yet at opt level {}: {}",
+                            self.options.opt_level, error.message
+                        ))
+                        .with_file(name)
+                        .with_span(span),
+                        None => Diagnostic::error(format!("internal: {error}"))
                             .with_file(name)
                             .with_span(Span::at(0)),
-                    );
+                    };
+                    diagnostics.push(diagnostic);
                     let items = truncate_diagnostics(diagnostics, &self.options);
                     return Err(Diagnostics::new(items, sources));
                 }

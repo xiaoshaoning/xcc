@@ -361,8 +361,20 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       constant folding and propagation, DCE, GVN/CSE, jump and branch threading, cross-jumping
       (tail merging, the one borland-reborn documents in detail), loop rotation, strength
       reduction, inlining.
-- [ ] `back-x64`: our own instruction selection, register allocation (start linear scan, the
-      Borland-style score-based allocator later), jump shortening, jump tables for `switch`.
+- [x] `back-x64`, **as a slice**: our own instruction selection, linear-scan register allocation
+      over callee-saved registers, `rsp`-relative frames with no `rbp` and no `push`, block
+      parameters through frame slots, direct calls, and the COFF writer. `--opt-level=2` selects it
+      and Cranelift is not in the path (ADR-008). **300 of the 464 corpus programs** build through
+      it, link, run and agree with the same program built by Cranelift's path; the other 164 are
+      refused with a span and named (`crates/xcc/tests/x64.rs`). It refuses floating point, indirect
+      calls, aggregates by value, globals, more than four arguments and `va_arg`.
+      **Code size, measured, before any shrinking: 60 108 bytes across the 302 programs that
+      compile, against Cranelift's 11 626 and `clang -O2`'s 9 255 - 5.2x and 6.5x.** Correct and
+      large, which is what a first slice is; shrinking is the next milestone.
+- [ ] `back-x64` shrinking, in the order the measurements will justify it: move operands in place
+      instead of through scratch registers (most of the 5.2x), coalesce block-parameter slots,
+      interval splitting in the allocator, jump shortening and jump tables for `switch`, and the
+      same passes as below but on machine code rather than `cir`.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the
@@ -372,9 +384,9 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       lowering costs 18% of the test's time because the work is already parallel.
 - [~] `--opt-level` picks the lowering: `0`/`1` Cranelift (compile speed), `2`/`3` ours (code
       quality), with numbers in `docs/COMPARISON.md` style rather than claims.
-      **`0` and `1` are there**: `0` leaves Cranelift at `opt_level=none`, `1` turns its optimiser
-      on, and `2`/`3` are refused as the caller's mistake because our own back end is not written -
-      a number never means two things. Measured on the six-file corpus: **3822 bytes of x64 at `0`,
+      **`0`, `1` and `2` are there**: `0` leaves Cranelift at `opt_level=none`, `1` turns its
+      optimiser on, and `2` is this compiler's own back end, Cranelift not in the path at all. `3`
+      is refused as the caller's mistake: a number never means two things. Measured on the six-file corpus: **3822 bytes of x64 at `0`,
       2459 at `1`** (55 ms against 180), which takes the gap the measuring stick reports from 3.1x
       to **2.0x**. All 414 corpus programs that run agree between the two levels, and a JIT test
       keeps it that way.
