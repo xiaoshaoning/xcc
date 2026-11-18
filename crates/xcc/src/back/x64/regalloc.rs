@@ -62,22 +62,18 @@ pub(crate) const CALLEE_SAVED: [Reg; 7] = [
     Reg(15), // r15
 ];
 
-/// What a function that calls nothing may allocate, when it also contains no shift and no division:
-/// the caller-saved registers that the fixed-purpose ones leave over. `rax` stays out (it holds a
-/// comparison's result and the return value) and the two the encoder needs as scratch are `rcx` and
-/// `rdx`, which this function does not use for anything. Four registers for nothing in the prologue.
-pub(crate) const CALLER_SAVED_WIDE: [Reg; 4] = [
+/// What a function that calls nothing may allocate, in the order it should prefer them: the
+/// caller-saved registers that nothing in the ABI claims. `rax` is not here - a comparison writes its
+/// low byte, a division its whole width, and the return value goes there - and neither are `rcx` and
+/// `rdx`, because a shift's count is `rcx` and a division's high half is `rdx`.
+///
+/// The first two are safe in every such function; the last two are safe only when it contains no
+/// shift and no division, and are then the pair the encoder uses as scratch instead.
+pub(crate) const CALLER_SAVED: [Reg; 4] = [
     Reg(8),  // r8
     Reg(9),  // r9
     Reg(10), // r10
     Reg(11), // r11
-];
-
-/// What a function that calls nothing may allocate when it shifts or divides: only the two the
-/// instruction set does not fix, because `rcx` is a shift's count and `rdx` a division's high half.
-pub(crate) const CALLER_SAVED: [Reg; 2] = [
-    Reg(8), // r8
-    Reg(9), // r9
 ];
 
 /// What allocation decided for one function.

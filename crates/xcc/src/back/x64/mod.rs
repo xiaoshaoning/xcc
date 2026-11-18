@@ -81,12 +81,14 @@ impl MachineFunction {
         let arguments_are_safe = self.param_count <= 2;
         if !self.makes_call && arguments_are_safe && !shifts_or_divides {
             Registers {
-                allocatable: &regalloc::CALLER_SAVED_WIDE,
-                scratch: [Reg(1), Reg(2)], // rcx, rdx: this function fixes neither
+                allocatable: &regalloc::CALLER_SAVED,
+                // This function fixes nothing to `rcx` or `rdx`, so they are the scratch pair and
+                // the last two caller-saved registers are lent out.
+                scratch: [Reg(1), Reg(2)],
             }
         } else if !self.makes_call && arguments_are_safe {
             Registers {
-                allocatable: &regalloc::CALLER_SAVED,
+                allocatable: &regalloc::CALLER_SAVED[..2],
                 scratch: [Reg(10), Reg(11)],
             }
         } else {

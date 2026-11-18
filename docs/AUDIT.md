@@ -105,6 +105,45 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### a leaf function's registers, reviewed - 2026-11-16 - a scratch script in the repository, and two names for one set
+
+Review of `965b394`.
+
+**Found: a 146-line scratch script committed to the repository root.** `.leaf.py` was the edit script
+for the change itself - written to a file so the heredoc could not truncate it, then meant to be
+deleted. Its first run failed an assertion, `&& rm` did not run, and the next attempt used a different
+file name, so this one was still sitting there when `git add -A` swept it in. Two things follow: the
+file is gone, and `.gitignore` now says `.*.py` - the habit of writing a script to a file before
+running it is a good one, and this is the second time in the project's history that the tidying-up
+step was the one that got skipped.
+
+**Found: two names for one set.** `CALLER_SAVED_WIDE` (four registers) and `CALLER_SAVED` (two) read
+as if they described different kinds of register, and neither name said what actually separates them:
+the same four registers, of which the last two are safe only when the function contains no shift and
+no division. There is now one `CALLER_SAVED` whose order means something - `r8` and `r9` first,
+because they are safe in every such function - and the narrow case is `[..2]`, which says "the first
+two of the same list" rather than naming a second list that could drift.
+
+**Checked and sound:** `rax`, `rcx` and `rdx` are written by the encoder in exactly the places the
+register plan accounts for - a comparison's low byte, a shift's count, a division's two halves, the
+return value and the spare a spilled result is computed in - and each of those places was read
+against the set it can appear in; `rcx`/`rdx` are scratch *only* in the set that allocates neither, so
+no value can be clobbered by them; a function of three or more arguments never gets a caller-saved
+set, which is the invariant the two corpus failures established, and both shapes are now named tests;
+and `Op::Incoming` reads its argument register before writing anything, so the wide set's
+`rcx`/`rdx` scratch pair cannot collide with an argument.
+
+**A smaller thing left alone, with the reason:** a leaf function still reserves the 32 bytes of shadow
+space it will never use. It costs stack, not instructions, and the frame is rounded to sixteen either
+way; changing it would be a line that buys nothing measurable.
+
+**Code size after the review: 34 632 bytes, unchanged**, with the ratchet at 302 agreeing and none
+wrong.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### back-x64 shrinking, round one, reviewed - 2026-11-16 - a knob nobody measured, and one argument nobody read
 
 Review of `c2cb1e2`.

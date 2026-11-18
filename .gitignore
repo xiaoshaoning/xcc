@@ -1,6 +1,9 @@
 # Build output
 /target
 
+# Scratch: edit scripts are written to a file, run, and thrown away
+.*.py
+
 # Editor and tool scratch
 *.rs.bk
 *.swp
