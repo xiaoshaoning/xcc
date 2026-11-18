@@ -30,6 +30,8 @@ use crate::cir::BinOp;
 use crate::cir::CmpOp;
 use crate::diag::Span;
 
+use regalloc::Reg;
+
 /// Why this back end cannot compile something yet. Not a compiler bug: a documented gap, refused
 /// with the expression that asked for it, so the caller fixes the program rather than the compiler.
 #[derive(Debug)]
@@ -43,6 +45,56 @@ pub(crate) struct NotYet {
 impl std::fmt::Display for NotYet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
+    }
+}
+
+/// The registers one function's code may use, decided by what the function contains.
+///
+/// This is the one place that knows which registers the instruction set fixes for what - `rcx` is a
+/// shift's count and the first argument, `rdx` a division's high half and the second, `rax` a
+/// comparison's result and the return value - so a function that does none of those things can lend
+/// the registers out instead of leaving them idle, and one that does keeps them to itself.
+pub(crate) struct Registers {
+    /// What the allocator may give to values, in the order it prefers them.
+    pub allocatable: &'static [Reg],
+    /// Two registers the encoder may clobber while it works, never given to a value.
+    pub scratch: [Reg; 2],
+}
+
+impl MachineFunction {
+    /// The registers this function's code may use. A call makes the caller-saved registers useless
+    /// (a call destroys them) and the callee-saved ones free (a call preserves them); a function
+    /// that calls nothing has the opposite trade, and it is worth taking because the saves are then
+    /// two `mov`s each that nothing needs.
+    pub(crate) fn registers(&self) -> Registers {
+        let shifts_or_divides = self
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|op| matches!(op, Op::Shift { .. } | Op::Divide { .. }));
+        // `rax` is never allocatable: a comparison writes its low byte, a division its whole width,
+        // and the return value goes there. It is the spare the encoder computes a spilled result in.
+        //
+        // The argument registers are excluded with the same reasoning: a value moved into `r8` while
+        // the fourth argument is still there destroys it. Two arguments arrive in `rcx` and `rdx`,
+        // which no caller-saved set allocates, so two is the count under which the sets are safe.
+        let arguments_are_safe = self.param_count <= 2;
+        if !self.makes_call && arguments_are_safe && !shifts_or_divides {
+            Registers {
+                allocatable: &regalloc::CALLER_SAVED_WIDE,
+                scratch: [Reg(1), Reg(2)], // rcx, rdx: this function fixes neither
+            }
+        } else if !self.makes_call && arguments_are_safe {
+            Registers {
+                allocatable: &regalloc::CALLER_SAVED,
+                scratch: [Reg(10), Reg(11)],
+            }
+        } else {
+            Registers {
+                allocatable: &regalloc::CALLEE_SAVED,
+                scratch: [Reg(10), Reg(11)],
+            }
+        }
     }
 }
 
@@ -247,6 +299,15 @@ pub(crate) struct MachineFunction {
     pub name: String,
     /// Bytes of frame the lowering needed, block parameters included; spills are added after.
     pub frame_bytes: i32,
+    /// How many arguments it takes. A caller-saved register may only be allocated when this is two
+    /// or fewer: arguments arrive in `rcx`, `rdx`, `r8` and `r9`, and moving the first one into `r8`
+    /// would destroy the third before anything had read it.
+    pub param_count: usize,
+    /// Whether anything in this function calls another. A function that calls has to keep the
+    /// callee-saved registers intact for its caller and can keep its own values in them; a function
+    /// that calls nothing has neither obligation, and can use caller-saved registers instead - which
+    /// are destroyed by a call, and there is no call.
+    pub makes_call: bool,
     /// The blocks, in layout order.
     pub blocks: Vec<MachineBlock>,
     /// Where each block's parameters start, in the same order.

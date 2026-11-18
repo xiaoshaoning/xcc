@@ -52,10 +52,6 @@ pub(crate) struct Encoded {
     pub frame: i32,
 }
 
-/// The two scratch registers an operation reads its operands into, neither allocatable.
-const LEFT: Reg = Reg(10); // r10
-const RIGHT: Reg = Reg(11); // r11
-
 /// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
 const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
 
@@ -83,6 +79,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         spill_base,
         staging_base,
         epilogue: func.blocks.len(),
+        scratch: func.registers().scratch,
         scratches: Vec::new(),
         frame,
     };
@@ -169,6 +166,8 @@ struct Encoder<'a> {
     staging_base: i32,
     /// Which label the epilogue is at.
     epilogue: usize,
+    /// The scratch registers an operation may clobber, which belong to the function.
+    scratch: [Reg; 2],
     /// The scratch registers the operation being encoded is holding.
     scratches: Vec<Reg>,
     /// How many bytes the prologue subtracts.
@@ -442,7 +441,7 @@ impl Encoder<'_> {
         size: u8,
     ) {
         self.read_into(left, Reg::RAX);
-        let divisor = self.read_into(right, LEFT);
+        let divisor = self.read_into(right, self.scratch[0]);
         if signed {
             self.bytes(&[0x48, 0x99]); // cqo
         } else {
@@ -550,13 +549,15 @@ impl Encoder<'_> {
         wanted
     }
 
-    /// A register for a spilled operand: `r10` first, then `r11`, and no third: an operation holds
-    /// at most two, and asking for a third means it would clobber one it is still using.
+    /// A register for a spilled operand: the function's two scratch registers, and no third. An
+    /// operation holds at most two, and asking for a third means it would clobber one it is still
+    /// using.
     fn scratch(&mut self) -> Reg {
-        let register = if !self.scratches.contains(&LEFT) {
-            LEFT
-        } else if !self.scratches.contains(&RIGHT) {
-            RIGHT
+        let [first, second] = self.scratch;
+        let register = if !self.scratches.contains(&first) {
+            first
+        } else if !self.scratches.contains(&second) {
+            second
         } else {
             unreachable!("an operation is holding both scratch registers already")
         };

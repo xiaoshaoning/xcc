@@ -50,9 +50,17 @@ fn lower_function(
         direct_calls: HashMap::new(),
     };
     lowerer.run(func)?;
+    let makes_call = func.blocks.iter().any(|block| {
+        block
+            .insts
+            .iter()
+            .any(|inst| matches!(inst, Inst::Call { .. }))
+    });
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
+        param_count: func.params().len(),
+        makes_call,
         blocks: lowerer.blocks,
         param_offsets: lowerer.param_offsets,
     })

@@ -107,6 +107,14 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
+**The second round took it to 34 632 bytes - 3.0x and 3.7x** - by noticing that a function which
+calls nothing has no callee-saved obligation at all: it allocates caller-saved registers and saves
+none. Frame discipline fell from 19.6% of the instruction stream to 3.7%. Which registers a function
+may use is one function's decision (`MachineFunction::registers`): `rax` is never allocatable, `rcx`
+and `rdx` are kept out only when the function shifts or divides, and the argument registers are kept
+out unless it takes two arguments or fewer - because moving the first argument into `r8` destroys the
+third, which two corpus programs demonstrated within a minute of the change existing.
+
 **The first shrinking round took it to 40 716 bytes** - 3.5x and 4.4x - and the measurement said
 what to do before any of it was written: 73.4% of the instructions were `mov`. Computing in the
 destination's own register when an operand is already there, and letting a computed value coalesce

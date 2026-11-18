@@ -383,10 +383,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       8 798, `mov` 7 235 -> 4 985.
       **Measured and rejected:** coalescing block parameters was 2.6% of the instruction stream (94
       parameter loads and 192 stores across the whole corpus), so it is not worth the machinery.
-- [ ] `back-x64` shrinking, round two: a leaf function has no call to survive, so it can allocate
-      caller-saved registers and save none of them (the prologue and epilogue are ~15% of the
-      remaining bytes); interval splitting in the allocator; jump shortening and jump tables for
-      `switch`; and the passes below, on machine code rather than `cir`.
+- [x] `back-x64` shrinking, round two: **40 716 -> 34 632 bytes (-15%)**, now **3.0x Cranelift and
+      3.7x `clang -O2`** from 5.2x and 6.5x at the slice, with all 302 programs agreeing. A leaf
+      function has no call to survive, so it allocates **caller-saved** registers and saves none:
+      the prologue and epilogue's frame discipline fell from **19.6% of the instruction stream to
+      3.7%** (881 saves to 129). The set is chosen by what the function contains, and that is the
+      whole design: `rax` is never allocatable (a comparison writes its low byte, a division its
+      whole width, the return value goes there), `rcx`/`rdx` only stay out when the function shifts
+      or divides, and four registers are lent out when it does neither. **Two corpus programs
+      disagreed the first time** - three and four argument functions - because a value moved into
+      `r8` destroyed the third argument still sitting in it; caller-saved registers are therefore
+      only allocated to functions of two arguments or fewer, which is the count whose registers
+      cannot collide, and both shapes are now hand-written tests.
+- [ ] `back-x64` shrinking, round three: interval splitting instead of whole-interval spilling
+      (spills are what the corpus mostly pays for now); coalescing a spilled value with its slot;
+      jump shortening and jump tables for `switch`; and the passes below, on machine code rather
+      than `cir`.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the

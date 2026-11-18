@@ -49,8 +49,10 @@ pub(crate) enum Location {
     Spill(i32),
 }
 
-/// The registers this allocator may use: the callee-saved ones.
-pub(crate) const ALLOCATABLE: [Reg; 7] = [
+/// What a function that calls another may allocate: the callee-saved registers. A call cannot
+/// destroy them, so a value in one is safe across the call for free; the price is a `mov` to save and
+/// another to restore it, once each per function.
+pub(crate) const CALLEE_SAVED: [Reg; 7] = [
     Reg(3),  // rbx
     Reg(6),  // rsi
     Reg(7),  // rdi
@@ -58,6 +60,24 @@ pub(crate) const ALLOCATABLE: [Reg; 7] = [
     Reg(13), // r13
     Reg(14), // r14
     Reg(15), // r15
+];
+
+/// What a function that calls nothing may allocate, when it also contains no shift and no division:
+/// the caller-saved registers that the fixed-purpose ones leave over. `rax` stays out (it holds a
+/// comparison's result and the return value) and the two the encoder needs as scratch are `rcx` and
+/// `rdx`, which this function does not use for anything. Four registers for nothing in the prologue.
+pub(crate) const CALLER_SAVED_WIDE: [Reg; 4] = [
+    Reg(8),  // r8
+    Reg(9),  // r9
+    Reg(10), // r10
+    Reg(11), // r11
+];
+
+/// What a function that calls nothing may allocate when it shifts or divides: only the two the
+/// instruction set does not fix, because `rcx` is a shift's count and `rdx` a division's high half.
+pub(crate) const CALLER_SAVED: [Reg; 2] = [
+    Reg(8), // r8
+    Reg(9), // r9
 ];
 
 /// What allocation decided for one function.
@@ -86,6 +106,8 @@ struct Interval {
 
 /// Allocate registers for one function.
 pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
+    let registers = func.registers();
+    let allocatable = registers.allocatable;
     let positions = Positions::new(func);
     let intervals = positions.intervals(func);
     let mut locations = vec![Location::Register(Reg(0)); positions.value_count];
@@ -97,7 +119,7 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     order.sort_by_key(|interval| (interval.start, interval.reg));
 
     let mut active: Vec<Interval> = Vec::new();
-    let mut free: Vec<Reg> = ALLOCATABLE.to_vec();
+    let mut free: Vec<Reg> = allocatable.to_vec();
     let mut saved: Vec<Reg> = Vec::new();
     for interval in order {
         // Everything that ended before this one starts has finished with its register. The
@@ -121,12 +143,12 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         if let Some(hint) = interval.hint {
             if let Some(register) = free
                 .iter()
-                .find(|register| self_register(&locations, hint) == Some(**register))
+                .find(|register| self_register(&locations, hint, allocatable) == Some(**register))
             {
                 let register = *register;
                 free.retain(|other| *other != register);
                 locations[interval.reg.0 as usize] = Location::Register(register);
-                if !saved.contains(&register) {
+                if func.makes_call && !saved.contains(&register) {
                     saved.push(register);
                 }
                 active.push(interval);
@@ -161,7 +183,7 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         } else {
             let register = free.remove(0);
             locations[interval.reg.0 as usize] = Location::Register(register);
-            if !saved.contains(&register) {
+            if func.makes_call && !saved.contains(&register) {
                 saved.push(register);
             }
             active.push(interval);
@@ -177,14 +199,14 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     }
 }
 
-/// Where a value already lives, if it has been given an allocatable register.
+/// Where a value already lives, if it has been given a register out of this function's set.
 ///
-/// The table is filled with `rax` before the scan, and a value that nothing reads keeps that
-/// filler, so the result is filtered by the allocatable set: a register this allocator can hand out
-/// is the only thing that can be coalesced with.
-fn self_register(locations: &[Location], value: VReg) -> Option<Reg> {
+/// The table is filled with `rax` before the scan and a value that nothing reads keeps that filler,
+/// so the answer is filtered by the set: a register this allocation can hand out is the only thing
+/// worth coalescing with.
+fn self_register(locations: &[Location], value: VReg, allocatable: &[Reg]) -> Option<Reg> {
     match locations.get(value.0 as usize) {
-        Some(Location::Register(register)) if ALLOCATABLE.contains(register) => Some(*register),
+        Some(Location::Register(register)) if allocatable.contains(register) => Some(*register),
         _ => None,
     }
 }

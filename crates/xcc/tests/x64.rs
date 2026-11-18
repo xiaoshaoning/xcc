@@ -96,6 +96,18 @@ fn the_constructs_the_slice_lowers_behave() {
             42,
         ),
         (
+            // The argument registers are also candidates for allocation, so moving the first
+            // argument into `r8` must not happen while the third is still there.
+            "four arguments, which is all the registers hold",
+            "int f(int a, int b, int c, int d) { return a * 1000 + b * 100 + c * 10 + d; } int main(void) { return f(1, 2, 4, 4); }",
+            1244,
+        ),
+        (
+            "three arguments, and a call",
+            "int g(int a, int b, int c) { return a - b - c; } int main(void) { return g(10, 2, 3); }",
+            5,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,
