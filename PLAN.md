@@ -475,46 +475,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       asserted the gap this round closed. Its two programs are now cases in the constructs table with
       their right answers (1 and 7), and `a_function_address_that_never_escapes_is_still_a_direct_call`
       still holds the other half.
-- [ ] `back-x64` **floating point across calls**, attempted twice and both times reverted - the state
-      of it, so the next attempt starts from the diagnosis instead of from the beginning. The ABI
-      mapping is settled and was implemented: float parameters and returns in `xmm0`-`xmm3` by
-      *position*, counted separately per class, with a `Target` plan (integer register, XMM register,
-      outgoing slot) and a 64-byte staging area for both classes. Two things stopped it.
-      **First**: `xmm2`-`xmm5` are caller-saved, so a `double` live across a call was destroyed by it -
-      `d2and.c` answered 1 instead of 42. That is fixed and landed (`1361692`): a calling function
-      allocates `xmm6`-`xmm15` and saves them with `movups`.
-      **Second, not fixed**: with the ABI in place, `d2and.c` still failed, and the disassembly showed a
-      comparison reading `xmm0` - the encoder's *scratch* - where its operand had been converted into
-      `xmm8`. The fault is operand selection with a spilled float: `float_destination` returns the
-      scratch for a spilled result and `float_scratch` hands the same pair out to operands, so the
-      result's register, the operands' registers and the scratch are **not** pairwise distinct. The
-      integer path holds that invariant by construction (`rax` for a spilled result, `r10`/`r11` for
-      operands); the float path has only two spare registers and one of them doubles as the result's
-      home.
-      **The fix to make first**: reserve a third register - `xmm2` - as the spilled result's home, so
-      the pools become `xmm3`-`xmm5` (a function that calls nothing) and `xmm6`-`xmm15` (one that
-      calls), the scratch stays `xmm0`/`xmm1`, and the invariant is written beside the pool: *the
-      result's register, each operand's, and the scratch pair are pairwise distinct*. Then the ABI work
-      on top of it, with `d2and.c` and the mixed-signature hand tests as the first things to run.
-      A test that would have caught the second fault at HEAD: a leaf function with more live doubles
-      than it has registers, which `fs.c`-shaped programs do not reach because a leaf has four.
-      **Third attempt** took the plan's first step - `xmm2` reserved as the spilled result's home, pools
-      `xmm3`-`xmm5` and `xmm6`-`xmm15`, scratch `xmm0`/`xmm1`, the invariant written beside the pool -
-      and then the ABI on top of it. The invariant held (eight doubles in one function, the corpus, and
-      every float hand test still agreed), and **`d2and.c` still answered 1**. The debug dump is the
-      measurement to start from, because it narrows the fault to one place:
-      ```
-      FloatCompare { op: Less, left: VReg(4), right: VReg(9) } => dst in Register(Reg(3))
-      FloatConvert { dst: VReg(9), ... } => Float(Reg(8))     // the operand is in xmm8
-      FloatConvert { dst: VReg(15), ... } => Float(Reg(7))    // and this one, in xmm7
-      ```
-      The allocation is right - the operands' intervals do not overlap, and reuse after a compare is
-      legal - but the emitted instruction is `ucomisd %xmm7,%xmm0`: its first operand is `xmm0`, which
-      holds the call's leftover and no value at all. So the fault is in **`float_compare`'s reading of
-      its operands**, not in the allocator: with `left` in `xmm7` and `right` in `xmm8`, the encoder
-      emitted a read of `xmm0`. Whatever the cause, it is one function, and the dump above is the
-      starting point: log `read_float`'s return for each operand next to the plan, and the disagreement
-      will be visible in one line.
+- [x] `back-x64` **floating point across calls**: parameters, returns and float arguments in
+      `xmm0`-`xmm3` *by position*, counted separately per class, with a `Target` plan (integer register,
+      XMM register, outgoing slot) and a 64-byte staging area for both. **411 -> 414 of the 464 corpus
+      programs** compile, link, run and agree; 50 refuse, and every one is the front end's or ADR-004's.
+      It took three attempts, and the fault that stopped the first two was **a missing REX byte**: every
+      SSE instruction's operand above `xmm7` is only nameable through it, and `ucomisd`, the arithmetic
+      operations and the width conversions all emitted their registers without one. That was invisible
+      while the pools were `xmm2`-`xmm5` and became a wrong answer the moment a calling function
+      allocated `xmm6`-`xmm15` - `d2and.c` read an operand out of `xmm0`, the register holding the
+      callee's leftovers. Three faults in this feature have now been the same fault: a REX byte that
+      only matters for a high register (the float moves, the conversions, and now the comparisons).
+      **The lesson kept**: the third attempt's debug dump - allocation correct, instruction reading a
+      register no value occupied - is what turned "somewhere in the float path" into one instruction's
+      encoding, so the dump stays in the review log rather than being thrown away.
+      The invariant the pools now hold by construction: *a result, its operands and the scratch are
+      pairwise distinct* - `xmm0`/`xmm1` scratch, `xmm2` a spilled result's home, `xmm3`-`xmm5` (calls
+      nothing) or `xmm6`-`xmm15` (calls) for values.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.

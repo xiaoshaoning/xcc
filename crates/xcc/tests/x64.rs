@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 53 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 411;
+/// 50 the back end still refuses are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 414;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -240,6 +240,35 @@ fn the_constructs_the_slice_lowers_behave() {
             "a function's address passed to another function",
             "int f(void) { return 7; } int g(int (*p)(void)) { return p(); } int main(void) { return g(f); }",
             7,
+        ),
+        (
+            // Floating point across a call: doubles in `xmm0`-`xmm3` by position and back in `xmm0`,
+            // with the registers above `xmm7` that the callee-saved pool uses named by a REX byte.
+            "a double passed to a function and returned",
+            "double add2(double a, double b) { return a + b; } int main(void) { return (int)(add2(2.5, 1.25) * 2.0); }",
+            7,
+        ),
+        (
+            "integers and doubles mixed in one signature",
+            "double mix(int a, double b, int c, double d) { return a + b + c + d; } int main(void) { return (int)mix(1, 2.5, 3, 4.25); }",
+            10,
+        ),
+        (
+            "a double fifth, which is on the stack",
+            "double later(double a, int b, double c, int d, double e) { return a + e + b + c + d; } int main(void) { return (int)(later(1.0, 2, 3.0, 4, 5.0) - 15.0); }",
+            0,
+        ),
+        (
+            "a float parameter and return",
+            "float half(float x) { return x / 2.0f; } int main(void) { return (int)(half(9.0f) * 2.0f); }",
+            9,
+        ),
+        (
+            // The program that failed three attempts: a value live across a call to a function that
+            // uses XMM registers itself.
+            "a double computed, then compared, around a call",
+            "double f2(double a, double b) { return a - b; } int main(void) { double a = 2.5; double b = -1.25; double c = a * b; double e = f2(a, 10); if (c < 0 && e < 0) return 42; return 1; }",
+            42,
         ),
         (
             "a loop, which becomes block parameters",

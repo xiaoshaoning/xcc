@@ -151,19 +151,33 @@ impl FunctionLowering<'_> {
         // The entry block's parameters are the arguments.
         let entry = func.entry;
         let mut ops = Vec::new();
-        for (index, param) in func.params().iter().enumerate() {
+        // The first four *positions* take a register each, counted separately per class: a fifth
+        // integer argument does not take `r10`, it goes on the stack.
+        let mut integer_slot = 0u8;
+        let mut float_slot = 0u8;
+        for (position, param) in func.params().iter().enumerate() {
             let ty = func.value(*param).ty;
             let (size, signed, class) = self.scalar(ty, func.entry_span())?;
-            if class == Class::Float {
-                return Err(NotYet {
-                    message: "a floating-point parameter: Win64 passes one in `xmm0`-`xmm3`, which this back end has not learnt".into(),
-                    span: func.entry_span(),
-                });
-            }
+            let (slot, on_stack) = if position < ARGUMENT_COUNT {
+                if class == Class::Float {
+                    let slot = float_slot;
+                    float_slot += 1;
+                    (slot, false)
+                } else {
+                    let slot = integer_slot;
+                    integer_slot += 1;
+                    (slot, false)
+                }
+            } else {
+                ((position - ARGUMENT_COUNT) as u8, true)
+            };
             let dst = self.reg_for(*param);
+            self.classify(dst, class);
             ops.push(Op::Incoming {
                 dst,
-                index: index as u8,
+                slot,
+                class,
+                on_stack,
                 size,
                 signed,
             });
@@ -274,6 +288,23 @@ impl FunctionLowering<'_> {
                 message: format!("a value of type {}", self.types.describe(ty)),
                 span,
             }),
+        }
+    }
+
+    /// Which register file a type belongs to.
+    fn class_of(&self, ty: TypeId) -> Class {
+        if self.types.is_float(ty) {
+            Class::Float
+        } else {
+            Class::Integer
+        }
+    }
+
+    /// A floating type's width in bytes.
+    fn float_size(&self, ty: TypeId) -> u8 {
+        match self.types.kind(ty) {
+            Type::Float { bits } => bits / 8,
+            _ => unreachable!("a float width asked of a type that is not one"),
         }
     }
 
@@ -607,32 +638,30 @@ impl FunctionLowering<'_> {
                 args,
                 ..
             } => {
-                for arg in args {
-                    if self.types.is_float(func.value(*arg).ty) {
-                        return Err(NotYet {
-                            message: "a floating-point argument in a call".into(),
-                            span,
-                        });
-                    }
-                }
-                if let Some(result) = result {
-                    if self.types.is_float(func.value(*result).ty) {
-                        return Err(NotYet {
-                            message: "a call that returns a floating-point value".into(),
-                            span,
-                        });
-                    }
-                }
+                let arguments = args.clone();
                 let args: Vec<VReg> = args.iter().map(|arg| self.reg_for(*arg)).collect();
-                let dst = result.map(|result| self.reg_for(result));
+                for (register, argument) in args.iter().zip(arguments.iter()) {
+                    let class = self.class_of(func.value(*argument).ty);
+                    self.classify(*register, class);
+                }
+                let dst = result.map(|result| {
+                    let register = self.reg_for(result);
+                    let class = self.class_of(func.value(result).ty);
+                    self.classify(register, class);
+                    register
+                });
                 let (size, signed) = match result {
-                    Some(result) => self.width(func.value(*result).ty, span)?,
+                    Some(result) => {
+                        let ty = func.value(*result).ty;
+                        if self.class_of(ty) == Class::Float {
+                            (self.float_size(ty), false)
+                        } else {
+                            self.width(ty, span)?
+                        }
+                    }
                     // A call that returns nothing has neither, and the encoder never asks.
                     None => (0, false),
                 };
-                if let Some(dst) = dst {
-                    self.classify(dst, Class::Integer);
-                }
                 // A callee whose only use is this call is a direct call: `call rel32` names the
                 // symbol and no address is materialised. Anything else - a pointer held in a
                 // variable, passed in, read from a table - is called through a register.
@@ -671,14 +700,14 @@ impl FunctionLowering<'_> {
         Ok(match term {
             Term::Return { value, .. } => match value {
                 Some(value) => {
-                    if self.types.is_float(func.value(value).ty) {
-                        return Err(NotYet {
-                            message: "a function that returns a floating-point value: Win64 returns one in `xmm0`, which this back end has not learnt".into(),
-                            span: func.block(block).span,
-                        });
-                    }
                     let register = self.reg_for(value);
-                    self.returned.push(register);
+                    let float = self.types.is_float(func.value(value).ty);
+                    self.classify(register, self.class_of(func.value(value).ty));
+                    // Only an integer return is a candidate for the `rax` preference: a float comes
+                    // back in `xmm0`.
+                    if !float {
+                        self.returned.push(register);
+                    }
                     BlockTerm::Return(Some(register))
                 }
                 None => BlockTerm::Return(None),

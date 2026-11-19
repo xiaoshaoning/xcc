@@ -125,12 +125,17 @@ pub(crate) struct VReg(pub u32);
 pub(crate) enum Op {
     /// A 64-bit constant, already canonical for its C type.
     Const { dst: VReg, value: u64 },
-    /// An argument: the first four arrive in the registers Win64 gives those positions, and the rest
-    /// in the caller's outgoing area, above the shadow space.
+    /// An argument. Win64 gives the first four *positions* a register each in the argument's own
+    /// class - `rcx`, `rdx`, `r8`, `r9` for integers, `xmm0`-`xmm3` for floats, counted separately -
+    /// and the fifth position onwards goes in the caller's outgoing area whatever its class.
     Incoming {
         dst: VReg,
-        /// Its position in the parameter list, from zero.
-        index: u8,
+        /// Which register of its class the argument arrives in, or which stack slot if `on_stack`.
+        slot: u8,
+        /// The register file it belongs to, which decides the register and how it is moved.
+        class: Class,
+        /// Whether the caller pushed it.
+        on_stack: bool,
         size: u8,
         signed: bool,
     },

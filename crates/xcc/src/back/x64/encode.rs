@@ -76,6 +76,22 @@ enum Move {
 /// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
 const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
 
+/// The registers the floating-point arguments arrive in: `xmm0` to `xmm3`, counted separately from
+/// the integer ones - so `f(int, double)` puts the `int` in `rcx` and the `double` in `xmm0`, because
+/// each position takes the next register of its *own* class.
+const FLOAT_ARGUMENTS: [Reg; super::ARGUMENT_COUNT] = [Reg(0), Reg(1), Reg(2), Reg(3)];
+
+/// Where a call argument goes: a register of its class, or the caller's outgoing slots.
+#[derive(Debug, Clone, Copy)]
+enum Target {
+    /// A general-purpose register.
+    Integer(Reg),
+    /// An XMM register.
+    Float(Reg),
+    /// A stack slot, at this offset from `rsp`.
+    Stack(i32),
+}
+
 /// Encode one function.
 pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encoded {
     // An `i32` frame is what the prologue can subtract, and the front end's token budget bounds the
@@ -88,7 +104,9 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let body_base = saved_float_base + allocation.saved_floats.len() as i32 * 16;
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
-    let raw = staging_base + if func.makes_call { 32 } else { 0 };
+    // Eight slots: four integer arguments and four floating ones can be in registers at once, and
+    // every one of them is staged when any could collide.
+    let raw = staging_base + if func.makes_call { 64 } else { 0 };
     // Everything `rsp` is moved for, named: a call (which needs the shadow space and the staging
     // area), a value that did not fit in a register, a block parameter, a variable whose address
     // escapes, and a callee-saved register this function had to keep. A function with none of them
@@ -123,6 +141,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         saved_float_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
+        classes: &func.classes,
         scratches: Vec::new(),
         frame,
     };
@@ -136,8 +155,14 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         match &block.term {
             BlockTerm::Return(value) => {
                 if let Some(value) = value {
-                    let register = encoder.read(*value);
-                    encoder.mov_reg(Reg::RAX, register);
+                    // A float goes back in `xmm0` and an integer in `rax`.
+                    if encoder.class_of(*value) == super::Class::Float {
+                        let register = encoder.read_float(*value);
+                        encoder.float_move(FLOAT_ARGUMENTS[0], register, 0, 8, Move::Register);
+                    } else {
+                        let register = encoder.read(*value);
+                        encoder.mov_reg(Reg::RAX, register);
+                    }
                     encoder.release();
                 }
                 // The last block is followed by the epilogue: jumping there is jumping to the
@@ -222,6 +247,8 @@ struct Encoder<'a> {
     epilogue: usize,
     /// The scratch registers an operation may clobber, which belong to the function.
     scratch: [Reg; 2],
+    /// Which register file each value belongs to, from the lowering.
+    classes: &'a [super::Class],
     /// The scratch registers the operation being encoded is holding.
     scratches: Vec<Reg>,
     /// How many bytes the prologue subtracts.
@@ -274,24 +301,46 @@ impl Encoder<'_> {
             }
             Op::Incoming {
                 dst,
-                index,
+                slot,
+                class,
+                on_stack,
                 size,
                 signed,
             } => {
-                // Straight into the register (or spill) the value lives in: the argument arrives in
-                // one register and is canonicalised where it is going, not in `rax` and then moved.
-                let register = self.destination(*dst);
-                let position = usize::from(*index);
-                if let Some(argument) = ARGUMENT_REGISTERS.get(position) {
-                    self.mov_reg(register, *argument);
-                } else {
-                    // The fifth argument onwards was pushed by the caller: it sits above the shadow
-                    // space, and the return address above that, so it is `rsp + frame + 40` here.
-                    let offset = self.frame + 40 + 8 * (position - ARGUMENT_REGISTERS.len()) as i32;
-                    self.mov_reg_from_memory(register, offset);
+                // The fifth position onwards was pushed by the caller: it sits above the shadow
+                // space, with the return address above that, so it is `rsp + frame + 40` here.
+                let stack_offset = self.frame + 40 + 8 * i32::from(*slot);
+                match (class, on_stack) {
+                    (super::Class::Integer, false) => {
+                        // Straight into the register (or spill) the value lives in: the argument
+                        // arrives in one register and is canonicalised where it is going.
+                        let register = self.destination(*dst);
+                        self.mov_reg(register, ARGUMENT_REGISTERS[usize::from(*slot)]);
+                        self.canonicalise(register, *size, *signed);
+                        self.write(*dst, register);
+                    }
+                    (super::Class::Integer, true) => {
+                        let register = self.destination(*dst);
+                        self.mov_reg_from_memory(register, stack_offset);
+                        self.canonicalise(register, *size, *signed);
+                        self.write(*dst, register);
+                    }
+                    (super::Class::Float, _) => {
+                        let register = self.float_destination(*dst);
+                        if *on_stack {
+                            self.float_move(register, Reg::RSP, stack_offset, *size, Move::Load);
+                        } else {
+                            self.float_move(
+                                register,
+                                FLOAT_ARGUMENTS[usize::from(*slot)],
+                                0,
+                                *size,
+                                Move::Register,
+                            );
+                        }
+                        self.write_float(*dst, register);
+                    }
                 }
-                self.canonicalise(register, *size, *signed);
-                self.write(*dst, register);
             }
             Op::SymbolAddress { dst, symbol } => {
                 // `lea dst, [rip + disp32]`: the displacement is a relocation, because the linker
@@ -725,6 +774,7 @@ impl Encoder<'_> {
             (scratch, right_register)
         };
         self.float_prefix(size);
+        self.prefix(target, source);
         self.bytes(&[0x0F, float_opcode(op)]);
         self.modrm(3, target.0, source);
         self.write_float(dst, target);
@@ -762,6 +812,9 @@ impl Encoder<'_> {
         if size == 8 {
             self.byte(0x66);
         }
+        // The REX byte names a register above `xmm7`, and without it the operand is read as
+        // `xmm0`-`xmm7`: a silent wrong answer rather than a fault, because both are valid.
+        self.prefix(first, second);
         self.bytes(&[0x0F, 0x2E]); // ucomisd / ucomiss
         self.modrm(3, first.0, second);
         self.byte(0x40);
@@ -819,12 +872,18 @@ impl Encoder<'_> {
                     self.float_move(target, source, 0, 8, Move::Register);
                 }
                 if from_size == 4 && to_size == 8 {
-                    self.bytes(&[0xF3, 0x0F, 0x5A]); // cvtss2sd
+                    self.byte(0xF3);
+                    self.prefix(target, target);
+                    self.bytes(&[0x0F, 0x5A]); // cvtss2sd
                     self.modrm(3, target.0, target);
                 } else if from_size == 8 && to_size == 4 {
-                    self.bytes(&[0xF2, 0x0F, 0x5A]); // cvtsd2ss
+                    self.byte(0xF2);
+                    self.prefix(target, target);
+                    self.bytes(&[0x0F, 0x5A]); // cvtsd2ss
                     self.modrm(3, target.0, target);
                 }
+                // The source and destination are the same register here, and a register above
+                // `xmm7` is only nameable through a REX byte.
                 self.write_float(dst, target);
             }
             (super::Class::Integer, super::Class::Float) => {
@@ -1010,33 +1069,99 @@ impl Encoder<'_> {
     /// `r9`, the rest in the outgoing slots. One place, because a direct call and a call through a
     /// pointer pass their arguments the same way, and two copies of this would drift.
     fn place_arguments(&mut self, args: &[VReg]) {
-        // The arguments beyond the fourth go to the outgoing slots, and they go first: a slot write
-        // cannot disturb a register, while a register move could disturb a value not yet stored.
-        for (index, argument) in args.iter().enumerate().skip(ARGUMENT_REGISTERS.len()) {
-            let value = self.read(*argument);
-            let offset = self.outgoing_base + 8 * (index - ARGUMENT_REGISTERS.len()) as i32;
-            self.mov_memory_from_reg(offset, value);
+        // Where each argument goes: a register of its own class for the first four positions, an
+        // outgoing slot for the rest.
+        let mut integer_slot = 0;
+        let mut float_slot = 0;
+        let mut plan = Vec::with_capacity(args.len());
+        for (position, argument) in args.iter().enumerate() {
+            let class = self.class_of(*argument);
+            let target = if position < ARGUMENT_REGISTERS.len() {
+                match class {
+                    super::Class::Integer => {
+                        let register = ARGUMENT_REGISTERS[integer_slot];
+                        integer_slot += 1;
+                        Target::Integer(register)
+                    }
+                    super::Class::Float => {
+                        let register = FLOAT_ARGUMENTS[float_slot];
+                        float_slot += 1;
+                        Target::Float(register)
+                    }
+                }
+            } else {
+                let slot = position - ARGUMENT_REGISTERS.len();
+                Target::Stack(self.outgoing_base + 8 * slot as i32)
+            };
+            plan.push((*argument, class, target));
+        }
+        // The stack arguments go first: a store cannot disturb a register, while a register move
+        // could disturb a value that has not been stored yet.
+        for (argument, class, target) in &plan {
+            let Target::Stack(offset) = target else {
+                continue;
+            };
+            match class {
+                super::Class::Integer => {
+                    let register = self.read(*argument);
+                    self.mov_memory_from_reg(*offset, register);
+                }
+                super::Class::Float => {
+                    let register = self.read_float(*argument);
+                    self.float_move(register, Reg::RSP, *offset, 8, Move::Store);
+                }
+            }
             self.release();
         }
-        if self.arguments_collide(args) {
-            // An argument may be in the register another has to go to; the staging area gets them
-            // all out of the way at once.
-            let register_arguments = args.len().min(ARGUMENT_REGISTERS.len());
-            for (index, arg) in args.iter().enumerate().take(register_arguments) {
-                let register = self.read(*arg);
-                self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
-                self.release();
+        let all_integer = plan
+            .iter()
+            .all(|(_, class, _)| *class == super::Class::Integer);
+        if all_integer && !self.arguments_collide(args) {
+            for (argument, _, target) in &plan {
+                match target {
+                    Target::Integer(register) => {
+                        self.read_into(*argument, *register);
+                    }
+                    // A stack argument is already where it belongs.
+                    Target::Stack(_) => {}
+                    Target::Float(_) => {
+                        unreachable!("an integer argument in a floating-point register")
+                    }
+                }
             }
-            for (index, target) in ARGUMENT_REGISTERS
-                .iter()
-                .enumerate()
-                .take(register_arguments)
-            {
-                self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
+            return;
+        }
+        // Otherwise every register argument is staged, whatever its class, and then loaded: one may
+        // be in the register another has to go to, and an XMM argument can share a position with an
+        // integer one without either being wrong.
+        let staged: Vec<_> = plan
+            .iter()
+            .filter(|(_, _, target)| !matches!(target, Target::Stack(_)))
+            .collect();
+        for (index, (argument, class, _)) in staged.iter().enumerate() {
+            let offset = self.staging_base + index as i32 * 8;
+            match class {
+                super::Class::Integer => {
+                    let register = self.read(*argument);
+                    self.mov_memory_from_reg(offset, register);
+                }
+                super::Class::Float => {
+                    let register = self.read_float(*argument);
+                    self.float_move(register, Reg::RSP, offset, 8, Move::Store);
+                }
             }
-        } else {
-            for (index, arg) in args.iter().enumerate().take(ARGUMENT_REGISTERS.len()) {
-                self.read_into(*arg, ARGUMENT_REGISTERS[index]);
+            self.release();
+        }
+        for (index, (_, class, target)) in staged.iter().enumerate() {
+            let offset = self.staging_base + index as i32 * 8;
+            match (class, target) {
+                (super::Class::Integer, Target::Integer(register)) => {
+                    self.mov_reg_from_memory(*register, offset);
+                }
+                (super::Class::Float, Target::Float(register)) => {
+                    self.float_move(*register, Reg::RSP, offset, 8, Move::Load);
+                }
+                _ => unreachable!("an argument that is not where its class says"),
             }
         }
     }
@@ -1046,8 +1171,14 @@ impl Encoder<'_> {
     /// in `xmm0`, which is the ABI round this back end has not finished.
     fn finish_call(&mut self, dst: Option<VReg>, size: u8, signed: bool) {
         let Some(dst) = dst else { return };
-        self.canonicalise(Reg::RAX, size, signed);
-        self.write(dst, Reg::RAX);
+        if self.class_of(dst) == super::Class::Float {
+            let register = self.float_destination(dst);
+            self.float_move(register, FLOAT_ARGUMENTS[0], 0, size, Move::Register);
+            self.write_float(dst, register);
+        } else {
+            self.canonicalise(Reg::RAX, size, signed);
+            self.write(dst, Reg::RAX);
+        }
     }
 
     /// `call r/m64`: the same call as a direct one, with the target in a register. `/2` is the
@@ -1056,6 +1187,14 @@ impl Encoder<'_> {
         self.prefix(Reg(0), target);
         self.byte(0xFF);
         self.modrm(3, 2, target);
+    }
+
+    /// Which register file a value belongs to, from the function's table.
+    fn class_of(&self, value: VReg) -> super::Class {
+        self.classes
+            .get(value.0 as usize)
+            .copied()
+            .unwrap_or(super::Class::Integer)
     }
 
     /// Whether moving the arguments into their registers, in order, can destroy one that has not

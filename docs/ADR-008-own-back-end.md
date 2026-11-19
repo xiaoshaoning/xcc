@@ -81,7 +81,7 @@ arguments and an integer or `void` result; recursion.
 
 ## What it refuses, and why that is the design
 
-Floating point across a call - parameters, returns and float arguments; aggregates by value; `va_arg`. Each is a `NotYet` with a span, so the
+Aggregates by value; `va_arg`. Each is a `NotYet` with a span, so the
 refusal reads like the two hundred other refusals in this compiler and a program never runs
 *differently* from the same program at level 0 - it either agrees or does not compile.
 
@@ -106,8 +106,13 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
-**Floats across calls remain open**, after three attempts; `PLAN.md` carries the diagnosis, the
-invariant now in the pool, and the debug dump that localises what is left to one function.
+**Floats across calls landed on the third attempt.** The ABI places a float in `xmm0`-`xmm3` by
+argument position, counted separately from the integer registers, and the pools were widened so that an
+operation's result, its operands and its scratch are pairwise distinct by construction. What had stopped
+the first two attempts was a missing REX byte: an SSE operand above `xmm7` is only nameable through one,
+and three instruction families emitted their registers without it - invisible while no allocated register
+was above seven, and a wrong answer as soon as a calling function used the callee-saved pool. The same
+fault, three times, which is why the encoder's register-naming is now written as one rule.
 
 **Function pointers came next,** which closed the last gap that was not a front-end one: a function's
 address is a symbol, so `lea` with a relocation materialises it, and `call r/m` calls through it. Five
