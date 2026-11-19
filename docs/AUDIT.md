@@ -105,6 +105,48 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### the volatile XMM registers, reviewed - 2026-11-16 - a wrong answer for a saved value
+
+Review of what `edfdfc4` and its two review commits left behind, found by asking what the *calling*
+convention says about the registers the float slice was given.
+
+**Found: a `double` that is live across a call was destroyed by the call.** The float slice allocated
+`xmm2`-`xmm5`, which Win64 calls caller-saved, and the integer side's version of this lesson - a calling
+function allocates *callee-saved* registers - was not carried over. So this program answered `1`
+instead of `63`:
+
+```c
+int noisy(void) { double a=1.0, b=2.0, c=3.0, d=4.0; double r = (a+b)*(c+d); return (int)r; }
+int main(void) { double keep = 2.5 * -1.25; int x = noisy(); if (keep < 0) return 42 + x; return 1; }
+```
+
+`keep` sat in `xmm2`, `noisy` used `xmm2`-`xmm5` for its own arithmetic, and the comparison afterwards
+read the callee's leftovers. No diagnostic, no crash - the class of defect the corpus ratchet exists to
+find, and it did not: none of the 406 programs it agrees on keeps a float across a call to a
+float-using function, which is exactly the blind spot a corpus built for a compiler without floating
+point would have.
+
+**The fix is the ABI's own answer, and it is the piece that was already written once this session:**
+a function that calls allocates `xmm6`-`xmm15`, which a call preserves, and saves the ones it uses with
+`movups` into sixteen-byte frame slots (`movups` because a save slot sits wherever the integer saves
+left room, and asking for alignment would buy nothing). A function that calls nothing keeps
+`xmm2`-`xmm5` and pays nothing, exactly as it does for integers. `Allocation` gained `saved_floats`
+beside `saved`, the frame gained a band between them, and the prologue and epilogue name both lists -
+one field each, so the two cannot drift.
+
+**Checked and sound:** the sixteen-byte slots need no alignment because `movups` has none, so the band
+can start at whatever offset the general saves end on; `saved_floats` is filtered by which registers the
+allocation actually handed out, so a function that saves nothing pays nothing; the frameless rule now
+requires both lists empty; and a leaf function's float code is byte-for-byte what it was, which the
+406-program ratchet confirms by not moving.
+
+**Measured after the review: 406 agreeing, 58 refused, 0 wrong** - the same numbers, plus one program
+that was wrong and is now right.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### the float fixes, reviewed - 2026-11-16 - a panic where a diagnostic belonged
 
 Review of `7e6f1e5`.

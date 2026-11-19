@@ -206,6 +206,14 @@ fn the_constructs_the_slice_lowers_behave() {
             9,
         ),
         (
+            // A call preserves `xmm6`-`xmm15` and destroys the rest, so a `double` that is live
+            // across a call must be in one of those, and the caller must save it: this value was
+            // read back as garbage because it lived in a volatile register.
+            "a double that survives a call which uses XMM registers",
+            "int noisy(void) { double a = 1.0, b = 2.0, c = 3.0, d = 4.0; double r = (a + b) * (c + d); return (int)r; } int main(void) { double keep = 2.5 * -1.25; int x = noisy(); if (keep < 0) return 42 + x; return 1; }",
+            63,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,

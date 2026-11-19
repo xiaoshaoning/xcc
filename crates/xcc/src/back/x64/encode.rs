@@ -66,6 +66,11 @@ enum Move {
     Load,
     /// Register to memory.
     Store,
+    /// Sixteen bytes from memory into a register wherever they are: `movups`, which asks for no
+    /// alignment, because a save slot sits wherever the general saves left room.
+    LoadUnaligned,
+    /// The same the other way.
+    StoreUnaligned,
 }
 
 /// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
@@ -78,7 +83,9 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let outgoing_base = 32;
     let outgoing_bytes = func.outgoing_slots as i32 * 8;
     let saved_base = outgoing_base + outgoing_bytes;
-    let body_base = saved_base + allocation.saved.len() as i32 * 8;
+    // An XMM register is sixteen bytes and `movups` does not care where they are.
+    let saved_float_base = saved_base + allocation.saved.len() as i32 * 8;
+    let body_base = saved_float_base + allocation.saved_floats.len() as i32 * 16;
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
     let raw = staging_base + if func.makes_call { 32 } else { 0 };
@@ -91,7 +98,8 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let frameless = !func.makes_call
         && allocation.spill_bytes == 0
         && func.frame_bytes == 0
-        && allocation.saved.is_empty();
+        && allocation.saved.is_empty()
+        && allocation.saved_floats.is_empty();
     // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
     // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
     let frame = if frameless {
@@ -112,6 +120,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         outgoing_base,
         outgoing_bytes,
         saved_base,
+        saved_float_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
         scratches: Vec::new(),
@@ -197,8 +206,10 @@ struct Encoder<'a> {
     outgoing_base: i32,
     /// How many bytes those slots take, which everything after them is displaced by.
     outgoing_bytes: i32,
-    /// Where the saved registers start, from `rsp`: after the outgoing slots.
+    /// Where the saved general registers start, from `rsp`: after the outgoing slots.
     saved_base: i32,
+    /// Where the saved XMM registers start, from `rsp`: after those, sixteen bytes each.
+    saved_float_base: i32,
     /// Where the lowering's frame starts, from `rsp`: after the shadow space and the saved
     /// registers. Meaningful whether or not the function has a frame, because a frame of nothing puts
     /// it where the shadow space ends.
@@ -228,6 +239,11 @@ impl Encoder<'_> {
         for (index, register) in saved.iter().enumerate() {
             self.mov_memory_from_reg(self.saved_base + index as i32 * 8, *register);
         }
+        let saved_floats = self.allocation.saved_floats.clone();
+        for (index, register) in saved_floats.iter().enumerate() {
+            let offset = self.saved_float_base + index as i32 * 16;
+            self.float_move(*register, Reg::RSP, offset, 16, Move::StoreUnaligned);
+        }
     }
 
     fn epilogue(&mut self) {
@@ -235,6 +251,11 @@ impl Encoder<'_> {
         let saved_base = self.saved_base;
         for (index, register) in saved.iter().enumerate() {
             self.mov_reg_from_memory(*register, saved_base + index as i32 * 8);
+        }
+        let saved_floats = self.allocation.saved_floats.clone();
+        for (index, register) in saved_floats.iter().enumerate() {
+            let offset = self.saved_float_base + index as i32 * 16;
+            self.float_move(*register, Reg::RSP, offset, 16, Move::LoadUnaligned);
         }
         if self.frame != 0 {
             self.add_rsp(self.frame);
@@ -677,6 +698,16 @@ impl Encoder<'_> {
                 self.float_prefix(size);
                 self.prefix(to, base);
                 self.bytes(&[0x0F, 0x11]);
+                self.memory_operand(to.0, base, offset);
+            }
+            Move::LoadUnaligned => {
+                self.prefix(to, base);
+                self.bytes(&[0x0F, 0x10]); // movups
+                self.memory_operand(to.0, base, offset);
+            }
+            Move::StoreUnaligned => {
+                self.prefix(to, base);
+                self.bytes(&[0x0F, 0x11]); // movups
                 self.memory_operand(to.0, base, offset);
             }
         }

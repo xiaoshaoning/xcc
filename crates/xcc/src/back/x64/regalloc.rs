@@ -56,6 +56,24 @@ pub(crate) enum Location {
 /// callee-saved, and nothing here calls a function that takes or returns a float yet.
 pub(crate) const FLOAT_REGISTERS: [Reg; 4] = [Reg(2), Reg(3), Reg(4), Reg(5)];
 
+/// The XMM registers a *calling* function may keep a value in: `xmm6` to `xmm15`, which Win64 says a
+/// call preserves. `xmm0`-`xmm5` are caller-saved, so a `double` in one of them is destroyed by the
+/// next call - a wrong answer with no diagnostic, and the reason this pool exists. The price is
+/// sixteen bytes of frame and two `movups` per register used, exactly as the integer registers cost a
+/// `mov` each.
+pub(crate) const CALLEE_SAVED_FLOATS: [Reg; 10] = [
+    Reg(6),
+    Reg(7),
+    Reg(8),
+    Reg(9),
+    Reg(10),
+    Reg(11),
+    Reg(12),
+    Reg(13),
+    Reg(14),
+    Reg(15),
+];
+
 /// What a function that calls another may allocate: the callee-saved registers. A call cannot
 /// destroy them, so a value in one is safe across the call for free; the price is a `mov` to save and
 /// another to restore it, once each per function.
@@ -90,8 +108,10 @@ pub(crate) struct Allocation {
     /// a function whose only use is the call that names it - has no interval, so its entry here is
     /// meaningless and must not be read.
     pub locations: Vec<Location>,
-    /// The callee-saved registers used, in the order the prologue saves them.
+    /// The callee-saved general registers used, in the order the prologue saves them.
     pub saved: Vec<Reg>,
+    /// The callee-saved XMM registers used, likewise: only these survive a call.
+    pub saved_floats: Vec<Reg>,
     /// Bytes of spill slots, at the end of the frame.
     pub spill_bytes: i32,
 }
@@ -130,9 +150,16 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             .unwrap_or(super::Class::Integer)
     };
     let mut free_integer: Vec<Reg> = allocatable.to_vec();
-    let mut free_float: Vec<Reg> = FLOAT_REGISTERS.to_vec();
+    // A function that calls can only keep a float where a call leaves it alone.
+    let float_pool: &[Reg] = if func.makes_call {
+        &CALLEE_SAVED_FLOATS
+    } else {
+        &FLOAT_REGISTERS
+    };
+    let mut free_float: Vec<Reg> = float_pool.to_vec();
     let mut active: Vec<Interval> = Vec::new();
     let mut saved: Vec<Reg> = Vec::new();
+    let mut saved_floats: Vec<Reg> = Vec::new();
     for interval in order {
         let float = class_of(interval.reg) == super::Class::Float;
         // Everything that ended before this one starts has finished with its register. The
@@ -178,6 +205,12 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
                 // saves are what keep its caller's values alive.
                 if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                     saved.push(register);
+                }
+                if float
+                    && CALLEE_SAVED_FLOATS.contains(&register)
+                    && !saved_floats.contains(&register)
+                {
+                    saved_floats.push(register);
                 }
                 active.push(interval);
                 active.sort_by_key(|other| other.end);
@@ -227,6 +260,10 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                 saved.push(register);
             }
+            if float && CALLEE_SAVED_FLOATS.contains(&register) && !saved_floats.contains(&register)
+            {
+                saved_floats.push(register);
+            }
             active.push(interval);
             active.sort_by_key(|other| other.end);
         }
@@ -259,9 +296,11 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     });
     // The prologue saves in a fixed order, so two runs of the compiler save in the same order.
     saved.sort();
+    saved_floats.sort();
     Allocation {
         locations,
         saved,
+        saved_floats,
         spill_bytes: spills * 8,
     }
 }
