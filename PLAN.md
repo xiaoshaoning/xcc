@@ -492,7 +492,34 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       The invariant the pools now hold by construction: *a result, its operands and the scratch are
       pairwise distinct* - `xmm0`/`xmm1` scratch, `xmm2` a spilled result's home, `xmm3`-`xmm5` (calls
       nothing) or `xmm6`-`xmm15` (calls) for values.
-- [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
+- [ ] `back-x64` shrinking, round five - and the first measurement says most of it is already at the
+      floor. Measured over the 414 corpus programs it compiles: **jump shortening buys 405 bytes of
+      118 840 (0.3%)** - 135 of 1 068 jumps could take the two-byte form - so the plan's own item is
+      not worth writing. The register-to-register copies are **2 760 of ~25 600 instructions (10.8%)**,
+      and the tagged breakdown of them is `write` 798, `return` 761, and 984 from the paths that read
+      an operand into a place (mostly `Incoming` and the call results, which the ABI fixes). Every
+      cheap item on the old list has now been measured and taken or dropped: DCE (zero dead
+      instructions), constant folding (zero constant-vs-constant operations), block-parameter
+      coalescing (2.6%), spills (254 instructions), jump shortening (0.3%). What is left needs a
+      better *allocator* - interval splitting, or coalescing across block boundaries - and that is a
+      design change with a test suite as its justification, not an afternoon's work. **A caution for
+      whoever measures next**: a quick grep of `mov` operands counted 10 048 copies where the correct
+      anchored pattern counts 2 760, and the wrong number was briefly believed. The pattern has to
+      anchor at the end of the line.
+- [ ] **`va_arg`, and it is a milestone rather than a slice.** It is not a back-end feature at all:
+      `stdarg.h` is a stub that `#error`s, the front end has no builtin for `va_start`/`va_arg`, and
+      `cir` has no operation for either. The work, in order: a `__builtin_va_list` type (`char *` on
+      Win64) and the three builtins; the parser's special case for `__builtin_va_arg(ap, T)`, whose
+      second argument is a *type* and not an expression; a `cir` operation that says "the address of
+      the first unnamed argument" and one that reads and steps; and on this back end the variadic
+      prologue - the four register arguments and the float ones written into the caller's 32-byte home
+      space, which is already below the stack arguments, so one pointer walks both.
+      **The structural consequence to decide first**: Cranelift cannot express a variadic definition at
+      all, so levels 0 and 1 will refuse what level 2 accepts. The corpus ratchet compares the two
+      lowerings and would call that a mismatch; a variadic program therefore needs the *clang*
+      comparison in `tests/x64.rs` instead, and ADR-006 needs a sentence saying the two lowerings
+      deliberately differ in what they accept.
+- [ ] `back-x64` shrinking, round six: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
