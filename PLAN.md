@@ -498,6 +498,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       on top of it, with `d2and.c` and the mixed-signature hand tests as the first things to run.
       A test that would have caught the second fault at HEAD: a leaf function with more live doubles
       than it has registers, which `fs.c`-shaped programs do not reach because a leaf has four.
+      **Third attempt** took the plan's first step - `xmm2` reserved as the spilled result's home, pools
+      `xmm3`-`xmm5` and `xmm6`-`xmm15`, scratch `xmm0`/`xmm1`, the invariant written beside the pool -
+      and then the ABI on top of it. The invariant held (eight doubles in one function, the corpus, and
+      every float hand test still agreed), and **`d2and.c` still answered 1**. The debug dump is the
+      measurement to start from, because it narrows the fault to one place:
+      ```
+      FloatCompare { op: Less, left: VReg(4), right: VReg(9) } => dst in Register(Reg(3))
+      FloatConvert { dst: VReg(9), ... } => Float(Reg(8))     // the operand is in xmm8
+      FloatConvert { dst: VReg(15), ... } => Float(Reg(7))    // and this one, in xmm7
+      ```
+      The allocation is right - the operands' intervals do not overlap, and reuse after a compare is
+      legal - but the emitted instruction is `ucomisd %xmm7,%xmm0`: its first operand is `xmm0`, which
+      holds the call's leftover and no value at all. So the fault is in **`float_compare`'s reading of
+      its operands**, not in the allocator: with `left` in `xmm7` and `right` in `xmm8`, the encoder
+      emitted a read of `xmm0`. Whatever the cause, it is one function, and the dump above is the
+      starting point: log `read_float`'s return for each operand next to the plan, and the disagreement
+      will be visible in one line.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.

@@ -106,6 +106,9 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
+**Floats across calls remain open**, after three attempts; `PLAN.md` carries the diagnosis, the
+invariant now in the pool, and the debug dump that localises what is left to one function.
+
 **Function pointers came next,** which closed the last gap that was not a front-end one: a function's
 address is a symbol, so `lea` with a relocation materialises it, and `call r/m` calls through it. Five
 corpus programs, and the refusals left are three float-ABI programs and the front end's own.
