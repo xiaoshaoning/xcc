@@ -51,10 +51,13 @@ pub(crate) enum Location {
     Spill(i32),
 }
 
-/// The XMM registers a floating-point value may live in. `xmm0` and `xmm1` are the encoder's scratch
-/// for floating-point operands, as `r10` and `r11` are for integers; `xmm6` and above are
-/// callee-saved, and nothing here calls a function that takes or returns a float yet.
-pub(crate) const FLOAT_REGISTERS: [Reg; 4] = [Reg(2), Reg(3), Reg(4), Reg(5)];
+/// The XMM registers a floating-point value may live in, for a function that calls nothing. The three
+/// below them are spoken for, and the reason is the invariant the encoder relies on - **an operation's
+/// result, each of its operands and the scratch pair are pairwise distinct**, exactly as
+/// `rax`/`r10`/`r11` are for integers: `xmm0`/`xmm1` are the scratch, `xmm2` is where a spilled result
+/// is computed, and a pool that overlapped either would let an operation destroy a value it has still
+/// to read.
+pub(crate) const FLOAT_REGISTERS: [Reg; 3] = [Reg(3), Reg(4), Reg(5)];
 
 /// The XMM registers a *calling* function may keep a value in: `xmm6` to `xmm15`, which Win64 says a
 /// call preserves. `xmm0`-`xmm5` are caller-saved, so a `double` in one of them is destroyed by the

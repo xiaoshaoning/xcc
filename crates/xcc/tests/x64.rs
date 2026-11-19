@@ -271,6 +271,13 @@ fn the_constructs_the_slice_lowers_behave() {
             42,
         ),
         (
+            // More live doubles than the leaf pool has registers, so operands and results spill: the
+            // case the three-register invariant exists for.
+            "twelve doubles, more than the registers hold",
+            "int main(void) { double d0=0.5; double d1=1.5; double d2=2.5; double d3=3.5; double d4=4.5; double d5=5.5; double d6=6.5; double d7=7.5; double d8=8.5; double d9=9.5; double d10=10.5; double d11=11.5; double r = (d0+d1)*(d2+d3)+(d4+d5)*(d6+d7)-(d8+d9)*(d10+d11)+(d0*d11-d1*d10); return (int)(r + 1000.0) % 251; }",
+            244,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,

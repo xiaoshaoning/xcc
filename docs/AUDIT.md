@@ -105,6 +105,41 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### floats across calls, reviewed - 2026-11-16 - an invariant the commit claimed and the code did not hold
+
+Review of `c0ff87c`.
+
+**Found: the register pools did not hold the invariant the commit message and `PLAN.md` said they did.**
+The round's account of itself is specific - "the invariant the pools now hold by construction: a result,
+its operands and the scratch are pairwise distinct - `xmm0`/`xmm1` scratch, `xmm2` the home of a spilled
+result, `xmm3`-`xmm5` (calls nothing) or `xmm6`-`xmm15` (calls)" - and the code had none of the three
+pieces: `FLOAT_REGISTERS` was still `[2, 3, 4, 5]`, there was no `FLOAT_RESULT` at all, and
+`float_destination` returned `FLOAT_SCRATCH` for a spilled result *without claiming it*, which is exactly
+the collision `320e819` had diagnosed. The landed code happened to work - 414 corpus programs and a
+dozen hand tests, including two that force nine and fourteen live doubles - because the collision needs
+two spilled operands *and* a spilled destination in one operation, and no program in the corpus reaches
+it. A latent hazard documented as a guarantee is worse than either: the next reader trusts it.
+
+The fix is the two edits the plan described, landed: `xmm2` is `FLOAT_RESULT`, the leaf pool is
+`xmm3`-`xmm5`, and `float_destination` claims the register like every other one an operation holds. The
+property now holds where the comment says it does, and the pool comment names the invariant and says what
+an overlapping pool would cost.
+
+**Checked and sound:** the REX fixes of this round - `float_binary`, `ucomisd`, `cvtss2sd`/`cvtsd2ss` -
+are in the right order relative to the mandatory prefixes (`66`/`F2`/`F3` before REX, never after), and
+each was verified against `objdump` output rather than assumed; the argument placement stages both classes
+into eight slots and loads them back, with the stack arguments stored before any register move; a float
+result is taken from `xmm0` in `finish_call` and a float return writes it there; `Incoming` reads a
+stack-passed double with `movss`/`movsd` in the value's own width; and `saved_floats` is still filtered
+to the registers the allocation actually used.
+
+**Measured after the review: 414 agreeing, 50 refused, 0 wrong** - unchanged, with two spill-heavy
+programs added to the hand tests that would catch the collision if the pool is ever widened again.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### function pointers, reviewed - 2026-11-16 - scaffolding left by a deleted refusal
 
 Review of `2510387`.

@@ -55,6 +55,10 @@ pub(crate) struct Encoded {
 /// The two XMM registers the encoder uses as scratch for floating-point operands; nothing is
 /// allocated from them.
 const FLOAT_SCRATCH: Reg = Reg(0);
+/// Where a spilled floating-point *result* is computed before it is stored: a third register, because
+/// an operation with two spilled operands has spent the scratch pair and would otherwise compute its
+/// answer in a register it still has to read.
+const FLOAT_RESULT: Reg = Reg(2);
 const FLOAT_SECOND: Reg = Reg(1);
 
 /// What a floating-point move is doing, which decides its opcode and its direction.
@@ -979,10 +983,17 @@ impl Encoder<'_> {
     /// A value in a *general* register here is a mistake in the lowering's classes, and using that
     /// register's number as an XMM number would address a different register quietly - which is how
     /// a float load read the wrong one once already.
-    fn float_destination(&self, dst: VReg) -> Reg {
+    fn float_destination(&mut self, dst: VReg) -> Reg {
         match self.allocation.location(dst) {
             Location::Float(register) => register,
-            Location::Spill(_) => FLOAT_SCRATCH,
+            Location::Spill(_) => {
+                // Claimed like any other register the operation is holding: no operand read for the
+                // same operation may be handed the register the answer is computed in.
+                if !self.scratches.contains(&FLOAT_RESULT) {
+                    self.scratches.push(FLOAT_RESULT);
+                }
+                FLOAT_RESULT
+            }
             Location::Register(_) => unreachable!("a floating-point result in a general register"),
         }
     }
