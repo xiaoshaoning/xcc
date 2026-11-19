@@ -1326,22 +1326,11 @@ impl Parser<'_> {
                 if self.types.is_error(argument.ty) {
                     continue;
                 }
-                if self.types.is_float(argument.ty) {
-                    // Win64 says how many vector registers a variadic call uses in `AL`, a
-                    // physical register this back end cannot write; a callee that reads a float
-                    // and finds `AL` at zero reads nothing. Integers and pointers are safe: the
-                    // callee either spills its vector registers or does not, and asks for none of
-                    // our arguments either way. This refusal is the ABI, not a missing lowering
-                    // step, so it does not say "yet".
-                    let diagnostic = Diagnostic::error(
-                        "a floating-point argument to a variadic function cannot be passed",
-                    )
-                    .with_note(
-                        "Win64 passes it in a vector register and tells the callee how many to read in `AL`, a physical register this back end cannot set; integer and pointer arguments work (docs/ADR-006-varargs.md)",
-                    );
-                    self.push(diagnostic, span);
-                    return Value::new(result, None, false);
-                }
+                // A `float` becomes a `double` here, and a `double` crosses the ABI twice: Win64
+                // duplicates a variadic floating-point argument into the general register of its
+                // own position, which is what lets a callee read the whole list with one 8-byte
+                // walk (ADR-006). That duplicate is the back end's business, so nothing is refused
+                // here - level 0 and 1 cannot do it and say so themselves.
                 let promoted = self.types.promote(argument.ty);
                 *slot = self.convert(argument, promoted, span);
             }

@@ -11,12 +11,15 @@
 //! Everything is a subprocess, so a crash in one program is a result for that program and not the
 //! end of the run, and a hang is killed after a few seconds and reported as a difference.
 //!
-//! What is left out, and why: a program that calls a variadic function (`printf`; ADR-006) is
-//! *refused* by xcc, and a refusal is not a behavioural difference - it is a recorded gap,
-//! counted and printed here. Both compilers read the same headers (`-nostdinc` and the ones xcc
-//! ships), so an `#include` compares like anything else. A program `clang` itself cannot build is
-//! skipped: the corpus holds programs that are deliberately not C99, and this test is about the
-//! ones both compilers claim.
+//! What is left out, and why: a *refusal* is not a behavioural difference - it is a recorded gap,
+//! counted and printed here, and a program is counted as refused if any of the three answers with
+//! one. That now includes a case worth naming: a floating-point argument to a variadic function is
+//! compiled by level 2 and refused by levels 0 and 1, so its pair has one answer and one gap and it
+//! belongs in the refused copy rather than in the agreed one. The back end's own ratchet
+//! (`tests/x64.rs`) is where those programs are compared with `clang` instead. Both compilers read
+//! the same headers (`-nostdinc` and the ones xcc ships), so an `#include` compares like anything
+//! else. A program `clang` itself cannot build is skipped: the corpus holds programs that are
+//! deliberately not C99, and this test is about the ones both compilers claim.
 //!
 //! The count is printed even when the test passes, so a shrinking subset is visible.
 

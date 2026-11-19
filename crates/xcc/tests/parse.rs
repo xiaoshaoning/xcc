@@ -27,18 +27,6 @@ fn check_with(options: Options, source: &str) -> Vec<String> {
         .collect()
 }
 
-/// The notes of the diagnostics `source` produced: what a refusal says *beside* its message.
-fn notes(source: &str) -> Vec<String> {
-    match xcc::Compile::new(Options::default()).compile("t.c", source) {
-        Ok(_) => Vec::new(),
-        Err(diagnostics) => diagnostics
-            .items()
-            .iter()
-            .flat_map(|diagnostic| diagnostic.notes.clone())
-            .collect(),
-    }
-}
-
 /// Whether the source parses as declarations, with no complaint about the declarations
 /// themselves: "the code generator is not implemented yet" notice is expected.
 fn parses(source: &str) -> bool {
@@ -299,18 +287,6 @@ fn what_is_not_implemented_is_said_not_guessed() {
     );
     refuses("int a[2] = {[0 ... 1] = 3};", "not implemented yet");
     refuses("int f(void) { asm(\"nop\"); }", "`asm` is not declared");
-    refuses(
-        "int printf(const char *, ...); int f(void) { return printf(\"%f\", 1.5); }",
-        "a floating-point argument to a variadic function cannot be passed",
-    );
-    // ...and the *note* names the thing the back end cannot say, so a reader does not have to
-    // rediscover it. The message stays one sentence; the reason is the diagnostic's note, which a
-    // host can show apart from it (ADR-006).
-    let notes = notes("int printf(const char *, ...); int f(void) { return printf(\"%f\", 1.5); }");
-    assert!(
-        notes.iter().any(|note| note.contains("ADR-006")),
-        "{notes:?}"
-    );
     // The refusal comes after the arguments are read, so the argument is still checked.
     refuses(
         "int printf(const char *, ...); int f(void) { return printf(1); }",
@@ -336,15 +312,17 @@ fn an_unevaluated_address_still_obeys_what_address_of_allows() {
 }
 
 #[test]
-fn a_variadic_call_passes_integers_and_refuses_floats() {
-    // ADR-006, in its new shape: the call site's own signature makes the *call* expressible, and
-    // `AL` is the only thing left - which only a floating-point argument needs.
+fn a_variadic_call_passes_both_classes_of_argument() {
+    // ADR-006, in its final shape: the call site's own signature makes the call expressible, and a
+    // floating-point argument is no longer refused - the *front end* promotes a `float` to a
+    // `double` and says nothing more. Which register files that `double` goes into is the back
+    // end's business, and level 0/1 refuse it there, at the call, with the reason.
     parses("int p(const char *, ...); int f(void) { return p(\"%d\", 1); }");
     parses("int p(const char *, ...); int f(void) { char c = 1; return p(\"%d\", c); }");
-    refuses(
-        "int p(const char *, ...); int f(void) { return p(\"%f\", 1.5); }",
-        "a floating-point argument to a variadic function cannot be passed",
-    );
+    parses("int p(const char *, ...); int f(void) { return p(\"%f\", 1.5); }");
+    // A `float` is promoted to `double` on the way, which is C99 6.5.2.2p6 and not the back end's
+    // choice to make.
+    parses("int p(const char *, ...); int f(void) { float x = 1.5f; return p(\"%f\", x); }");
 }
 
 #[test]

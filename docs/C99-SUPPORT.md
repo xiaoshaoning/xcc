@@ -6,8 +6,8 @@ without having to read the parser.
 **Status**: M10. The front end (preprocessor, parser, types, initialisers, the C library's
 declarations) is done; there are two back ends - Cranelift behind `--opt-level=0`/`1`, and this
 compiler's own behind `--opt-level=2`, which lowers everything the front end accepts. What is left is
-`va_arg` and variadic *definitions* (the rows below say why), the optimiser's backlog, and the
-`planned` rows.
+variadic *definitions* - the rows below say why it is `--opt-level=2` only - the optimizer's backlog,
+and the `planned` rows.
 
 | status | meaning |
 |---|---|
@@ -79,10 +79,9 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | a call to a variadic function (`printf`-style) with integer, character, string or pointer arguments | `sound` (M8): the call site's arguments are its signature, so it is lowered as an indirect call, and the default argument promotions are applied. A callee that reads `AL` finds it at whatever it was, which only matters if a floating-point argument was passed |
-| a floating-point argument to a variadic function | `refused` - Win64 passes it in a vector register *and* sets `AL` to the number of vector registers the call used, and `cir` does not carry that count: the back end would have to derive it, and the two lowerings must agree. The diagnostic is "cannot be passed", not "not lowered yet" ([ADR-006](ADR-006-varargs.md)) |
+| a floating-point argument to a variadic function | `sound` (M10) **at `--opt-level=2`**: the argument is promoted to `double` and written to the vector register *and* to the general register of its own position, which is Win64's duplicate rule - and is what lets one eight-byte-per-argument walk read a list that mixes the classes. The caller says zero vector registers in `AL`, so a callee reads the general ones, where the copies are. Verified against the real C runtime's `printf` with `%f`, `%.2f`, `%e` and `%g`, byte for byte against clang's output. Levels 0 and 1 refuse the construct with the reason rather than print zeros ([ADR-006](ADR-006-varargs.md)) |
 | `va_list`, `va_start`, `va_arg` of an integer, pointer or record-free type | `sound` (M10) **at `--opt-level=2`**: `va_list` is a `char *` walking Win64's argument slots, which a variadic function's prologue fills from its four register arguments; `va_arg` is a load and an eight-byte step. Cranelift has no home area to point at and refuses with a span, so this is the one construct where the two lowerings deliberately differ ([ADR-006](ADR-006-varargs.md)) |
 | `va_arg` of a floating-point type, **reading** | `sound` (M10) at `--opt-level=2`, against a caller that follows Win64: a variadic `double` is duplicated into a general-purpose register precisely so a walk like this finds it, so the read is the same eight bytes as any other argument. Verified with a clang-built caller; MinGW's gcc does not duplicate one, and would read as zeros ([ADR-006](ADR-006-varargs.md)) |
-| a floating-point argument **to** a variadic function, from this compiler | `refused` - the duplicating half, which needs both register files for one argument and `AL`'s count ([ADR-006](ADR-006-varargs.md)) |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
 | `switch`, `goto`, labels | `sound` (M6): the controlling expression must be an integer, `case` values unique, one `default`, and a `goto` lowers to a jump - forward or backward, with a label on the entry block or a join given a block of its own |
 | initialisation of aggregates, static and automatic | `sound` (M6): brace lists, elision and designators, read into a frame slot or a file-scope object's bytes |
@@ -93,7 +92,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | construct | status |
 |---|---|
 | freestanding: `stddef.h`, `stdarg.h`, `stdbool.h`, `stdint.h`, `limits.h`, `float.h` | `sound` (M8) - they ship inside the compiler, twelve clean-room headers consulted after the host's, so no `-I` is needed and `-I` still shadows them. `stdarg.h` is the exception: it refuses with the reason in [ADR-006](ADR-006-varargs.md) |
-| hosted: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `math.h`, `time.h` | `partial` (M8) - the declarations ship and a linked program uses the host's C runtime; `--run` resolves every function the headers declare out of one loaded C runtime, except `snprintf`, which no Windows runtime exports directly. A variadic call with a floating-point argument is refused (see the rows below) |
+| hosted: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `math.h`, `time.h` | `partial` (M8) - the declarations ship and a linked program uses the host's C runtime; `--run` resolves every function the headers declare out of one loaded C runtime, except `snprintf`, which no Windows runtime exports directly |
 | `setjmp.h` | `planned`, with the caveat that a JIT'ed frame cannot be long-jumped out of without unwind information |
 | `signal.h`, `locale.h`, `wchar.h`, `wctype.h` | `refused` for now - a diagnostic when included, rather than a header that pretends |
 

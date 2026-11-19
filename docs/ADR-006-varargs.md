@@ -120,6 +120,22 @@ a load plus an eight-byte step the front end writes back into the list. `AL` was
 half - the floating-point duplicate - and that is still refused, with a span, for a reason that has
 nothing to do with registers: `cir` does not carry the count.
 
+**The caller's half of the duplicate works too, and the second rule turned out to be optional.** This
+ADR said the caller could not pass a floating-point argument because it would have to set `AL` to the
+number of vector registers used, "a physical register this back end cannot write". The second half of
+that sentence was true and the first half was not: `AL` is the *count*, and a caller that duplicates has
+no need of it - a callee told zero reads the general registers, where the copies are. `clang` leaves `AL`
+unspecified at such a call and relies on exactly that, which is how the assumption was found to be too
+strong: its own output for `printf("%f %f %d
+", 1.5, 2.25, 7)` writes both doubles to the vector
+registers and to the general ones, and never touches `AL`. This compiler writes the same duplicate and
+says zero, which is the same answer made deterministic.
+
+So `printf("%f", x)` compiles and prints what `clang` prints - and the construct is `--opt-level=2` only,
+because Cranelift's lowerer writes the vector register alone: it would print zeros, so it refuses, with
+the span that asked. That is the second construct where the two lowerings deliberately differ, and the
+first where the difference is a *call* rather than a definition.
+
 **And the floating-point half of reading works too**, which this ADR had thought impossible. The
 duplicate is the reason: Win64 passes a variadic `double` in a vector register *and* in a general one, so
 a callee that walks the general-purpose slots - which is exactly what our `va_list` does - finds it with

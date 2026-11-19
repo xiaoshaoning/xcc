@@ -1624,10 +1624,13 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        // A floating-point argument to a variadic call needs `AL` set to the vector-register
-        // count, which is a physical register this back end cannot write (ADR-006).
-        let (module, _, diagnostics) =
-            module("int p(const char *, ...); int f(void) { return p(\"%f\", 1.5); }");
+        // An aggregate's value is its address (ADR-004), so a conditional expression choosing
+        // between two of them would have to carry one through a join, and `cir` has no register for
+        // one: refused at the expression, and the function is not lowered.
+        let (module, _, diagnostics) = module(
+            "struct S { int a; int b; };
+             int f(int c) { struct S x; struct S y; return (c ? x : y).a; }",
+        );
         let messages: Vec<&str> = diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())
@@ -1635,7 +1638,7 @@ block0 (entry)(v0: int, v1: int):
         assert!(
             messages
                 .iter()
-                .any(|message| message.contains("cannot be passed")),
+                .any(|message| message.contains("not lowered yet")),
             "{messages:?}"
         );
         assert!(module.funcs.is_empty(), "a body with a gap is not lowered");

@@ -688,6 +688,7 @@ impl FunctionLowering<'_> {
                 result,
                 callee,
                 args,
+                variadic,
                 ..
             } => {
                 let arguments = args.clone();
@@ -724,6 +725,7 @@ impl FunctionLowering<'_> {
                         args,
                         size,
                         signed,
+                        variadic: *variadic,
                     }),
                     None => ops.push(Op::CallIndirect {
                         dst,
@@ -731,6 +733,7 @@ impl FunctionLowering<'_> {
                         args,
                         size,
                         signed,
+                        variadic: *variadic,
                     }),
                 }
             }

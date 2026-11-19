@@ -1,6 +1,7 @@
-/* stdio.h - C99 7.19, declarations only.  Calling a variadic one (`printf`) is refused by the
- * compiler itself until ADR-006 is unblocked; the rest are the C runtime's, which the linker
- * brings in.
+/* stdio.h - C99 7.19, declarations only: every function here is the C runtime's, which the
+ * linker brings in.  A variadic one (`printf`) is called by the rules ADR-006 records - the call
+ * site's arguments are its signature - and a floating-point argument to one needs `--opt-level=2`,
+ * the only level that writes the general-register duplicate Win64 asks for.
  */
 #ifndef XCC_STDIO_H
 #define XCC_STDIO_H

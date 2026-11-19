@@ -556,6 +556,26 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **`printf("%f")`: a floating-point argument *to* a variadic function.** The last row of ADR-006,
+      and the premise behind its refusal was wrong. Win64 asks the caller to write each variadic
+      floating-point argument to a vector register **and** to the general register of its position, and
+      to say how many vector registers it used in `AL`. The duplicate is what lets one
+      eight-byte-per-argument walk read a list that mixes the classes - the same walk `va_arg` already
+      did - and a callee told *zero* reads the general registers, where the copies are. `clang` does
+      exactly that and leaves `AL` unspecified at such a call; writing zero is the same answer made
+      deterministic. So this is not "the ABI we cannot express": it is one extra load from a staging
+      slot the caller had already written, plus two bytes.
+      **Where it is**: `--opt-level=2` only, because Cranelift's lowerer writes the vector register
+      alone and would print zeros - it now refuses with the span that asked, at the call, which is the
+      second construct where the two lowerings differ on purpose and the first where the difference is a
+      call rather than a definition. **Measured**: 414 -> **418 of 464 corpus programs** compile and agree
+      through our back end (the four: `dmath`, `dmore`, `dreg_denseprint`, `dsmoke`), and the acceptance
+      test's `printf("%f|%.2f|%e|%g|%d|%f")` is byte-identical to clang's output from the real C runtime.
+      **And the review of the accounting found a hole worth more than the feature**: the corpus ratchet
+      counted a program as "refused" when *either* lowering refused, so four programs we now compile were
+      reported as gaps we had not closed - and, once that was fixed, as "compiled only here" and compared
+      with *nothing*. They are now compared with `clang` where Cranelift refuses. A ratchet that counts a
+      program and never looks at what it answers is a coverage hole wearing a number.
 - [x] **`va_arg` of a `double`**, and the duplicate is what makes it easy: Win64 passes a variadic
       `double` in a vector register *and* a general one, so a callee walking the general slots - which is
       what our `va_list` is - finds it with no `AL` and no vector save area. Verified against a

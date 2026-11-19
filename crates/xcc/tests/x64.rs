@@ -15,9 +15,15 @@ use std::sync::Mutex;
 
 use xcc::{Compile, Options};
 
-/// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 50 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 414;
+/// How many corpus programs agreed, through this back end, when the ratchet was last raised - with
+/// Cranelift where it answers and with `clang` where it does not. The 46 the back end still refuses
+/// are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 418;
+
+/// How many corpus programs this back end compiles and Cranelift refuses, and which are therefore
+/// compared with `clang` instead. A ratchet like the one above, in the other direction: closing an
+/// ABI gap raises it, and losing one lowers it.
+const PROGRAMS_ONLY_THIS_BACK_END_COMPILES: usize = 4;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -63,6 +69,29 @@ fn build_and_run(source: &str, opt_level: u8, dir: &Path, name: &str) -> Option<
         return None;
     }
     let run = Command::new(&exe).output().expect("the program runs");
+    Some(Ran {
+        status: run.status.code(),
+        stdout: run.stdout,
+    })
+}
+
+/// The same program through `clang`, which is the oracle for the programs only this back end
+/// compiles: a ratchet that counts a program as "compiled here" and never looks at what it answers
+/// is a coverage hole wearing a number.
+fn run_with_clang(source: &str, dir: &Path, name: &str) -> Option<Ran> {
+    let file = dir.join(format!("{name}.ref.c"));
+    let exe = dir.join(format!("{name}.ref.exe"));
+    std::fs::write(&file, source).expect("the reference source is written");
+    let built = Command::new("clang")
+        .args(["-O0", "-w", "-o"])
+        .arg(&exe)
+        .arg(&file)
+        .output()
+        .ok()?;
+    if !built.status.success() {
+        return None;
+    }
+    let run = Command::new(&exe).output().ok()?;
     Some(Ran {
         status: run.status.code(),
         stdout: run.stdout,
@@ -286,6 +315,17 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             62,
         ),
         (
+            // A floating-point argument to a variadic function: the caller writes it to a vector
+            // register *and* to the general register of its position, which is what lets the
+            // callee's eight-byte-per-argument walk find a `double` where it finds an `int`.
+            "a variadic function reading a double, and a call that mixes the two",
+            "#include <stdarg.h>
+double pick(int count, ...) { va_list ap; double total = 0.0; int i; va_start(ap, count); for (i = 0; i < count; i++) total = total + va_arg(ap, double); va_end(ap); return total; }
+double tangled(int tag, ...) { va_list ap; double total = 0.0; va_start(ap, tag); total = total + va_arg(ap, double); total = total + va_arg(ap, int); total = total + va_arg(ap, double); va_end(ap); return total + tag; }
+int main(void) { return (int)(pick(3, 1.5, 2.25, 3.25) * 4.0 + tangled(1, 10.5, 5, 2.5)); }",
+            47,
+        ),
+        (
             "a variadic function reading past the fourth argument",
             "#include <stdarg.h>
 long long pick(int first, ...) { va_list ap; va_start(ap, first); char c = (char)va_arg(ap, int); int i = va_arg(ap, int); long long l = va_arg(ap, long long); va_end(ap); return first + c + i + l; } int main(void) { return (int)(pick(1, 'A', 1000, 100000LL) % 251); }",
@@ -413,11 +453,16 @@ fn the_corpus_agrees_through_both_back_ends() {
     let workers = std::thread::available_parallelism().map_or(4, |count| count.get());
     let next = AtomicUsize::new(0);
     let agreed = AtomicUsize::new(0);
+    // Programs this back end compiles and Cranelift does not: `va_arg` and a floating-point argument
+    // to a variadic call are the two, and counting them as refusals would report a gap we have closed
+    // as one we have not.
+    let beyond: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let refused: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let wrong: Mutex<Vec<String>> = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for worker in 0..workers {
-            let (files, next, agreed, refused, wrong) = (&files, &next, &agreed, &refused, &wrong);
+            let (files, next, agreed, beyond, refused, wrong) =
+                (&files, &next, &agreed, &beyond, &refused, &wrong);
             scope.spawn(move || {
                 let dir = std::env::temp_dir()
                     .join(format!("xcc-x64-corpus-{}-{worker}", std::process::id()));
@@ -436,18 +481,40 @@ fn the_corpus_agrees_through_both_back_ends() {
                         continue;
                     };
                     // Level 0 is Cranelift's lowering of the same `cir`: the two back ends are two
-                    // answers to one question, and they must agree.
-                    let Some(plain) = build_and_run(&source, 0, &dir, &name) else {
-                        refused.lock().expect("the refusals").push(name);
+                    // answers to one question, and they must agree where both answer. Where only one
+                    // does, that is the ABI asymmetry ADR-006 records - level 2 duplicates a
+                    // variadic float argument into the general register of its position and level 0
+                    // refuses to - so it is counted, not called a failure.
+                    let plain = build_and_run(&source, 0, &dir, &name);
+                    let cranelift_answered = plain.is_some();
+                    // Where Cranelift refuses, the oracle is `clang`: a program counted as compiled
+                    // here and compared with nothing is a coverage hole wearing a number.
+                    let Some(otherwise) = plain.or_else(|| run_with_clang(&source, &dir, &name))
+                    else {
+                        beyond
+                            .lock()
+                            .expect("the programs only level 2 compiles")
+                            .push(name);
                         continue;
                     };
-                    if plain == optimised {
+                    if !cranelift_answered {
+                        beyond
+                            .lock()
+                            .expect("the programs only level 2 compiles")
+                            .push(name.clone());
+                    }
+                    if otherwise == optimised {
                         agreed.fetch_add(1, Ordering::Relaxed);
                     } else {
-                        wrong.lock().expect("the mismatches").push(format!(
-                            "{name}: own back end {:?}, Cranelift {:?}",
-                            optimised, plain
-                        ));
+                        let reference = if cranelift_answered {
+                            format!("Cranelift {otherwise:?}")
+                        } else {
+                            format!("clang {otherwise:?}")
+                        };
+                        wrong
+                            .lock()
+                            .expect("the mismatches")
+                            .push(format!("{name}: own back end {:?}, {reference}", optimised));
                     }
                 }
                 let _ = std::fs::remove_dir_all(&dir);
@@ -458,13 +525,21 @@ fn the_corpus_agrees_through_both_back_ends() {
     let agreed = agreed.into_inner();
     let mut wrong = wrong.into_inner().expect("the mismatches");
     let mut refused = refused.into_inner().expect("the refusals");
+    let mut beyond = beyond
+        .into_inner()
+        .expect("the programs only level 2 compiles");
     wrong.sort();
     refused.sort();
+    beyond.sort();
     eprintln!(
-        "own back end: {agreed} corpus programs agreed, {} refused, {} wrong",
+        "own back end: {agreed} corpus programs agreed, {} refused, {} wrong, {} compiled only          here",
         refused.len(),
-        wrong.len()
+        wrong.len(),
+        beyond.len()
     );
+    if !beyond.is_empty() {
+        eprintln!("own back end: only here: {}", beyond.join(", "));
+    }
     if !wrong.is_empty() {
         eprintln!("own back end: wrong: {}", wrong.join(", "));
     }
@@ -473,5 +548,11 @@ fn the_corpus_agrees_through_both_back_ends() {
         agreed >= PROGRAMS_THAT_AGREED,
         "{agreed} programs agreed and {PROGRAMS_THAT_AGREED} used to: something this back end \
          lowered it no longer does"
+    );
+    assert!(
+        beyond.len() >= PROGRAMS_ONLY_THIS_BACK_END_COMPILES,
+        "{} programs are compiled only here and {PROGRAMS_ONLY_THIS_BACK_END_COMPILES} used to \
+         be: one of them has become something this back end refuses",
+        beyond.len()
     );
 }

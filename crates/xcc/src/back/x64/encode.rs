@@ -562,12 +562,16 @@ impl Encoder<'_> {
                 args,
                 size,
                 signed,
+                variadic,
             } => {
-                self.place_arguments(args);
+                self.place_arguments(args, *variadic);
                 // The callee's register survives the placement: a function with any call allocates
                 // only callee-saved registers, so it is never one of the argument registers the
                 // placement writes. A spilled callee is loaded after, into a scratch.
                 let target = self.read(*callee);
+                if *variadic {
+                    self.no_vector_arguments();
+                }
                 self.call_through(target);
                 self.finish_call(*dst, *size, *signed);
             }
@@ -577,8 +581,12 @@ impl Encoder<'_> {
                 args,
                 size,
                 signed,
+                variadic,
             } => {
-                self.place_arguments(args);
+                self.place_arguments(args, *variadic);
+                if *variadic {
+                    self.no_vector_arguments();
+                }
                 self.call(name);
                 self.finish_call(*dst, *size, *signed);
             }
@@ -1119,7 +1127,11 @@ impl Encoder<'_> {
     /// Put the arguments where the call will find them: the first four in `rcx`, `rdx`, `r8` and
     /// `r9`, the rest in the outgoing slots. One place, because a direct call and a call through a
     /// pointer pass their arguments the same way, and two copies of this would drift.
-    fn place_arguments(&mut self, args: &[VReg]) {
+    ///
+    /// A *variadic* call also copies each floating-point argument into the general register of its
+    /// own position: Win64 requires it, and it is what makes one eight-byte-per-argument walk read a
+    /// list that mixes the two classes (ADR-006).
+    fn place_arguments(&mut self, args: &[VReg], variadic: bool) {
         // Where each argument goes: **the position picks the register**, and the argument's class
         // picks which file it is in. `f(int a, double b, double c)` has `b` in `xmm1` and `c` in
         // `xmm2`, not `xmm0` and `xmm1` - which is what clang's own output says, and what a per-class
@@ -1176,12 +1188,14 @@ impl Encoder<'_> {
         }
         // Otherwise every register argument is staged, whatever its class, and then loaded: one may
         // be in the register another has to go to, and an XMM argument can share a position with an
-        // integer one without either being wrong.
+        // integer one without either being wrong. The position travels with it, because a variadic
+        // call's float copy goes in the general register of the position the argument holds.
         let staged: Vec<_> = plan
             .iter()
-            .filter(|(_, _, target)| !matches!(target, Target::Stack(_)))
+            .enumerate()
+            .filter(|(_, (_, _, target))| !matches!(target, Target::Stack(_)))
             .collect();
-        for (index, (argument, class, _)) in staged.iter().enumerate() {
+        for (index, (_, (argument, class, _))) in staged.iter().enumerate() {
             let offset = self.staging_base + index as i32 * 8;
             match class {
                 super::Class::Integer => {
@@ -1195,7 +1209,7 @@ impl Encoder<'_> {
             }
             self.release();
         }
-        for (index, (_, class, target)) in staged.iter().enumerate() {
+        for (index, (position, (_, class, target))) in staged.iter().enumerate() {
             let offset = self.staging_base + index as i32 * 8;
             match (class, target) {
                 (super::Class::Integer, Target::Integer(register)) => {
@@ -1203,6 +1217,14 @@ impl Encoder<'_> {
                 }
                 (super::Class::Float, Target::Float(register)) => {
                     self.float_move(*register, Reg::RSP, offset, 8, Move::Load);
+                    if variadic {
+                        // The same eight bytes, into the general register of the same position. A
+                        // callee that reads the list one eight-byte slot at a time - which is every
+                        // callee, `va_arg` among them - then finds an `int` and a `double` in the
+                        // same place, and needs no vector save area.
+                        let copy = super::ARGUMENT_REGISTERS[*position];
+                        self.mov_reg_from_memory(copy, offset);
+                    }
                 }
                 _ => unreachable!("an argument that is not where its class says"),
             }
@@ -1378,6 +1400,16 @@ impl Encoder<'_> {
             self.byte(0xB8 | (to.0 & 7));
             self.bytes(&value.to_le_bytes());
         }
+    }
+
+    /// `AL` is Win64's count of the vector registers a variadic call used. This back end duplicates
+    /// each floating-point argument into the general register of its position instead, so the answer
+    /// that makes a callee read the copies is zero - and no vector save area has to exist at all.
+    /// `clang` leaves `AL` unspecified at such a call and relies on the same duplicate; a zero is the
+    /// same answer made deterministic, which is the difference between working by luck and working.
+    fn no_vector_arguments(&mut self) {
+        self.byte(0xB0); // mov al, imm8
+        self.byte(0);
     }
 
     fn lea(&mut self, to: Reg, offset: i32) {

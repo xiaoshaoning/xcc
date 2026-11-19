@@ -332,6 +332,8 @@ pub(crate) enum Op {
         args: Vec<VReg>,
         size: u8,
         signed: bool,
+        /// See `Call`: a variadic call through a pointer duplicates its float arguments the same way.
+        variadic: bool,
     },
     /// Call a function by name: `call rel32`. The first four arguments go in registers, staged
     /// through the frame when one of them would destroy another; the rest go in the function's
@@ -342,6 +344,10 @@ pub(crate) enum Op {
         args: Vec<VReg>,
         size: u8,
         signed: bool,
+        /// Whether the call passes more arguments than the callee declares. A variadic call also
+        /// duplicates each floating-point argument into the general register of its position, and
+        /// tells the callee how many vector registers it used - which is what `AL` is for.
+        variadic: bool,
     },
 }
 

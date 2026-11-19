@@ -778,7 +778,7 @@ impl<M: Module> Lowerer<'_, M> {
                 callee,
                 args,
                 variadic,
-                ..
+                span,
             } => {
                 let machine: Vec<ClValue> = args
                     .iter()
@@ -789,6 +789,23 @@ impl<M: Module> Lowerer<'_, M> {
                 // carries the declaration's signature, and a second one for the same name is an
                 // error in `cranelift-module` (ADR-006).
                 if *variadic {
+                    // Win64 duplicates each floating-point argument into the general register of its
+                    // position, and says so in `AL`. Our own back end does both; this one writes the
+                    // vector register alone, and a callee that reads the general ones - which is what
+                    // every variadic callee does, `printf` included - answers zero. Refused rather
+                    // than miscompiled: level 2 implements it (ADR-006, ADR-008).
+                    if args
+                        .iter()
+                        .any(|arg| self.types.is_float(func.value(*arg).ty))
+                    {
+                        let message = concat!(
+                            "a floating-point argument to a variadic function: Win64 passes it in both a ",
+                            "vector register and the general register of its position, and this lowerer ",
+                            "writes only the vector one; `--opt-level=2` passes both ",
+                            "(docs/ADR-006-varargs.md)"
+                        );
+                        return Err(LoweringError::not_lowered(message.to_owned(), *span));
+                    }
                     let params: Vec<TypeId> = args.iter().map(|arg| func.value(*arg).ty).collect();
                     let result_ty = match result {
                         Some(result) => func.value(*result).ty,
