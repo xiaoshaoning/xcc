@@ -656,19 +656,26 @@ impl Encoder<'_> {
     // ---------------------------------------------------------------- floating point
 
     /// Move a floating-point value: a register copy, a load, or a store, in the type's width.
+    ///
+    /// The REX byte comes after the mandatory prefix and is not optional: an XMM register above
+    /// `xmm7` and an address base above `r7` are only nameable through it, and without it the
+    /// instruction silently addresses `rax` instead of `r8`.
     fn float_move(&mut self, to: Reg, base: Reg, offset: i32, size: u8, what: Move) {
         match what {
             Move::Register => {
+                self.prefix(to, base);
                 self.bytes(&[0x0F, 0x28]); // movaps: every bit, whatever the type
                 self.modrm(3, to.0, base);
             }
             Move::Load => {
                 self.float_prefix(size);
+                self.prefix(to, base);
                 self.bytes(&[0x0F, 0x10]);
                 self.memory_operand(to.0, base, offset);
             }
             Move::Store => {
                 self.float_prefix(size);
+                self.prefix(to, base);
                 self.bytes(&[0x0F, 0x11]);
                 self.memory_operand(to.0, base, offset);
             }
@@ -688,7 +695,12 @@ impl Encoder<'_> {
         // SSE's two-operand form is `op xmm1, xmm2/m`: the *register* field is the destination and
         // the r/m field the source, which is the opposite way round from the integer operations.
         let destination = self.float_destination(dst);
-        let (target, source) = if self.is_in_float(dst, left_register) {
+        // When the destination is memory its spare is `xmm0`, and `left` may already be in it: then
+        // it *is* the accumulator, and asking for a third scratch register - which does not exist -
+        // would be the alternative.
+        let spare_holds_left =
+            self.scratches.contains(&destination) && destination == left_register;
+        let (target, source) = if self.is_in_float(dst, left_register) || spare_holds_left {
             (left_register, right_register)
         } else if matches!(op, BinOp::Add | BinOp::Mul) && self.is_in_float(dst, right_register) {
             // Adding and multiplying commute, so the destination's register can hold either operand.
@@ -766,13 +778,15 @@ impl Encoder<'_> {
     fn float_const(&mut self, dst: VReg, bits: u64, size: u8) {
         let target = self.float_destination(dst);
         self.mov_imm(Reg::RAX, bits);
+        self.byte(0x66); // the mandatory prefix, before the REX byte
         if size == 8 {
-            self.bytes(&[0x66, 0x48, 0x0F, 0x6E]); // movq xmm, rax
-            self.modrm(3, target.0, Reg::RAX);
+            self.prefix_w(target, Reg::RAX);
+            self.bytes(&[0x0F, 0x6E]); // movq xmm, rax
         } else {
-            self.bytes(&[0x66, 0x0F, 0x6E]); // movd xmm, eax
-            self.modrm(3, target.0, Reg::RAX);
+            self.prefix(target, Reg::RAX);
+            self.bytes(&[0x0F, 0x6E]); // movd xmm, eax
         }
+        self.modrm(3, target.0, Reg::RAX);
         self.write_float(dst, target);
         self.release();
     }
@@ -888,17 +902,21 @@ impl Encoder<'_> {
     fn destination(&self, dst: VReg) -> Reg {
         match self.allocation.location(dst) {
             Location::Register(register) => register,
-            Location::Float(register) => register,
             Location::Spill(_) => Reg::RAX,
+            Location::Float(_) => unreachable!("an integer result in an XMM register"),
         }
     }
 
     /// The same for a floating-point result, whose spare is `xmm0`.
+    ///
+    /// A value in a *general* register here is a mistake in the lowering's classes, and using that
+    /// register's number as an XMM number would address a different register quietly - which is how
+    /// a float load read the wrong one once already.
     fn float_destination(&self, dst: VReg) -> Reg {
         match self.allocation.location(dst) {
             Location::Float(register) => register,
-            Location::Register(register) => register,
             Location::Spill(_) => FLOAT_SCRATCH,
+            Location::Register(_) => unreachable!("a floating-point result in a general register"),
         }
     }
 
@@ -906,7 +924,7 @@ impl Encoder<'_> {
     fn read_float(&mut self, value: VReg) -> Reg {
         match self.allocation.location(value) {
             Location::Float(register) => register,
-            Location::Register(register) => register,
+            Location::Register(_) => unreachable!("an integer value read as floating point"),
             Location::Spill(offset) => {
                 let scratch = self.float_scratch();
                 self.float_move(scratch, Reg::RSP, self.spill_base + offset, 8, Move::Load);
@@ -923,10 +941,8 @@ impl Encoder<'_> {
                     self.float_move(target, register, 0, 8, Move::Register);
                 }
             }
-            Location::Register(target) => {
-                if target != register {
-                    self.float_move(target, register, 0, 8, Move::Register);
-                }
+            Location::Register(_) => {
+                unreachable!("a floating-point value written to a general one")
             }
             Location::Spill(offset) => {
                 self.float_move(register, Reg::RSP, self.spill_base + offset, 8, Move::Store);
@@ -951,7 +967,7 @@ impl Encoder<'_> {
     fn read(&mut self, value: VReg) -> Reg {
         match self.allocation.location(value) {
             Location::Register(register) => register,
-            Location::Float(register) => register,
+            Location::Float(_) => unreachable!("a floating-point value read as an integer"),
             Location::Spill(offset) => {
                 let scratch = self.scratch();
                 self.mov_reg_from_memory(scratch, self.spill_base + offset);
@@ -1029,13 +1045,7 @@ impl Encoder<'_> {
                     self.mov_reg(target, register);
                 }
             }
-            // A general register path never receives a floating-point destination; the float paths
-            // write their own.
-            Location::Float(target) => {
-                if target != register {
-                    self.mov_reg(target, register);
-                }
-            }
+            Location::Float(_) => unreachable!("a floating-point value written by an integer op"),
             Location::Spill(offset) => self.mov_memory_from_reg(self.spill_base + offset, register),
         }
     }

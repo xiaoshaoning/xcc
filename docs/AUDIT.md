@@ -105,6 +105,48 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### floating point, reviewed - 2026-11-16 - a load that read the wrong address
+
+Review of `edfdfc4`.
+
+**Found: a floating-point load or store through a base in `r8`-`r15` read or wrote `[rax]`.** The move
+emitted the mandatory prefix and then the opcode, and never a REX byte - so the base register's high
+bit was dropped, and an address computed into `r8` (which is what a global's address arrives in) became
+`rax`. A global `double` read as garbage: `double g = 2.5; return (int)(g * 2.0);` answered 0. No
+corpus program has a global `double`, so the 406-program ratchet had nothing to say about it, and the
+hand tests all used locals whose addresses are `rsp`-relative. The rule is the one the integer path
+already follows and this path forgot: **the REX byte comes after the mandatory prefix, and an address
+base above `r7` is only nameable through it.**
+
+**Found: the float scratch registers could be asked for a third one.** When a destination is memory its
+spare is `xmm0`, and if the left operand was also spilled it had already been loaded into `xmm0` - so
+the code asked for a third scratch register, of which there are two, and would have hit `unreachable!`
+in a release build. The destination's spare *holding the left operand* is not a collision: it is the
+accumulator, and now it is treated as one.
+
+**Found: three arms that would have turned a class mistake into a wrong answer instead of a stop.** The
+float helpers had `Location::Register(register) => register` arms - a general register's number used as
+an XMM register's - added to satisfy the match checker while the class work was in progress. That is
+exactly the shape of the bug that made a `double` reach `xmm2` from `rdx` earlier in the round. All
+four helpers now have `unreachable!` arms with the reason, on both sides: a compiler bug should stop
+the compiler, and a wrong register is the one outcome that a test with the right answer in it may not
+catch.
+
+**Checked and sound:** the two widths' prefixes (`F3` for `float`, `F2` for `double`) are right on every
+arithmetic, move and conversion, and `ucomisd`/`ucomiss` - the one pair that takes `66` or nothing -
+are the exception they are documented as; `setnp` for equality and `setp` for inequality, with the
+ordering comparisons asked from the other side so a NaN fails them as C requires; the four conversions
+carry their REX byte; a spilled double takes one eight-byte slot whichever width it holds; and a block
+parameter's slot is read and written through the register file its type belongs to, which the earlier
+mismatch in `cc50_corners` was.
+
+**Measured after the review: 406 agreeing, 58 refused, 0 wrong** - the same numbers, with one defect
+that no corpus program exercises now correct.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### stack arguments, reviewed - 2026-11-16 - a count that fitted in a byte, and a dead condition
 
 Review of `39364ff`.
