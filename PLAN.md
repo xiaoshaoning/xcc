@@ -523,6 +523,16 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       the anchored pattern counts 2 760, and the wrong number was briefly believed. A pattern must anchor
       at the end of the line, and a measurement that disagrees with instrumented counting by a factor of
       four is the measurement that is wrong.
+- [x] Measured the copies, and the measurement **closed one door**. Tagged by source over the 414
+      programs: 2 234 copies, of which ~50% are conversions, 401 argument placement, 351 writes, 191
+      returns. The conversions looked like the win - `pointer -> unsigned long long -> pointer` around
+      every address - and the pass to drop them is illegal: substituting a same-*width* conversion away
+      breaks `cir`'s typing, and the verifier says so ("block 0 converts other types than it says"),
+      because a `pointer` and an `unsigned long long` are different `cir` types even when their machine
+      form agrees. Dropping only conversions between *identical* types is legal and finds nothing. So
+      those copies are the price of a typed IR, and they are only removable by giving the destination and
+      the source the same register - an allocator question, whose own measurement is hint *attempts*
+      against hint *fires*.
 - [ ] `back-x64` shrinking, what is left: the **register copies, 7.1% of the text** (2 323 instructions),
       which split into coalescing failures and the ABI's own moves - an argument arrives in `rcx` and
       lands in `rbx`, a result arrives in `rax`. Removing the second class needs cross-block coalescing or
