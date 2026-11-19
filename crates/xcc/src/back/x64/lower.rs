@@ -83,7 +83,7 @@ fn lower_function(
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
         returned: lowerer.returned,
-        outgoing_slots: outgoing_slots as u8,
+        outgoing_slots: outgoing_slots as u32,
         param_count: func.params().len(),
         makes_call,
         blocks: lowerer.blocks,

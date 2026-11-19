@@ -57,8 +57,10 @@ const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8)
 
 /// Encode one function.
 pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encoded {
+    // An `i32` frame is what the prologue can subtract, and the front end's token budget bounds the
+    // argument count long before that: a call site cannot spend more tokens than the whole source.
     let outgoing_base = 32;
-    let outgoing_bytes = i32::from(func.outgoing_slots) * 8;
+    let outgoing_bytes = func.outgoing_slots as i32 * 8;
     let saved_base = outgoing_base + outgoing_bytes;
     let body_base = saved_base + allocation.saved.len() as i32 * 8;
     let spill_base = body_base + func.frame_bytes;
@@ -68,11 +70,12 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // area), a value that did not fit in a register, a block parameter, a variable whose address
     // escapes, and a callee-saved register this function had to keep. A function with none of them
     // has no frame - no `sub rsp`, no `add rsp` - which is fourteen bytes of every such function.
+    // A function with no call has no outgoing slots by construction - the count comes from call
+    // sites - so the call is the only thing that needs naming here.
     let frameless = !func.makes_call
         && allocation.spill_bytes == 0
         && func.frame_bytes == 0
-        && allocation.saved.is_empty()
-        && outgoing_bytes == 0;
+        && allocation.saved.is_empty();
     // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
     // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
     let frame = if frameless {

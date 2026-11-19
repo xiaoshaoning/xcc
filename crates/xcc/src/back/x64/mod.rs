@@ -200,8 +200,9 @@ pub(crate) enum Op {
         size: u8,
         signed: bool,
     },
-    /// Call a function by name: `call rel32`, with the arguments staged through the frame because
-    /// `rcx` may hold one of them while another has to go there.
+    /// Call a function by name: `call rel32`. The first four arguments go in registers, staged
+    /// through the frame when one of them would destroy another; the rest go in the function's
+    /// outgoing slots, which is what the frame reserves them for.
     Call {
         dst: Option<VReg>,
         name: String,
@@ -320,7 +321,7 @@ pub(crate) struct MachineFunction {
     /// beyond the fourth, eight bytes each. The frame has to make room for them above the shadow
     /// space, because a callee reads its fifth argument at `[rsp + 40]` once its own frame is
     /// subtracted - the shadow space and the return address above it.
-    pub outgoing_slots: u8,
+    pub outgoing_slots: u32,
     /// The values this function returns: the ones a `return` hands back, which have to end up in
     /// `rax` and are worth keeping there.
     pub returned: Vec<VReg>,

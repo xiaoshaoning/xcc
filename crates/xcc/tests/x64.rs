@@ -143,6 +143,13 @@ fn the_constructs_the_slice_lowers_behave() {
             8,
         ),
         (
+            // A stack argument of a wider type, and a narrow one in a register that has to be
+            // canonicalised on arrival.
+            "mixed sizes across the register and stack boundary",
+            "long long f(long long a, int b, char c, int d, long long e) { return a + e + b + c + d; } int main(void) { return (int)(f(1, 2, 3, 4, 5) - 15); }",
+            0,
+        ),
+        (
             "seven arguments",
             "int seven(int a, int b, int c, int d, int e, int f, int g) { return a + g; } int main(void) { return seven(10, 1, 2, 3, 4, 5, 32); }",
             42,

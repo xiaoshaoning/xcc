@@ -105,6 +105,48 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### stack arguments, reviewed - 2026-11-16 - a count that fitted in a byte, and a dead condition
+
+Review of `39364ff`.
+
+**Found: the outgoing-slot count was a `u8`.** It comes from the widest call in a function, and a call
+with two hundred and fifty-three arguments would have wrapped it - a frame too small for the slots the
+call writes, which is memory corruption rather than a diagnostic. The front end's token budget makes
+that unreachable today, and the field is a `u32` now so that it stays unreachable for a reason the
+code states instead of a reason a reader has to derive.
+
+**Found: a condition that could never be false.** The frameless rule gained `outgoing_bytes == 0`, but
+a function has outgoing slots only if it has a call, and the same rule already tests that. Removed,
+with the invariant it rested on written where the remaining condition is.
+
+**Checked and sound, because the layout is the thing that can go wrong:**
+
+- The frame is now shadow space, outgoing slots, saved registers, the lowering's frame, spills,
+  staging - and every offset that moved (`body_base`, `spill_base`, `staging_base`, `saved_base`) moved
+  with it, because the prologue and the epilogue both read `saved_base` from one field.
+- The two halves of the ABI's frame layout are in one file and each names the other: the caller writes
+  its fifth argument at `[rsp + 32]`, and the callee reads it at `[rsp + frame + 40]`, the forty being
+  that same shadow space plus the return address the call pushed. `s2` - seven arguments summing the
+  first and the last - is the test that would fail if either half drifted.
+- Stack arguments are written before the register ones, so a register move cannot destroy a value that
+  has not been stored; and the staging path, when a collision forces it, stages the four register
+  arguments only, because the others are already in memory.
+- `arguments_collide` treats an argument in an argument register at a position of four or more as a
+  collision, which is conservative and safe: it can only send a call down the staging path.
+- A narrow stack argument is canonicalised on arrival like a register one, and a `long long` on the
+  stack keeps its eight bytes; the mixed-size case is a test.
+
+**What is not tested, and why:** a call from this back end *into another compiler's function* with
+more than four arguments. The corpus compares whole programs and the CRT's five-argument functions are
+variadic or absent, so the agreement rests on the ABI document rather than on a measurement. Recorded
+here because it is the one claim in this round that a ratchet cannot check.
+
+**Measured after the review: 396 agreeing, 68 refused, 0 wrong** - unchanged.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### the data section, reviewed - 2026-11-16 - a section that was writable and not readable
 
 Review of `5b268bd`.
