@@ -533,14 +533,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       those copies are the price of a typed IR, and they are only removable by giving the destination and
       the source the same register - an allocator question, whose own measurement is hint *attempts*
       against hint *fires*.
-- [ ] `back-x64` shrinking, what is left: the **register copies, 7.1% of the text** (2 323 instructions),
-      which split into coalescing failures and the ABI's own moves - an argument arrives in `rcx` and
-      lands in `rbx`, a result arrives in `rax`. Removing the second class needs cross-block coalescing or
-      a preference for the register a value will have to move to, which is an allocator design change;
-      the first thing to do is measure how many copies fall into each class, because two allocator
-      changes this session were written before that measurement and both were reverted.
-      The frame's remaining 12.8% is saves - a register's save and restore for a value that outlives a
-      call - and that is the ABI's price rather than a defect.
+- [x] `back-x64` shrinking: the register-copy question, **measured and closed**. The coalescing hint was
+      instrumented at the allocator: over the 414 programs it makes **6 297 attempts, fires on 4 128
+      (65.6%), and is blocked on 2 119 (33.7%) because the value it would share a register with is still
+      live at that point** - a copy that two live values require, not a missed opportunity - and on 50
+      (0.8%) because that value is in memory. The blocked 2 119 are, to within a hundred, the whole of the
+      copies the object code still contains, and the rest are the ABI's own moves: an argument arrives in
+      `rcx` and lands in `rbx`, a result arrives in `rax`.
+      So the allocator is doing what coalescing can do, and what is left of it needs interval *splitting*
+      with live-range reordering - a real design change whose ceiling is those 6% - rather than another
+      measurement. Written down rather than attempted, because the measurement says the ceiling is small
+      and two allocator changes this session were written before their measurement.
+      The frame's 12.8% is saves, which is the ABI's price for a value that outlives a call.
 - [x] **`va_arg`** - and it was a slice after all, once the shape was seen. `va_list` is a `char *`;
       Win64's home area holds arguments 0-3 at `[rsp + 8 .. +40)` with the stack arguments following at
       `+40`, so *one pointer walks both*; a variadic function's prologue writes its four register
