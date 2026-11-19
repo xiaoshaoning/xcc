@@ -1390,18 +1390,30 @@ impl Encoder<'_> {
         self.byte(0);
     }
 
+    /// `sub rsp, bytes`, in the four-byte form or the one-byte form: most frames are small, and six
+    /// bytes a function is six bytes over five hundred functions.
     fn sub_rsp(&mut self, bytes: i32) {
-        self.prefix_w(Reg(0), Reg::RSP);
-        self.byte(0x81);
-        self.modrm(3, 5, Reg::RSP);
-        self.bytes(&bytes.to_le_bytes());
+        self.adjust_rsp(5, bytes);
     }
 
+    /// `add rsp, bytes`, likewise.
     fn add_rsp(&mut self, bytes: i32) {
+        self.adjust_rsp(0, bytes);
+    }
+
+    /// `83 /ext ib` when the amount fits in a signed byte, `81 /ext id` otherwise: the same
+    /// instruction, and the assembler this back end writes for itself takes the shorter form.
+    fn adjust_rsp(&mut self, extension: u8, bytes: i32) {
         self.prefix_w(Reg(0), Reg::RSP);
-        self.byte(0x81);
-        self.modrm(3, 0, Reg::RSP);
-        self.bytes(&bytes.to_le_bytes());
+        if let Ok(small) = i8::try_from(bytes) {
+            self.byte(0x83);
+            self.modrm(3, extension, Reg::RSP);
+            self.byte(small as u8);
+        } else {
+            self.byte(0x81);
+            self.modrm(3, extension, Reg::RSP);
+            self.bytes(&bytes.to_le_bytes());
+        }
     }
 
     /// Read `size` bytes at `base + offset`, widened to 64 bits, with the sign the C type has.

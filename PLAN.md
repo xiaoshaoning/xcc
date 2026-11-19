@@ -508,8 +508,19 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       *signed* -2 in 64 bits and a logical shift of that drags bit 63 into the low word. Folding now
       canonicalises each operand for the operation's own type first, which is the rule the whole pass
       rested on and did not state.
-- [ ] `back-x64` shrinking, round five - and the first measurement says most of it is already at the
-      floor. Measured over the 414 corpus programs it compiles: **jump shortening buys 405 bytes of
+- [x] `back-x64` shrinking, round five: the frame's own instructions were **12.8% of the text** (25 bytes
+      per function over 507 functions) and the register copies **7.1%**, so the frame came first. Its
+      `sub rsp`/`add rsp` now take the one-byte-immediate form when the amount fits - `83 /ext ib`
+      instead of `81 /ext id`, six bytes a function - which is **97 432 -> 96 348 bytes**. Small, and
+      the rest of the frame is saves: 507 functions × a register's save and restore, which is the ABI's
+      price for a value that outlives a call and not a defect.
+- [ ] `back-x64` shrinking, round six - and the measurement now points at the register copies (7.1%,
+      2 323 instructions): the allocator's coalescing covers the case where a destination takes its
+      source's register, and the rest is the ABI (an argument arrives in `rcx` and lands in `rbx`, a
+      result arrives in `rax`). Removing those needs *cross-block* coalescing or a preference for a
+      register the value will move to, and that is an allocator design change.
+- [ ] `back-x64` shrinking, round five, the old list - and the first measurement says most of it is
+      already at the floor. Measured over the 414 corpus programs it compiles: **jump shortening buys 405 bytes of
       118 840 (0.3%)** - 135 of 1 068 jumps could take the two-byte form - so the plan's own item is
       not worth writing. The register-to-register copies are **2 760 of ~25 600 instructions (10.8%)**,
       and the tagged breakdown of them is `write` 798, `return` 761, and 984 from the paths that read
