@@ -175,67 +175,91 @@ fn a_program_that_prints_links_and_prints_the_same_as_clang() {
     }
 }
 
+/// Compile `ours` with this compiler and `theirs` with `clang`, link the two, run the program, and
+/// give its exit status. `linker` is named rather than found because the *other* side is part of the
+/// test: a convention has two of them, and only a foreign compiler can disagree with ours.
+fn linked_with_clang(
+    linker: &str,
+    dir: &std::path::Path,
+    ours: &str,
+    theirs: &str,
+) -> Result<Option<i32>, String> {
+    let object = dir.join("ours.obj");
+    let artifact = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    })
+    .compile("ours.c", ours)
+    .map_err(|diagnostics| format!("{diagnostics:?}"))?;
+    std::fs::write(&object, artifact.object()).expect("the object is written");
+    let their_source = dir.join("theirs.c");
+    std::fs::write(&their_source, theirs).expect("the other source is written");
+    let exe = dir.join("t.exe");
+    let link = Command::new(linker)
+        .args(["-O0", "-w", "-o"])
+        .arg(&exe)
+        .arg(&object)
+        .arg(&their_source)
+        .output()
+        .expect("the linker runs");
+    if !link.status.success() {
+        return Err(format!(
+            "the link failed: {}",
+            String::from_utf8_lossy(&link.stderr)
+        ));
+    }
+    Ok(Command::new(&exe)
+        .output()
+        .expect("the program runs")
+        .status
+        .code())
+}
+
 /// The ABI, checked against a compiler that is not this one.
 ///
 /// A calling convention has two sides, and a test that compiles both sides with the same compiler
-/// cannot see a mistake they share: `f(int a, double b, double c)` had its `double`s in `xmm0` and
-/// `xmm1` here and in `xmm1` and `xmm2` everywhere else, and every test of ours passed because it
-/// called our own code from our own code. One object from xcc and one from clang is the only
-/// arrangement that notices, so both directions are here - and the variadic read with it.
+/// cannot see a mistake they share: `f(int a, double b, double c)` had its `double`s in `xmm1` and
+/// `xmm2` here, would have had them in `xmm0` and `xmm1` from a per-class counter, and every test of
+/// ours passed because it called our own code from our own code. Two such mistakes shipped before
+/// this test existed. Both directions are here, and the variadic read with them.
 #[test]
 fn the_calling_convention_agrees_with_clang_in_both_directions() {
-    // `clang` by name, not whichever linker is first on PATH: the *other* side of this test has to be
-    // a compiler that follows Win64's varargs rule, and MinGW's gcc does not duplicate a variadic
-    // `double` into a general register, so a gcc caller would read this compiler's callee as zeros.
-    // The oracle is named for the same reason a measurement is instrumented.
-    let Some(linker) = ["clang"]
-        .into_iter()
-        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
-    else {
+    // `clang` by name, not whichever linker is first on PATH: the *other* side has to follow Win64's
+    // varargs rule, and MinGW's gcc does not duplicate a variadic `double` into a general register, so
+    // a gcc caller would read this compiler's callee as zeros. The oracle is named for the same
+    // reason a measurement is instrumented.
+    let Ok(clang) = Command::new("clang").arg("--version").output() else {
         eprintln!("no clang on this machine: the ABI test is skipped");
         return;
     };
-    let dir = temp_dir("abi");
-    // The callee has an integer and two doubles, so the *position* - not each class's own count -
-    // decides the registers, which is the mistake this test exists to catch. The variadic half goes
-    // one way only: a clang caller duplicates a `double` into a general register and this compiler's
-    // callee reads it, while this compiler's *caller* cannot yet duplicate one, which is the row
-    // ADR-006 still refuses.
-    let fixed_callee = "double g(int a, double b, double c) { return b + c + a; }
-";
-    let variadic_callee = concat!(
-        "double g(int a, double b, double c) { return b + c + a; }
-",
-        "#include <stdarg.h>
-",
-        "double pick(int count, ...) {
-",
-        "    va_list ap; double total = 0.0; int i;
-",
-        "    va_start(ap, count);
-",
-        "    for (i = 0; i < count; i++) total = total + va_arg(ap, double);
-",
-        "    va_end(ap); return total;
-",
-        "}
-"
-    );
-    let caller_calling_both = concat!(
-        "double g(int a, double b, double c);
-",
-        "double pick(int count, ...);
-",
-        "int main(void) { return (int)((g(1, 2.5, 3.5) + pick(3, 1.5, 2.25, 3.25)) * 2.0); }
-"
-    );
-    let caller_calling_fixed = concat!(
-        "double g(int a, double b, double c);
-",
-        "int main(void) { return (int)(g(1, 2.5, 3.5) * 2.0); }
-"
-    );
-    // g(1, 2.5, 3.5) is 7.0 and pick(3, 1.5, 2.25, 3.25) is 7.0, so the answers are 28 and 14.
+    assert!(clang.status.success(), "clang answers");
+    // The callee has an integer between two doubles, so the *position* decides the register - the
+    // mistake that shipped twice. The variadic half goes one way only: a clang caller duplicates a
+    // `double` into a general register and our callee reads it, while our *caller* cannot yet
+    // duplicate one, which is the row ADR-006 still refuses.
+    let fixed_callee = r#"
+        double g(int a, double b, double c) { return b + c + a; }
+    "#;
+    let variadic_callee = r#"
+        #include <stdarg.h>
+        double g(int a, double b, double c) { return b + c + a; }
+        double pick(int count, ...) {
+            va_list ap; double total = 0.0; int i;
+            va_start(ap, count);
+            for (i = 0; i < count; i++) total = total + va_arg(ap, double);
+            va_end(ap); return total;
+        }
+    "#;
+    let caller_calling_both = r#"
+        double g(int a, double b, double c);
+        double pick(int count, ...);
+        int main(void) { return (int)((g(1, 2.5, 3.5) + pick(3, 1.5, 2.25, 3.25)) * 2.0); }
+    "#;
+    let caller_calling_fixed = r#"
+        double g(int a, double b, double c);
+        int main(void) { return (int)(g(1, 2.5, 3.5) * 2.0); }
+    "#;
+    // `g(1, 2.5, 3.5)` is 7.0 and `pick(3, 1.5, 2.25, 3.25)` is 7.0, so the answers are 28 and 14.
     let cases = [
         (
             "xcc callee, clang caller",
@@ -250,42 +274,15 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
             14,
         ),
     ];
+    let dir = temp_dir("abi");
     let mut wrong = Vec::new();
-    for (what, our_source, their_source, expected) in cases {
-        let our_object = dir.join("ours.obj");
-        let artifact = Compile::new(Options {
-            opt_level: 2,
-            ..Options::default()
-        })
-        .compile("ours.c", our_source)
-        .unwrap_or_else(|diagnostics| panic!("{what}: {diagnostics:?}"));
-        std::fs::write(&our_object, artifact.object()).expect("the object is written");
-        let exe = dir.join("t.exe");
-        let sandbox = dir.join("their.c");
-        std::fs::write(&sandbox, their_source).expect("the other source is written");
-        let link = Command::new(linker)
-            .args(["-O0", "-w", "-o"])
-            .arg(&exe)
-            .arg(&our_object)
-            .arg(&sandbox)
-            .output()
-            .expect("the linker runs");
-        if !link.status.success() {
-            wrong.push(format!(
-                "{what}: the link failed: {}",
-                String::from_utf8_lossy(&link.stderr)
-            ));
-            continue;
-        }
-        let status = Command::new(&exe)
-            .output()
-            .expect("the program runs")
-            .status
-            .code();
-        if status != Some(expected) {
-            wrong.push(format!(
-                "{what}: exited with {status:?}, expected {expected}"
-            ));
+    for (what, ours, theirs, expected) in cases {
+        match linked_with_clang("clang", &dir, ours, theirs) {
+            Ok(Some(status)) if status == expected => {}
+            Ok(other) => wrong.push(format!(
+                "{what}: exited with {other:?}, expected {expected}"
+            )),
+            Err(why) => wrong.push(format!("{what}: {why}")),
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

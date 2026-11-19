@@ -77,14 +77,6 @@ enum Move {
     StoreUnaligned,
 }
 
-/// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
-const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
-
-/// The registers the floating-point arguments arrive in: `xmm0` to `xmm3`, counted separately from
-/// the integer ones - so `f(int, double)` puts the `int` in `rcx` and the `double` in `xmm0`, because
-/// each position takes the next register of its *own* class.
-const FLOAT_ARGUMENTS: [Reg; super::ARGUMENT_COUNT] = [Reg(0), Reg(1), Reg(2), Reg(3)];
-
 /// Where a call argument goes: a register of its class, or the caller's outgoing slots.
 #[derive(Debug, Clone, Copy)]
 enum Target {
@@ -162,7 +154,13 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
                     // A float goes back in `xmm0` and an integer in `rax`.
                     if encoder.class_of(*value) == super::Class::Float {
                         let register = encoder.read_float(*value);
-                        encoder.float_move(FLOAT_ARGUMENTS[0], register, 0, 8, Move::Register);
+                        encoder.float_move(
+                            super::FLOAT_ARGUMENTS[0],
+                            register,
+                            0,
+                            8,
+                            Move::Register,
+                        );
                     } else {
                         let register = encoder.read(*value);
                         encoder.mov_reg(Reg::RAX, register);
@@ -270,7 +268,7 @@ impl Encoder<'_> {
             // Win64's home area, which is where `va_start` points: the caller reserved it, and a
             // variadic callee is the only function that has to fill it in. Four integer registers and
             // the stack arguments after them are contiguous from here.
-            for (index, register) in ARGUMENT_REGISTERS.iter().enumerate() {
+            for (index, register) in super::ARGUMENT_REGISTERS.iter().enumerate() {
                 let offset = self.frame + 8 + 8 * index as i32;
                 self.mov_memory_from_reg(offset, *register);
             }
@@ -328,7 +326,7 @@ impl Encoder<'_> {
                         // Straight into the register (or spill) the value lives in: the argument
                         // arrives in one register and is canonicalised where it is going.
                         let register = self.destination(*dst);
-                        self.mov_reg(register, ARGUMENT_REGISTERS[usize::from(*slot)]);
+                        self.mov_reg(register, super::ARGUMENT_REGISTERS[usize::from(*slot)]);
                         self.canonicalise(register, *size, *signed);
                         self.write(*dst, register);
                     }
@@ -345,7 +343,7 @@ impl Encoder<'_> {
                         } else {
                             self.float_move(
                                 register,
-                                FLOAT_ARGUMENTS[usize::from(*slot)],
+                                super::FLOAT_ARGUMENTS[usize::from(*slot)],
                                 0,
                                 *size,
                                 Move::Register,
@@ -389,7 +387,7 @@ impl Encoder<'_> {
                 list,
                 size,
                 signed,
-                float,
+                class,
             } => {
                 // A load through the list; the front end advances the list itself, so `va_arg` is one
                 // instruction and the step is a store the reader can see in the `cir`. A `double` is
@@ -397,7 +395,7 @@ impl Encoder<'_> {
                 // floating-point argument into a general-purpose register for exactly this, so the
                 // only difference is which register file the value lands in.
                 let address = self.read(*list);
-                if *float {
+                if *class == super::Class::Float {
                     let register = self.float_destination(*dst);
                     self.float_move(register, address, 0, *size, Move::Load);
                     self.write_float(*dst, register);
@@ -1129,13 +1127,13 @@ impl Encoder<'_> {
         let mut plan = Vec::with_capacity(args.len());
         for (position, argument) in args.iter().enumerate() {
             let class = self.class_of(*argument);
-            let target = if position < ARGUMENT_REGISTERS.len() {
+            let target = if position < super::ARGUMENT_REGISTERS.len() {
                 match class {
-                    super::Class::Integer => Target::Integer(ARGUMENT_REGISTERS[position]),
-                    super::Class::Float => Target::Float(FLOAT_ARGUMENTS[position]),
+                    super::Class::Integer => Target::Integer(super::ARGUMENT_REGISTERS[position]),
+                    super::Class::Float => Target::Float(super::FLOAT_ARGUMENTS[position]),
                 }
             } else {
-                let slot = position - ARGUMENT_REGISTERS.len();
+                let slot = position - super::ARGUMENT_REGISTERS.len();
                 Target::Stack(self.outgoing_base + 8 * slot as i32)
             };
             plan.push((*argument, class, target));
@@ -1218,7 +1216,7 @@ impl Encoder<'_> {
         let Some(dst) = dst else { return };
         if self.class_of(dst) == super::Class::Float {
             let register = self.float_destination(dst);
-            self.float_move(register, FLOAT_ARGUMENTS[0], 0, size, Move::Register);
+            self.float_move(register, super::FLOAT_ARGUMENTS[0], 0, size, Move::Register);
             self.write_float(dst, register);
         } else {
             self.canonicalise(Reg::RAX, size, signed);
@@ -1250,7 +1248,7 @@ impl Encoder<'_> {
                 // A floating-point argument is refused before a call is lowered: the ABI's XMM
                 // registers are not part of this back end yet.
                 Location::Float(_) => false,
-                Location::Register(register) => ARGUMENT_REGISTERS
+                Location::Register(register) => super::ARGUMENT_REGISTERS
                     .iter()
                     .position(|target| *target == register)
                     .is_some_and(|position| position != index),

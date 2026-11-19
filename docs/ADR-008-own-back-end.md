@@ -114,6 +114,20 @@ and three instruction families emitted their registers without it - invisible wh
 was above seven, and a wrong answer as soon as a calling function used the callee-saved pool. The same
 fault, three times, which is why the encoder's register-naming is now written as one rule.
 
+**The argument's position picks the register, and the class only picks the file.** That is one sentence
+and it cost two shipped wrong answers. The first was a *counter per class*: an integer argument took the
+next integer register and a float the next vector one, which agrees with the truth for every signature
+where the classes alternate evenly and disagrees the moment they do not - `f(int, double, double)` has
+its doubles in `xmm1` and `xmm2`, and a per-class counter puts them in `xmm0` and `xmm1`. Our caller and
+our callee agreed with each other, so no test of ours could see it; clang's own output was the proof.
+The second was the same rule applied to the *pools*: the caller-saved vector set starts at `xmm3`, which
+is where the fourth parameter arrives, so a function with four parameters could be given `xmm3` for its
+first parameter's value and destroy the fourth before anything had read it - the "read every argument
+before writing any" rule the caller's staging area enforces and the callee's prologue did not state.
+Both were found by one test whose other side is `clang`, and both are now impossible: one table of
+argument registers per file, and one rule - a register a parameter arrives in is not allocatable - from
+which both pools are derived.
+
 **Function pointers came next,** which closed the last gap that was not a front-end one: a function's
 address is a symbol, so `lea` with a relocation materialises it, and `call r/m` calls through it. Five
 corpus programs, and the refusals left are three float-ABI programs and the front end's own.

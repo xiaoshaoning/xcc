@@ -705,6 +705,41 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-19 - a rule written twice is a rule broken once, and 60 bytes that proved it
+
+Four commits reviewed together: `va_arg` of a `double`, and the ABI fixes its test forced.
+
+**The finding that matters is structural.** The last commit fixed the argument register rule twice -
+once in `encode.rs` for the caller, once in `lower.rs` for the callee - and got it wrong once more, in
+`regalloc.rs`, because *which registers a function may use* was two decisions in two modules: integers
+in `mod.rs` behind `param_count <= 2`, floats in `regalloc.rs` behind `param_count > 3`. Two thresholds,
+neither derivable from the other, guarding one invariant - **a register a parameter arrives in is not
+allocatable** - and the bug that shipped was the half whose threshold nobody had revisited. The fix is
+not a third threshold: `Registers` now carries both pools, and `left_to_lend` subtracts the arriving
+argument registers from a candidate pool in one place. The number that pays for the refactor instead of
+the other way round: **96 348 -> 96 288 bytes**, because the old thresholds were over-conservative as
+well as wrong - a three-parameter leaf could not use `r9`, which nothing arrives in, and now can.
+
+The rest of the review, smaller:
+
+- `Op::VaArg { float: bool }` became `class: Class`, matching `Op::Incoming`. A boolean that restates
+  what a class already says is a second encoding of one fact, and the encoder branches on it either way.
+- The argument tables moved from `encode.rs` to `mod.rs`, beside `ARGUMENT_COUNT` and the rule that
+  reads them - a fact about the ABI filed under the encoder is how the encoder came to own half of it.
+  Their old doc comment still claimed `f(int, double)` puts the `double` in `xmm0`, which is the bug
+  this milestone fixed; deleted rather than corrected, since the tables now say it once.
+- `Op::Incoming`'s `slot` doc said "which register of its class", true before the position rule and
+  misleading after: it is the index into *both* files at once.
+- The interop test lost its boilerplate to a `linked_with_clang` helper, and its sources became raw
+  strings instead of `concat!` with embedded newlines.
+
+**Measured after the review: 414 corpus programs agree through the own back end, 50 refused, 0 wrong**,
+and 96 288 bytes of `.text` (was 96 348; `clang -O2` 16 715, 5.76x).
+
+181 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### M10: the harness compiles both lowerings - 2026-11-16 - and the plan's number against clang
 
 M10's fourth item: "a differential harness that compiles with both lowerings and compares behaviour,

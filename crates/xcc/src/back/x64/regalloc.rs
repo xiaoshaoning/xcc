@@ -133,7 +133,6 @@ struct Interval {
 /// Allocate registers for one function.
 pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     let registers = func.registers();
-    let allocatable = registers.allocatable;
     let mut positions = Positions::new(func);
     let intervals = positions.intervals(func);
     let mut locations = vec![Location::Register(Reg(0)); positions.value_count];
@@ -152,19 +151,8 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             .copied()
             .unwrap_or(super::Class::Integer)
     };
-    let mut free_integer: Vec<Reg> = allocatable.to_vec();
-    // Two reasons a float cannot use the caller-saved pool: a call destroys it, and the arguments
-    // arrive in `xmm0`-`xmm3` - the fourth of which is `xmm3`, the first register that pool hands
-    // out. A three-parameter function can put a value in `xmm3` because no argument arrives there; a
-    // four-parameter one cannot, because moving the first parameter into `xmm3` destroys the fourth
-    // before anything has read it. That is the same rule as `arguments_are_safe` for integers, and
-    // the same mistake, caught by a test that had both sides of a call compiled by us.
-    let float_pool: &[Reg] = if func.makes_call || func.param_count > 3 {
-        &CALLEE_SAVED_FLOATS
-    } else {
-        &FLOAT_REGISTERS
-    };
-    let mut free_float: Vec<Reg> = float_pool.to_vec();
+    let mut free_integer: Vec<Reg> = registers.integer;
+    let mut free_float: Vec<Reg> = registers.float;
     let mut active: Vec<Interval> = Vec::new();
     let mut saved: Vec<Reg> = Vec::new();
     let mut saved_floats: Vec<Reg> = Vec::new();

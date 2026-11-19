@@ -667,7 +667,7 @@ impl FunctionLowering<'_> {
                     list: self.reg_for(*list),
                     size,
                     signed,
-                    float: class == Class::Float,
+                    class,
                 });
             }
             Inst::GlobalAddress { result, name, .. } => {

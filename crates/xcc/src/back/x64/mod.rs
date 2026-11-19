@@ -55,10 +55,35 @@ impl std::fmt::Display for NotYet {
 /// comparison's result and the return value - so a function that does none of those things can lend
 /// the registers out instead of leaving them idle, and one that does keeps them to itself.
 pub(crate) struct Registers {
-    /// What the allocator may give to values, in the order it prefers them.
-    pub allocatable: &'static [Reg],
+    /// The general registers the allocator may give to integer values, in the order it prefers them.
+    pub integer: Vec<Reg>,
+    /// The same for floating-point values. A separate field, not a separate decision: the reasons to
+    /// exclude a register are the ones below, applied to both files at once.
+    pub float: Vec<Reg>,
     /// Two registers the encoder may clobber while it works, never given to a value.
     pub scratch: [Reg; 2],
+}
+
+/// The general registers the first four arguments arrive in, by position.
+pub(crate) const ARGUMENT_REGISTERS: [Reg; ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
+
+/// The vector registers the first four arguments arrive in, by the same position: the two files are
+/// counted separately, so position 1 puts an `int` in `rdx` and a `double` in `xmm1`.
+pub(crate) const FLOAT_ARGUMENTS: [Reg; ARGUMENT_COUNT] = [Reg(0), Reg(1), Reg(2), Reg(3)];
+
+/// A caller-saved pool minus the registers a parameter arrives in. A pool that loses every register
+/// to the arguments falls back to the callee-saved one: two `mov`s are cheaper than the spill that
+/// would otherwise follow, and no argument arrives in a callee-saved register.
+fn left_to_lend(pool: &[Reg], arriving: &[Reg], saved: &[Reg]) -> Vec<Reg> {
+    let mut registers: Vec<Reg> = pool
+        .iter()
+        .copied()
+        .filter(|register| !arriving.contains(register))
+        .collect();
+    if registers.is_empty() {
+        registers.extend_from_slice(saved);
+    }
+    registers
 }
 
 impl MachineFunction {
@@ -75,27 +100,44 @@ impl MachineFunction {
         // `rax` is never allocatable: a comparison writes its low byte, a division its whole width,
         // and the return value goes there. It is the spare the encoder computes a spilled result in.
         //
-        // The argument registers are excluded with the same reasoning: a value moved into `r8` while
-        // the fourth argument is still there destroys it. Two arguments arrive in `rcx` and `rdx`,
-        // which no caller-saved set allocates, so two is the count under which the sets are safe.
-        let arguments_are_safe = self.param_count <= 2;
-        if !self.makes_call && arguments_are_safe && !shifts_or_divides {
-            Registers {
-                allocatable: &regalloc::CALLER_SAVED,
-                // This function fixes nothing to `rcx` or `rdx`, so they are the scratch pair and
-                // the last two caller-saved registers are lent out.
-                scratch: [Reg(1), Reg(2)],
-            }
-        } else if !self.makes_call && arguments_are_safe {
-            Registers {
-                allocatable: &regalloc::CALLER_SAVED[..2],
+        // So is every register a parameter arrives in, and for a sharper reason: the prologue moves a
+        // parameter into the register the allocator chose, and that move can destroy a *later*
+        // parameter that arrived in the same register and has not been read yet. `f(int a, double b,
+        // int c, double d)` is the case that found this - `b` given `xmm3`, where `d` was waiting.
+        // Counting the arguments that arrive and dropping those registers covers both files with one
+        // rule; two per-class thresholds is how the float half of it was missed twice.
+        let arriving = self.param_count.min(ARGUMENT_COUNT);
+        if self.makes_call {
+            // A call destroys every caller-saved register, so only the callee-saved ones are usable -
+            // and no argument arrives in one, so nothing has to be filtered. The price is a `mov` to
+            // save and another to restore, once per register the function actually touches.
+            return Registers {
+                integer: regalloc::CALLEE_SAVED.to_vec(),
+                float: regalloc::CALLEE_SAVED_FLOATS.to_vec(),
                 scratch: [Reg(10), Reg(11)],
-            }
+            };
+        }
+        // A function that calls nothing keeps the caller-saved registers instead, because the saves
+        // they would cost are `mov`s nothing needs. `rcx` and `rdx` are lent out only when nothing
+        // fixes them: a shift's count is `rcx` and a division's high half is `rdx`, and then they are
+        // the scratch pair instead.
+        let (integer_pool, scratch) = if shifts_or_divides {
+            (&regalloc::CALLER_SAVED[..2], [Reg(10), Reg(11)])
         } else {
-            Registers {
-                allocatable: &regalloc::CALLEE_SAVED,
-                scratch: [Reg(10), Reg(11)],
-            }
+            (&regalloc::CALLER_SAVED[..], [Reg(1), Reg(2)])
+        };
+        Registers {
+            integer: left_to_lend(
+                integer_pool,
+                &ARGUMENT_REGISTERS[..arriving],
+                &regalloc::CALLEE_SAVED,
+            ),
+            float: left_to_lend(
+                &regalloc::FLOAT_REGISTERS,
+                &FLOAT_ARGUMENTS[..arriving],
+                &regalloc::CALLEE_SAVED_FLOATS,
+            ),
+            scratch,
         }
     }
 }
@@ -125,12 +167,15 @@ pub(crate) struct VReg(pub u32);
 pub(crate) enum Op {
     /// A 64-bit constant, already canonical for its C type.
     Const { dst: VReg, value: u64 },
-    /// An argument. Win64 gives the first four *positions* a register each in the argument's own
-    /// class - `rcx`, `rdx`, `r8`, `r9` for integers, `xmm0`-`xmm3` for floats, counted separately -
-    /// and the fifth position onwards goes in the caller's outgoing area whatever its class.
+    /// An argument. Win64 gives the first four *positions* a register each - the position picks the
+    /// register, and the argument's class picks which of the two files it is in, so `f(int, double)`
+    /// has its `int` in `rcx` and its `double` in `xmm1`. The fifth position onwards goes in the
+    /// caller's outgoing area whatever its class.
     Incoming {
         dst: VReg,
-        /// Which register of its class the argument arrives in, or which stack slot if `on_stack`.
+        /// The argument's position among the parameters, which is its index into *both* argument
+        /// files at once - 0 is `rcx` or `xmm0`, 1 is `rdx` or `xmm1` - or, when `on_stack`, the
+        /// outgoing slot it was written to.
         slot: u8,
         /// The register file it belongs to, which decides the register and how it is moved.
         class: Class,
@@ -202,10 +247,10 @@ pub(crate) enum Op {
         list: VReg,
         size: u8,
         signed: bool,
-        /// Whether the type is floating point: Win64 duplicates a variadic `double` into a
+        /// Which register file the value lands in. Win64 duplicates a variadic `double` into a
         /// general-purpose register precisely so a walk like this one can find it, so the read is the
-        /// same eight bytes and only the register file it lands in differs.
-        float: bool,
+        /// same eight bytes and only the file differs.
+        class: Class,
     },
     /// Unary `-` or `~`.
     Unary {
