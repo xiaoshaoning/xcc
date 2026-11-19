@@ -105,6 +105,38 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### the frame's immediates, reviewed - 2026-11-16 - a plan that could not be read
+
+Review of `afaf881`.
+
+**Found: the plan had three shrinking items and no reader could tell which one was current.** "round five"
+(done, the immediates), "round six" (the copies, open), and "round five, the old list" (open - which
+described rounds *one to four*, under a number that made it look like the same round twice). The same
+change decision - how much shrinking is left - was written in three places with overlapping numbers, and
+the third was the measurements of work already finished and already in `AUDIT.md`. That is change
+amplification in the document that decides what happens next, which is worse than in code: a reader who
+picks the wrong bullet spends a session on measured-out work.
+
+It is now one closed item with the numbers in order and one open item, and the history that lives in the
+audit log is no longer copied here. The caution about measuring is kept, in the item where it bites: the
+`mov` grep that counted 10 048 copies where the anchored pattern counts 2 760, and the observation that
+DCE and folding looked worthless on the six-file corpus and paid 18% on the whole one - a caution that
+has now earned its place twice.
+
+**Checked and sound:** the encoding claim is verified rather than assumed - `objdump` shows
+`48 83 ec 38` and `48 83 c4 38`, four bytes each, where the four-byte-immediate form was seven; the
+`i8` range test falls back to `81 /ext id` for a frame of 128 bytes or more, so a large frame is
+unchanged rather than truncated; the extension opcodes (`/5` for `sub`, `/0` for `add`) are named in one
+method that documents both; and a frame of zero still emits neither instruction, because the prologue
+guards on it before asking.
+
+**Measured after the review: 96 348 bytes over the 414 corpus programs** - unchanged, which is what a
+documentation repair should be - with 414 agreeing and none wrong.
+
+180 unit, 23 parser, 20 CLI, 3 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### folding and dead code, reviewed - 2026-11-16 - a bitcast that kept the wrong meaning of its bits
 
 Review of `e5706b6`.

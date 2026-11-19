@@ -508,31 +508,29 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       *signed* -2 in 64 bits and a logical shift of that drags bit 63 into the low word. Folding now
       canonicalises each operand for the operation's own type first, which is the rule the whole pass
       rested on and did not state.
-- [x] `back-x64` shrinking, round five: the frame's own instructions were **12.8% of the text** (25 bytes
-      per function over 507 functions) and the register copies **7.1%**, so the frame came first. Its
-      `sub rsp`/`add rsp` now take the one-byte-immediate form when the amount fits - `83 /ext ib`
-      instead of `81 /ext id`, six bytes a function - which is **97 432 -> 96 348 bytes**. Small, and
-      the rest of the frame is saves: 507 functions × a register's save and restore, which is the ABI's
-      price for a value that outlives a call and not a defect.
-- [ ] `back-x64` shrinking, round six - and the measurement now points at the register copies (7.1%,
-      2 323 instructions): the allocator's coalescing covers the case where a destination takes its
-      source's register, and the rest is the ABI (an argument arrives in `rcx` and lands in `rbx`, a
-      result arrives in `rax`). Removing those needs *cross-block* coalescing or a preference for a
-      register the value will move to, and that is an allocator design change.
-- [ ] `back-x64` shrinking, round five, the old list - and the first measurement says most of it is
-      already at the floor. Measured over the 414 corpus programs it compiles: **jump shortening buys 405 bytes of
-      118 840 (0.3%)** - 135 of 1 068 jumps could take the two-byte form - so the plan's own item is
-      not worth writing. The register-to-register copies are **2 760 of ~25 600 instructions (10.8%)**,
-      and the tagged breakdown of them is `write` 798, `return` 761, and 984 from the paths that read
-      an operand into a place (mostly `Incoming` and the call results, which the ABI fixes). Every
-      cheap item on the old list has now been measured and taken or dropped: DCE (zero dead
-      instructions), constant folding (zero constant-vs-constant operations), block-parameter
-      coalescing (2.6%), spills (254 instructions), jump shortening (0.3%). What is left needs a
-      better *allocator* - interval splitting, or coalescing across block boundaries - and that is a
-      design change with a test suite as its justification, not an afternoon's work. **A caution for
-      whoever measures next**: a quick grep of `mov` operands counted 10 048 copies where the correct
-      anchored pattern counts 2 760, and the wrong number was briefly believed. The pattern has to
-      anchor at the end of the line.
+- [x] `back-x64` shrinking, rounds one to five, each measured before it was written. Code size over the
+      414 corpus programs: **118 848 -> 96 348 bytes**, from 7.11x `clang -O2` to **5.76x**, and from
+      2.62x Cranelift's size to **2.17x**. In order: operands computed in place and copies coalesced
+      (-32%), a leaf function saving nothing (-11%, the callee-saved set is for functions that call),
+      comparisons answering in their own register, arguments placed directly, an empty frame not
+      emitted, the frame's immediates in one byte (-1%), and the largest of all - `cir` folding with an
+      address rule and dead-code elimination (-18%, and the three only pay together).
+      **Measured and dropped, with the numbers**: jump shortening (405 bytes, 0.3%), block-parameter
+      coalescing (2.6% of the stream), interval splitting (254 spill instructions corpus-wide), DCE and
+      folding *on the old six-file corpus* (zero opportunities each - they mattered only once the whole
+      corpus was measured, which is the caution below in its most useful form).
+      **A caution for whoever measures next**: a quick grep of `mov` operands counted 10 048 copies where
+      the anchored pattern counts 2 760, and the wrong number was briefly believed. A pattern must anchor
+      at the end of the line, and a measurement that disagrees with instrumented counting by a factor of
+      four is the measurement that is wrong.
+- [ ] `back-x64` shrinking, what is left: the **register copies, 7.1% of the text** (2 323 instructions),
+      which split into coalescing failures and the ABI's own moves - an argument arrives in `rcx` and
+      lands in `rbx`, a result arrives in `rax`. Removing the second class needs cross-block coalescing or
+      a preference for the register a value will have to move to, which is an allocator design change;
+      the first thing to do is measure how many copies fall into each class, because two allocator
+      changes this session were written before that measurement and both were reverted.
+      The frame's remaining 12.8% is saves - a register's save and restore for a value that outlives a
+      call - and that is the ABI's price rather than a defect.
 - [ ] **`va_arg`, and it is a milestone rather than a slice.** It is not a back-end feature at all:
       `stdarg.h` is a stub that `#error`s, the front end has no builtin for `va_start`/`va_arg`, and
       `cir` has no operation for either. The work, in order: a `__builtin_va_list` type (`char *` on
