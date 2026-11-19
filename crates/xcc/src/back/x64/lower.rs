@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{BlockTerm, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
+use super::{BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
 use crate::types::{Type, TypeId, Types};
 
@@ -56,6 +56,7 @@ fn lower_function(
         param_offsets: Vec::new(),
         frame_bytes: 0,
         returned: Vec::new(),
+        classes: Vec::new(),
         functions,
         direct_calls: HashMap::new(),
     };
@@ -82,6 +83,7 @@ fn lower_function(
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
+        classes: lowerer.classes,
         returned: lowerer.returned,
         outgoing_slots: outgoing_slots as u32,
         param_count: func.params().len(),
@@ -107,6 +109,8 @@ struct FunctionLowering<'a> {
     frame_bytes: i32,
     /// The values a `return` hands back.
     returned: Vec<VReg>,
+    /// Which register file each value belongs to, by virtual register.
+    classes: Vec<Class>,
     /// The names this module defines functions for.
     functions: &'a HashSet<String>,
     /// Values that are the function a call names directly, so no address is ever materialised for
@@ -183,6 +187,11 @@ impl FunctionLowering<'_> {
                 for (index, param) in func.block(block).params.iter().enumerate() {
                     let offset = self.param_offsets[position] + 8 * index as i32;
                     let dst = self.reg_for(*param);
+                    // A parameter's register file is its type's, like any other value's: the slot
+                    // holds eight bytes and only the reader knows what they mean.
+                    let ty = func.value(*param).ty;
+                    let (_, _, class) = self.scalar(ty, func.block(block).span)?;
+                    self.classify(dst, class);
                     block_ops.push(Op::LoadLocal { dst, offset });
                 }
             }
@@ -273,6 +282,27 @@ impl FunctionLowering<'_> {
         }
     }
 
+    /// Record which register file a value belongs to, from its C type.
+    fn classify(&mut self, value: VReg, class: Class) {
+        let index = value.0 as usize;
+        if self.classes.len() <= index {
+            self.classes.resize(index + 1, Class::Integer);
+        }
+        self.classes[index] = class;
+    }
+
+    /// The width, sign and register file of a scalar, which is everything an operation needs to know
+    /// about the type it works on.
+    fn scalar(&self, ty: TypeId, span: crate::diag::Span) -> Result<(u8, bool, Class), NotYet> {
+        match self.types.kind(ty) {
+            Type::Float { bits } => Ok((bits / 8, false, Class::Float)),
+            _ => {
+                let (size, signed) = self.width(ty, span)?;
+                Ok((size, signed, Class::Integer))
+            }
+        }
+    }
+
     /// Reserve `size` bytes of frame at `align`, giving an offset from the frame body.
     fn allocate(&mut self, size: u64, align: u64) -> i32 {
         let align = align.max(1) as i32;
@@ -289,11 +319,21 @@ impl FunctionLowering<'_> {
             Inst::Const {
                 result, ty, bits, ..
             } => {
-                let (size, signed) = self.width(*ty, span)?;
+                let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
-                ops.push(Op::Const {
-                    dst,
-                    value: canonical(*bits, size, signed),
+                self.classify(dst, class);
+                ops.push(match class {
+                    // A floating constant travels as its bit pattern; where those bits go is the
+                    // encoder's business.
+                    Class::Float => Op::FloatConst {
+                        dst,
+                        bits: *bits,
+                        size,
+                    },
+                    Class::Integer => Op::Const {
+                        dst,
+                        value: canonical(*bits, size, signed),
+                    },
                 });
             }
             Inst::Binary {
@@ -304,11 +344,28 @@ impl FunctionLowering<'_> {
                 right,
                 ..
             } => {
-                let (size, signed) = self.width(*ty, span)?;
+                let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
+                self.classify(dst, class);
                 let (left, right) = (self.reg_for(*left), self.reg_for(*right));
-                match op {
-                    BinOp::Shl | BinOp::Shr => ops.push(Op::Shift {
+                if class == Class::Float {
+                    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+                        return Err(NotYet {
+                            message: "a bitwise operation on a floating-point value".into(),
+                            span,
+                        });
+                    }
+                    ops.push(Op::FloatBinary {
+                        dst,
+                        op: *op,
+                        left,
+                        right,
+                        size,
+                    });
+                    return Ok(());
+                }
+                ops.push(match op {
+                    BinOp::Shl | BinOp::Shr => Op::Shift {
                         dst,
                         left,
                         right,
@@ -316,24 +373,24 @@ impl FunctionLowering<'_> {
                         left_shift: *op == BinOp::Shl,
                         size,
                         signed,
-                    }),
-                    BinOp::Div | BinOp::Rem => ops.push(Op::Divide {
+                    },
+                    BinOp::Div | BinOp::Rem => Op::Divide {
                         dst,
                         left,
                         right,
                         remainder: *op == BinOp::Rem,
                         signed,
                         size,
-                    }),
-                    _ => ops.push(Op::Binary {
+                    },
+                    _ => Op::Binary {
                         dst,
                         op: *op,
                         left,
                         right,
                         size,
                         signed,
-                    }),
-                }
+                    },
+                });
             }
             Inst::Unary {
                 result,
@@ -342,9 +399,35 @@ impl FunctionLowering<'_> {
                 value,
                 ..
             } => {
-                let (size, signed) = self.width(*ty, span)?;
+                let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
+                self.classify(dst, class);
                 let src = self.reg_for(*value);
+                if class == Class::Float {
+                    if *op != crate::cir::UnOp::Neg {
+                        return Err(NotYet {
+                            message: "`~` on a floating-point value".into(),
+                            span,
+                        });
+                    }
+                    // `-x` is `0 - x`: a zero arrives as the bits of one, so no constant of its own
+                    // is needed in the data section.
+                    let zero = self.fresh();
+                    self.classify(zero, Class::Float);
+                    ops.push(Op::FloatConst {
+                        dst: zero,
+                        bits: 0,
+                        size,
+                    });
+                    ops.push(Op::FloatBinary {
+                        dst,
+                        op: BinOp::Sub,
+                        left: zero,
+                        right: src,
+                        size,
+                    });
+                    return Ok(());
+                }
                 ops.push(match op {
                     crate::cir::UnOp::Neg => Op::Unary {
                         dst,
@@ -370,44 +453,86 @@ impl FunctionLowering<'_> {
                 right,
                 ..
             } => {
-                let (_, signed) = self.width(*ty, span)?;
+                let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
-                ops.push(Op::Compare {
-                    dst,
-                    op: *op,
-                    left: self.reg_for(*left),
-                    right: self.reg_for(*right),
-                    signed,
+                // A comparison answers in an `int`, whatever its operands were.
+                self.classify(dst, Class::Integer);
+                let (left, right) = (self.reg_for(*left), self.reg_for(*right));
+                ops.push(match class {
+                    Class::Float => Op::FloatCompare {
+                        dst,
+                        op: *op,
+                        left,
+                        right,
+                        size,
+                    },
+                    Class::Integer => Op::Compare {
+                        dst,
+                        op: *op,
+                        left,
+                        right,
+                        signed,
+                    },
                 });
             }
             Inst::Convert {
                 result,
                 op,
-                from: _,
+                from,
                 to,
                 value,
                 ..
             } => {
-                let (size, signed) = self.width(*to, span)?;
-                if matches!(
+                let (from_size, from_signed, from_class) = self.scalar(*from, span)?;
+                let (to_size, to_signed, to_class) = self.scalar(*to, span)?;
+                let floats = matches!(
                     op,
                     ConvertOp::IntToFloat
                         | ConvertOp::FloatToInt
                         | ConvertOp::FloatExtend
                         | ConvertOp::FloatTruncate
-                ) {
+                );
+                if floats != (from_class == Class::Float || to_class == Class::Float) {
                     return Err(NotYet {
-                        message: "a conversion between integers and floating point".into(),
+                        message: format!(
+                            "a conversion the front end named `{}` between {} and {}",
+                            op.as_str(),
+                            self.types.describe(*from),
+                            self.types.describe(*to)
+                        ),
                         span,
                     });
                 }
                 let dst = self.reg_for(*result);
+                self.classify(dst, to_class);
                 let src = self.reg_for(*value);
-                ops.push(Op::Canonical {
-                    dst,
-                    src,
-                    size,
-                    signed,
+                ops.push(match (from_class, to_class) {
+                    (Class::Float, Class::Float) | (Class::Integer, Class::Float) => {
+                        Op::FloatConvert {
+                            dst,
+                            src,
+                            from: from_class,
+                            to: to_class,
+                            from_size,
+                            to_size,
+                            signed: from_signed,
+                        }
+                    }
+                    (Class::Float, Class::Integer) => Op::FloatConvert {
+                        dst,
+                        src,
+                        from: from_class,
+                        to: to_class,
+                        from_size,
+                        to_size,
+                        signed: to_signed,
+                    },
+                    (Class::Integer, Class::Integer) => Op::Canonical {
+                        dst,
+                        src,
+                        size: to_size,
+                        signed: to_signed,
+                    },
                 });
             }
             Inst::Load {
@@ -416,24 +541,44 @@ impl FunctionLowering<'_> {
                 address,
                 ..
             } => {
-                let (size, signed) = self.width(*ty, span)?;
+                let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
-                ops.push(Op::LoadMemory {
-                    dst,
-                    base: self.reg_for(*address),
-                    offset: 0,
-                    size,
-                    signed,
+                self.classify(dst, class);
+                let base = self.reg_for(*address);
+                ops.push(match class {
+                    Class::Float => Op::LoadFloat {
+                        dst,
+                        base,
+                        offset: 0,
+                        size,
+                    },
+                    Class::Integer => Op::LoadMemory {
+                        dst,
+                        base,
+                        offset: 0,
+                        size,
+                        signed,
+                    },
                 });
             }
             Inst::Store { address, value, .. } => {
                 let ty = func.value(*value).ty;
-                let (size, _) = self.width(ty, span)?;
-                ops.push(Op::StoreMemory {
-                    base: self.reg_for(*address),
-                    offset: 0,
-                    src: self.reg_for(*value),
-                    size,
+                let (size, _, class) = self.scalar(ty, span)?;
+                let base = self.reg_for(*address);
+                let src = self.reg_for(*value);
+                ops.push(match class {
+                    Class::Float => Op::StoreFloat {
+                        base,
+                        offset: 0,
+                        src,
+                        size,
+                    },
+                    Class::Integer => Op::StoreMemory {
+                        base,
+                        offset: 0,
+                        src,
+                        size,
+                    },
                 });
             }
             Inst::Slot { result, ty, .. } => {
@@ -444,6 +589,7 @@ impl FunctionLowering<'_> {
                 let align = self.types.align_of(*ty).unwrap_or(1);
                 let offset = self.allocate(size, align);
                 let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
                 ops.push(Op::LocalAddress { dst, offset });
             }
             Inst::GlobalAddress { result, name, .. } => {
@@ -460,6 +606,7 @@ impl FunctionLowering<'_> {
                     });
                 } else {
                     let dst = self.reg_for(*result);
+                    self.classify(dst, Class::Integer);
                     ops.push(Op::DataAddress {
                         dst,
                         symbol: name.clone(),
@@ -478,6 +625,22 @@ impl FunctionLowering<'_> {
                         span,
                     });
                 };
+                for arg in args {
+                    if self.types.is_float(func.value(*arg).ty) {
+                        return Err(NotYet {
+                            message: "a floating-point argument in a call".into(),
+                            span,
+                        });
+                    }
+                }
+                if let Some(result) = result {
+                    if self.types.is_float(func.value(*result).ty) {
+                        return Err(NotYet {
+                            message: "a call that returns a floating-point value".into(),
+                            span,
+                        });
+                    }
+                }
                 let args: Vec<VReg> = args.iter().map(|arg| self.reg_for(*arg)).collect();
                 let dst = result.map(|result| self.reg_for(result));
                 let size = match result {
@@ -487,6 +650,9 @@ impl FunctionLowering<'_> {
                     }
                     None => None,
                 };
+                if let Some(dst) = dst {
+                    self.classify(dst, Class::Integer);
+                }
                 ops.push(Op::Call {
                     dst,
                     name,

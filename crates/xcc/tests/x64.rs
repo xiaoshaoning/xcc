@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 68 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 396;
+/// 58 the back end still refuses are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 406;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -160,6 +160,38 @@ fn the_constructs_the_slice_lowers_behave() {
             "a three-argument leaf called twice, with values kept across both",
             "int three(int a, int b, int c) { return a + b + c; } int main(void) { int x = three(1, 2, 3); int y = three(4, 5, 6); return x + y; }",
             21,
+        ),
+        (
+            // Floating point: its own register file, its own widths, and a comparison whose answer
+            // is an `int` again.
+            "doubles in arithmetic, narrowed on the way out",
+            "int main(void) { double x = 2.5; double y = 4.0; return (int)(x * y); }",
+            10,
+        ),
+        (
+            "a double division and subtraction",
+            "int main(void) { double a = 7.0, b = 2.0; return (int)(a / b) + (int)(a - b); }",
+            8,
+        ),
+        (
+            "a double comparison",
+            "int main(void) { double z = 3.75; if (z > 1.5) return 42; return 1; }",
+            42,
+        ),
+        (
+            "negative doubles, which are a subtraction from zero",
+            "int main(void) { double c = -3.125; double d = -1.25; if (c < 0 && d > -2) return 42; return 1; }",
+            42,
+        ),
+        (
+            "float widened to double",
+            "int main(void) { float f = 1.5f; double d = f; return (int)(d * 2.0); }",
+            3,
+        ),
+        (
+            "double equality, which is not the same question as ordering",
+            "int main(void) { double a = 7.0; return (a == 7.0 ? 100 : 0) + (int)(a / 2.0); }",
+            103,
         ),
         (
             "a loop, which becomes block parameters",

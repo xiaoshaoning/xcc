@@ -105,6 +105,16 @@ impl MachineFunction {
 /// keeps the argument registers out of the allocatable set for a function that takes more.
 pub(crate) const ARGUMENT_COUNT: usize = 4;
 
+/// Which register file a value lives in. x86-64 has two, and a value belongs to exactly one: a float
+/// is never in a general register, an integer never in an XMM one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Class {
+    /// An integer or a pointer, in a general-purpose register.
+    Integer,
+    /// A `float` or a `double`, in an XMM register.
+    Float,
+}
+
 /// A virtual register: one per value, and one per temporary this back end needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct VReg(pub u32);
@@ -200,6 +210,53 @@ pub(crate) enum Op {
         size: u8,
         signed: bool,
     },
+    /// Two floating-point values, one operation: `+`, `-`, `*` or `/`, in the type's own width.
+    FloatBinary {
+        dst: VReg,
+        op: BinOp,
+        left: VReg,
+        right: VReg,
+        /// 4 for `float`, 8 for `double`.
+        size: u8,
+    },
+    /// A floating-point comparison, giving 1 or 0 in an `int` - so the answer lands in a general
+    /// register, because that is the register C's answer belongs in.
+    FloatCompare {
+        dst: VReg,
+        op: CmpOp,
+        left: VReg,
+        right: VReg,
+        size: u8,
+    },
+    /// Load a floating-point constant into a register; its bits travel through a general register.
+    FloatConst { dst: VReg, bits: u64, size: u8 },
+    /// Convert between the two floating widths, or between a float and an integer.
+    FloatConvert {
+        dst: VReg,
+        src: VReg,
+        from: Class,
+        to: Class,
+        /// The source's width and the destination's, in bytes.
+        from_size: u8,
+        to_size: u8,
+        /// Whether the source is signed: an integer's sign for `int`-to-float, the float's for
+        /// `float`-to-`int`, where it chooses between the signed and unsigned conversions.
+        signed: bool,
+    },
+    /// Read a floating-point value from memory.
+    LoadFloat {
+        dst: VReg,
+        base: VReg,
+        offset: i32,
+        size: u8,
+    },
+    /// Write one.
+    StoreFloat {
+        base: VReg,
+        offset: i32,
+        src: VReg,
+        size: u8,
+    },
     /// Call a function by name: `call rel32`. The first four arguments go in registers, staged
     /// through the frame when one of them would destroy another; the rest go in the function's
     /// outgoing slots, which is what the frame reserves them for.
@@ -227,9 +284,14 @@ impl Op {
             | Op::Divide { dst, .. }
             | Op::Unary { dst, .. }
             | Op::Compare { dst, .. }
+            | Op::FloatBinary { dst, .. }
+            | Op::FloatCompare { dst, .. }
+            | Op::FloatConst { dst, .. }
+            | Op::FloatConvert { dst, .. }
+            | Op::LoadFloat { dst, .. }
             | Op::Canonical { dst, .. } => Some(*dst),
             Op::Call { dst, .. } => *dst,
-            Op::StoreLocal { .. } | Op::StoreMemory { .. } => None,
+            Op::StoreLocal { .. } | Op::StoreMemory { .. } | Op::StoreFloat { .. } => None,
         }
     }
 
@@ -247,7 +309,13 @@ impl Op {
             Op::Binary { left, right, .. }
             | Op::Shift { left, right, .. }
             | Op::Divide { left, right, .. }
-            | Op::Compare { left, right, .. } => vec![*left, *right],
+            | Op::Compare { left, right, .. }
+            | Op::FloatBinary { left, right, .. }
+            | Op::FloatCompare { left, right, .. } => vec![*left, *right],
+            Op::LoadFloat { base, .. } => vec![*base],
+            Op::StoreFloat { base, src, .. } => vec![*base, *src],
+            Op::FloatConvert { src, .. } => vec![*src],
+            Op::FloatConst { .. } => Vec::new(),
             Op::Unary { src, .. } | Op::Canonical { src, .. } => vec![*src],
             Op::Call { args, .. } => args.clone(),
         }
@@ -322,6 +390,9 @@ pub(crate) struct MachineFunction {
     /// space, because a callee reads its fifth argument at `[rsp + 40]` once its own frame is
     /// subtracted - the shadow space and the return address above it.
     pub outgoing_slots: u32,
+    /// The register file each value belongs to, by virtual register. A value's class comes from its C
+    /// type, not from the allocation, so the lowering records it and the allocator reads it.
+    pub classes: Vec<Class>,
     /// The values this function returns: the ones a `return` hands back, which have to end up in
     /// `rax` and are worth keeping there.
     pub returned: Vec<VReg>,

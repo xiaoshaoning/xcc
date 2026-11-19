@@ -43,11 +43,18 @@ impl Reg {
 /// Where a value is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Location {
-    /// In a register for its whole life.
+    /// In a general-purpose register for its whole life.
     Register(Reg),
+    /// In an XMM register for its whole life.
+    Float(Reg),
     /// In a frame slot at this offset from the frame body: the encoder moves it in and out.
     Spill(i32),
 }
+
+/// The XMM registers a floating-point value may live in. `xmm0` and `xmm1` are the encoder's scratch
+/// for floating-point operands, as `r10` and `r11` are for integers; `xmm6` and above are
+/// callee-saved, and nothing here calls a function that takes or returns a float yet.
+pub(crate) const FLOAT_REGISTERS: [Reg; 4] = [Reg(2), Reg(3), Reg(4), Reg(5)];
 
 /// What a function that calls another may allocate: the callee-saved registers. A call cannot
 /// destroy them, so a value in one is safe across the call for free; the price is a `mov` to save and
@@ -114,10 +121,20 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     let mut order: Vec<Interval> = intervals;
     order.sort_by_key(|interval| (interval.start, interval.reg));
 
+    // Two register files, so two pools. A value's class decides which one it draws from, and an
+    // interval only ever competes with the ones in its own file.
+    let class_of = |value: VReg| {
+        func.classes
+            .get(value.0 as usize)
+            .copied()
+            .unwrap_or(super::Class::Integer)
+    };
+    let mut free_integer: Vec<Reg> = allocatable.to_vec();
+    let mut free_float: Vec<Reg> = FLOAT_REGISTERS.to_vec();
     let mut active: Vec<Interval> = Vec::new();
-    let mut free: Vec<Reg> = allocatable.to_vec();
     let mut saved: Vec<Reg> = Vec::new();
     for interval in order {
+        let float = class_of(interval.reg) == super::Class::Float;
         // Everything that ended before this one starts has finished with its register. The
         // register is free again, and it stays in `saved`: the prologue has to save every register
         // the function touches, not every one it holds at the end.
@@ -128,26 +145,37 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             // operands before it writes the destination.
             if active[index].end <= interval.start {
                 let other = active.remove(index);
-                free.push(location_register(locations[other.reg.0 as usize]));
+                match locations[other.reg.0 as usize] {
+                    Location::Register(register) => free_integer.push(register),
+                    Location::Float(register) => free_float.push(register),
+                    Location::Spill(_) => {}
+                }
             } else {
                 index += 1;
             }
         }
-        free.sort();
+        free_integer.sort();
+        free_float.sort();
+        let free = if float {
+            &mut free_float
+        } else {
+            &mut free_integer
+        };
         // Coalescing: a value computed from another one takes the same register when it is free, so
         // the `mov` that would copy it is not emitted at all.
         if let Some(hint) = interval.hint {
-            if let Some(register) = free
-                .iter()
-                .find(|register| self_register(&locations, hint, allocatable) == Some(**register))
-            {
-                let register = *register;
+            let wanted = self_register(&locations, hint);
+            if let Some(register) = wanted.filter(|register| free.contains(register)) {
                 free.retain(|other| *other != register);
-                locations[interval.reg.0 as usize] = Location::Register(register);
-                // Every callee-saved register this function touches has to be preserved, whether
-                // it calls anything or not. A leaf usually allocates none of them - its set is the
-                // caller-saved one - but it does when it takes more than two arguments, and then
-                // the saves are what keep its caller's values alive.
+                locations[interval.reg.0 as usize] = if float {
+                    Location::Float(register)
+                } else {
+                    Location::Register(register)
+                };
+                // Every callee-saved register this function touches has to be preserved, whether it
+                // calls anything or not. A leaf usually allocates none of them - its set is the
+                // caller-saved one - but it does when it takes more than two arguments, and then the
+                // saves are what keep its caller's values alive.
                 if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                     saved.push(register);
                 }
@@ -158,20 +186,29 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
         }
         if free.is_empty() {
             // Nothing is free: the interval that runs longest loses its register, because that
-            // register then covers the most instructions. A tie spills the new one, which keeps
-            // the scan's decision stable.
+            // register then covers the most instructions. A tie spills the new one, which keeps the
+            // scan's decision stable. Only an interval of the same class is a candidate: a float
+            // cannot take a general register.
             let victim = active
                 .iter()
                 .enumerate()
+                .filter(|(_, other)| (class_of(other.reg) == super::Class::Float) == float)
                 .max_by_key(|(_, other)| other.end)
                 .map(|(index, other)| (index, *other));
             match victim {
                 Some((index, other)) if other.end > interval.end => {
-                    let register = location_register(locations[other.reg.0 as usize]);
+                    let register = match locations[other.reg.0 as usize] {
+                        Location::Register(register) | Location::Float(register) => register,
+                        Location::Spill(_) => unreachable!("an active interval has a register"),
+                    };
                     active.remove(index);
                     locations[other.reg.0 as usize] = Location::Spill(spills * 8);
                     spills += 1;
-                    locations[interval.reg.0 as usize] = Location::Register(register);
+                    locations[interval.reg.0 as usize] = if float {
+                        Location::Float(register)
+                    } else {
+                        Location::Register(register)
+                    };
                     active.push(interval);
                     active.sort_by_key(|other| other.end);
                 }
@@ -182,7 +219,11 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             }
         } else {
             let register = free.remove(0);
-            locations[interval.reg.0 as usize] = Location::Register(register);
+            locations[interval.reg.0 as usize] = if float {
+                Location::Float(register)
+            } else {
+                Location::Register(register)
+            };
             if CALLEE_SAVED.contains(&register) && !saved.contains(&register) {
                 saved.push(register);
             }
@@ -225,21 +266,21 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
     }
 }
 
-/// Where a value already lives, if it has been given a register out of this function's set.
+/// Where a value already lives, if it has been given a register at all.
 ///
-/// The table is filled with `rax` before the scan and a value that nothing reads keeps that filler,
-/// so the answer is filtered by the set: a register this allocation can hand out is the only thing
-/// worth coalescing with.
-fn self_register(locations: &[Location], value: VReg, allocatable: &[Reg]) -> Option<Reg> {
+/// The table is filled with `rax` before the scan and a value that nothing reads keeps that filler;
+/// the caller asks whether the answer is in the pool it is drawing from, which is what makes the
+/// filler harmless.
+fn self_register(locations: &[Location], value: VReg) -> Option<Reg> {
     match locations.get(value.0 as usize) {
-        Some(Location::Register(register)) if allocatable.contains(register) => Some(*register),
+        Some(Location::Register(register)) | Some(Location::Float(register)) => Some(*register),
         _ => None,
     }
 }
 
 fn location_register(location: Location) -> Reg {
     match location {
-        Location::Register(register) => register,
+        Location::Register(register) | Location::Float(register) => register,
         Location::Spill(_) => unreachable!("a spilled value has no register to give back"),
     }
 }

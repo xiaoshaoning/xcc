@@ -106,6 +106,12 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
 
+**Floating point came next, as one file's worth of it:** XMM registers as a second register file, the
+four arithmetic operations in both widths, comparisons with C's NaN rules, and the four conversions.
+A value's register file is a property of its C type and is carried beside the value, so the allocator
+scans each class against its own pool. Float *parameters*, returns and call arguments are still
+refused: the Win64 ABI places them by argument position in `xmm0`-`xmm3`, which is the next round.
+
 **Stack arguments came next:** the fifth argument onwards in the caller's outgoing area above the
 shadow space, which took another thirteen corpus programs. It also surfaced a bug from the leaf work:
 a function with three arguments cannot allocate caller-saved registers, so it takes the callee-saved

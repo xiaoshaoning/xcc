@@ -444,6 +444,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       now "every callee-saved register touched", which is what the ABI asks for and needs no
       knowledge of whether a call happens; a leaf usually touches none because its set is
       caller-saved.
+- [x] `back-x64` **floating point, inside a function**: a second register file (`xmm2`-`xmm5`, with
+      `xmm0`/`xmm1` as the encoder's scratch), `addsd`/`subss`/… in both widths, constants through a
+      general register, `ucomisd` comparisons whose answer is an `int`, `cvtsi2sd` and its
+      counterparts both ways, and `cvtss2sd`/`cvtsd2ss`. **396 -> 406 of the 464 corpus programs**
+      compile, link, run and agree. The class of a value - a general register or an XMM one - comes
+      from its C type and is carried in `MachineFunction::classes`; the allocator scans each class
+      against its own pool and a floated interval can only spill against a float.
+      **Not here, and the next round of it:** a `double` parameter, a `double` return, and a float
+      argument to a call - the ABI puts those in `xmm0`-`xmm3` *by argument position*, and three
+      corpus programs refuse for exactly that. Four encoding faults were found by hand tests before
+      the corpus saw any of them: SSE's two-operand form puts the destination in the *register* field
+      (the opposite of the integer form); a float destination whose register holds a still-live
+      operand needs a scratch, as the integer path already knew; `ucomisd` takes `66` and not `F2`,
+      and a wrong prefix is not a wrong answer but an illegal instruction; the two conversions need
+      their REX byte or they read `rax`; and `==` needs `setnp`, not `setp`, or every equality is
+      quietly false.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.

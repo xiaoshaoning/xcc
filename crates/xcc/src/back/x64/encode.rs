@@ -52,6 +52,22 @@ pub(crate) struct Encoded {
     pub frame: i32,
 }
 
+/// The two XMM registers the encoder uses as scratch for floating-point operands; nothing is
+/// allocated from them.
+const FLOAT_SCRATCH: Reg = Reg(0);
+const FLOAT_SECOND: Reg = Reg(1);
+
+/// What a floating-point move is doing, which decides its opcode and its direction.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Move {
+    /// Register to register: a copy that keeps every bit.
+    Register,
+    /// Memory to register.
+    Load,
+    /// Register to memory.
+    Store,
+}
+
 /// The registers the integer arguments arrive in, in order: rcx, rdx, r8, r9.
 const ARGUMENT_REGISTERS: [Reg; super::ARGUMENT_COUNT] = [Reg(1), Reg(2), Reg(8), Reg(9)];
 
@@ -277,13 +293,29 @@ impl Encoder<'_> {
                 self.write(*dst, register);
             }
             Op::LoadLocal { dst, offset } => {
-                let register = self.destination(*dst);
-                self.mov_reg_from_memory(register, self.body_base + offset);
-                self.write(*dst, register);
+                // A block parameter's slot holds eight bytes whichever register file the value
+                // belongs to, so the move has to be the one that file understands: an integer load
+                // would read a double's bits into a general register and lose them.
+                let offset = self.body_base + offset;
+                if matches!(self.allocation.location(*dst), Location::Float(_)) {
+                    let register = self.float_destination(*dst);
+                    self.float_move(register, Reg::RSP, offset, 8, Move::Load);
+                    self.write_float(*dst, register);
+                } else {
+                    let register = self.destination(*dst);
+                    self.mov_reg_from_memory(register, offset);
+                    self.write(*dst, register);
+                }
             }
             Op::StoreLocal { offset, src } => {
-                let register = self.read(*src);
-                self.mov_memory_from_reg(self.body_base + offset, register);
+                let offset = self.body_base + offset;
+                if matches!(self.allocation.location(*src), Location::Float(_)) {
+                    let register = self.read_float(*src);
+                    self.float_move(register, Reg::RSP, offset, 8, Move::Store);
+                } else {
+                    let register = self.read(*src);
+                    self.mov_memory_from_reg(offset, register);
+                }
                 self.release();
             }
             Op::LoadMemory {
@@ -357,6 +389,53 @@ impl Encoder<'_> {
                 right,
                 signed,
             } => self.compare(*dst, *op, *left, *right, *signed),
+            Op::FloatBinary {
+                dst,
+                op,
+                left,
+                right,
+                size,
+            } => self.float_binary(*dst, *op, *left, *right, *size),
+            Op::FloatCompare {
+                dst,
+                op,
+                left,
+                right,
+                size,
+            } => self.float_compare(*dst, *op, *left, *right, *size),
+            Op::FloatConst { dst, bits, size } => self.float_const(*dst, *bits, *size),
+            Op::FloatConvert {
+                dst,
+                src,
+                from,
+                to,
+                from_size,
+                to_size,
+                signed,
+            } => self.float_convert(*dst, *src, *from, *to, *from_size, *to_size, *signed),
+            Op::LoadFloat {
+                dst,
+                base,
+                offset,
+                size,
+            } => {
+                let address = self.read(*base);
+                let register = self.float_destination(*dst);
+                self.float_move(register, address, *offset, *size, Move::Load);
+                self.write_float(*dst, register);
+                self.release();
+            }
+            Op::StoreFloat {
+                base,
+                offset,
+                src,
+                size,
+            } => {
+                let address = self.read(*base);
+                let value = self.read_float(*src);
+                self.float_move(value, address, *offset, *size, Move::Store);
+                self.release();
+            }
             Op::Canonical {
                 dst,
                 src,
@@ -574,6 +653,216 @@ impl Encoder<'_> {
         self.release();
     }
 
+    // ---------------------------------------------------------------- floating point
+
+    /// Move a floating-point value: a register copy, a load, or a store, in the type's width.
+    fn float_move(&mut self, to: Reg, base: Reg, offset: i32, size: u8, what: Move) {
+        match what {
+            Move::Register => {
+                self.bytes(&[0x0F, 0x28]); // movaps: every bit, whatever the type
+                self.modrm(3, to.0, base);
+            }
+            Move::Load => {
+                self.float_prefix(size);
+                self.bytes(&[0x0F, 0x10]);
+                self.memory_operand(to.0, base, offset);
+            }
+            Move::Store => {
+                self.float_prefix(size);
+                self.bytes(&[0x0F, 0x11]);
+                self.memory_operand(to.0, base, offset);
+            }
+        }
+    }
+
+    /// The mandatory prefix a floating-point instruction carries: `F2` for `double`, `F3` for
+    /// `float`.
+    fn float_prefix(&mut self, size: u8) {
+        self.byte(if size == 8 { 0xF2 } else { 0xF3 });
+    }
+
+    /// `dst = left OP right` on XMM registers, in the type's width.
+    fn float_binary(&mut self, dst: VReg, op: BinOp, left: VReg, right: VReg, size: u8) {
+        let left_register = self.read_float(left);
+        let right_register = self.read_float(right);
+        // SSE's two-operand form is `op xmm1, xmm2/m`: the *register* field is the destination and
+        // the r/m field the source, which is the opposite way round from the integer operations.
+        let destination = self.float_destination(dst);
+        let (target, source) = if self.is_in_float(dst, left_register) {
+            (left_register, right_register)
+        } else if matches!(op, BinOp::Add | BinOp::Mul) && self.is_in_float(dst, right_register) {
+            // Adding and multiplying commute, so the destination's register can hold either operand.
+            (right_register, left_register)
+        } else if destination != left_register && destination != right_register {
+            self.float_move(destination, left_register, 0, size, Move::Register);
+            (destination, right_register)
+        } else {
+            // The destination's register holds an operand that is still live - the register was
+            // freed by *another* interval ending here - so copying into it would destroy that
+            // operand before the operation reads it.
+            let scratch = self.float_scratch();
+            self.float_move(scratch, left_register, 0, size, Move::Register);
+            (scratch, right_register)
+        };
+        self.float_prefix(size);
+        self.bytes(&[0x0F, float_opcode(op)]);
+        self.modrm(3, target.0, source);
+        self.write_float(dst, target);
+        self.release();
+    }
+
+    /// A floating-point comparison, answering 1 or 0 in a general register.
+    ///
+    /// `ucomisd` sets the flags as an unsigned comparison does, and a NaN sets carry and parity
+    /// together. C says a comparison involving a NaN is false except `!=`, so the two orders a NaN
+    /// would otherwise pass - `setb` and `setbe` - are avoided by asking whether the *second* operand
+    /// is the greater one; `==` and `!=` are asked directly and corrected with the parity flag.
+    fn float_compare(
+        &mut self,
+        dst: VReg,
+        op: crate::cir::CmpOp,
+        left: VReg,
+        right: VReg,
+        size: u8,
+    ) {
+        let left = self.read_float(left);
+        let right = self.read_float(right);
+        use crate::cir::CmpOp;
+        let (first, second, condition) = match op {
+            CmpOp::Less => (right, left, 7),         // seta
+            CmpOp::LessEqual => (right, left, 3),    // setae
+            CmpOp::Greater => (left, right, 7),      // seta
+            CmpOp::GreaterEqual => (left, right, 3), // setae
+            CmpOp::Eq => (left, right, 4),           // sete, with parity
+            CmpOp::Ne => (left, right, 5),           // setne, with parity
+        };
+        // `ucomisd` carries `66` and `ucomiss` carries nothing: this is the one floating-point
+        // instruction whose prefix is not the arithmetic one, and `F2 0F 2E` is not an instruction
+        // at all - which the processor says by refusing to run it.
+        if size == 8 {
+            self.byte(0x66);
+        }
+        self.bytes(&[0x0F, 0x2E]); // ucomisd / ucomiss
+        self.modrm(3, first.0, second);
+        self.byte(0x40);
+        self.bytes(&[0x0F, 0x90 | condition]);
+        self.modrm(3, 0, Reg::RAX);
+        if matches!(op, CmpOp::Eq | CmpOp::Ne) {
+            // Equality is "equal *and* not unordered", so it asks for `setnp`; inequality is
+            // "unequal *or* unordered", so it asks for `setp`. Using `setp` for both would make every
+            // equal comparison false, which is a quiet way to lose an `if`.
+            let parity = if op == CmpOp::Eq { 0x9B } else { 0x9A }; // setnp / setp
+            self.bytes(&[0x0F, parity]);
+            self.modrm(3, 1, Reg::RCX);
+            let opcode = if op == CmpOp::Eq { 0x20 } else { 0x08 }; // and al, cl / or al, cl
+            self.bytes(&[opcode, 0xC8]);
+        }
+        self.bytes(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+        self.write(dst, Reg::RAX);
+        self.release();
+    }
+
+    /// A floating-point constant, whose bits travel through a general register.
+    fn float_const(&mut self, dst: VReg, bits: u64, size: u8) {
+        let target = self.float_destination(dst);
+        self.mov_imm(Reg::RAX, bits);
+        if size == 8 {
+            self.bytes(&[0x66, 0x48, 0x0F, 0x6E]); // movq xmm, rax
+            self.modrm(3, target.0, Reg::RAX);
+        } else {
+            self.bytes(&[0x66, 0x0F, 0x6E]); // movd xmm, eax
+            self.modrm(3, target.0, Reg::RAX);
+        }
+        self.write_float(dst, target);
+        self.release();
+    }
+
+    /// A conversion involving a floating-point type: between widths, from an integer, or to one.
+    #[allow(clippy::too_many_arguments)] // the shape of a conversion is this long
+    fn float_convert(
+        &mut self,
+        dst: VReg,
+        src: VReg,
+        from: super::Class,
+        to: super::Class,
+        from_size: u8,
+        to_size: u8,
+        signed: bool,
+    ) {
+        match (from, to) {
+            (super::Class::Float, super::Class::Float) => {
+                let target = self.float_destination(dst);
+                let source = self.read_float(src);
+                if target != source {
+                    self.float_move(target, source, 0, 8, Move::Register);
+                }
+                if from_size == 4 && to_size == 8 {
+                    self.bytes(&[0xF3, 0x0F, 0x5A]); // cvtss2sd
+                    self.modrm(3, target.0, target);
+                } else if from_size == 8 && to_size == 4 {
+                    self.bytes(&[0xF2, 0x0F, 0x5A]); // cvtsd2ss
+                    self.modrm(3, target.0, target);
+                }
+                self.write_float(dst, target);
+            }
+            (super::Class::Integer, super::Class::Float) => {
+                let target = self.float_destination(dst);
+                // A 32-bit integer is extended to 64 first, so one conversion serves both widths,
+                // and an unsigned 32-bit one is already a positive 64-bit value.
+                let source = self.read(src);
+                self.extend_to_whole(source, from_size, signed);
+                self.float_prefix(to_size);
+                // The REX byte carries the 64-bit operand size, without which the instruction would
+                // read the 32-bit half of a register, and the high bits of both registers.
+                self.prefix_w(target, source);
+                self.bytes(&[0x0F, 0x2A]); // cvtsi2sd / cvtsi2ss
+                self.modrm(3, target.0, source);
+                self.write_float(dst, target);
+            }
+            (super::Class::Integer, super::Class::Integer) => {
+                unreachable!("an integer conversion is not a floating-point one")
+            }
+            (super::Class::Float, super::Class::Integer) => {
+                let target = self.destination(dst);
+                let source = self.read_float(src);
+                self.float_prefix(from_size);
+                // A 64-bit destination, for the same reason as the conversion the other way.
+                self.prefix_w(target, source);
+                self.bytes(&[0x0F, 0x2C]); // cvttsd2si / cvttss2si
+                self.modrm(3, target.0, source);
+                // The conversion fills a whole 64-bit register; a narrower C type keeps its low
+                // bytes, which is what the canonical form does next.
+                self.canonicalise(target, to_size, signed);
+                self.write(dst, target);
+            }
+        }
+        self.release();
+    }
+
+    /// Whether a value lives in this XMM register.
+    fn is_in_float(&self, value: VReg, register: Reg) -> bool {
+        matches!(self.allocation.location(value), Location::Float(other) if other == register)
+    }
+
+    /// Extend a value of `width` bytes to the whole register, with the type's sign; nothing at all
+    /// when it is already whole.
+    fn extend_to_whole(&mut self, register: Reg, width: u8, signed: bool) {
+        match (width, signed) {
+            (8, _) => {}
+            (4, true) => self.widen_reg(register, &[0x63]),
+            (4, false) => {
+                self.prefix(register, register);
+                self.byte(0x89);
+                self.modrm(3, register.0, register);
+            }
+            (2, true) => self.widen_reg(register, &[0x0F, 0xBF]),
+            (2, false) => self.widen_reg(register, &[0x0F, 0xB7]),
+            (1, true) => self.widen_reg(register, &[0x0F, 0xBE]),
+            (1, false) => self.widen_reg(register, &[0x0F, 0xB6]),
+            (other, _) => unreachable!("extending a {other}-byte value"),
+        }
+    }
+
     /// Truncate to the type's width and extend back: in place when the value is where it is going.
     fn canonical_op(&mut self, dst: VReg, src: VReg, size: u8, signed: bool) {
         let source = self.read(src);
@@ -599,14 +888,70 @@ impl Encoder<'_> {
     fn destination(&self, dst: VReg) -> Reg {
         match self.allocation.location(dst) {
             Location::Register(register) => register,
+            Location::Float(register) => register,
             Location::Spill(_) => Reg::RAX,
         }
+    }
+
+    /// The same for a floating-point result, whose spare is `xmm0`.
+    fn float_destination(&self, dst: VReg) -> Reg {
+        match self.allocation.location(dst) {
+            Location::Float(register) => register,
+            Location::Register(register) => register,
+            Location::Spill(_) => FLOAT_SCRATCH,
+        }
+    }
+
+    /// Where a floating-point value lives, in an XMM register: a spilled one is loaded for this use.
+    fn read_float(&mut self, value: VReg) -> Reg {
+        match self.allocation.location(value) {
+            Location::Float(register) => register,
+            Location::Register(register) => register,
+            Location::Spill(offset) => {
+                let scratch = self.float_scratch();
+                self.float_move(scratch, Reg::RSP, self.spill_base + offset, 8, Move::Load);
+                scratch
+            }
+        }
+    }
+
+    /// Write a floating-point result back to where it lives.
+    fn write_float(&mut self, dst: VReg, register: Reg) {
+        match self.allocation.location(dst) {
+            Location::Float(target) => {
+                if target != register {
+                    self.float_move(target, register, 0, 8, Move::Register);
+                }
+            }
+            Location::Register(target) => {
+                if target != register {
+                    self.float_move(target, register, 0, 8, Move::Register);
+                }
+            }
+            Location::Spill(offset) => {
+                self.float_move(register, Reg::RSP, self.spill_base + offset, 8, Move::Store);
+            }
+        }
+    }
+
+    /// The spare XMM register an operation uses for a spilled operand: `xmm0` first, then `xmm1`.
+    fn float_scratch(&mut self) -> Reg {
+        let register = if !self.scratches.contains(&FLOAT_SCRATCH) {
+            FLOAT_SCRATCH
+        } else if !self.scratches.contains(&FLOAT_SECOND) {
+            FLOAT_SECOND
+        } else {
+            unreachable!("an operation is holding both floating-point scratch registers")
+        };
+        self.scratches.push(register);
+        register
     }
 
     /// Where a value lives, in a register: a spilled one is loaded into a scratch for this use.
     fn read(&mut self, value: VReg) -> Reg {
         match self.allocation.location(value) {
             Location::Register(register) => register,
+            Location::Float(register) => register,
             Location::Spill(offset) => {
                 let scratch = self.scratch();
                 self.mov_reg_from_memory(scratch, self.spill_base + offset);
@@ -619,6 +964,11 @@ impl Encoder<'_> {
     /// dividend, and `r10`/`r11` are the operands' homes.
     fn read_into(&mut self, value: VReg, wanted: Reg) -> Reg {
         match self.allocation.location(value) {
+            // A general-register path never receives a floating-point value; the float paths read
+            // their own operands. Reaching here with one is a bug in the lowering's classes.
+            Location::Float(_) => {
+                unreachable!("an integer operation reads a floating-point value")
+            }
             Location::Register(register) => {
                 if register != wanted {
                     self.mov_reg(wanted, register);
@@ -637,6 +987,9 @@ impl Encoder<'_> {
     fn arguments_collide(&self, args: &[VReg]) -> bool {
         args.iter().enumerate().any(|(index, arg)| {
             match self.allocation.location(*arg) {
+                // A floating-point argument is refused before a call is lowered: the ABI's XMM
+                // registers are not part of this back end yet.
+                Location::Float(_) => false,
                 Location::Register(register) => ARGUMENT_REGISTERS
                     .iter()
                     .position(|target| *target == register)
@@ -672,6 +1025,13 @@ impl Encoder<'_> {
     fn write(&mut self, dst: VReg, register: Reg) {
         match self.allocation.location(dst) {
             Location::Register(target) => {
+                if target != register {
+                    self.mov_reg(target, register);
+                }
+            }
+            // A general register path never receives a floating-point destination; the float paths
+            // write their own.
+            Location::Float(target) => {
                 if target != register {
                     self.mov_reg(target, register);
                 }
@@ -917,6 +1277,18 @@ impl Encoder<'_> {
     /// A REX prefix with no 64-bit bit: the only way to name `spl`, `bpl`, `sil` or `dil`.
     fn rex_byte(&mut self, reg: Reg, base: Reg) {
         self.byte(0x40 | ((reg.0 >> 3) << 2) | (base.0 >> 3));
+    }
+}
+
+/// The `0F 5x` opcode of a floating-point operation: the same for both widths, which the mandatory
+/// prefix chooses.
+fn float_opcode(op: BinOp) -> u8 {
+    match op {
+        BinOp::Add => 0x58,
+        BinOp::Mul => 0x59,
+        BinOp::Sub => 0x5C,
+        BinOp::Div => 0x5E,
+        other => unreachable!("{other:?} is not a floating-point operation"),
     }
 }
 
