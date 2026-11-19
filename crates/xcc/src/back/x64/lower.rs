@@ -152,23 +152,16 @@ impl FunctionLowering<'_> {
         // The entry block's parameters are the arguments.
         let entry = func.entry;
         let mut ops = Vec::new();
-        // The first four *positions* take a register each, counted separately per class: a fifth
-        // integer argument does not take `r10`, it goes on the stack.
-        let mut integer_slot = 0u8;
-        let mut float_slot = 0u8;
+        // The first four *positions* take a register each: a fifth argument goes on the stack,
+        // whatever its class.
         for (position, param) in func.params().iter().enumerate() {
             let ty = func.value(*param).ty;
             let (size, signed, class) = self.scalar(ty, func.entry_span())?;
+            // The position picks the register and the class picks the file - the same rule the
+            // caller writes, because it is the same ABI: `f(int, double)` has its `double` in
+            // `xmm1`, beside the `int` in `rcx`.
             let (slot, on_stack) = if position < ARGUMENT_COUNT {
-                if class == Class::Float {
-                    let slot = float_slot;
-                    float_slot += 1;
-                    (slot, false)
-                } else {
-                    let slot = integer_slot;
-                    integer_slot += 1;
-                    (slot, false)
-                }
+                (position as u8, false)
             } else {
                 ((position - ARGUMENT_COUNT) as u8, true)
             };
@@ -667,23 +660,14 @@ impl FunctionLowering<'_> {
                 result, list, ty, ..
             } => {
                 let (size, signed, class) = self.scalar(*ty, span)?;
-                if class == Class::Float {
-                    return Err(NotYet {
-                        message:
-                            "a `va_arg` of a floating-point type: Win64 passes a variadic `double` \
-                                  in a vector register as well as a general one, and this back end \
-                                  writes only the general one"
-                                .into(),
-                        span,
-                    });
-                }
                 let dst = self.reg_for(*result);
-                self.classify(dst, Class::Integer);
+                self.classify(dst, class);
                 ops.push(Op::VaArg {
                     dst,
                     list: self.reg_for(*list),
                     size,
                     signed,
+                    float: class == Class::Float,
                 });
             }
             Inst::GlobalAddress { result, name, .. } => {

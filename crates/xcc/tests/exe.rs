@@ -174,3 +174,120 @@ fn a_program_that_prints_links_and_prints_the_same_as_clang() {
         assert_eq!(ours.stderr, theirs.stderr, "stderr differs from clang's");
     }
 }
+
+/// The ABI, checked against a compiler that is not this one.
+///
+/// A calling convention has two sides, and a test that compiles both sides with the same compiler
+/// cannot see a mistake they share: `f(int a, double b, double c)` had its `double`s in `xmm0` and
+/// `xmm1` here and in `xmm1` and `xmm2` everywhere else, and every test of ours passed because it
+/// called our own code from our own code. One object from xcc and one from clang is the only
+/// arrangement that notices, so both directions are here - and the variadic read with it.
+#[test]
+fn the_calling_convention_agrees_with_clang_in_both_directions() {
+    // `clang` by name, not whichever linker is first on PATH: the *other* side of this test has to be
+    // a compiler that follows Win64's varargs rule, and MinGW's gcc does not duplicate a variadic
+    // `double` into a general register, so a gcc caller would read this compiler's callee as zeros.
+    // The oracle is named for the same reason a measurement is instrumented.
+    let Some(linker) = ["clang"]
+        .into_iter()
+        .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
+    else {
+        eprintln!("no clang on this machine: the ABI test is skipped");
+        return;
+    };
+    let dir = temp_dir("abi");
+    // The callee has an integer and two doubles, so the *position* - not each class's own count -
+    // decides the registers, which is the mistake this test exists to catch. The variadic half goes
+    // one way only: a clang caller duplicates a `double` into a general register and this compiler's
+    // callee reads it, while this compiler's *caller* cannot yet duplicate one, which is the row
+    // ADR-006 still refuses.
+    let fixed_callee = "double g(int a, double b, double c) { return b + c + a; }
+";
+    let variadic_callee = concat!(
+        "double g(int a, double b, double c) { return b + c + a; }
+",
+        "#include <stdarg.h>
+",
+        "double pick(int count, ...) {
+",
+        "    va_list ap; double total = 0.0; int i;
+",
+        "    va_start(ap, count);
+",
+        "    for (i = 0; i < count; i++) total = total + va_arg(ap, double);
+",
+        "    va_end(ap); return total;
+",
+        "}
+"
+    );
+    let caller_calling_both = concat!(
+        "double g(int a, double b, double c);
+",
+        "double pick(int count, ...);
+",
+        "int main(void) { return (int)((g(1, 2.5, 3.5) + pick(3, 1.5, 2.25, 3.25)) * 2.0); }
+"
+    );
+    let caller_calling_fixed = concat!(
+        "double g(int a, double b, double c);
+",
+        "int main(void) { return (int)(g(1, 2.5, 3.5) * 2.0); }
+"
+    );
+    // g(1, 2.5, 3.5) is 7.0 and pick(3, 1.5, 2.25, 3.25) is 7.0, so the answers are 28 and 14.
+    let cases = [
+        (
+            "xcc callee, clang caller",
+            variadic_callee,
+            caller_calling_both,
+            28,
+        ),
+        (
+            "clang callee, xcc caller",
+            fixed_callee,
+            caller_calling_fixed,
+            14,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (what, our_source, their_source, expected) in cases {
+        let our_object = dir.join("ours.obj");
+        let artifact = Compile::new(Options {
+            opt_level: 2,
+            ..Options::default()
+        })
+        .compile("ours.c", our_source)
+        .unwrap_or_else(|diagnostics| panic!("{what}: {diagnostics:?}"));
+        std::fs::write(&our_object, artifact.object()).expect("the object is written");
+        let exe = dir.join("t.exe");
+        let sandbox = dir.join("their.c");
+        std::fs::write(&sandbox, their_source).expect("the other source is written");
+        let link = Command::new(linker)
+            .args(["-O0", "-w", "-o"])
+            .arg(&exe)
+            .arg(&our_object)
+            .arg(&sandbox)
+            .output()
+            .expect("the linker runs");
+        if !link.status.success() {
+            wrong.push(format!(
+                "{what}: the link failed: {}",
+                String::from_utf8_lossy(&link.stderr)
+            ));
+            continue;
+        }
+        let status = Command::new(&exe)
+            .output()
+            .expect("the program runs")
+            .status
+            .code();
+        if status != Some(expected) {
+            wrong.push(format!(
+                "{what}: exited with {status:?}, expected {expected}"
+            ));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}

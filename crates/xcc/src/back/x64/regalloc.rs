@@ -153,8 +153,13 @@ pub(crate) fn allocate(func: &MachineFunction) -> Allocation {
             .unwrap_or(super::Class::Integer)
     };
     let mut free_integer: Vec<Reg> = allocatable.to_vec();
-    // A function that calls can only keep a float where a call leaves it alone.
-    let float_pool: &[Reg] = if func.makes_call {
+    // Two reasons a float cannot use the caller-saved pool: a call destroys it, and the arguments
+    // arrive in `xmm0`-`xmm3` - the fourth of which is `xmm3`, the first register that pool hands
+    // out. A three-parameter function can put a value in `xmm3` because no argument arrives there; a
+    // four-parameter one cannot, because moving the first parameter into `xmm3` destroys the fourth
+    // before anything has read it. That is the same rule as `arguments_are_safe` for integers, and
+    // the same mistake, caught by a test that had both sides of a call compiled by us.
+    let float_pool: &[Reg] = if func.makes_call || func.param_count > 3 {
         &CALLEE_SAVED_FLOATS
     } else {
         &FLOAT_REGISTERS

@@ -389,13 +389,23 @@ impl Encoder<'_> {
                 list,
                 size,
                 signed,
+                float,
             } => {
-                // A load through the list; the front end advances the list itself, so `va_arg` is
-                // one instruction and the step is a store the reader can see in the `cir`.
+                // A load through the list; the front end advances the list itself, so `va_arg` is one
+                // instruction and the step is a store the reader can see in the `cir`. A `double` is
+                // read from the same eight bytes as anything else: Win64 duplicates a variadic
+                // floating-point argument into a general-purpose register for exactly this, so the
+                // only difference is which register file the value lands in.
                 let address = self.read(*list);
-                let register = self.destination(*dst);
-                self.load_widened(register, address, 0, *size, *signed);
-                self.write(*dst, register);
+                if *float {
+                    let register = self.float_destination(*dst);
+                    self.float_move(register, address, 0, *size, Move::Load);
+                    self.write_float(*dst, register);
+                } else {
+                    let register = self.destination(*dst);
+                    self.load_widened(register, address, 0, *size, *signed);
+                    self.write(*dst, register);
+                }
                 self.release();
             }
             Op::LoadLocal { dst, offset } => {
@@ -1112,25 +1122,17 @@ impl Encoder<'_> {
     /// `r9`, the rest in the outgoing slots. One place, because a direct call and a call through a
     /// pointer pass their arguments the same way, and two copies of this would drift.
     fn place_arguments(&mut self, args: &[VReg]) {
-        // Where each argument goes: a register of its own class for the first four positions, an
-        // outgoing slot for the rest.
-        let mut integer_slot = 0;
-        let mut float_slot = 0;
+        // Where each argument goes: **the position picks the register**, and the argument's class
+        // picks which file it is in. `f(int a, double b, double c)` has `b` in `xmm1` and `c` in
+        // `xmm2`, not `xmm0` and `xmm1` - which is what clang's own output says, and what a per-class
+        // counter gets wrong while every test that compiles both sides itself still passes.
         let mut plan = Vec::with_capacity(args.len());
         for (position, argument) in args.iter().enumerate() {
             let class = self.class_of(*argument);
             let target = if position < ARGUMENT_REGISTERS.len() {
                 match class {
-                    super::Class::Integer => {
-                        let register = ARGUMENT_REGISTERS[integer_slot];
-                        integer_slot += 1;
-                        Target::Integer(register)
-                    }
-                    super::Class::Float => {
-                        let register = FLOAT_ARGUMENTS[float_slot];
-                        float_slot += 1;
-                        Target::Float(register)
-                    }
+                    super::Class::Integer => Target::Integer(ARGUMENT_REGISTERS[position]),
+                    super::Class::Float => Target::Float(FLOAT_ARGUMENTS[position]),
                 }
             } else {
                 let slot = position - ARGUMENT_REGISTERS.len();

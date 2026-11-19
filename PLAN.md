@@ -556,6 +556,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **`va_arg` of a `double`**, and the duplicate is what makes it easy: Win64 passes a variadic
+      `double` in a vector register *and* a general one, so a callee walking the general slots - which is
+      what our `va_list` is - finds it with no `AL` and no vector save area. Verified against a
+      **clang-built caller**, which is the only way: a test that compiles both sides itself cannot see a
+      convention they share.
+      **That test found two real ABI bugs in what we had already shipped.** First, the argument register
+      is chosen by the argument's *position*, not by a per-class counter: `f(int, double, double)` has its
+      doubles in `xmm1` and `xmm2`, and we were putting them in `xmm0` and `xmm1`. Second - found by the
+      same test after the first fix - a callee whose fourth parameter arrives in `xmm3` could not keep a
+      value in `xmm3`, because the float pool's caller-saved set starts there: moving the first parameter
+      into it destroyed the fourth before anything read it. Both are invisible to any test where one
+      compiler builds both sides, which every test we had did.
 - [ ] **`va_arg`, the older plan, kept for what it got wrong:** It is not a back-end feature at all:
       `stdarg.h` is a stub that `#error`s, the front end has no builtin for `va_start`/`va_arg`, and
       `cir` has no operation for either. The work, in order: a `__builtin_va_list` type (`char *` on

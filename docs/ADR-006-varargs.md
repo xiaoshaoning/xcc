@@ -120,6 +120,16 @@ a load plus an eight-byte step the front end writes back into the list. `AL` was
 half - the floating-point duplicate - and that is still refused, with a span, for a reason that has
 nothing to do with registers: `cir` does not carry the count.
 
+**And the floating-point half of reading works too**, which this ADR had thought impossible. The
+duplicate is the reason: Win64 passes a variadic `double` in a vector register *and* in a general one, so
+a callee that walks the general-purpose slots - which is exactly what our `va_list` does - finds it with
+no `AL`, no vector save area and no second pointer. The count is only needed by a callee that wants the
+*vector* copies, and none of ours does. What is still refused is the caller's half: duplicating an
+argument into both files is a call-site change we have not written.
+**A caveat worth its own line**: the duplicate is in the ABI, and MinGW's gcc does not implement it - a
+gcc-built caller, read by this compiler's callee, gives zeros. The interop test names clang for that
+reason, and the row in the support matrix says so.
+
 **The lowerings now differ, deliberately.** `cir` has `VaStart` and `VaArg`, and Cranelift cannot lower
 either - it has no home area to point at, so it refuses with a span and names the level that works. That
 is the first construct where `--opt-level=2` accepts what `0` and `1` refuse, and the reason the corpus

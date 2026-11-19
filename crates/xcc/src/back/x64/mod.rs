@@ -202,6 +202,10 @@ pub(crate) enum Op {
         list: VReg,
         size: u8,
         signed: bool,
+        /// Whether the type is floating point: Win64 duplicates a variadic `double` into a
+        /// general-purpose register precisely so a walk like this one can find it, so the read is the
+        /// same eight bytes and only the register file it lands in differs.
+        float: bool,
     },
     /// Unary `-` or `~`.
     Unary {
