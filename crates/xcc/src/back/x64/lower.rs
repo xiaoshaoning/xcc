@@ -291,6 +291,43 @@ impl FunctionLowering<'_> {
         }
     }
 
+    /// An address, as the base a memory operand needs and the displacement it can carry. The front
+    /// end writes `base + k` for every element of an array, and x86 has a place for the `k`: folding it
+    /// out of the instruction stream is what turns a byte of an initialiser from a multiply, an add
+    /// and three bitcasts into one store.
+    fn address(&mut self, func: &Func, address: Value, _ops: &mut Vec<Op>) -> (Value, i32) {
+        // The front end wraps the arithmetic in bitcasts - `pointer -> u64 -> pointer -> pointer` -
+        // and every one of them is the same bits. Peeling them is what lets the addition be seen.
+        let mut peeled = address;
+        for _ in 0..8 {
+            match self.defining(func, peeled) {
+                Some(Inst::Convert {
+                    op: ConvertOp::Bitcast,
+                    value,
+                    ..
+                }) => peeled = *value,
+                _ => break,
+            }
+        }
+        if let Some(Inst::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        }) = self.defining(func, peeled)
+        {
+            // `base + k`, or `k + base`.
+            for (pointer, offset) in [(*left, *right), (*right, *left)] {
+                if let Some(Inst::Const { bits, .. }) = self.defining(func, offset) {
+                    if let Ok(offset) = i32::try_from(*bits as i64) {
+                        return (pointer, offset);
+                    }
+                }
+            }
+        }
+        (address, 0)
+    }
+
     /// Which register file a type belongs to.
     fn class_of(&self, ty: TypeId) -> Class {
         if self.types.is_float(ty) {
@@ -570,18 +607,19 @@ impl FunctionLowering<'_> {
                 let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
                 self.classify(dst, class);
-                let base = self.reg_for(*address);
+                let (address, offset) = self.address(func, *address, ops);
+                let base = self.reg_for(address);
                 ops.push(match class {
                     Class::Float => Op::LoadFloat {
                         dst,
                         base,
-                        offset: 0,
+                        offset,
                         size,
                     },
                     Class::Integer => Op::LoadMemory {
                         dst,
                         base,
-                        offset: 0,
+                        offset,
                         size,
                         signed,
                     },
@@ -590,18 +628,19 @@ impl FunctionLowering<'_> {
             Inst::Store { address, value, .. } => {
                 let ty = func.value(*value).ty;
                 let (size, _, class) = self.scalar(ty, span)?;
-                let base = self.reg_for(*address);
+                let (address, offset) = self.address(func, *address, ops);
+                let base = self.reg_for(address);
                 let src = self.reg_for(*value);
                 ops.push(match class {
                     Class::Float => Op::StoreFloat {
                         base,
-                        offset: 0,
+                        offset,
                         src,
                         size,
                     },
                     Class::Integer => Op::StoreMemory {
                         base,
-                        offset: 0,
+                        offset,
                         src,
                         size,
                     },

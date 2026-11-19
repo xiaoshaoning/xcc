@@ -492,6 +492,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       The invariant the pools now hold by construction: *a result, its operands and the scratch are
       pairwise distinct* - `xmm0`/`xmm1` scratch, `xmm2` a spilled result's home, `xmm3`-`xmm5` (calls
       nothing) or `xmm6`-`xmm15` (calls) for values.
+- [x] `cir` **folding and dead-code elimination**, measured first and then three passes deep:
+      `--opt-level=2` over the 414 corpus programs went **118 848 -> 97 432 bytes (-18%)**, from 7.11x
+      `clang -O2` to **5.83x**, and from 2.62x Cranelift's size to **2.19x**. The chain that made it so:
+      the front end writes an initialiser one byte per `store`, each byte's address being
+      `bitcast + sext(index) * sizeof` and then `+ const`; **folding** (1 565 foldable instructions of
+      19 289, 1 274 of them `sext` of a constant) collapses the arithmetic to constants, the *back end's*
+      new address rule turns `base + k` into a memory operand's displacement, and **dead-code
+      elimination** removes the arithmetic nothing reads any more. Each alone was measured and each
+      alone *lost*: folding without the address rule was +9% (the constants were emitted and the
+      arithmetic stayed), and the address rule without DCE was +1% (the same, one level down). That
+      three-pass dependency is the finding worth keeping.
+      **And the differential harness caught a semantic bug in the fold**: `unsigned int u = 0 - 2; u >>= 1;`
+      answered 0xFFFFFFFF instead of 0x7FFFFFFF, because the front end's constant for `0 - 2` is the
+      *signed* -2 in 64 bits and a logical shift of that drags bit 63 into the low word. Folding now
+      canonicalises each operand for the operation's own type first, which is the rule the whole pass
+      rested on and did not state.
 - [ ] `back-x64` shrinking, round five - and the first measurement says most of it is already at the
       floor. Measured over the 414 corpus programs it compiles: **jump shortening buys 405 bytes of
       118 840 (0.3%)** - 135 of 1 068 jumps could take the two-byte form - so the plan's own item is

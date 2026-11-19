@@ -10,6 +10,8 @@
 //! `cir::optimise`, and the verifier runs after each one in debug builds, so a pass that breaks a
 //! function is caught where it broke rather than where it was used.
 
+pub mod dce;
+pub mod fold;
 pub mod mem2reg;
 
 use super::{Broken, Module};
@@ -21,6 +23,10 @@ pub struct Changes {
     pub memory: usize,
     /// Stack slots removed because nothing was left in them.
     pub slots: usize,
+    /// Instructions whose result became a constant.
+    pub folded: usize,
+    /// Instructions removed because nothing read their result.
+    pub dead: usize,
 }
 
 impl Changes {
@@ -47,6 +53,17 @@ pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, 
         if let Err(broken) = func.verify(&module.types) {
             return Err((func.name, broken));
         }
+        // Folding runs after `mem2reg`, because promotion is what turns a local's value into a
+        // constant in the first place.
+        changes.folded += fold::run(func, &module.types);
+        if let Err(broken) = func.verify(&module.types) {
+            return Err((func.name, broken));
+        }
+        // Folding is what makes instructions dead, so this runs last and to a fixpoint of its own.
+        changes.dead += dce::run(func);
+        if let Err(broken) = func.verify(&module.types) {
+            return Err((func.name, broken));
+        }
     }
     Ok(changes)
 }
@@ -58,6 +75,31 @@ mod tests {
     use crate::options::Options;
     use crate::pp::preprocess;
     use crate::source::SourceFile;
+
+    /// Count the instructions a program's `cir` holds, before and after the passes: what folding a
+    /// chain of address arithmetic is worth, in one number.
+    pub(crate) fn folded(source: &str) -> (usize, usize) {
+        let file = SourceFile::new("t.c", source);
+        let options = Options::default();
+        let preprocessed = preprocess(&file, &options, &());
+        let parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let mut module = parsed.module;
+        // Counting instructions cannot see a fold - one instruction replaces another - so count the
+        // ones that still do something: everything but a constant.
+        let count = |module: &crate::cir::Module| {
+            module
+                .funcs
+                .iter()
+                .flat_map(|f| &f.blocks)
+                .flat_map(|b| &b.insts)
+                .filter(|inst| !matches!(inst, crate::cir::Inst::Const { .. }))
+                .count()
+        };
+        let before = count(&module);
+        optimise(&mut module).unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
+        (before, count(&module))
+    }
 
     /// Compile one function, run the passes, and give back the `cir` written down.
     fn promoted(source: &str) -> (String, Changes) {
