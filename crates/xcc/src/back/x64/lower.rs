@@ -14,7 +14,7 @@
 //!   slot has one offset for the whole function, which is why an offset in this file is relative
 //!   to the frame body and the encoder adds the shadow space and the saved registers once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::{BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
@@ -26,16 +26,9 @@ pub(crate) fn lower(
     module: &Module,
     names: &crate::intern::Interner,
 ) -> Result<Vec<MachineFunction>, NotYet> {
-    // Which names are functions: taking a function's *address* as a value needs a call through a
-    // pointer, which this back end does not lower, while taking an object's address is one `lea`.
-    let functions: HashSet<String> = module
-        .funcs
-        .iter()
-        .map(|func| names.resolve(func.name).to_owned())
-        .collect();
     let mut lowered = Vec::new();
     for func in &module.funcs {
-        lowered.push(lower_function(func, &module.types, names, &functions)?);
+        lowered.push(lower_function(func, &module.types, names)?);
     }
     Ok(lowered)
 }
@@ -44,7 +37,6 @@ fn lower_function(
     func: &Func,
     types: &Types,
     names: &crate::intern::Interner,
-    functions: &HashSet<String>,
 ) -> Result<MachineFunction, NotYet> {
     let mut lowerer = FunctionLowering {
         types,
@@ -57,7 +49,6 @@ fn lower_function(
         frame_bytes: 0,
         returned: Vec::new(),
         classes: Vec::new(),
-        functions,
         direct_calls: HashMap::new(),
     };
     lowerer.run(func)?;
@@ -111,8 +102,6 @@ struct FunctionLowering<'a> {
     returned: Vec<VReg>,
     /// Which register file each value belongs to, by virtual register.
     classes: Vec<Class>,
-    /// The names this module defines functions for.
-    functions: &'a HashSet<String>,
     /// Values that are the function a call names directly, so no address is ever materialised for
     /// them: `call rel32` needs a symbol, not a pointer.
     direct_calls: HashMap<Value, String>,
@@ -278,7 +267,7 @@ impl FunctionLowering<'_> {
                 span,
             }),
             Type::Float { .. } => Err(NotYet {
-                message: "a floating-point value in this back end".into(),
+                message: "a floating-point value where an integer one is needed".into(),
                 span,
             }),
             _other => Err(NotYet {

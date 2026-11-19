@@ -105,6 +105,47 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### function pointers, reviewed - 2026-11-16 - scaffolding left by a deleted refusal
+
+Review of `2510387`.
+
+**Found: the set of function names existed only to feed the refusal this round deleted.** `lower`
+built a `HashSet<String>` of every function's link name, allocated a `String` for each, and threaded it
+through `FunctionLowering` - all to ask "is this name a function, and therefore a gap?" Now that a
+function's address is a symbol like any other, nothing reads it, and the comment above it still said
+"taking a function's address as a value needs a call through a pointer, which this back end does not
+lower" - a sentence that had become the opposite of the code two lines below it. Both are gone; the
+allocation per function goes with them.
+
+**Found: a refusal whose message had stopped being true.** The integer width helper answered "a
+floating-point value in this back end", which stopped being true when the float slice landed: floats
+*are* in the back end, and what is missing at that point is the caller's expectation of an integer. It
+says "a floating-point value where an integer one is needed" now.
+
+**Checked and sound, because a pointer that survives the argument placement is the whole trick:**
+
+- The callee's register is read *after* the arguments are placed, which is safe because a function
+  containing any `cir::Call` allocates only callee-saved registers - so the pointer can never be in
+  `rcx`, `rdx`, `r8` or `r9`, the four the placement writes. That invariant is written at the call site
+  it protects, and the register plan that provides it says so where the pools are defined.
+- A spilled callee is loaded after the placement, into a scratch the placement has released; the
+  scratch pair and the argument registers are disjoint by construction.
+- `place_arguments` was extracted by moving one block, and the integer path it holds is byte-for-byte
+  the one the direct call used - which the corpus agrees on, since 411 programs still match Cranelift
+  including every call they make.
+- An indirect call writes `rax`, so it joins `writes_rax` and the `rax` preference refuses to put a
+  returned value there across one; `operands` includes the callee, so liveness and the spill decision
+  account for it.
+- `SymbolAddress` now names one instruction used for three things - a string literal, a global object
+  and a function - and the relocation is the same for all three, which is why the COFF writer needed no
+  change for this round.
+
+**Measured after the review: 411 agreeing, 53 refused, 0 wrong** - unchanged.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### the volatile XMM registers, reviewed - 2026-11-16 - a wrong answer for a saved value
 
 Review of what `edfdfc4` and its two review commits left behind, found by asking what the *calling*
