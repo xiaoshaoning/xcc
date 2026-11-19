@@ -74,6 +74,7 @@ fn lower_function(
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
         frame_bytes: lowerer.frame_bytes,
+        variadic: func.variadic,
         classes: lowerer.classes,
         returned: lowerer.returned,
         outgoing_slots: outgoing_slots as u32,
@@ -656,6 +657,34 @@ impl FunctionLowering<'_> {
                 let dst = self.reg_for(*result);
                 self.classify(dst, Class::Integer);
                 ops.push(Op::LocalAddress { dst, offset });
+            }
+            Inst::VaStart { result, skip, .. } => {
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                ops.push(Op::VaStart { dst, skip: *skip });
+            }
+            Inst::VaArg {
+                result, list, ty, ..
+            } => {
+                let (size, signed, class) = self.scalar(*ty, span)?;
+                if class == Class::Float {
+                    return Err(NotYet {
+                        message:
+                            "a `va_arg` of a floating-point type: Win64 passes a variadic `double` \
+                                  in a vector register as well as a general one, and this back end \
+                                  writes only the general one"
+                                .into(),
+                        span,
+                    });
+                }
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                ops.push(Op::VaArg {
+                    dst,
+                    list: self.reg_for(*list),
+                    size,
+                    signed,
+                });
             }
             Inst::GlobalAddress { result, name, .. } => {
                 if self.direct_calls.contains_key(result) {

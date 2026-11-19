@@ -192,6 +192,17 @@ pub(crate) enum Op {
         signed: bool,
         size: u8,
     },
+    /// `va_start`: the address of the first argument that is not a parameter. `skip` counts those
+    /// parameters, and the caller's home area holds the first four arguments, so it is one `lea`.
+    VaStart { dst: VReg, skip: u8 },
+    /// `va_arg`: read the type at the list's address. The step is the front end's store to the list,
+    /// so this is a load and nothing else.
+    VaArg {
+        dst: VReg,
+        list: VReg,
+        size: u8,
+        signed: bool,
+    },
     /// Unary `-` or `~`.
     Unary {
         dst: VReg,
@@ -299,6 +310,8 @@ impl Op {
             | Op::Shift { dst, .. }
             | Op::Divide { dst, .. }
             | Op::Unary { dst, .. }
+            | Op::VaStart { dst, .. }
+            | Op::VaArg { dst, .. }
             | Op::Compare { dst, .. }
             | Op::FloatBinary { dst, .. }
             | Op::FloatCompare { dst, .. }
@@ -332,6 +345,8 @@ impl Op {
             Op::StoreFloat { base, src, .. } => vec![*base, *src],
             Op::FloatConvert { src, .. } => vec![*src],
             Op::FloatConst { .. } => Vec::new(),
+            Op::VaArg { list, .. } => vec![*list],
+            Op::VaStart { .. } => Vec::new(),
             Op::Unary { src, .. } | Op::Canonical { src, .. } => vec![*src],
             Op::Call { args, .. } => args.clone(),
             Op::CallIndirect { callee, args, .. } => {
@@ -429,6 +444,10 @@ pub(crate) struct MachineFunction {
     /// that calls nothing has neither obligation, and can use caller-saved registers instead - which
     /// are destroyed by a call, and there is no call.
     pub makes_call: bool,
+    /// Whether this function takes `...`: its prologue writes the register arguments into the
+    /// caller's home area, because that is what a `va_list` walks - the four registers, then the stack
+    /// arguments, contiguously (ADR-006).
+    pub variadic: bool,
     /// The blocks, in layout order.
     pub blocks: Vec<MachineBlock>,
     /// Where each block's parameters start, in the same order.

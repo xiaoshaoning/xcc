@@ -541,7 +541,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       changes this session were written before that measurement and both were reverted.
       The frame's remaining 12.8% is saves - a register's save and restore for a value that outlives a
       call - and that is the ABI's price rather than a defect.
-- [ ] **`va_arg`, and it is a milestone rather than a slice.** It is not a back-end feature at all:
+- [x] **`va_arg`** - and it was a slice after all, once the shape was seen. `va_list` is a `char *`;
+      Win64's home area holds arguments 0-3 at `[rsp + 8 .. +40)` with the stack arguments following at
+      `+40`, so *one pointer walks both*; a variadic function's prologue writes its four register
+      arguments there, `va_start` is one `lea`, and `va_arg` is a load plus an eight-byte step the front
+      end writes back into the list. `cir` gained `VaStart` and `VaArg`, the parser two builtins beside
+      `__builtin_offsetof`, and `stdarg.h` is a real header. Cranelift cannot lower either operation - it
+      has no home area to point at - so it refuses with a span, which makes this **the first construct
+      where level 2 accepts what 0 and 1 refuse**: the corpus ratchet cannot hold such a program, and
+      `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
+      refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
+      count.
+- [ ] **`va_arg`, the older plan, kept for what it got wrong:** It is not a back-end feature at all:
       `stdarg.h` is a stub that `#error`s, the front end has no builtin for `va_start`/`va_arg`, and
       `cir` has no operation for either. The work, in order: a `__builtin_va_list` type (`char *` on
       Win64) and the three builtins; the parser's special case for `__builtin_va_arg(ap, T)`, whose

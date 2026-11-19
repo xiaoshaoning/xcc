@@ -278,6 +278,20 @@ fn the_constructs_the_slice_lowers_behave() {
             244,
         ),
         (
+            // `va_arg`: the first four arguments arrive in registers, and a variadic function's
+            // prologue writes them into the caller's home area, which is what the list walks.
+            "a variadic function reading its arguments",
+            "#include <stdarg.h>
+int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count); for (i = 0; i < count; i++) total += va_arg(ap, int); va_end(ap); return total; } int main(void) { return sum(4, 10, 20, 30, 2); }",
+            62,
+        ),
+        (
+            "a variadic function reading past the fourth argument",
+            "#include <stdarg.h>
+long long pick(int first, ...) { va_list ap; va_start(ap, first); char c = (char)va_arg(ap, int); int i = va_arg(ap, int); long long l = va_arg(ap, long long); va_end(ap); return first + c + i + l; } int main(void) { return (int)(pick(1, 'A', 1000, 100000LL) % 251); }",
+            164,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,

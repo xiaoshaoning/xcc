@@ -112,6 +112,17 @@ pub(crate) fn instruction(
             address,
             ..
         } => format!("{} = load {}, {}", v(*result), ty(*of), v(*address)),
+        Inst::VaStart { result, skip, .. } => {
+            format!("v{} = va_start {} parameters", result.0, skip)
+        }
+        Inst::VaArg {
+            result, list, ty, ..
+        } => format!(
+            "v{} = va_arg {} as {}",
+            result.0,
+            list.0,
+            types.describe(*ty)
+        ),
         Inst::Store { address, value, .. } => format!("store {}, {}", v(*value), v(*address)),
         Inst::Binary {
             result,

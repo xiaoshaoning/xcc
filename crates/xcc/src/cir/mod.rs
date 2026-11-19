@@ -301,6 +301,35 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
+    /// The address of the first *unnamed* argument of a variadic function: `skip` names the
+    /// parameters before the `...`, so the address is that many argument slots past the home area.
+    ///
+    /// This is the one `cir` operation that does not describe a C construct. C's `va_start` is a macro
+    /// over an implementation-defined type, and what it has to say is "where the arguments that are not
+    /// parameters begin", which is a fact about the calling convention. A back end with no home area to
+    /// point at - Cranelift, whose arguments live in whatever register its allocator chose - cannot
+    /// implement it and says so rather than guessing (ADR-006).
+    VaStart {
+        /// The pointer produced: a `char *` that walks the argument slots.
+        result: Value,
+        /// How many named parameters come before the `...`.
+        skip: u8,
+        /// Where in the source.
+        span: Span,
+    },
+    /// Read one argument through a `va_list`, by the type the macro was given. It does not advance the
+    /// list: C's `va_arg` is an expression that yields a value, and the front end writes the step back
+    /// into the `va_list` lvalue, so the advance is a store like any other.
+    VaArg {
+        /// The value read.
+        result: Value,
+        /// The list to read through: a `char *`.
+        list: Value,
+        /// The type read, which decides the width and the sign extension.
+        ty: TypeId,
+        /// Where in the source.
+        span: Span,
+    },
     /// The address of a global object or a function, by the name its object file gives it.
     GlobalAddress {
         /// The pointer produced.
@@ -344,7 +373,11 @@ impl Inst {
                     *arg = rewrite(*arg);
                 }
             }
-            Inst::Slot { .. } | Inst::Const { .. } | Inst::GlobalAddress { .. } => {}
+            Inst::Slot { .. }
+            | Inst::Const { .. }
+            | Inst::VaStart { .. }
+            | Inst::GlobalAddress { .. } => {}
+            Inst::VaArg { list, .. } => *list = rewrite(*list),
         }
     }
 
@@ -358,6 +391,8 @@ impl Inst {
             | Inst::Convert { result, .. }
             | Inst::Slot { result, .. }
             | Inst::Const { result, .. }
+            | Inst::VaStart { result, .. }
+            | Inst::VaArg { result, .. }
             | Inst::GlobalAddress { result, .. } => Some(*result),
             Inst::Call { result, .. } => *result,
             Inst::Store { .. } => None,
@@ -376,6 +411,8 @@ impl Inst {
             | Inst::Slot { span, .. }
             | Inst::Const { span, .. }
             | Inst::Call { span, .. }
+            | Inst::VaStart { span, .. }
+            | Inst::VaArg { span, .. }
             | Inst::GlobalAddress { span, .. } => *span,
         }
     }
@@ -459,6 +496,9 @@ pub struct Func {
     pub name: Symbol,
     /// What it returns.
     pub result: TypeId,
+    /// Whether the parameter list ended in `...`. A variadic function's prologue writes its register
+    /// arguments into the caller's home area, which is what a `va_list` walks (ADR-006).
+    pub variadic: bool,
     /// The entry block, which receives the parameters.
     pub entry: Block,
     /// Every block, in the order the builder made them.
@@ -473,6 +513,7 @@ impl Func {
         let mut func = Func {
             name,
             result,
+            variadic: false,
             entry: Block(0),
             blocks: Vec::new(),
             values: Vec::new(),
@@ -793,6 +834,25 @@ impl<'a> Builder<'a> {
     }
 
     /// The address of a global object or function.
+    /// `va_start`: the address of the first argument that is not a parameter (`skip` counts them).
+    pub fn va_start(&mut self, ty: TypeId, skip: u8, span: Span) -> Value {
+        let result = self.func.mint(ty, self.current);
+        self.push(Inst::VaStart { result, skip, span });
+        result
+    }
+
+    /// `va_arg`: read one argument of `ty` through the list.
+    pub fn va_arg(&mut self, ty: TypeId, list: Value, read: TypeId, span: Span) -> Value {
+        let result = self.func.mint(ty, self.current);
+        self.push(Inst::VaArg {
+            result,
+            list,
+            ty: read,
+            span,
+        });
+        result
+    }
+
     pub fn global_address(&mut self, name: String, ty: TypeId, span: Span) -> Value {
         let result = self.func.mint(ty, self.current);
         self.push(Inst::GlobalAddress { result, name, span });
@@ -1019,6 +1079,24 @@ impl Func {
         // Every type comparison here is structural, as the arena's identity is: the same C type
         // may be two `TypeId`s, and `==` would reject correct code (ADR-004's corollary).
         match inst {
+            Inst::VaStart { result, .. } | Inst::VaArg { result, .. } => {
+                // The same rule every other defining instruction answers: the value is defined here,
+                // and it is of the type the instruction names.
+                if self.value(*result).block != here {
+                    return wrong(format!("v{} is not defined where it is used", result.0));
+                }
+                if let Inst::VaArg { ty, list, .. } = inst {
+                    if !types.same(self.value(*result).ty, *ty) {
+                        return wrong(format!("v{} is not read as its own type", result.0));
+                    }
+                    if !types.is_pointer(self.value(*list).ty) {
+                        return wrong(format!(
+                            "block {index} reads an argument through a non-pointer"
+                        ));
+                    }
+                }
+                Ok(())
+            }
             Inst::Load {
                 result,
                 ty,
@@ -1394,7 +1472,11 @@ fn used_values(inst: &Inst) -> Vec<Value> {
             used.extend(args.iter().copied());
             used
         }
-        Inst::Slot { .. } | Inst::Const { .. } | Inst::GlobalAddress { .. } => Vec::new(),
+        Inst::VaArg { list, .. } => vec![*list],
+        Inst::Slot { .. }
+        | Inst::Const { .. }
+        | Inst::VaStart { .. }
+        | Inst::GlobalAddress { .. } => Vec::new(),
     }
 }
 

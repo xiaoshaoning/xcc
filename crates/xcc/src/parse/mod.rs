@@ -61,6 +61,8 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         label_blocks: HashMap::new(),
         gotos: Vec::new(),
         last_parameters: Vec::new(),
+        last_variadic: false,
+        function_params: Vec::new(),
         funcs: Vec::new(),
         globals: Vec::new(),
         globals_by_name: HashMap::new(),
@@ -232,6 +234,11 @@ struct Parser<'a> {
     /// The parameter names of the last function declarator, which a definition declares in its
     /// body's scope.
     last_parameters: Vec<(Option<Symbol>, TypeId, Span)>,
+    /// Whether the parameter list just read ended in `...`, for the definition that follows.
+    last_variadic: bool,
+    /// The place of each parameter of the function being defined, in order: what `va_start` needs to
+    /// know which one was named as the last.
+    function_params: Vec<Option<cir::Value>>,
     /// The functions whose bodies have been read.
     funcs: Vec<cir::Func>,
     /// The globals declared so far: one per name, because C99 6.9p5 gives an identifier one
@@ -1222,6 +1229,7 @@ impl Parser<'_> {
         let mut params = Vec::new();
         if capture_names {
             self.last_parameters.clear();
+            self.last_variadic = false;
         }
         let mut variadic = false;
         self.symbols.push();
@@ -1238,6 +1246,7 @@ impl Parser<'_> {
         loop {
             if self.eat("...") {
                 variadic = true;
+                self.last_variadic = true;
                 break;
             }
             let specs = self.declaration_specifiers();

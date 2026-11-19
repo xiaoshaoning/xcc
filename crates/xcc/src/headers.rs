@@ -90,25 +90,54 @@ mod tests {
 
     #[test]
     fn a_header_that_cannot_be_honoured_refuses_with_the_reason() {
-        // `stdarg.h` is the one header that is a promise this compiler cannot keep: `va_list` is
-        // the ABI's variadic convention, not a declaration (ADR-006). It says so, and the message
-        // names the record so a reader can find out why.
-        let mut compiler = crate::Compile::new(crate::Options::default());
-        let diagnostics = compiler
-            .compile(
-                "t.c",
-                "#include <stdarg.h>
-",
-            )
-            .expect_err("stdarg.h refuses");
-        let message = diagnostics
-            .items()
-            .iter()
-            .map(|diagnostic| diagnostic.message.as_str())
-            .collect::<Vec<_>>()
-            .join("; ");
-        assert!(message.contains("variadic"), "{message}");
-        assert!(message.contains("ADR-006"), "{message}");
+        // The headers that are promises this compiler cannot keep are the ones for facilities it has
+        // no implementation of at all - `setjmp.h`, `signal.h`, `locale.h`, `wchar.h`. They refuse
+        // rather than declaring something that would fail later, and the message says which
+        // (CONSTRAINTS 3).
+        //
+        // `stdarg.h` used to be on this list: it refused because a `va_list` is the ABI's variadic
+        // convention rather than a declaration. It is a real header now, and a program that reads an
+        // unnamed argument compiles - the premise of this test went with it.
+        for absent in ["setjmp.h", "signal.h", "locale.h", "wchar.h"] {
+            let mut compiler = crate::Compile::new(crate::Options::default());
+            assert!(
+                compiler
+                    .compile(
+                        "t.c",
+                        &format!(
+                            "#include <{absent}>
+"
+                        )
+                    )
+                    .is_err(),
+                "{absent} should refuse"
+            );
+        }
+    }
+
+    #[test]
+    fn stdarg_h_is_a_header_now() {
+        // The three macros over the builtins, and a variadic function that reads its arguments: the
+        // whole of what `stdarg.h` promises at level 2, in one compilation. It is the program the
+        // old `#error` existed to prevent from crashing at run time.
+        let source = "#include <stdarg.h>
+                      int sum(int count, ...) {
+                          va_list ap; int total = 0; int i;
+                          va_start(ap, count);
+                          for (i = 0; i < count; i++) total += va_arg(ap, int);
+                          va_end(ap);
+                          return total;
+                      }
+                      int main(void) { return sum(4, 10, 20, 30, 2); }
+";
+        let options = crate::Options {
+            opt_level: 2,
+            ..crate::Options::default()
+        };
+        let artifact = crate::Compile::new(options)
+            .compile("t.c", source)
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        assert!(!artifact.object().is_empty());
     }
 
     #[test]

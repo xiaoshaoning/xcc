@@ -551,6 +551,15 @@ impl<M: Module> Lowerer<'_, M> {
         };
         let pointer = ir::types::I64;
         match inst {
+            // The two operations that only a back end with a home area can lower (ADR-006).
+            Inst::VaStart { span, .. } | Inst::VaArg { span, .. } => {
+                return Err(LoweringError::not_lowered(
+                    "`va_arg` in the Cranelift back end: its arguments are in registers it chose, and \
+                     there is no home area to walk. Level 2 lowers it"
+                        .into(),
+                    *span,
+                ))
+            }
             Inst::Const {
                 result, ty, bits, ..
             } => {

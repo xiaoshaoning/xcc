@@ -149,7 +149,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         scratches: Vec::new(),
         frame,
     };
-    encoder.prologue();
+    encoder.prologue(func.variadic);
     let last = func.blocks.len().saturating_sub(1);
     for (index, block) in func.blocks.iter().enumerate() {
         encoder.label(index);
@@ -262,9 +262,18 @@ struct Encoder<'a> {
 impl Encoder<'_> {
     // ---------------------------------------------------------------- frame
 
-    fn prologue(&mut self) {
+    fn prologue(&mut self, variadic: bool) {
         if self.frame != 0 {
             self.sub_rsp(self.frame);
+        }
+        if variadic {
+            // Win64's home area, which is where `va_start` points: the caller reserved it, and a
+            // variadic callee is the only function that has to fill it in. Four integer registers and
+            // the stack arguments after them are contiguous from here.
+            for (index, register) in ARGUMENT_REGISTERS.iter().enumerate() {
+                let offset = self.frame + 8 + 8 * index as i32;
+                self.mov_memory_from_reg(offset, *register);
+            }
         }
         let saved = self.allocation.saved.clone();
         for (index, register) in saved.iter().enumerate() {
@@ -365,6 +374,29 @@ impl Encoder<'_> {
                 let register = self.destination(*dst);
                 self.lea(register, self.body_base + offset);
                 self.write(*dst, register);
+            }
+            Op::VaStart { dst, skip } => {
+                // The caller's home area holds arguments 0 to 3 at `[rsp + frame + 8 ..+]`, and the
+                // stack arguments follow at `+40`, so the first unnamed argument is `skip` slots into
+                // it and one pointer walks both. This is the whole of Win64's `va_start`.
+                let register = self.destination(*dst);
+                let offset = self.frame + 8 + 8 * i32::from(*skip);
+                self.lea(register, offset);
+                self.write(*dst, register);
+            }
+            Op::VaArg {
+                dst,
+                list,
+                size,
+                signed,
+            } => {
+                // A load through the list; the front end advances the list itself, so `va_arg` is
+                // one instruction and the step is a store the reader can see in the `cir`.
+                let address = self.read(*list);
+                let register = self.destination(*dst);
+                self.load_widened(register, address, 0, *size, *signed);
+                self.write(*dst, register);
+                self.release();
             }
             Op::LoadLocal { dst, offset } => {
                 // A block parameter's slot holds eight bytes whichever register file the value

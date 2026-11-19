@@ -890,6 +890,14 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.offsetof_expression(span))
             }
+            "__builtin_va_start" => {
+                self.bump();
+                Some(self.va_start_expression(span))
+            }
+            "__builtin_va_arg" => {
+                self.bump();
+                Some(self.va_arg_expression(span))
+            }
             _ => self.postfix_expression(),
         }
     }
@@ -965,6 +973,114 @@ impl Parser<'_> {
     /// the null pointer has no address to give. The layout is already known here - that is what
     /// `member.offset` is - so the builtin asks the type table instead of asking the machine.
     ///
+    /// `__builtin_va_start(ap, last)`: set the list to the first argument that is not a parameter.
+    ///
+    /// `last` is the final named parameter, and what the back end needs is how many parameters come
+    /// before the `...` - which is `last`'s position. A definition's parameters are in scope here
+    /// (C99 6.2.1p4), so each one's place is recorded as it is declared and compared by identity.
+    fn va_start_expression(&mut self, span: Span) -> Value {
+        let void = self.types.fundamental("void").unwrap();
+        if !self.eat("(") {
+            self.error_at_current("`__builtin_va_start` needs `(`");
+            return Value::temporary(void);
+        }
+        let Some(list) = self.assignment_expression() else {
+            self.error_at_current("`__builtin_va_start` needs a `va_list`");
+            return Value::temporary(void);
+        };
+        if !self.eat(",") {
+            self.error_at_current("`__builtin_va_start` needs the last parameter");
+            return Value::temporary(void);
+        }
+        let Some(last) = self.assignment_expression() else {
+            return Value::temporary(void);
+        };
+        if !self.eat(")") {
+            self.error_at_current("expected `)`");
+            return Value::temporary(void);
+        }
+        let params = self.function_params.clone();
+        let position = params
+            .iter()
+            .position(|place| place.is_some() && *place == last.place)
+            // The count of named parameters, not the index of the last one: `va_start` points at the
+            // first argument *after* them.
+            .map(|index| index as u8 + 1);
+        let Some(skip) = position else {
+            self.error(
+                span,
+                "the second argument of `va_start` must be the last named parameter",
+            );
+            return Value::temporary(void);
+        };
+        let char = self.types.fundamental("char").unwrap();
+        let bytes = self.pointer_to(char);
+        let Some(address) = self.emit(|builder| builder.va_start(bytes, skip, span)) else {
+            return Value::temporary(void);
+        };
+        let value = Value::code(bytes, address);
+        match list.place {
+            Some(place) => self.store_at(place, list.ty, value, span),
+            None => self.not_lowered(span, "a `va_list` that is not a local"),
+        }
+        Value::temporary(void)
+    }
+
+    /// `__builtin_va_arg(ap, type)`: read one argument and step the list over its slot.
+    ///
+    /// The step is eight bytes because a Win64 argument slot is eight bytes whatever the type - a
+    /// `char` argument still takes one - and it is written back into the list as an ordinary store, so
+    /// the `cir` shows the list moving rather than an operation with a side effect of its own.
+    fn va_arg_expression(&mut self, span: Span) -> Value {
+        if !self.eat("(") {
+            self.error_at_current("`__builtin_va_arg` needs `(`");
+            return Value::temporary(self.types.error());
+        }
+        let Some(list) = self.assignment_expression() else {
+            self.error_at_current("`__builtin_va_arg` needs a `va_list`");
+            return Value::temporary(self.types.error());
+        };
+        if !self.eat(",") {
+            self.error_at_current("`__builtin_va_arg` needs a type");
+            return Value::temporary(self.types.error());
+        }
+        let Some(ty) = self.try_type_name() else {
+            self.error_at_current("`__builtin_va_arg` needs a type");
+            return Value::temporary(self.types.error());
+        };
+        if !self.eat(")") {
+            self.error_at_current("expected `)`");
+            return Value::temporary(self.types.error());
+        }
+        if !self.in_body() {
+            self.not_lowered(span, "`va_arg` outside a function");
+            return Value::temporary(ty);
+        }
+        let (Some(ap), Some(place)) = (list.cir, list.place) else {
+            return Value::temporary(ty);
+        };
+        // C99 7.15.1.1: `va_arg` names the type as it was *passed*, which for a promoted argument is
+        // the promoted type - an `int` for a `char`, because that is what the caller wrote.
+        let promoted = self.types.promote(ty);
+        let Some(value) = self.emit(|builder| builder.va_arg(promoted, ap, ty, span)) else {
+            return Value::temporary(promoted);
+        };
+        // Then the step: eight bytes on, written back into the list.
+        let char = self.types.fundamental("char").unwrap();
+        let bytes = self.pointer_to(char);
+        let list_value = Value::code(list.ty, ap);
+        let eight = self.constant_of(
+            self.types.fundamental("unsigned long long").unwrap(),
+            8,
+            span,
+        );
+        let stepped = self.pointer_walk(bytes, list_value, eight, true, span);
+        if let Some(stepped) = stepped.cir {
+            self.emit(|builder| builder.store(place, stepped, span));
+        }
+        Value::code(promoted, value)
+    }
+
     /// `stddef.h` spells `offsetof` in terms of this, the way every compiler's own header does.
     fn offsetof_expression(&mut self, span: Span) -> Value {
         let size_type = self.types.fundamental("unsigned long long").unwrap();
@@ -1821,6 +1937,7 @@ impl Parser<'_> {
         self.blocks_reported.clear();
         let span = self.span();
         let params = std::mem::take(&mut self.last_parameters);
+        let variadic = std::mem::take(&mut self.last_variadic);
         let Some(name) = name else {
             self.block_body();
             self.function_result = None;
@@ -1857,7 +1974,8 @@ impl Parser<'_> {
             param_types.push(shaped);
         }
         let shaped_result = self.abi_value(result);
-        let func = cir::Func::new(name, shaped_result, span);
+        let mut func = cir::Func::new(name, shaped_result, span);
+        func.variadic = variadic;
         let mut body = Body {
             current: func.entry,
             func,
@@ -1900,7 +2018,9 @@ impl Parser<'_> {
             let pointer = self.pointer_to(ty);
             // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and what arrives is
             // stored into it - as an integer, for a record small enough for a register.
-            if let Some(slot) = self.emit(|builder| builder.slot(ty, pointer, span)) {
+            let slot = self.emit(|builder| builder.slot(ty, pointer, span));
+            self.function_params.push(slot);
+            if let Some(slot) = slot {
                 if let Some(incoming) = incoming {
                     if self.types.record_of(ty).is_some() {
                         let integer = self.record_integer(ty);

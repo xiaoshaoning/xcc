@@ -112,7 +112,21 @@ registers nobody asked it for, or spills nothing and reads nothing. So:
 
 That refusal is honest and small: a `%f` in a format string is the only thing it costs a `printf` user.
 
-**Amended again when this compiler's own back end landed (ADR-008).** "Until the back end can write a
+**Amended again when this compiler's own back end landed (ADR-008)** - and then *resolved*, for
+integer arguments, by it. `va_start` is one `lea`: Win64's home area holds arguments 0 to 3 at
+`[rsp + 8 .. +40)` and the stack arguments follow at `+40`, so a variadic function's prologue writes its
+four register arguments into that home area and a `char *` walks everything with one pointer. `va_arg` is
+a load plus an eight-byte step the front end writes back into the list. `AL` was needed for the *other*
+half - the floating-point duplicate - and that is still refused, with a span, for a reason that has
+nothing to do with registers: `cir` does not carry the count.
+
+**The lowerings now differ, deliberately.** `cir` has `VaStart` and `VaArg`, and Cranelift cannot lower
+either - it has no home area to point at, so it refuses with a span and names the level that works. That
+is the first construct where `--opt-level=2` accepts what `0` and `1` refuse, and the reason the corpus
+ratchet compares the two lowerings cannot hold a `va_arg` program: `tests/x64.rs` compares those against
+*clang* instead, which is the honest oracle when one side of the comparison cannot run.
+
+**The older amendment, kept for the reasoning:** "Until the back end can write a
 physical register" was true of Cranelift and is now false of this project: `back-x64` names its registers
 and writes `AL` in one instruction. Two obstacles remain, and they are different in kind. The count itself
 is a number `cir` does not carry - it can be derived from the call's arguments, so that is work, not an
