@@ -105,6 +105,46 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### folding and dead code, reviewed - 2026-11-16 - a bitcast that kept the wrong meaning of its bits
+
+Review of `e5706b6`.
+
+**Found: folding a `bitcast` returned the source's bits unchanged, which is the wrong meaning for the
+destination type.** `int -1` cast to `unsigned int` is `0xFFFFFFFF`; the fold produced the sign-extended
+64-bit form. Every other fold in the pass relies on a constant being canonical for its own type - that is
+the invariant `folded_value` now enforces on its *operands* - and this was the one arm that could break
+it. It is one line: canonicalise to the destination type, like the truncating arms already do. The case
+is not reachable from today's front end (it does not fold `-1`, and the two lowerings both use the
+*type* rather than the bits, so a non-canonical constant is masked), which is exactly why it needed
+finding by reading rather than by running.
+
+**Found: an arm in `result_type` that could never be reached.** It listed `Unary` among the folded
+instructions, and the pass never folds a unary operation. Removed, with the `unreachable!` message now
+saying which two instructions can arrive.
+
+**Checked and sound, because three passes in one commit is where a design decision can hide:**
+
+- **Dead-code elimination keeps what has an effect**: a store, a call, and a slot - the last because the
+  frame's shape comes from saying a slot exists, so removing an unused one would move every offset after
+  it. A `Load` *is* removed when nothing reads it, which is the as-if rule (C99 5.1.2.3) and not an
+  optimisation of a program that could notice.
+- **A division is removed when its result is unused** even though it can trap. C says the trap is
+  undefined behaviour, so a program that does not use the result does not have to have done the division;
+  the corpus's `LLONG_MIN / -1` case is not affected because its result is used.
+- **The address rule looks through at most eight bitcasts** and gives up rather than guessing: a longer
+  chain, or an offset that does not fit in `i32`, leaves the addition where it was.
+- **The fold loops to a fixpoint and terminates** because each round replaces at least one instruction
+  with a constant and a constant is never folded again.
+- **The two orderings matter and are stated**: folding runs after `mem2reg` (promotion is what makes a
+  local's value a constant), and DCE runs after folding (folding is what makes instructions dead).
+
+**Measured after the review: 97 432 bytes over the 414 corpus programs - unchanged**, with 414 agreeing
+and none wrong.
+
+180 unit, 23 parser, 20 CLI, 3 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### floats across calls, reviewed - 2026-11-16 - an invariant the commit claimed and the code did not hold
 
 Review of `c0ff87c`.

@@ -69,9 +69,9 @@ fn constants_of(func: &Func) -> HashMap<Value, u64> {
 /// The C type an instruction produces.
 fn result_type(inst: &Inst) -> TypeId {
     match inst {
-        Inst::Binary { ty, .. } | Inst::Unary { ty, .. } => *ty,
+        Inst::Binary { ty, .. } => *ty,
         Inst::Convert { to, .. } => *to,
-        _ => unreachable!("an instruction with no type asked for one"),
+        _ => unreachable!("only a binary operation or a conversion is ever folded"),
     }
 }
 
@@ -121,7 +121,11 @@ fn folded_value(inst: &Inst, constants: &HashMap<Value, u64>, types: &Types) -> 
             // whatever the front end recorded.
             let value = canonical(bits, from_size, from_signed);
             Some(match op {
-                ConvertOp::Bitcast => value,
+                // A bitcast keeps the bits *as the destination type means them*: `int -1` cast to
+                // `unsigned int` is 0xFFFFFFFF, not the sign-extended 64-bit form. Every other fold
+                // relies on a constant being canonical for its own type, and this is the arm that
+                // would break that rule if it returned the source unchanged.
+                ConvertOp::Bitcast => canonical(value, to_size, to_signed),
                 ConvertOp::Truncate | ConvertOp::SignExtend | ConvertOp::ZeroExtend => {
                     canonical(value, to_size, to_signed)
                 }
