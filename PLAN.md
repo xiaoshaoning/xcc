@@ -460,6 +460,21 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       and a wrong prefix is not a wrong answer but an illegal instruction; the two conversions need
       their REX byte or they read `rax`; and `==` needs `setnp`, not `setp`, or every equality is
       quietly false.
+- [x] `back-x64` **function pointers and indirect calls**: a function's address is a symbol like any
+      other, so `lea reg, [rip + disp32]` with a relocation materialises it; a call through one is
+      `call r/m` with the same argument placement as a direct call, in one function used by both. A
+      callee whose only reader is the call stays a direct `call rel32`, so a promoted pointer costs
+      nothing. **406 -> 411 of the 464 corpus programs** compile, link, run and agree; the refusals are
+      now 53, and every one of them is the front end or ADR-004 except three float-ABI programs.
+      **`Op::DataAddress` became `Op::SymbolAddress`**, because the address of a function is the same
+      instruction and the same relocation as the address of an object, and one name for one thing is
+      what keeps a reader from looking for the other. The callee's register survives the argument
+      placement for a reason the register plan guarantees - a function with any call allocates only
+      callee-saved registers - and that is written where it is relied on.
+      **A test whose premise expired was replaced, not kept**: `a_function_address_read_as_a_value_is_refused`
+      asserted the gap this round closed. Its two programs are now cases in the constructs table with
+      their right answers (1 and 7), and `a_function_address_that_never_escapes_is_still_a_direct_call`
+      still holds the other half.
 - [ ] `back-x64` **floating point across calls**, attempted twice and both times reverted - the state
       of it, so the next attempt starts from the diagnosis instead of from the beginning. The ABI
       mapping is settled and was implemented: float parameters and returns in `xmm0`-`xmm3` by

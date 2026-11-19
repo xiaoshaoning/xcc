@@ -81,7 +81,7 @@ arguments and an integer or `void` result; recursion.
 
 ## What it refuses, and why that is the design
 
-Floating point; indirect calls and taking a function's address; aggregates by value; `va_arg`. Each is a `NotYet` with a span, so the
+Floating point across a call - parameters, returns and float arguments; aggregates by value; `va_arg`. Each is a `NotYet` with a span, so the
 refusal reads like the two hundred other refusals in this compiler and a program never runs
 *differently* from the same program at level 0 - it either agrees or does not compile.
 
@@ -105,6 +105,10 @@ compile, against Cranelift's 11 626 for the same programs and `clang -O2`'s 9 25
 **5.2x Cranelift and 6.5x clang**. That is the honest state of a first slice: correct, and large,
 because every operation goes through scratch moves, every edge through memory, and nothing is
 coalesced or peepholed.
+
+**Function pointers came next,** which closed the last gap that was not a front-end one: a function's
+address is a symbol, so `lea` with a relocation materialises it, and `call r/m` calls through it. Five
+corpus programs, and the refusals left are three float-ABI programs and the front end's own.
 
 **Floating point came next, as one file's worth of it:** XMM registers as a second register file, the
 four arithmetic operations in both widths, comparisons with C's NaN rules, and the four conversions.

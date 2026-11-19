@@ -603,17 +603,10 @@ impl FunctionLowering<'_> {
                     // Read only as the callee of a call: the call names the symbol and no address
                     // is ever materialised, so this value is defined by being left out. Nothing
                     // reads it, so it never needs a register or a slot.
-                } else if self.functions.contains(name) {
-                    // A function's address as a value is a call through a pointer, which this back
-                    // end has not learnt; an object's address is one `lea`.
-                    return Err(NotYet {
-                        message: format!("the address of the function `{name}` as a value"),
-                        span,
-                    });
                 } else {
                     let dst = self.reg_for(*result);
                     self.classify(dst, Class::Integer);
-                    ops.push(Op::DataAddress {
+                    ops.push(Op::SymbolAddress {
                         dst,
                         symbol: name.clone(),
                     });
@@ -625,12 +618,6 @@ impl FunctionLowering<'_> {
                 args,
                 ..
             } => {
-                let Some(name) = self.direct_calls.get(callee).cloned() else {
-                    return Err(NotYet {
-                        message: "an indirect call".into(),
-                        span,
-                    });
-                };
                 for arg in args {
                     if self.types.is_float(func.value(*arg).ty) {
                         return Err(NotYet {
@@ -649,23 +636,33 @@ impl FunctionLowering<'_> {
                 }
                 let args: Vec<VReg> = args.iter().map(|arg| self.reg_for(*arg)).collect();
                 let dst = result.map(|result| self.reg_for(result));
-                let size = match result {
-                    Some(result) => {
-                        let (size, signed) = self.width(func.value(*result).ty, span)?;
-                        Some((size, signed))
-                    }
-                    None => None,
+                let (size, signed) = match result {
+                    Some(result) => self.width(func.value(*result).ty, span)?,
+                    // A call that returns nothing has neither, and the encoder never asks.
+                    None => (0, false),
                 };
                 if let Some(dst) = dst {
                     self.classify(dst, Class::Integer);
                 }
-                ops.push(Op::Call {
-                    dst,
-                    name,
-                    args,
-                    size: size.map_or(0, |(size, _)| size),
-                    signed: size.is_some_and(|(_, signed)| signed),
-                });
+                // A callee whose only use is this call is a direct call: `call rel32` names the
+                // symbol and no address is materialised. Anything else - a pointer held in a
+                // variable, passed in, read from a table - is called through a register.
+                match self.direct_calls.get(callee).cloned() {
+                    Some(name) => ops.push(Op::Call {
+                        dst,
+                        name,
+                        args,
+                        size,
+                        signed,
+                    }),
+                    None => ops.push(Op::CallIndirect {
+                        dst,
+                        callee: self.reg_for(*callee),
+                        args,
+                        size,
+                        signed,
+                    }),
+                }
             }
         }
         Ok(())

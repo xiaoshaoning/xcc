@@ -16,8 +16,8 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised. The
-/// 58 the back end still refuses are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 406;
+/// 53 the back end still refuses are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 411;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -214,6 +214,34 @@ fn the_constructs_the_slice_lowers_behave() {
             63,
         ),
         (
+            // A function pointer: the callee's address is a symbol, and the call is `call r/m`.
+            "a call through a function pointer",
+            "int add(int a, int b) { return a + b; } int main(void) { int (*p)(int, int) = add; return p(20, 22); }",
+            42,
+        ),
+        (
+            "a function pointer passed to another function",
+            "int add(int a, int b) { return a + b; } int mul(int a, int b) { return a * b; } int apply(int (*f)(int, int), int a, int b) { return f(a, b); } int main(void) { return apply(mul, 6, 7); }",
+            42,
+        ),
+        (
+            "a function pointer called twice",
+            "int twice(int x) { return x * 2; } int main(void) { int (*p)(int) = twice; int r = p(p(10)); return r; }",
+            40,
+        ),
+        (
+            // An address read by something other than the call that uses it: the two programs that
+            // used to be refused here are correct now.
+            "a function's address compared with zero",
+            "int f(void) { return 7; } int main(void) { return f != 0; }",
+            1,
+        ),
+        (
+            "a function's address passed to another function",
+            "int f(void) { return 7; } int g(int (*p)(void)) { return p(); } int main(void) { return g(f); }",
+            7,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,
@@ -316,50 +344,6 @@ fn a_function_address_that_never_escapes_is_still_a_direct_call() {
         ran.status,
         Some(7),
         "the call went to the function it names"
-    );
-}
-
-/// Everywhere else, an address this back end cannot make is a gap, and a gap must be refused: the
-/// one way it could go wrong silently is the direct-call path deciding the call is the only reader
-/// of an address something else reads too, and calling through zero.
-#[test]
-fn a_function_address_read_as_a_value_is_refused() {
-    let Some(_) = linker() else {
-        eprintln!("no linker on this machine: the own back end's tests are skipped");
-        return;
-    };
-    let dir = temp_dir("address");
-    let programs = [
-        (
-            "compared with something",
-            "int f(void) { return 7; } int main(void) { return f != 0; }",
-        ),
-        (
-            "passed to another function",
-            "int f(void) { return 7; } int g(int (*p)(void)) { return p(); } int main(void) { return g(f); }",
-        ),
-    ];
-    let mut wrong = Vec::new();
-    for (what, source) in programs {
-        if let Some(ran) = build_and_run(source, 2, &dir, "address") {
-            wrong.push(format!("{what}: compiled and exited with {:?}", ran.status));
-        }
-        // The other lowering must accept it: a program level 0 refuses too is no evidence of this
-        // back end's discipline.
-        if build_and_run(source, 0, &dir, "address").is_none() {
-            wrong.push(format!(
-                "{what}: level 0 refused it too, so this proves nothing"
-            ));
-        }
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        wrong.is_empty(),
-        "{}",
-        wrong.join(
-            "
-"
-        )
     );
 }
 

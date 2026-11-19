@@ -136,9 +136,10 @@ pub(crate) enum Op {
     },
     /// The address of a frame slot: `lea`.
     LocalAddress { dst: VReg, offset: i32 },
-    /// The address of an object in the data section, by its link name: `lea` with a displacement the
-    /// object file's relocation fills in. Also how a string literal's address is taken.
-    DataAddress { dst: VReg, symbol: String },
+    /// The address of a symbol, by its link name: `lea` with a displacement the object file's
+    /// relocation fills in. A string literal, a global object and - since function pointers - a
+    /// function are all a name the linker resolves to an address.
+    SymbolAddress { dst: VReg, symbol: String },
     /// Read eight bytes of a frame slot, which is how a block parameter arrives.
     LoadLocal { dst: VReg, offset: i32 },
     /// Write eight bytes of a frame slot, which is how an edge passes them.
@@ -257,6 +258,16 @@ pub(crate) enum Op {
         src: VReg,
         size: u8,
     },
+    /// Call through a pointer: `call r/m`, with the same argument placement as a direct call and the
+    /// target in a register. This is how a function pointer is called (C99 6.5.2.2p1).
+    CallIndirect {
+        dst: Option<VReg>,
+        /// The pointer being called.
+        callee: VReg,
+        args: Vec<VReg>,
+        size: u8,
+        signed: bool,
+    },
     /// Call a function by name: `call rel32`. The first four arguments go in registers, staged
     /// through the frame when one of them would destroy another; the rest go in the function's
     /// outgoing slots, which is what the frame reserves them for.
@@ -276,7 +287,7 @@ impl Op {
             Op::Const { dst, .. }
             | Op::Incoming { dst, .. }
             | Op::LocalAddress { dst, .. }
-            | Op::DataAddress { dst, .. }
+            | Op::SymbolAddress { dst, .. }
             | Op::LoadLocal { dst, .. }
             | Op::LoadMemory { dst, .. }
             | Op::Binary { dst, .. }
@@ -290,7 +301,7 @@ impl Op {
             | Op::FloatConvert { dst, .. }
             | Op::LoadFloat { dst, .. }
             | Op::Canonical { dst, .. } => Some(*dst),
-            Op::Call { dst, .. } => *dst,
+            Op::Call { dst, .. } | Op::CallIndirect { dst, .. } => *dst,
             Op::StoreLocal { .. } | Op::StoreMemory { .. } | Op::StoreFloat { .. } => None,
         }
     }
@@ -301,7 +312,7 @@ impl Op {
             Op::Const { .. }
             | Op::Incoming { .. }
             | Op::LocalAddress { .. }
-            | Op::DataAddress { .. }
+            | Op::SymbolAddress { .. }
             | Op::LoadLocal { .. } => Vec::new(),
             Op::StoreLocal { src, .. } => vec![*src],
             Op::LoadMemory { base, .. } => vec![*base],
@@ -318,6 +329,11 @@ impl Op {
             Op::FloatConst { .. } => Vec::new(),
             Op::Unary { src, .. } | Op::Canonical { src, .. } => vec![*src],
             Op::Call { args, .. } => args.clone(),
+            Op::CallIndirect { callee, args, .. } => {
+                let mut operands = vec![*callee];
+                operands.extend(args.iter().copied());
+                operands
+            }
         }
     }
 }
@@ -326,7 +342,10 @@ impl Op {
 /// register a value may not share. The three that do are the ones the instruction set fixes: a
 /// comparison's low byte, a division's dividend and high half, and a call's result.
 fn writes_rax(op: &Op) -> bool {
-    matches!(op, Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. })
+    matches!(
+        op,
+        Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. } | Op::CallIndirect { .. }
+    )
 }
 
 /// The value an operation copies, if it copies one: the operand its result is computed from. The

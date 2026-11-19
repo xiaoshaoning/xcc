@@ -293,7 +293,7 @@ impl Encoder<'_> {
                 self.canonicalise(register, *size, *signed);
                 self.write(*dst, register);
             }
-            Op::DataAddress { dst, symbol } => {
+            Op::SymbolAddress { dst, symbol } => {
                 // `lea dst, [rip + disp32]`: the displacement is a relocation, because the linker
                 // decides where the data section goes.
                 let register = self.destination(*dst);
@@ -463,6 +463,21 @@ impl Encoder<'_> {
                 size,
                 signed,
             } => self.canonical_op(*dst, *src, *size, *signed),
+            Op::CallIndirect {
+                dst,
+                callee,
+                args,
+                size,
+                signed,
+            } => {
+                self.place_arguments(args);
+                // The callee's register survives the placement: a function with any call allocates
+                // only callee-saved registers, so it is never one of the argument registers the
+                // placement writes. A spilled callee is loaded after, into a scratch.
+                let target = self.read(*callee);
+                self.call_through(target);
+                self.finish_call(*dst, *size, *signed);
+            }
             Op::Call {
                 dst,
                 name,
@@ -470,47 +485,9 @@ impl Encoder<'_> {
                 size,
                 signed,
             } => {
-                // An argument that is already in another argument's register has to be got out of
-                // the way first, which the staging area does; when no two of them collide - the
-                // common case, and the only one for a call with one argument - each goes straight
-                // to its register.
-                // The arguments beyond the fourth go to the outgoing slots, and they go first: a
-                // slot write cannot disturb a register, while a register move could disturb a value
-                // that has not been stored yet.
-                for (index, argument) in args.iter().enumerate().skip(ARGUMENT_REGISTERS.len()) {
-                    let value = self.read(*argument);
-                    let offset = self.outgoing_base + 8 * (index - ARGUMENT_REGISTERS.len()) as i32;
-                    self.mov_memory_from_reg(offset, value);
-                    self.release();
-                }
-                if self.arguments_collide(args) {
-                    // Only the register arguments are staged; the rest are already in the outgoing
-                    // slots, which no register move can disturb.
-                    let register_arguments = args.len().min(ARGUMENT_REGISTERS.len());
-                    for (index, arg) in args.iter().enumerate().take(register_arguments) {
-                        let register = self.read(*arg);
-                        self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
-                        self.release();
-                    }
-                    for (index, target) in ARGUMENT_REGISTERS
-                        .iter()
-                        .enumerate()
-                        .take(register_arguments)
-                    {
-                        self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
-                    }
-                } else {
-                    for (index, arg) in args.iter().enumerate().take(ARGUMENT_REGISTERS.len()) {
-                        self.read_into(*arg, ARGUMENT_REGISTERS[index]);
-                    }
-                }
+                self.place_arguments(args);
                 self.call(name);
-                if let Some(dst) = dst {
-                    // The upper bits of `rax` are unspecified after a call, so a narrow result is
-                    // canonicalised here rather than trusted.
-                    self.canonicalise(Reg::RAX, *size, *signed);
-                    self.write(*dst, Reg::RAX);
-                }
+                self.finish_call(*dst, *size, *signed);
             }
         }
     }
@@ -1027,6 +1004,58 @@ impl Encoder<'_> {
             self.scratches.push(wanted);
         }
         wanted
+    }
+
+    /// Put the arguments where the call will find them: the first four in `rcx`, `rdx`, `r8` and
+    /// `r9`, the rest in the outgoing slots. One place, because a direct call and a call through a
+    /// pointer pass their arguments the same way, and two copies of this would drift.
+    fn place_arguments(&mut self, args: &[VReg]) {
+        // The arguments beyond the fourth go to the outgoing slots, and they go first: a slot write
+        // cannot disturb a register, while a register move could disturb a value not yet stored.
+        for (index, argument) in args.iter().enumerate().skip(ARGUMENT_REGISTERS.len()) {
+            let value = self.read(*argument);
+            let offset = self.outgoing_base + 8 * (index - ARGUMENT_REGISTERS.len()) as i32;
+            self.mov_memory_from_reg(offset, value);
+            self.release();
+        }
+        if self.arguments_collide(args) {
+            // An argument may be in the register another has to go to; the staging area gets them
+            // all out of the way at once.
+            let register_arguments = args.len().min(ARGUMENT_REGISTERS.len());
+            for (index, arg) in args.iter().enumerate().take(register_arguments) {
+                let register = self.read(*arg);
+                self.mov_memory_from_reg(self.staging_base + index as i32 * 8, register);
+                self.release();
+            }
+            for (index, target) in ARGUMENT_REGISTERS
+                .iter()
+                .enumerate()
+                .take(register_arguments)
+            {
+                self.mov_reg_from_memory(*target, self.staging_base + index as i32 * 8);
+            }
+        } else {
+            for (index, arg) in args.iter().enumerate().take(ARGUMENT_REGISTERS.len()) {
+                self.read_into(*arg, ARGUMENT_REGISTERS[index]);
+            }
+        }
+    }
+
+    /// What a call leaves behind: its result in `rax`, with the upper bits of a narrow one
+    /// unspecified, so they are canonicalised rather than trusted. A floating-point result comes back
+    /// in `xmm0`, which is the ABI round this back end has not finished.
+    fn finish_call(&mut self, dst: Option<VReg>, size: u8, signed: bool) {
+        let Some(dst) = dst else { return };
+        self.canonicalise(Reg::RAX, size, signed);
+        self.write(dst, Reg::RAX);
+    }
+
+    /// `call r/m64`: the same call as a direct one, with the target in a register. `/2` is the
+    /// indirect form, and the register is the r/m field.
+    fn call_through(&mut self, target: Reg) {
+        self.prefix(Reg(0), target);
+        self.byte(0xFF);
+        self.modrm(3, 2, target);
     }
 
     /// Whether moving the arguments into their registers, in order, can destroy one that has not
