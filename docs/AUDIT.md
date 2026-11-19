@@ -105,6 +105,46 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### the support matrix, reviewed - 2026-11-16 - a compiler that said it was freestanding
+
+Nothing in the tree was unreviewed, so the review went after what the last five rounds had made untrue:
+the document that answers "do you support X?".
+
+**Found: `__STDC_HOSTED__` was 0, and this compiler has been hosted since M8.** The support matrix said
+"`__STDC_HOSTED__` is **0** until M8 ships headers" - and M8 shipped them; the macro did not change. C99
+6.10.8p1 says a hosted implementation defines it as 1, and this one ships the standard headers and links
+a program against the host's C runtime. A program that tests the macro would take the freestanding branch
+of its own code, which is a wrong answer produced by a constant. The value is 1 now, the test that pinned
+0 pins 1, and the matrix says why.
+
+**Found: the matrix's own preamble said nothing was implemented.** "Nothing below is implemented yet. M2
+is the preprocessor, M3 the parser and types..." - from the M2 era, in the document a user reads first.
+It now says what is true: M10, the front end done, two back ends, and what is actually left.
+
+**Found: three rows that had become false in the same way.**
+- The freestanding headers were `planned (M8)`; they ship inside the compiler, twelve clean-room headers
+  consulted after the host's, and `stdarg.h` is the one that refuses.
+- The hosted headers were `planned (M8), over UCRT imports`; they ship, and a linked program uses the
+  host's runtime while `--run` resolves the same names out of one loaded runtime - except `snprintf`.
+- `va_arg` was refused "because the back end cannot write `AL`". That was true of Cranelift and is now
+  false of this project: the own back end names registers and writes `AL` in one instruction. The rows
+  (and ADR-006, which said the refusal was "permanent until the back end can write a physical
+  register") now say what is actually true - the count is a value `cir` does not carry, which is work,
+  and Cranelift still cannot express a variadic *definition*, which is a decision about the two
+  lowerings rather than a missing instruction.
+
+**Checked and sound:** the rows that were already right stayed untouched - the variadic *call* row with
+its `AL` caveat, the `switch`/jump-table row, `__func__`, `setjmp.h` and the four headers that refuse. No
+claim in the matrix is now stronger than a test behind it: the hosted rows name what `tests/exe.rs` and
+`--run` demonstrate, and the freestanding row names the header set that ships.
+
+**Measured after the review: 414 agreeing, 50 refused, 0 wrong** - unchanged, and one wrong constant
+fixed.
+
+180 unit, 23 parser, 20 CLI, 3 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### the frame's immediates, reviewed - 2026-11-16 - a plan that could not be read
 
 Review of `afaf881`.

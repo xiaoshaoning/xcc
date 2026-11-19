@@ -955,7 +955,10 @@ impl Preprocessor<'_> {
             "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
             "__STDC__" => (TokenKind::Number, "1".to_owned()),
             "__STDC_VERSION__" => (TokenKind::Number, "199901L".to_owned()),
-            "__STDC_HOSTED__" => (TokenKind::Number, "0".to_owned()),
+            // C99 6.10.8p1: 1 for a hosted implementation, and this one is - it ships the standard
+            // headers and a linked program calls the host's C runtime. It said 0 from M2 until M8
+            // made it false, which a reader of the support matrix noticed before a test did.
+            "__STDC_HOSTED__" => (TokenKind::Number, "1".to_owned()),
             _ => return None,
         };
         let text = self.interner.intern(&text);
@@ -2102,7 +2105,7 @@ yes
             &Options::default(),
             &(),
         );
-        assert_eq!(spells, ["1", "199901L", "0"]);
+        assert_eq!(spells, ["1", "199901L", "1"]);
     }
 
     // ---- #line ------------------------------------------------------------------

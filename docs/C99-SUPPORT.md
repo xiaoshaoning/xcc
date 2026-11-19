@@ -1,10 +1,13 @@
 # C99 support matrix
 
-What xcc accepts, what it refuses, and what is not built yet. This table is the work list for
-M3 and M6, and the answer to "do you support X?" without having to read the parser.
+What xcc accepts, what it refuses, and what is not built yet - the answer to "do you support X?"
+without having to read the parser.
 
-**Status**: nothing below is implemented yet. M2 is the preprocessor, M3 the parser and types,
-M6 the rest of C. Everything is `planned` until a test says otherwise.
+**Status**: M10. The front end (preprocessor, parser, types, initialisers, the C library's
+declarations) is done; there are two back ends - Cranelift behind `--opt-level=0`/`1`, and this
+compiler's own behind `--opt-level=2`, which lowers everything the front end accepts. What is left is
+`va_arg` and variadic *definitions* (the rows below say why), the optimiser's backlog, and the
+`planned` rows.
 
 | status | meaning |
 |---|---|
@@ -37,7 +40,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `#error`, `#warning` | `sound` - the rest of the line is the message |
 | `#line` | `partial` (M2.4) - it renumbers `__LINE__` and `__FILE__`; diagnostics still report physical lines, deliberately |
 | `#pragma once`, unknown `#pragma` ignored with a warning | `sound` for the directive itself; `once` matters at M2.4 |
-| `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__` | `sound` (M2.4) - the date and time come from `Options::stamp`, never from a clock, so the same source gives the same tokens. `__STDC_HOSTED__` is **0** until M8 ships headers, which is a real difference from a hosted compiler and the one disagreement the gate's probe file demonstrates |
+| `__FILE__`, `__LINE__`, `__DATE__`, `__TIME__`, `__STDC__`, `__STDC_VERSION__`, `__STDC_HOSTED__` | `sound` (M2.4) - the date and time come from `Options::stamp`, never from a clock, so the same source gives the same tokens. `__STDC_HOSTED__` is **1**: this is a hosted implementation, because it ships the standard headers and a linked program calls the host's C runtime (C99 6.10.8p1) |
 | `#pragma pack`, `#pragma comment` | `refused` - a diagnostic, not a silent misparse |
 
 ## Types
@@ -76,8 +79,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | implicit conversions, usual arithmetic conversions, assignment compatibility | `sound` (M3.2) |
 | `switch` with dense and sparse cases (jump tables where they pay) | `planned` |
 | a call to a variadic function (`printf`-style) with integer, character, string or pointer arguments | `sound` (M8): the call site's arguments are its signature, so it is lowered as an indirect call, and the default argument promotions are applied. A callee that reads `AL` finds it at whatever it was, which only matters if a floating-point argument was passed |
-| a floating-point argument to a variadic function | `refused` - Win64 passes it in a vector register and says how many in `AL`, a physical register the back end cannot write, so a callee would read nothing; the diagnostic is "cannot be passed", not "not lowered yet" ([ADR-006](ADR-006-varargs.md)) |
-| `va_list`, `va_start`, `va_arg`, defining a variadic function | `refused` - the callee's side of the same convention, and the same `AL` question ([ADR-006](ADR-006-varargs.md)); `stdarg.h` refuses with a pointer to it |
+| a floating-point argument to a variadic function | `refused` - Win64 passes it in a vector register *and* sets `AL` to the number of vector registers the call used, and `cir` does not carry that count: the back end would have to derive it, and the two lowerings must agree. The diagnostic is "cannot be passed", not "not lowered yet" ([ADR-006](ADR-006-varargs.md)) |
+| `va_list`, `va_start`, `va_arg`, defining a variadic function | `refused` - nothing implements it. The own back end *can* write `AL` and has a register save area to walk; Cranelift cannot express a variadic definition at all, so a program using one would be accepted at `--opt-level=2` and refused at `0` and `1`. That is a decision about the two lowerings, not a missing register ([ADR-006](ADR-006-varargs.md)); `stdarg.h` refuses with a pointer to it |
 | `if`/`else`, `while`, `do`/`while`, `for`, `return`, `break`, `continue`, blocks | `sound` (M3.2) |
 | `switch`, `goto`, labels | `sound` (M6): the controlling expression must be an integer, `case` values unique, one `default`, and a `goto` lowers to a jump - forward or backward, with a label on the entry block or a join given a block of its own |
 | initialisation of aggregates, static and automatic | `sound` (M6): brace lists, elision and designators, read into a frame slot or a file-scope object's bytes |
@@ -87,8 +90,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 
 | construct | status |
 |---|---|
-| freestanding: `stddef.h`, `stdarg.h`, `stdbool.h`, `stdint.h`, `limits.h`, `float.h` | `planned` (M8) |
-| hosted: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `math.h`, `time.h` | `planned` (M8), over UCRT imports |
+| freestanding: `stddef.h`, `stdarg.h`, `stdbool.h`, `stdint.h`, `limits.h`, `float.h` | `sound` (M8) - they ship inside the compiler, twelve clean-room headers consulted after the host's, so no `-I` is needed and `-I` still shadows them. `stdarg.h` is the exception: it refuses with the reason in [ADR-006](ADR-006-varargs.md) |
+| hosted: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `math.h`, `time.h` | `partial` (M8) - the declarations ship and a linked program uses the host's C runtime; `--run` resolves every function the headers declare out of one loaded C runtime, except `snprintf`, which no Windows runtime exports directly. A variadic call with a floating-point argument is refused (see the rows below) |
 | `setjmp.h` | `planned`, with the caveat that a JIT'ed frame cannot be long-jumped out of without unwind information |
 | `signal.h`, `locale.h`, `wchar.h`, `wctype.h` | `refused` for now - a diagnostic when included, rather than a header that pretends |
 

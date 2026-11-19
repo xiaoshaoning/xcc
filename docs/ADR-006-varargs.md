@@ -110,8 +110,15 @@ registers nobody asked it for, or spills nothing and reads nothing. So:
   should be. Passing it in both files (the ABI's duplicate) does not help: which of the two
   `va_arg` reads is the callee's choice, and it is the vector one for a `double`.
 
-That refusal is honest and permanent until the back end can write a physical register. It is also
-small: a `%f` in a format string is the only thing it costs a `printf` user.
+That refusal is honest and small: a `%f` in a format string is the only thing it costs a `printf` user.
+
+**Amended again when this compiler's own back end landed (ADR-008).** "Until the back end can write a
+physical register" was true of Cranelift and is now false of this project: `back-x64` names its registers
+and writes `AL` in one instruction. Two obstacles remain, and they are different in kind. The count itself
+is a number `cir` does not carry - it can be derived from the call's arguments, so that is work, not an
+impossibility. The other is that Cranelift still cannot express a variadic definition at all, so a
+level-2-only `va_arg` would make the two lowerings accept different programs. That is the decision this
+ADR now waits on.
 
 **What the amendment costs.** A variadic call is an indirect call - a `func_addr` and a
 `call_indirect` instead of a direct `call` - so its callee cannot be inlined and it pays one
