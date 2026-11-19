@@ -460,6 +460,29 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       and a wrong prefix is not a wrong answer but an illegal instruction; the two conversions need
       their REX byte or they read `rax`; and `==` needs `setnp`, not `setp`, or every equality is
       quietly false.
+- [ ] `back-x64` **floating point across calls**, attempted twice and both times reverted - the state
+      of it, so the next attempt starts from the diagnosis instead of from the beginning. The ABI
+      mapping is settled and was implemented: float parameters and returns in `xmm0`-`xmm3` by
+      *position*, counted separately per class, with a `Target` plan (integer register, XMM register,
+      outgoing slot) and a 64-byte staging area for both classes. Two things stopped it.
+      **First**: `xmm2`-`xmm5` are caller-saved, so a `double` live across a call was destroyed by it -
+      `d2and.c` answered 1 instead of 42. That is fixed and landed (`1361692`): a calling function
+      allocates `xmm6`-`xmm15` and saves them with `movups`.
+      **Second, not fixed**: with the ABI in place, `d2and.c` still failed, and the disassembly showed a
+      comparison reading `xmm0` - the encoder's *scratch* - where its operand had been converted into
+      `xmm8`. The fault is operand selection with a spilled float: `float_destination` returns the
+      scratch for a spilled result and `float_scratch` hands the same pair out to operands, so the
+      result's register, the operands' registers and the scratch are **not** pairwise distinct. The
+      integer path holds that invariant by construction (`rax` for a spilled result, `r10`/`r11` for
+      operands); the float path has only two spare registers and one of them doubles as the result's
+      home.
+      **The fix to make first**: reserve a third register - `xmm2` - as the spilled result's home, so
+      the pools become `xmm3`-`xmm5` (a function that calls nothing) and `xmm6`-`xmm15` (one that
+      calls), the scratch stays `xmm0`/`xmm1`, and the invariant is written beside the pool: *the
+      result's register, each operand's, and the scratch pair are pairwise distinct*. Then the ABI work
+      on top of it, with `d2and.c` and the mixed-signature hand tests as the first things to run.
+      A test that would have caught the second fault at HEAD: a leaf function with more live doubles
+      than it has registers, which `fs.c`-shaped programs do not reach because a leaf has four.
 - [ ] `back-x64` shrinking, round five: interval splitting; jump shortening and jump tables for
       `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
       copies are the return path (partly done), values crossing a call, and spills.
