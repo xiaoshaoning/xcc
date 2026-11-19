@@ -194,6 +194,18 @@ fn the_constructs_the_slice_lowers_behave() {
             103,
         ),
         (
+            // A global's address arrives in `r8`, so a float load through it needs the REX byte that
+            // names that base: without it the load read `[rax]` and answered nonsense.
+            "a double in the data section",
+            "double g = 2.5; int main(void) { return (int)(g * 2.0); }",
+            5,
+        ),
+        (
+            "a double through a pointer",
+            "int main(void) { double d = 4.5; double *p = &d; return (int)(*p * 2.0); }",
+            9,
+        ),
+        (
             "a loop, which becomes block parameters",
             "int main(void) { int i; int s = 0; for (i = 0; i < 10; i++) s += i; return s; }",
             45,

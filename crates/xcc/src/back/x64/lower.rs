@@ -164,7 +164,13 @@ impl FunctionLowering<'_> {
         let mut ops = Vec::new();
         for (index, param) in func.params().iter().enumerate() {
             let ty = func.value(*param).ty;
-            let (size, signed) = self.width(ty, func.entry_span())?;
+            let (size, signed, class) = self.scalar(ty, func.entry_span())?;
+            if class == Class::Float {
+                return Err(NotYet {
+                    message: "a floating-point parameter: Win64 passes one in `xmm0`-`xmm3`, which this back end has not learnt".into(),
+                    span: func.entry_span(),
+                });
+            }
             let dst = self.reg_for(*param);
             ops.push(Op::Incoming {
                 dst,
@@ -679,6 +685,12 @@ impl FunctionLowering<'_> {
         Ok(match term {
             Term::Return { value, .. } => match value {
                 Some(value) => {
+                    if self.types.is_float(func.value(value).ty) {
+                        return Err(NotYet {
+                            message: "a function that returns a floating-point value: Win64 returns one in `xmm0`, which this back end has not learnt".into(),
+                            span: func.block(block).span,
+                        });
+                    }
                     let register = self.reg_for(value);
                     self.returned.push(register);
                     BlockTerm::Return(Some(register))

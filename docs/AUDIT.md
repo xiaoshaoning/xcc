@@ -105,6 +105,41 @@ numbers, and the test's doc now says what it does.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### the float fixes, reviewed - 2026-11-16 - a panic where a diagnostic belonged
+
+Review of `7e6f1e5`.
+
+**Found: a function that returns a floating-point value stopped the compiler.** `double f(void) { return
+1.5; }` reached the encoder's return as a value whose class was Float, and the encoder's `read` - which
+had just learned to say `unreachable!` rather than use a general register's number as an XMM one - said
+so by panicking: exit 101, no diagnostic, no source line. The `unreachable!` did its job, which was to
+turn a silent wrong answer into a loud stop; a stop is still not an answer. The lowering refuses it now,
+with the span of the `return`, and the same for a floating-point parameter, whose message had been the
+left-over "a floating-point value in this back end" - untrue since the previous commit, and unhelpful to
+anyone reading it.
+
+**Found: two messages that had become lies.** The refusal for a float parameter came from the integer
+width helper, which still said floating point was not lowered at all. Both gap messages now name the ABI
+they are missing: `xmm0` for a return, `xmm0`-`xmm3` by position for a parameter.
+
+**Checked and sound, path by path, because "a value's class" is a promise the lowering makes to the
+encoder:** every operation that defines a value classifies it - constants, arithmetic, comparisons,
+conversions, loads, stores, block parameters, calls, addresses; the only remaining integer-only paths a
+float could reach are the ones now refused (parameters, returns, call arguments and results), and a
+`Branch`'s condition is always an `int` because C's conversion of a float condition to `!= 0` is the
+front end's; the two `unreachable!` arms left in the encoder are the ones that cannot be reached and
+whose message says why.
+
+**Tests added for the defect this review fixed:** a `double` in the data section (whose address arrives
+in `r8`, the case the ratchet cannot see) and a `double` read through a pointer, beside the eight float
+cases already there.
+
+**Measured after the review: 406 agreeing, 58 refused, 0 wrong** - unchanged.
+
+177 unit, 23 parser, 20 CLI, 3 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### floating point, reviewed - 2026-11-16 - a load that read the wrong address
 
 Review of `edfdfc4`.
