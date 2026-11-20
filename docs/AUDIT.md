@@ -705,6 +705,36 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - a number that meant two things, and the two out of sixty-six
+
+The push/pop commit, reviewed - and the review found a **wrong answer**, not a smell.
+
+**`frame` meant two different things and the code assumed one.** It had always been "how far `rsp` is
+below its value on entry", and five places read it: the `sub`/`add rsp`, the variadic home area, the
+incoming stack arguments, and `va_start`'s `lea`. Pushing callee-saved registers moved `rsp` *before* the
+subtraction, so the subtraction had to shrink by the pushed bytes - and the patch shrank the field itself
+instead of only the thing subtracted. The patch built `let frame = total - pushed` and stored that, which
+is right for the two `sub`/`add` sites and wrong for the other three: `va_start` pointed 48 bytes below
+the home area in a function that pushed six registers, and `sum(4, 10, 20, 30, 2)` answered **72 where
+clang answers 70**. Silent, and no corpus program puts a `va_list` and a pushed integer in one function
+(`dmath` and its three neighbours save only XMM registers, so `pushed` is zero and the arithmetic
+coincidentally held).
+
+The field keeps its one meaning and the two subtraction sites subtract `self.pushed()`. That is fewer
+lines than the version that was wrong, and it makes the invariant true for every reader instead of only
+the two that were edited.
+
+**Why nothing caught it.** The construct table had a variadic *reader* and a variadic *definition*, and the
+one place they met was a function that calls nothing - so no pushes. The new construct is a variadic
+function that also calls something, which is exactly where the two mechanisms cross; checked the way a
+test should be, by putting the wrong subtraction back and watching it answer 72.
+
+**Measured after the review: 418 corpus programs agree, 46 refused, 0 wrong, 60 964 bytes** - the same
+bytes as the commit, one construct richer and one wrong answer gone.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - the width that was not a widening, and a panic the corpus could not see
 
 Two commits reviewed: the truth-test pass, and the free widening.

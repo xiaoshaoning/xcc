@@ -325,6 +325,18 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             7,
         ),
         (
+            // A variadic function that *also* calls something: the call makes it keep its integers in
+            // callee-saved registers, so the prologue pushes - and the home area `va_start` points at
+            // is above the pushes as well as above the frame. This is the case a pushed register and a
+            // `va_list` met in, and the answer was two out of sixty-six before it was.
+            "a variadic function that also calls, reading its arguments",
+            "#include <stdarg.h>
+             int helper(void) { return 1; }
+             int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count); for (i = 0; i < count; i++) { total += va_arg(ap, int); total += helper(); } va_end(ap); return total + i; }
+             int main(void) { return sum(4, 10, 20, 30, 2); }",
+            70,
+        ),
+        (
             // A branch that compares for itself, in the three shapes that tell fusion from a wrong
             // fusion: an integer comparison read once, a *floating-point* one read once (which is
             // not fused - `ucomisd` settles unordered cases with other condition codes), and one

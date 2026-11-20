@@ -123,12 +123,11 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // aligned - `frame` is that total, and `rsp` inside the function is `entry - frame` either way, so
     // every offset below is unchanged. The subtraction is what is left of the total after the pushes,
     // and the total is rounded up from whichever is larger, its own body or the pushes themselves.
-    let total = if frameless {
+    let frame = if frameless {
         0
     } else {
         (raw.max(pushed) + 15) / 16 * 16 + 8
     };
-    let frame = total - pushed;
 
     let mut encoder = Encoder {
         code: Vec::new(),
@@ -265,7 +264,9 @@ struct Encoder<'a> {
     classes: &'a [super::Class],
     /// The scratch registers the operation being encoded is holding.
     scratches: Vec<Reg>,
-    /// How many bytes the prologue subtracts.
+    /// How far `rsp` is below its value on entry: the frame's own bytes plus the bytes the pushes
+    /// moved. **Every offset in the function is measured from there**, which is why the offsets use
+    /// this number and the `sub`/`add rsp` use it minus the pushes - the two add up to the same place.
     frame: i32,
 }
 
@@ -279,8 +280,10 @@ impl Encoder<'_> {
         for register in &saved {
             self.push(*register);
         }
-        if self.frame != 0 {
-            self.sub_rsp(self.frame);
+        // What is left to subtract after the pushes have moved `rsp` by their own bytes.
+        let remaining = self.frame - self.pushed();
+        if remaining != 0 {
+            self.sub_rsp(remaining);
         }
         if variadic {
             // Win64's home area, which is where `va_start` points: the caller reserved it, and a
@@ -304,8 +307,9 @@ impl Encoder<'_> {
             let offset = self.saved_float_base + index as i32 * 16;
             self.float_move(*register, Reg::RSP, offset, 16, Move::LoadUnaligned);
         }
-        if self.frame != 0 {
-            self.add_rsp(self.frame);
+        let remaining = self.frame - self.pushed();
+        if remaining != 0 {
+            self.add_rsp(remaining);
         }
         // Popped in the reverse of the order they were pushed, which is all the addressing they need.
         let saved = self.allocation.saved.clone();
@@ -1599,6 +1603,11 @@ impl Encoder<'_> {
     /// bytes a function is six bytes over five hundred functions.
     fn sub_rsp(&mut self, bytes: i32) {
         self.adjust_rsp(5, bytes);
+    }
+
+    /// What the pushes move `rsp` by, which is the part of `frame` the subtraction does not have to.
+    fn pushed(&self) -> i32 {
+        8 * self.allocation.saved.len() as i32
     }
 
     /// `push r64`: one byte for the first eight registers, two for the rest, and it does the
