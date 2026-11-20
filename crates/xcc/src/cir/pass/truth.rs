@@ -104,38 +104,47 @@ mod tests {
     use crate::pp::preprocess;
     use crate::source::SourceFile;
 
-    /// The `cir` of a program with the passes run over it.
-    fn optimised(source: &str) -> String {
+    /// The `cir` of a program with the passes run over it, and what the passes said they changed.
+    fn optimised(source: &str) -> (String, super::super::Changes) {
         let file = SourceFile::new("t.c", source);
         let options = Options::default();
         let preprocessed = preprocess(&file, &options, &());
         let parsed = crate::parse::parse(&preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let mut module = parsed.module;
-        super::super::optimise(&mut module)
+        let changes = super::super::optimise(&mut module)
             .unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
-        dump(&module, preprocessed.names())
+        (dump(&module, preprocessed.names()), changes)
     }
 
     #[test]
     fn a_condition_is_its_comparisons_answer() {
-        let text = optimised("int f(int a, int b) { if (a < b) return 1; return 0; }");
+        let (text, changes) = optimised("int f(int a, int b) { if (a < b) return 1; return 0; }");
         // One comparison, not two: the wrapper's `cmp ne ... , 0` is gone.
         assert_eq!(text.matches("= cmp ").count(), 1, "{text}");
+        assert_eq!(changes.simplified, 1, "the pass counts what it removed");
     }
 
     #[test]
     fn a_condition_that_is_not_a_comparison_keeps_its_test() {
         // `if (p)` tests a pointer, which is not 0 or 1: the test has to stay.
-        let text = optimised("int f(int *p) { if (p) return 1; return 0; }");
+        let (text, changes) = optimised("int f(int *p) { if (p) return 1; return 0; }");
         assert_eq!(text.matches("= cmp ").count(), 1, "{text}");
+        assert_eq!(changes.simplified, 0, "nothing to remove");
     }
 
     #[test]
     fn a_negated_condition_is_not_the_same_answer() {
-        // `!(a < b)` is the negation, so both comparisons must remain: substituting would answer
-        // the question the wrong way round.
-        let text = optimised("int f(int a, int b) { if (!(a < b)) return 1; return 0; }");
+        // `!(a < b)` is `(a < b) == 0`, and the answer to *that* is the negation - substituting the
+        // comparison for it would answer a flipped branch the wrong way round, so both comparisons
+        // remain. What the pass does remove is the truth test wrapped around the negation, which is
+        // one more comparison whose answer is already 0 or 1.
+        let (text, changes) =
+            optimised("int f(int a, int b) { if (!(a < b)) return 1; return 0; }");
         assert_eq!(text.matches("= cmp ").count(), 2, "{text}");
+        assert_eq!(
+            changes.simplified, 1,
+            "the truth test of the negation, not the negation"
+        );
     }
 }

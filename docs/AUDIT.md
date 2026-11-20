@@ -705,6 +705,43 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - the width that was not a widening, and a panic the corpus could not see
+
+Two commits reviewed: the truth-test pass, and the free widening.
+
+**The widening shortcut took a conversion that is not a widening.** The guard was
+`to_class == Class::Integer && to_size == 8`, and `(long long)1.5` satisfies it - destination an integer,
+size eight - while its *source* is a `double`. Aliasing the two values therefore handed an integer reader
+a register holding a float, and the back end **panicked**: `a floating-point result in a general register`.
+Not a wrong answer, but not a diagnostic either: a compiler that exits 101 on a working C program. Both
+files have to be the integer one, and the comment now says why the destination alone is not the question -
+the value in the register is a `double`, and reading it as an integer is a reinterpretation.
+
+**Why nothing caught it.** The corpus never converts a double to a 64-bit integer, and the construct table
+had float conversions only to `int`. Both were green. The construct is now there - 3 750 000 000 needs all
+sixty-four bits, so a 32-bit path would have hidden the fault rather than shown it - and it was checked the
+way a test should be: with the guard removed again, it fails with the panic; with the guard, it answers 7
+where clang answers 7.
+
+The rest of the review:
+
+- The shortcut also called `classify(src, Class::Integer)`, which with both files named is provably the
+  same value it already had. Deleted, and the comment says what makes it unnecessary instead of the code
+  repeating it.
+- `Changes::simplified` had no reader: the new pass reported a count nothing printed or asserted. Three
+  tests now assert it, which is better than either printing it or dropping it - the field is a claim about
+  what the pass did, and a claim needs a witness.
+- The negated-condition test asserted the wrong number, and the reason is interesting: `!(a < b)` in `cir`
+  is `(a < b) == 0` *and then* a truth test of the result, so the pass removes one comparison (the truth
+  test) and keeps two (the comparison and its negation). The assertion now says which one, which is a
+  sharper statement of the rule than "nothing happened".
+
+**Measured after the review: 418 corpus programs agree, 46 refused, 0 wrong, 64 156 bytes** - the same
+bytes, one construct richer.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - a count one decision had edited, and a scan that asked twice
 
 The immediate-operand commit, reviewed.

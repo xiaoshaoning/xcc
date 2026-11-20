@@ -315,6 +315,16 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             62,
         ),
         (
+            // A floating-point to 64-bit integer conversion is `cvttsd2si`, not a widening: the
+            // register holds a `double` and reading it as an integer is a reinterpretation. This is
+            // the case that a widening shortcut took by mistake, and it panicked rather than
+            // answering - 3 750 000 000 needs all sixty-four bits, so a 32-bit path would have
+            // hidden the fault instead of showing it.
+            "a double converted to a 64-bit integer",
+            "int main(void) { double d = 3.75e9; long long a = (long long)d; long long b = (long long)1.5; return (int)(a / 1000000000 + b + 3); }",
+            7,
+        ),
+        (
             // A branch that compares for itself, in the three shapes that tell fusion from a wrong
             // fusion: an integer comparison read once, a *floating-point* one read once (which is
             // not fused - `ucomisd` settles unordered cases with other condition codes), and one

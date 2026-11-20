@@ -670,11 +670,17 @@ impl FunctionLowering<'_> {
                 // `(long)x` is `x` - sign-extended for `int`, zero-extended for `unsigned`, and
                 // neither needed here because the register holds that form. Narrowing is the only
                 // conversion with work to do.
-                if to_class == Class::Integer && to_size == 8 {
+                //
+                // **Both files have to be the integer one.** `(long long)1.5` is also a conversion to
+                // a type of size eight, and it is `cvttsd2si`: the value in the register is a `double`
+                // and reading it as an integer is not a widening, it is a reinterpretation. Testing
+                // only the destination let that case take this shortcut and panic where the double
+                // met an integer reader - found by an audit of the review, not by the corpus.
+                if from_class == Class::Integer && to_class == Class::Integer && to_size == 8 {
+                    // The two `cir` values are one machine value - and it is already in the integer
+                    // file, and already canonical, so there is nothing to classify either. Saying they
+                    // are one value is cheaper than an instruction that copies a register to itself.
                     let src = self.reg_for(*value);
-                    self.classify(src, Class::Integer);
-                    // The two `cir` values are one machine value; saying so is cheaper than an
-                    // instruction that copies a register to itself.
                     self.regs[result.0 as usize] = Some(src);
                     return Ok(());
                 }
