@@ -556,6 +556,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The truth test of a truth value is the value.** Fourth measurement: `binary` led at 18.5%, but the
+      question behind `compare`'s 13.1% was bigger. Counting the corpus's `cir`: **530 of 1 177 comparisons
+      (45%) are `cmp ne (cmp ...), 0`** - the front end's literal truth test, because `if (a < b)` asks for
+      the comparison and *then* asks whether its answer is non-zero. That wrapper is not free: it hides the
+      comparison from the branch that could have carried it, so the comparison is materialised (`cmp`,
+      `setcc`, a widening to 64 bits) and then tested again, where the fused form is `cmp` and a `jcc`.
+      A new pass - `cir::pass::truth`, between `mem2reg` and `fold` - substitutes the comparison for its
+      wrapper and removes it. It is a *substitution*, not a fold, which is why it is its own pass: folding
+      turns instructions into constants, and that pass's module doc says so.
+      **Measured 73 432 -> 67 868 (-7.6%)**, 4.27x -> **3.94x `clang -O2`**, and the ratio has passed a
+      milestone of its own: the back end is under four times clang's -O2 for the first time. 418 programs
+      still agree. Both lowerings gain - the wrapper was an `icmp` and a `brif` in Cranelift too.
+      **Only `!= 0`.** `(a < b) == 0` is the *negation*: substituting would answer a flipped branch the
+      wrong way round, so it is left alone, with a test that pins it (`!(a < b)` keeps both comparisons).
+      That is a decision a future change can revisit - the branch can turn its own condition over - but it
+      is not this substitution and the code says which it is.
 - [x] **A constant travels inside the instruction that reads it.** Third measurement, same method: after
       the fusion, `const` was **31.5%** of the bytes (22 684) and `compare` had fallen from 18.2% to 11.0%,
       so the constants were the whole story. The reader table said where they go: **binary 31.5%, compare

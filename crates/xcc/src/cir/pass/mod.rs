@@ -13,6 +13,7 @@
 pub mod dce;
 pub mod fold;
 pub mod mem2reg;
+pub mod truth;
 
 use super::{Broken, Module};
 
@@ -27,6 +28,8 @@ pub struct Changes {
     pub folded: usize,
     /// Instructions removed because nothing read their result.
     pub dead: usize,
+    /// Truth tests removed because the value they tested was already 0 or 1.
+    pub simplified: usize,
 }
 
 impl Changes {
@@ -50,6 +53,12 @@ pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, 
         changes.slots += mem2reg::run(func, &module.types);
         let after = mem2reg::count_memory(func);
         changes.memory += before.saturating_sub(after);
+        if let Err(broken) = func.verify(&module.types) {
+            return Err((func.name, broken));
+        }
+        // A condition's truth test goes first: it is the one pass that *removes* a comparison rather
+        // than folding it, and what it leaves is what the branch can carry.
+        changes.simplified += truth::run(func);
         if let Err(broken) = func.verify(&module.types) {
             return Err((func.name, broken));
         }
