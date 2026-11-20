@@ -556,6 +556,25 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **A constant travels inside the instruction that reads it.** Third measurement, same method: after
+      the fusion, `const` was **31.5%** of the bytes (22 684) and `compare` had fallen from 18.2% to 11.0%,
+      so the constants were the whole story. The reader table said where they go: **binary 31.5%, compare
+      30.7%, store 18.0%, return 10.8%**, and **96% of constants have exactly one reader**.
+      So the machine form now says what it always meant: an operand is **`Operand::Value(vreg)` or
+      `Operand::Immediate(u64)`**. The lowering carries a constant inside `add`, `sub`, `and`, `or`, `xor`
+      and any comparison when it has one reader, is an integer, and fits a signed 32-bit immediate; the
+      `Const` instruction is then *not lowered at all*, so the value has no register and no `mov`. A
+      comparison against zero needs no constant either - `test x, x` sets the same flags for every
+      condition this back end emits, in three bytes.
+      **Measured 80 936 -> 73 432 (-9.3%)**, 4.70x -> **4.27x `clang -O2`**; 418 programs still agree.
+      The type change is the point of the exercise, not an accident: with `right: VReg` the constant had to
+      exist as a value, and a register nothing defines is a wrong answer waiting for a reader - which is
+      exactly the fault the review found in the branch fusion. `Operand` makes the compiler ask at every
+      use site whether it handled the constant.
+      **Left out, and said so in the code**: `mul` and the shifts (their encodings take a register, and
+      `imul`'s three-operand form is a different family), a constant on the *left* of a non-commutative
+      operation (x86 puts the immediate field on the right, and swapping is a separate decision worth its
+      own measurement), and stores, which would need the immediate-store form.
 - [x] **A comparison that only a branch reads never becomes a value.** Re-measured after the constant
       change: `const` still led at 28.9%, then `compare` at **18.2%** and `canonical` at 5.0% - and those
       two are one decision. A comparison materialised `cmp`, `setcc`, a widening to 64 bits, and then the

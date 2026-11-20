@@ -21,7 +21,7 @@
 //! (ADR-005); this one will when the slice grows a frame that large.
 
 use super::regalloc::{Allocation, Location, Reg};
-use super::{BinOp, BlockTerm, MachineFunction, Op, VReg};
+use super::{BinOp, BlockTerm, MachineFunction, Op, Operand, VReg};
 
 /// Whether an operation gives the same answer with its operands swapped, which is what lets the
 /// destination's register hold either one.
@@ -604,7 +604,15 @@ impl Encoder<'_> {
     /// `dst = left OP right`, in the destination's own register where one of the operands is
     /// already there. This is where most of the code size is won: the naive form moves both operands
     /// into scratch registers and the result out again, three moves around one `add`.
-    fn binary(&mut self, dst: VReg, op: BinOp, left: VReg, right: VReg, size: u8, signed: bool) {
+    fn binary(&mut self, dst: VReg, op: BinOp, left: VReg, right: Operand, size: u8, signed: bool) {
+        // A constant operand is written into the instruction's immediate field: `81 /ext id`, or
+        // `83 /ext ib` when a byte is enough, which is how `x + 1` stops paying for a `mov` first.
+        if let Operand::Immediate(value) = right {
+            return self.binary_immediate(dst, op, left, value, size, signed);
+        }
+        let Operand::Value(right) = right else {
+            unreachable!("an immediate returned above")
+        };
         let left = self.read(left);
         let right = self.read(right);
         let swaps = commutative(op);
@@ -741,14 +749,45 @@ impl Encoder<'_> {
     /// through `rax`, and 317 of the corpus's copies were it doing so.
     /// `cmp left, right`, leaving the answer in the flags. The half a comparison has whether or not
     /// its answer becomes a value, so both shapes share it.
-    fn compare_flags(&mut self, left: VReg, right: VReg) {
-        let (left, right) = (self.read(left), self.read(right));
-        self.prefix_w(right, left);
-        self.byte(0x39); // cmp left, right
-        self.modrm(3, right.0, left);
+    fn compare_flags(&mut self, left: VReg, right: Operand) {
+        let left = self.read(left);
+        match right {
+            Operand::Value(right) => {
+                let right = self.read(right);
+                self.prefix_w(right, left);
+                self.byte(0x39); // cmp left, right
+                self.modrm(3, right.0, left);
+            }
+            // Comparing with zero does not need a `cmp`: `test x, x` sets the same flags for every
+            // condition this back end emits, in fewer bytes, and costs no immediate at all.
+            Operand::Immediate(0) => {
+                self.prefix_w(left, left);
+                self.byte(0x85); // test left, left
+                self.modrm(3, left.0, left);
+            }
+            Operand::Immediate(value) => {
+                self.prefix_w(Reg(0), left);
+                if let Ok(small) = i8::try_from(value as i64) {
+                    self.byte(0x83);
+                    self.modrm(3, 7, left);
+                    self.byte(small as u8);
+                } else {
+                    self.byte(0x81);
+                    self.modrm(3, 7, left);
+                    self.bytes(&(value as i32).to_le_bytes());
+                }
+            }
+        }
     }
 
-    fn compare(&mut self, dst: VReg, op: crate::cir::CmpOp, left: VReg, right: VReg, signed: bool) {
+    fn compare(
+        &mut self,
+        dst: VReg,
+        op: crate::cir::CmpOp,
+        left: VReg,
+        right: Operand,
+        signed: bool,
+    ) {
         self.compare_flags(left, right);
         let target = self.destination(dst);
         // `setcc` has no 64-bit form, and its operand is the r/m byte: a REX prefix is needed to
@@ -759,6 +798,52 @@ impl Encoder<'_> {
         self.bytes(&[0x0F, 0x90 | condition_code(op, signed)]);
         self.modrm(3, 0, target);
         self.canonicalise(target, 1, false);
+        self.write(dst, target);
+        self.release();
+    }
+
+    /// `dst = left OP constant`, with the constant in the instruction. Only the operations whose
+    /// encoding has that field: `mul` takes three operands and a register, and a shift's count is a
+    /// register, so neither comes here.
+    fn binary_immediate(
+        &mut self,
+        dst: VReg,
+        op: BinOp,
+        left: VReg,
+        value: u64,
+        size: u8,
+        signed: bool,
+    ) {
+        let extension = match op {
+            BinOp::Add => 0,
+            BinOp::Or => 1,
+            BinOp::And => 4,
+            BinOp::Sub => 5,
+            BinOp::Xor => 6,
+            other => unreachable!("{other:?} has no immediate form"),
+        };
+        let left = self.read(left);
+        let target = self.destination(dst);
+        let target = if self.is_in(dst, left) {
+            left
+        } else if target != left {
+            self.mov_reg(target, left);
+            target
+        } else {
+            // The destination is the left operand itself: nothing to move, compute in place.
+            target
+        };
+        self.prefix_w(Reg(0), target);
+        if let Ok(small) = i8::try_from(value as i64) {
+            self.byte(0x83);
+            self.modrm(3, extension, target);
+            self.byte(small as u8);
+        } else {
+            self.byte(0x81);
+            self.modrm(3, extension, target);
+            self.bytes(&(value as i32).to_le_bytes());
+        }
+        self.canonicalise(target, size, signed);
         self.write(dst, target);
         self.release();
     }

@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 
-use super::{BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, VReg, ARGUMENT_COUNT};
+use super::{
+    BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, Operand, VReg, ARGUMENT_COUNT,
+};
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
 use crate::types::{Type, TypeId, Types};
 
@@ -51,6 +53,7 @@ fn lower_function(
         classes: Vec::new(),
         direct_calls: HashMap::new(),
         reads: HashMap::new(),
+        immediates: HashMap::new(),
     };
     lowerer.run(func)?;
     let makes_call = func.blocks.iter().any(|block| {
@@ -120,6 +123,10 @@ struct FunctionLowering<'a> {
     /// How many times each value is read, instructions and terminators together: a comparison read
     /// once is a branch that can compare for itself, and one read twice is a value that has to exist.
     reads: HashMap<Value, usize>,
+    /// The constants that never materialise: their value travels in the instruction that reads them.
+    /// A constant read once, by an operation whose encoding has an immediate field, needs neither a
+    /// register nor a `mov`, and a third of the back end's bytes went into that `mov`.
+    immediates: HashMap<Value, u64>,
 }
 
 impl FunctionLowering<'_> {
@@ -147,6 +154,7 @@ impl FunctionLowering<'_> {
             }
         }
         self.reads = reads;
+        self.immediates = self.carried_constants(func);
         // The layout: blocks after the ones that dominate them, so a branch's target is in the
         // future about as often as it is in the past. Parameters first in the frame, locals after.
         for (index, block) in super::super::dominator_order(func).into_iter().enumerate() {
@@ -221,6 +229,12 @@ impl FunctionLowering<'_> {
                 if Some(index) == fused.as_ref().map(|fused| fused.index) {
                     continue;
                 }
+                // A constant the instruction after it carries needs no register and no `mov`.
+                if let Inst::Const { result, .. } = inst {
+                    if self.immediates.contains_key(result) {
+                        continue;
+                    }
+                }
                 self.lower_inst(func, inst, &mut block_ops)?;
             }
             let term = self.lower_term(func, block, &mut block_ops, fused)?;
@@ -237,6 +251,56 @@ impl FunctionLowering<'_> {
         let mut pairs: Vec<(Block, usize)> = self.order.iter().map(|(b, i)| (*b, *i)).collect();
         pairs.sort_by_key(|(_, index)| *index);
         pairs
+    }
+
+    /// The constants that can travel inside the instruction that reads them.
+    ///
+    /// Three conditions, and each rules out a way of being wrong: the constant is read exactly once,
+    /// so nothing else can want its register; that reader is an operation whose encoding *has* an
+    /// immediate field - `add`, `sub`, `and`, `or`, `xor` and a comparison - and it reads the constant
+    /// on the right, where x86 puts the field; and the value survives being written there, which for
+    /// every one of those forms means fitting a signed 32-bit immediate, since that is what the
+    /// instruction sign-extends. `mul` and the shifts are left out: their encodings take a register.
+    fn carried_constants(&self, func: &Func) -> HashMap<Value, u64> {
+        let mut carried = HashMap::new();
+        for block in &func.blocks {
+            for inst in &block.insts {
+                let Inst::Const {
+                    result, ty, bits, ..
+                } = inst
+                else {
+                    continue;
+                };
+                if self.reads.get(result).copied().unwrap_or(0) != 1 || self.types.is_float(*ty) {
+                    continue;
+                }
+                if i32::try_from(*bits as i64).is_err() {
+                    continue;
+                }
+                let read_here = func.blocks.iter().any(|block| {
+                    block.insts.iter().any(|inst| match inst {
+                        Inst::Binary { op, right, .. } if right == result => matches!(
+                            op,
+                            BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor
+                        ),
+                        Inst::Compare { right, .. } if right == result => true,
+                        _ => false,
+                    })
+                });
+                if read_here {
+                    carried.insert(*result, *bits);
+                }
+            }
+        }
+        carried
+    }
+
+    /// How the operation reads a value: from a register, or as the constant it was made from.
+    fn operand(&mut self, value: Value) -> Operand {
+        match self.immediates.get(&value) {
+            Some(bits) => Operand::Immediate(*bits),
+            None => Operand::Value(self.reg_for(value)),
+        }
     }
 
     /// How many times each value is read, instructions and terminators together.
@@ -426,8 +490,12 @@ impl FunctionLowering<'_> {
                 let (size, signed, class) = self.scalar(*ty, span)?;
                 let dst = self.reg_for(*result);
                 self.classify(dst, class);
-                let (left, right) = (self.reg_for(*left), self.reg_for(*right));
+                let left = self.reg_for(*left);
+                // The right operand is only put in a register when the encoding needs it there: a
+                // constant that fits the immediate field never becomes a value.
+                let register = |lowering: &mut Self| lowering.reg_for(*right);
                 if class == Class::Float {
+                    let right = register(self);
                     if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
                         return Err(NotYet {
                             message: "a bitwise operation on a floating-point value".into(),
@@ -447,7 +515,7 @@ impl FunctionLowering<'_> {
                     BinOp::Shl | BinOp::Shr => Op::Shift {
                         dst,
                         left,
-                        right,
+                        right: register(self),
                         right_signed: signed,
                         left_shift: *op == BinOp::Shl,
                         size,
@@ -456,7 +524,7 @@ impl FunctionLowering<'_> {
                     BinOp::Div | BinOp::Rem => Op::Divide {
                         dst,
                         left,
-                        right,
+                        right: register(self),
                         remainder: *op == BinOp::Rem,
                         signed,
                         size,
@@ -465,7 +533,7 @@ impl FunctionLowering<'_> {
                         dst,
                         op: *op,
                         left,
-                        right,
+                        right: self.operand(*right),
                         size,
                         signed,
                     },
@@ -536,20 +604,20 @@ impl FunctionLowering<'_> {
                 let dst = self.reg_for(*result);
                 // A comparison answers in an `int`, whatever its operands were.
                 self.classify(dst, Class::Integer);
-                let (left, right) = (self.reg_for(*left), self.reg_for(*right));
+                let left = self.reg_for(*left);
                 ops.push(match class {
                     Class::Float => Op::FloatCompare {
                         dst,
                         op: *op,
                         left,
-                        right,
+                        right: self.reg_for(*right),
                         size,
                     },
                     Class::Integer => Op::Compare {
                         dst,
                         op: *op,
                         left,
-                        right,
+                        right: self.operand(*right),
                         signed,
                     },
                 });
@@ -858,7 +926,7 @@ impl FunctionLowering<'_> {
                     return Ok(BlockTerm::BranchCompare {
                         op: fused.op,
                         left: self.reg_for(fused.left),
-                        right: self.reg_for(fused.right),
+                        right: self.operand(fused.right),
                         signed,
                         then,
                         otherwise,

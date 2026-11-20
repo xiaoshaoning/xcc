@@ -214,7 +214,7 @@ pub(crate) enum Op {
         dst: VReg,
         op: BinOp,
         left: VReg,
-        right: VReg,
+        right: Operand,
         size: u8,
         signed: bool,
     },
@@ -265,7 +265,7 @@ pub(crate) enum Op {
         dst: VReg,
         op: CmpOp,
         left: VReg,
-        right: VReg,
+        right: Operand,
         signed: bool,
     },
     /// Truncate to `size` and extend back to 64 bits, which is all a C conversion of integers is
@@ -352,6 +352,31 @@ pub(crate) enum Op {
     },
 }
 
+/// What an operation computes with: a value in a register, or a constant it can carry itself.
+///
+/// The corpus puts a third of its bytes into materialising constants - `mov r32, imm32` for a value a
+/// `cmp` or an `add` could hold in the instruction - and 62% of those constants are read exactly once,
+/// by exactly such an operation. Saying "an operand is a register **or** a constant" makes that
+/// expressible once, and makes every use site say which it handles: the alternative, a register that
+/// nothing ever defines, is a wrong answer waiting for a reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Operand {
+    /// A value in a register.
+    Value(VReg),
+    /// A constant, as it would be materialised: canonical for its C type.
+    Immediate(u64),
+}
+
+impl Operand {
+    /// The register this operand reads, if it reads one.
+    pub(crate) fn register(self) -> Option<VReg> {
+        match self {
+            Operand::Value(value) => Some(value),
+            Operand::Immediate(_) => None,
+        }
+    }
+}
+
 impl Op {
     /// The virtual register this operation defines, if it defines one.
     pub(crate) fn defined(&self) -> Option<VReg> {
@@ -391,10 +416,13 @@ impl Op {
             Op::StoreLocal { src, .. } => vec![*src],
             Op::LoadMemory { base, .. } => vec![*base],
             Op::StoreMemory { base, src, .. } => vec![*base, *src],
-            Op::Binary { left, right, .. }
-            | Op::Shift { left, right, .. }
+            Op::Binary { left, right, .. } | Op::Compare { left, right, .. } => {
+                let mut read = vec![*left];
+                read.extend(right.register());
+                read
+            }
+            Op::Shift { left, right, .. }
             | Op::Divide { left, right, .. }
-            | Op::Compare { left, right, .. }
             | Op::FloatBinary { left, right, .. }
             | Op::FloatCompare { left, right, .. } => vec![*left, *right],
             Op::LoadFloat { base, .. } => vec![*base],
@@ -456,7 +484,7 @@ pub(crate) enum BlockTerm {
     BranchCompare {
         op: crate::cir::CmpOp,
         left: VReg,
-        right: VReg,
+        right: Operand,
         signed: bool,
         then: usize,
         otherwise: usize,
@@ -472,7 +500,11 @@ impl BlockTerm {
             BlockTerm::Return(Some(value)) => vec![*value],
             BlockTerm::Return(None) | BlockTerm::Jump(_) | BlockTerm::Unreachable => Vec::new(),
             BlockTerm::Branch { condition, .. } => vec![*condition],
-            BlockTerm::BranchCompare { left, right, .. } => vec![*left, *right],
+            BlockTerm::BranchCompare { left, right, .. } => {
+                let mut read = vec![*left];
+                read.extend(right.register());
+                read
+            }
         }
     }
 }
@@ -584,7 +616,7 @@ mod tests {
             dst: VReg(2),
             op: BinOp::Add,
             left: VReg(0),
-            right: VReg(1),
+            right: Operand::Value(VReg(1)),
             size: 4,
             signed: true,
         };
