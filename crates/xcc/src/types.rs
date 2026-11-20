@@ -403,6 +403,40 @@ impl Types {
     }
 
     /// Whether two types are the same type.
+    /// Whether two types are *the same type*, which is [`Types::same`] except that the fundamental
+    /// types are told apart by identity rather than by their shape.
+    ///
+    /// The difference is not academic on this target: `int` and `long` are both thirty-two bits and
+    /// both signed, so a structural comparison calls them one type - and C says they are two
+    /// (6.2.5p4). `_Generic` asks exactly this question (6.5.1.1p2), which is where the fault showed:
+    /// `_Generic(l, int: 1, default: 9)` answered 1 for a `long`. The fundamental types are made
+    /// once, so identity is the answer for them; a pointer or an array is compared through its
+    /// element, because those are built per use and have no identity of their own.
+    pub fn identical(&self, left: TypeId, right: TypeId) -> bool {
+        if left == right {
+            return true;
+        }
+        let fundamental = |id: TypeId| self.fundamentals.values().any(|other| *other == id);
+        if fundamental(left) || fundamental(right) {
+            return false;
+        }
+        match (self.kind(left), self.kind(right)) {
+            (Type::Error, _) | (_, Type::Error) => true, // poisoned types match to stay quiet
+            (Type::Pointer(a), Type::Pointer(b)) => self.identical(*a, *b),
+            (
+                Type::Array {
+                    element: a,
+                    count: ca,
+                },
+                Type::Array {
+                    element: b,
+                    count: cb,
+                },
+            ) => self.identical(*a, *b) && (ca == cb || ca.is_none() || cb.is_none()),
+            (a, b) => a == b,
+        }
+    }
+
     pub fn same(&self, left: TypeId, right: TypeId) -> bool {
         if left == right {
             return true;

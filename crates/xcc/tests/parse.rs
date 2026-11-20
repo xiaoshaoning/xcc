@@ -326,6 +326,41 @@ fn a_variadic_call_passes_both_classes_of_argument() {
 }
 
 #[test]
+fn c11_is_a_dialect_you_ask_for() {
+    // `_Static_assert` and `_Generic` are C11's, and the compiler says so instead of pretending the
+    // words were never declared: the note names the flag.
+    refuses(
+        "_Static_assert(sizeof(int) == 4, \"32-bit int\");",
+        "`_Static_assert` is C11: compile with `--std=c11`",
+    );
+    refuses(
+        "int f(void) { return _Generic(1, int: 1, default: 0); }",
+        "`_Generic` is C11: compile with `--std=c11`",
+    );
+    // And with the dialect, both parse - and a false assertion is an error with the source's own
+    // message, which is the whole point of the feature.
+    let c11 = Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    };
+    let complaints = check_with(c11.clone(), "_Static_assert(1 == 2, \"one is not two\");");
+    assert!(
+        complaints
+            .iter()
+            .any(|message| message.contains("one is not two")),
+        "{complaints:?}"
+    );
+    let complaints = check_with(
+        c11,
+        "int f(void) { return _Generic(1, int: 42, default: 0); }",
+    );
+    assert!(
+        complaints.iter().all(|message| !message.contains("error")),
+        "{complaints:?}"
+    );
+}
+
+#[test]
 fn an_identifier_has_one_definition() {
     // C99 6.9p5. The back end treats a second symbol as an internal error, so the front end has to
     // say it in C's words - and a tentative definition is not one yet.

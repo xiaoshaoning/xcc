@@ -558,6 +558,25 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **`--std=c11`, and the two constructs the matrix had been promising behind it.** The flag did not
+      exist, so every "planned behind `--std=c11`" row was unreachable - a support matrix is a promise,
+      and this one had a promise with no mechanism for four milestones. `--std=c99` (the default) and
+      `--std=c11` now exist, `__STDC_VERSION__` follows them (`199901L` / `201112L`), and the dialect
+      travels with the tokens so the parser can answer for it.
+      `_Static_assert` is a declaration that declares nothing - checked where it is asked, reported with
+      the source's own message - and `_Generic` reads every arm for its type and its syntax, then reads
+      the winner again for real: two passes over a token span rather than one pass with a deferred
+      decision, because the parser is a function over a token slice and a rewind is cheaper than a way to
+      evaluate an expression later. The arms that lose are read with the same `unevaluated` switch
+      `sizeof` uses, so they emit nothing - which is what C asks for and what makes
+      `_Generic(x, int: 1, char: x = 2)` legal.
+      **And it needed a front-end fix underneath.** `_Generic(l, int: 1, default: 9)` answered 1 for a
+      `long`: the specifier path chose a type from `(signed, bits)`, so a declared `long` *was* the `int`
+      type object - the LLP64 trap this project recorded in M8, this time in the type system rather than
+      in a header. C99 6.2.5p4 says `int` and `long` are two types even when the target makes them the same
+      width; the spelling now picks the type, and `Types::identical` asks the question `_Generic` actually
+      asks (identity, recursively through pointers and arrays) rather than the structural `same` that
+      answered it wrongly.
 - [ ] **Branch threading, measured and dropped: 136 bytes of 59 660 (0.2%).** The count that suggested it
       was real: **415 of the corpus's 2 203 `cir` blocks are "hallways"** - no instructions, no
       parameters, and a jump for a terminator, so a jump to one is a jump to somewhere else. Threading

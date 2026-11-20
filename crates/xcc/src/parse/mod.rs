@@ -418,10 +418,146 @@ impl Parser<'_> {
         }
     }
 
+    /// `_Static_assert ( constant-expression , string-literal ) ;` - C11 6.7.10.
+    ///
+    /// There is nothing to lower: the assertion is a question about the source, answered where it is
+    /// asked. A false one is an error with the message the source gave, which is the point of the
+    /// feature - `_Static_assert(sizeof(int) == 4, "32-bit int")` fails a build rather than a program.
+    fn static_assertion(&mut self) {
+        if self.preprocessed.standard == crate::options::CStandard::C99 {
+            let span = self.span();
+            self.error(span, "`_Static_assert` is C11: compile with `--std=c11`");
+        }
+        self.bump(); // `_Static_assert`
+        if !self.eat("(") {
+            self.error_at_current("expected `(` after `_Static_assert`");
+            self.skip_until(&[";"], true);
+            return;
+        }
+        let saved = std::mem::replace(&mut self.unevaluated, true);
+        let condition = self.conditional_expression();
+        self.unevaluated = saved;
+        let mut message = String::new();
+        if self.eat(",")
+            && self
+                .peek()
+                .is_some_and(|t| t.kind == crate::lex::TokenKind::Str)
+        {
+            let (_, _, bytes) = self.string_literal();
+            message = String::from_utf8_lossy(&bytes[..bytes.len().saturating_sub(1)]).into_owned();
+        }
+        let span = self.span();
+        if !self.eat(")") {
+            self.error_at_current("expected `)` to end `_Static_assert`");
+        }
+        if !self.eat(";") {
+            self.error_at_current("expected `;` after `_Static_assert`");
+        }
+        if condition.and_then(|value| value.constant) == Some(0) {
+            let said = if message.is_empty() {
+                String::new()
+            } else {
+                format!(": {message}")
+            };
+            self.error(span, format!("static assertion failed{said}"));
+        }
+    }
+
+    /// `_Generic ( assignment-expression , type-name : assignment-expression , ... )` - C11 6.5.1.1.
+    ///
+    /// Nothing here runs, and only one choice is *made*: the controlling expression is read for its
+    /// type, every arm is read for its type and its syntax, and then the winner is read again - this
+    /// time for real. Two passes over a token span rather than one pass with a deferred decision,
+    /// because the parser is a function over a token slice and a rewind is cheaper than a way to
+    /// evaluate an expression later.
+    ///
+    /// The arms that lose are read with `unevaluated` set, which is the same switch `sizeof` uses:
+    /// their values are never built, so an arm that would not compile still has to *parse*, which is
+    /// what C asks for.
+    fn generic_selection(&mut self) -> Option<Value> {
+        if self.preprocessed.standard == crate::options::CStandard::C99 {
+            let span = self.span();
+            self.error(span, "`_Generic` is C11: compile with `--std=c11`");
+        }
+        self.bump(); // `_Generic`
+        if !self.eat("(") {
+            self.error_at_current("expected `(` after `_Generic`");
+            return None;
+        }
+        let saved = std::mem::replace(&mut self.unevaluated, true);
+        let control = self.assignment_expression();
+        self.unevaluated = saved;
+        // C11 6.5.1.1p2: the type is the value's after lvalue conversion, and an array or a function
+        // decays - which is what `decay` is for.
+        let wanted = control.map(|value| self.decay(value).ty);
+        // First pass: which arm matches, and where its expression starts.
+        let mut chosen: Option<usize> = None;
+        let mut fallback: Option<usize> = None;
+        while self.eat(",") {
+            let start = self.at;
+            let mut arm = None;
+            let is_default = self.at_word("default");
+            if is_default {
+                self.bump();
+            } else {
+                arm = self.try_type_name();
+            }
+            if !self.eat(":") {
+                self.error_at_current("expected `:` in `_Generic`");
+                break;
+            }
+            let saved = std::mem::replace(&mut self.unevaluated, true);
+            self.assignment_expression();
+            self.unevaluated = saved;
+            let matched = match (is_default, arm, wanted) {
+                (true, ..) => {
+                    fallback.get_or_insert(start);
+                    false
+                }
+                (false, Some(arm), Some(wanted)) => self.types.identical(arm, wanted),
+                _ => false,
+            };
+            if matched && chosen.is_none() {
+                chosen = Some(start);
+            }
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` to end `_Generic`");
+        }
+        // Where the whole construct ends. The second pass reads one arm and comes back here, so the
+        // arms after the winner are consumed once - by the pass that made no code.
+        let after = self.at;
+        let Some(start) = chosen.or(fallback) else {
+            let span = self.span();
+            self.error(
+                span,
+                "no `_Generic` arm matches the controlling expression and there is no `default`",
+            );
+            return None;
+        };
+        self.at = start;
+        if self.at_word("default") {
+            self.bump();
+        } else {
+            self.try_type_name();
+        }
+        self.eat(":");
+        let value = self.assignment_expression();
+        self.at = after;
+        value
+    }
+
     /// A declaration or function definition, ending at `;` or a body.
     fn external_declaration(&mut self) {
+        let start = self.at;
         let Some(declared) = self.declaration() else {
-            self.skip_until(&[";"], true);
+            // Nothing declared. A declaration that declares nothing - `_Static_assert` - has still
+            // read its own tokens and its own `;`, so skipping to the next `;` here would swallow the
+            // definition after it: `_Static_assert(...); int main(void) {...}` lost `main` entirely
+            // and wrote an empty object. Skip only when nothing was consumed at all.
+            if self.at == start {
+                self.skip_until(&[";"], true);
+            }
             return;
         };
         let name = self.last_declared;
@@ -467,6 +603,13 @@ impl Parser<'_> {
     /// One declaration: specifiers, then one or more declarators. Returns the last type it
     /// declared, which is what tells a definition from a declaration.
     fn declaration(&mut self) -> Option<TypeId> {
+        // C11 6.7.10: a declaration that declares nothing, and says what it checked. It belongs to
+        // the declaration grammar rather than the statement grammar, which is why file scope and
+        // block scope both reach it here.
+        if self.at_word("_Static_assert") {
+            self.static_assertion();
+            return None;
+        }
         let specs = self.declaration_specifiers();
         let Some(base) = specs.ty else {
             let span = self.span();
@@ -972,16 +1115,29 @@ impl Parser<'_> {
             // declaration must have one, a `sizeof (` may be the start of an expression.
             return specs;
         }
-        let bits = if count("char") > 0 {
-            8
-        } else if count("short") > 0 {
-            16
-        } else if count("long") >= 2 {
-            64
-        } else {
-            32 // `int`, and `long`, which is 32 here
+        // The *spelling* picks the type, not the size. `int` and `long` are both thirty-two bits on
+        // this target (LLP64), and they are two types (C99 6.2.5p4) - which `_Generic` asks about
+        // directly, and which a table keyed on `(signed, bits)` cannot answer: it gave `long` the
+        // `int` type object, so `_Generic(l, int: 1, default: 9)` answered 1 for a `long`.
+        let name = match (
+            count("char") > 0,
+            count("short") > 0,
+            count("long") > 0,
+            count("long") >= 2,
+        ) {
+            (true, ..) if signed => "char",
+            (true, ..) => "unsigned char",
+            (_, true, ..) if signed => "short",
+            (_, true, ..) => "unsigned short",
+            // `signed long long` and `signed long` are their own types; `signed int` is `int`.
+            (_, _, _, true) if signed => "long long",
+            (_, _, _, true) => "unsigned long long",
+            (_, _, true, _) if signed => "long",
+            (_, _, true, _) => "unsigned long",
+            _ if signed => "int",
+            _ => "unsigned int",
         };
-        specs.ty = Some(self.types.integer_with(signed, bits));
+        specs.ty = self.types.fundamental(name);
         specs
     }
 

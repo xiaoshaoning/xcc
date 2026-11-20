@@ -59,6 +59,11 @@ struct Args {
     #[arg(long = "opt-level", value_name = "N", default_value_t = 0)]
     opt_level: u8,
 
+    /// Which C the source is allowed to use. `c11` adds the pieces a host meets in practice -
+    /// `_Static_assert`, `_Generic` - and nothing that changes what a C99 program means.
+    #[arg(long = "std", value_name = "DIALECT", default_value = "c99")]
+    standard: StandardArg,
+
     /// How to print diagnostics.
     #[arg(long, value_enum, default_value_t = FormatArg::Human)]
     format: FormatArg,
@@ -102,6 +107,24 @@ enum FormatArg {
     Msvc,
     /// `t.c:3:7: error: ...`, for GCC-style tools.
     Gcc,
+}
+
+/// The two dialects the library knows, spelled the way a compiler's manual spells them.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StandardArg {
+    /// C99, the baseline and the default.
+    C99,
+    /// C99 plus the C11 pieces a host meets in practice.
+    C11,
+}
+
+impl From<StandardArg> for xcc::CStandard {
+    fn from(standard: StandardArg) -> Self {
+        match standard {
+            StandardArg::C99 => xcc::CStandard::C99,
+            StandardArg::C11 => xcc::CStandard::C11,
+        }
+    }
 }
 
 impl From<FormatArg> for xcc::Format {
@@ -167,6 +190,7 @@ fn main() -> ExitCode {
 
         let source = SourceFile::new(name.clone(), text.clone());
         let options = Options {
+            standard: args.standard.into(),
             defines: args.defines.clone(),
             undefines: args.undefines.clone(),
             opt_level: args.opt_level,

@@ -63,7 +63,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | qualifiers (`const`, `volatile`, `restrict`), `inline` | `partial` - accepted and ignored, which is conforming for `restrict` and wrong for `const`; enforcing `const` arrives with the expression checker (M3.2) |
 | variably modified types, VLAs as parameters | `planned` - VLA objects are accepted, with a stack-growth check |
 | a file-scope object read or written in code | `sound` (M6): a global is data, so its value is the symbol's address - loaded, stored, subscripted and taken a member of like any other place |
-| `_Alignas`, `_Alignof`, `_Static_assert`, `_Generic`, `_Atomic` (without `<stdatomic.h>`) | `planned` behind `--std=c11` |
+| `--std=c11`: `_Static_assert` and `_Generic` | `sound` (M10) - the flag exists, and in `c11` both constructs are parsed and mean what C11 6.7.10 and 6.5.1.1 say: a static assertion is checked where it is asked and reports the source's own message, and a generic selection reads every arm (for its type and its syntax), then reads the winner again for real, so the arms that lose emit nothing. **It needed a front-end fix underneath**: a declared `long` was the `int` type object, because the specifier path chose a type from `(signed, bits)`; `_Generic(l, int: 1, default: 9)` answered 1 for a `long`. C99 6.2.5p4 says those are two types even when the target makes them the same width, and the spelling now picks the type. `_Alignas`, `_Alignof` and `_Atomic` are still `planned` |
+| `--std=c99` (the default), `__STDC_VERSION__` | `sound` - `199901L` in `c99` and `201112L` in `c11`, which is the one place a program can ask what it is being compiled as |
 
 ## Expressions and statements
 

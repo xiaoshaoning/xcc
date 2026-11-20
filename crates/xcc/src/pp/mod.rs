@@ -65,6 +65,10 @@ pub struct Preprocessed {
     pub files: Vec<SourceFile>,
     /// Errors and warnings, in the order they were found.
     pub diagnostics: Vec<Diagnostic>,
+    /// The C the source was read as. It travels with the tokens because the parser needs it for the
+    /// constructs that are one standard's and not another's, and because `__STDC_VERSION__` is
+    /// already a fact about it.
+    pub standard: crate::options::CStandard,
     /// The names the tokens are spelled with: ids are only meaningful with the table that
     /// minted them, so it travels with them rather than being left behind.
     names: Interner,
@@ -118,6 +122,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         includes,
         budgets: &options.budgets,
         stamp: &options.stamp,
+        standard: options.standard,
         interner: &mut interner,
         pending: VecDeque::new(),
         out: Vec::new(),
@@ -151,6 +156,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         tokens,
         files,
         diagnostics,
+        standard: options.standard,
         names: interner,
     }
 }
@@ -247,6 +253,7 @@ struct Preprocessor<'a> {
     includes: &'a dyn Includes,
     budgets: &'a Budgets,
     stamp: &'a Stamp,
+    standard: crate::options::CStandard,
     interner: &'a mut Interner,
     /// The tokens still to look at, sources and expansions alike.
     pending: VecDeque<Raw>,
@@ -954,7 +961,16 @@ impl Preprocessor<'_> {
             "__DATE__" => (TokenKind::Str, quoted(&self.stamp.date)),
             "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
             "__STDC__" => (TokenKind::Number, "1".to_owned()),
-            "__STDC_VERSION__" => (TokenKind::Number, "199901L".to_owned()),
+            // C99 6.10.8p2 and C11 6.10.8p2: the version is the dialect's own, which is the one
+            // place a program can ask what it is being compiled as.
+            "__STDC_VERSION__" => (
+                TokenKind::Number,
+                match self.standard {
+                    crate::options::CStandard::C99 => "199901L",
+                    crate::options::CStandard::C11 => "201112L",
+                }
+                .to_owned(),
+            ),
             // C99 6.10.8p1: 1 for a hosted implementation, and this one is - it ships the standard
             // headers and a linked program calls the host's C runtime. It said 0 from M2 until M8
             // made it false, which a reader of the support matrix noticed before a test did.
