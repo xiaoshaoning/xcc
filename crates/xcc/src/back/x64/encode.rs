@@ -188,16 +188,21 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
                 let register = encoder.read(*condition);
                 encoder.cmp_zero(register);
                 encoder.release();
-                // The common shape is one side falling through, and testing for that side first
-                // keeps a comparison and a constant out of the instruction stream.
-                if *otherwise == index + 1 {
-                    encoder.branch(*then, 5); // jne
-                } else if *then == index + 1 {
-                    encoder.branch(*otherwise, 4); // je
-                } else {
-                    encoder.branch(*then, 5);
-                    encoder.jump(*otherwise);
-                }
+                encoder.branch_either(5, 4, *then, *otherwise, index);
+            }
+            BlockTerm::BranchCompare {
+                op,
+                left,
+                right,
+                signed,
+                then,
+                otherwise,
+            } => {
+                encoder.compare_flags(*left, *right);
+                let taken = condition_code(*op, *signed);
+                // The inverse of a condition code is its low bit: the sixteen of them are eight
+                // pairs, `e`/`ne`, `b`/`ae`, `be`/`a`, and so on.
+                encoder.branch_either(taken, taken ^ 1, *then, *otherwise, index);
             }
             BlockTerm::Unreachable => encoder.bytes(&[0x0F, 0x0B]), // ud2
         }
@@ -733,6 +738,17 @@ impl Encoder<'_> {
     /// A comparison into a 1 or 0: `cmp` the two registers the operands already live in, then `setcc`
     /// into the destination's own low byte and widen it there. The answer has no reason to pass
     /// through `rax`, and 317 of the corpus's copies were it doing so.
+    /// `cmp left, right`, leaving the answer in the flags. The half of a comparison that a branch
+    /// uses when the comparison has no other reader.
+    fn compare_flags(&mut self, left: VReg, right: VReg) {
+        let left = self.read(left);
+        let right = self.read(right);
+        self.prefix_w(right, left);
+        self.byte(0x39); // cmp left, right
+        self.modrm(3, right.0, left);
+        self.release();
+    }
+
     fn compare(&mut self, dst: VReg, op: crate::cir::CmpOp, left: VReg, right: VReg, signed: bool) {
         let left = self.read(left);
         let right = self.read(right);
@@ -1336,6 +1352,26 @@ impl Encoder<'_> {
     fn jump(&mut self, target: usize) {
         self.byte(0xE9);
         self.fixup(target);
+    }
+
+    /// One of two blocks, whichever falls through. The common shape is one side falling through, and
+    /// testing for that side first keeps an extra jump out of the instruction stream.
+    fn branch_either(
+        &mut self,
+        taken: u8,
+        not_taken: u8,
+        then: usize,
+        otherwise: usize,
+        index: usize,
+    ) {
+        if otherwise == index + 1 {
+            self.branch(then, taken);
+        } else if then == index + 1 {
+            self.branch(otherwise, not_taken);
+        } else {
+            self.branch(then, taken);
+            self.jump(otherwise);
+        }
     }
 
     fn branch(&mut self, target: usize, condition: u8) {

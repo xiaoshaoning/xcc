@@ -449,6 +449,18 @@ pub(crate) enum BlockTerm {
         then: usize,
         otherwise: usize,
     },
+    /// Two ways out, decided by comparing two values. The same thing as `Branch` on a comparison's
+    /// answer, but the answer is never materialised: 45% of the comparisons in the corpus are read by
+    /// nothing but a branch, and computing `setcc`, widening it and testing it again costs about seven
+    /// bytes each where `cmp` and a `jcc` cost two instructions between them.
+    BranchCompare {
+        op: crate::cir::CmpOp,
+        left: VReg,
+        right: VReg,
+        signed: bool,
+        then: usize,
+        otherwise: usize,
+    },
     /// Nothing follows.
     Unreachable,
 }
@@ -460,6 +472,7 @@ impl BlockTerm {
             BlockTerm::Return(Some(value)) => vec![*value],
             BlockTerm::Return(None) | BlockTerm::Jump(_) | BlockTerm::Unreachable => Vec::new(),
             BlockTerm::Branch { condition, .. } => vec![*condition],
+            BlockTerm::BranchCompare { left, right, .. } => vec![*left, *right],
         }
     }
 }

@@ -406,6 +406,9 @@ impl Positions {
                 BlockTerm::Jump(target) => vec![*target],
                 BlockTerm::Branch {
                     then, otherwise, ..
+                }
+                | BlockTerm::BranchCompare {
+                    then, otherwise, ..
                 } => vec![*then, *otherwise],
             })
             .collect();

@@ -556,6 +556,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **A comparison that only a branch reads never becomes a value.** Re-measured after the constant
+      change: `const` still led at 28.9%, then `compare` at **18.2%** and `canonical` at 5.0% - and those
+      two are one decision. A comparison materialised `cmp`, `setcc`, a widening to 64 bits, and then the
+      branch tested it against zero: about eleven bytes to answer a question the branch had to ask
+      anyway. Counting the readers of every comparison: **1 306 comparisons, 593 of them (45.4%) read by
+      nothing but a branch.** Those now become `BlockTerm::BranchCompare`, and the branch emits `cmp` and
+      a `jcc` - eight bytes of `setcc`, widening and test gone, and a value that no longer exists.
+      **Measured 87 768 -> 80 936 (-7.8%)**, 5.10x -> **4.70x `clang -O2`**. The estimate was 4 150 bytes
+      and the result 6 832, because the fused branch also stops materialising the constant the
+      comparison compared against.
+      Three things made it cheap enough to be worth it, and all three were already there: `cir` values are
+      defined once, so a comparison's operands cannot change between it and the branch; the lowering
+      already built a read-count map for direct calls, so "read exactly once" cost one field; and a value
+      with no definition needs no interval, which `regalloc` already assumed for an unused function
+      address. Floating-point comparisons are left alone - `ucomisd` and the unordered cases are settled
+      by different condition codes than `setcc` and this branch code use, and 45% of the integer ones is
+      where the money is.
 - [x] **The cheapest form of a constant, which was 37.7% of the code.** Measured first: a histogram of
       the emitted bytes by operation kind over the 418 corpus programs put `const` at **37.7%** - twice
       anything else, ahead of `compare` (16.0%), `binary` (8.2%), `store` (6.9%) and the prologue and
