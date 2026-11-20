@@ -14,7 +14,7 @@
 //!   slot has one offset for the whole function, which is why an offset in this file is relative
 //!   to the frame body and the encoder adds the shadow space and the saved registers once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{
     BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, Operand, VReg, ARGUMENT_COUNT,
@@ -120,8 +120,9 @@ struct FunctionLowering<'a> {
     /// Values that are the function a call names directly, so no address is ever materialised for
     /// them: `call rel32` needs a symbol, not a pointer.
     direct_calls: HashMap<Value, String>,
-    /// How many times each value is read, instructions and terminators together: a comparison read
-    /// once is a branch that can compare for itself, and one read twice is a value that has to exist.
+    /// How many times each value is read, instructions and terminators together, as `cir` wrote it:
+    /// a comparison read once is a branch that can compare for itself, a constant read once is an
+    /// immediate, and either read twice is a value that has to exist.
     reads: HashMap<Value, usize>,
     /// The constants that never materialise: their value travels in the instruction that reads them.
     /// A constant read once, by an operation whose encoding has an immediate field, needs neither a
@@ -135,7 +136,12 @@ impl FunctionLowering<'_> {
         // itself is then left out of the machine form - which is sound only when *every* read of it
         // is a call naming it. A value read anywhere else needs an address this back end has not
         // learnt to make, so it is refused rather than quietly made zero.
-        let mut reads = self.read_counts(func);
+        //
+        // The counts themselves are kept as they are, and the removal below works on a copy: two
+        // later decisions ask "is this read exactly once", and a count that has been edited to make
+        // one decision come out right is a count the next one cannot trust.
+        self.reads = self.read_counts(func);
+        let mut reads = self.reads.clone();
         let mut callee_reads: HashMap<Value, usize> = HashMap::new();
         for block in &func.blocks {
             for inst in &block.insts {
@@ -153,7 +159,6 @@ impl FunctionLowering<'_> {
                 reads.remove(&callee);
             }
         }
-        self.reads = reads;
         self.immediates = self.carried_constants(func);
         // The layout: blocks after the ones that dominate them, so a branch's target is in the
         // future about as often as it is in the past. Parameters first in the frame, locals after.
@@ -262,6 +267,29 @@ impl FunctionLowering<'_> {
     /// every one of those forms means fitting a signed 32-bit immediate, since that is what the
     /// instruction sign-extends. `mul` and the shifts are left out: their encodings take a register.
     fn carried_constants(&self, func: &Func) -> HashMap<Value, u64> {
+        // One pass to find where an immediate field can hold a constant, one to collect the
+        // constants: asking "does anything read this one there" inside the loop over constants would
+        // be quadratic in the size of the function, and the last quadratic scan in this back end cost
+        // a review of its own.
+        let mut carryable: HashSet<Value> = HashSet::new();
+        for block in &func.blocks {
+            for inst in &block.insts {
+                match inst {
+                    // `Inst::Binary`'s operation is the *owning instruction's* question: the encoder
+                    // answers which operations have an immediate field, and this asks it rather than
+                    // keeping a second list to drift.
+                    Inst::Binary { op, right, .. }
+                        if super::encode::immediate_extension(*op).is_some() =>
+                    {
+                        carryable.insert(*right);
+                    }
+                    Inst::Compare { right, .. } => {
+                        carryable.insert(*right);
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut carried = HashMap::new();
         for block in &func.blocks {
             for inst in &block.insts {
@@ -271,25 +299,14 @@ impl FunctionLowering<'_> {
                 else {
                     continue;
                 };
-                if self.reads.get(result).copied().unwrap_or(0) != 1 || self.types.is_float(*ty) {
+                if self.reads.get(result).copied().unwrap_or(0) != 1
+                    || self.types.is_float(*ty)
+                    || i32::try_from(*bits as i64).is_err()
+                    || !carryable.contains(result)
+                {
                     continue;
                 }
-                if i32::try_from(*bits as i64).is_err() {
-                    continue;
-                }
-                let read_here = func.blocks.iter().any(|block| {
-                    block.insts.iter().any(|inst| match inst {
-                        Inst::Binary { op, right, .. } if right == result => matches!(
-                            op,
-                            BinOp::Add | BinOp::Sub | BinOp::And | BinOp::Or | BinOp::Xor
-                        ),
-                        Inst::Compare { right, .. } if right == result => true,
-                        _ => false,
-                    })
-                });
-                if read_here {
-                    carried.insert(*result, *bits);
-                }
+                carried.insert(*result, *bits);
             }
         }
         carried
@@ -491,11 +508,8 @@ impl FunctionLowering<'_> {
                 let dst = self.reg_for(*result);
                 self.classify(dst, class);
                 let left = self.reg_for(*left);
-                // The right operand is only put in a register when the encoding needs it there: a
-                // constant that fits the immediate field never becomes a value.
-                let register = |lowering: &mut Self| lowering.reg_for(*right);
                 if class == Class::Float {
-                    let right = register(self);
+                    let right = self.reg_for(*right);
                     if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
                         return Err(NotYet {
                             message: "a bitwise operation on a floating-point value".into(),
@@ -515,7 +529,7 @@ impl FunctionLowering<'_> {
                     BinOp::Shl | BinOp::Shr => Op::Shift {
                         dst,
                         left,
-                        right: register(self),
+                        right: self.reg_for(*right),
                         right_signed: signed,
                         left_shift: *op == BinOp::Shl,
                         size,
@@ -524,7 +538,7 @@ impl FunctionLowering<'_> {
                     BinOp::Div | BinOp::Rem => Op::Divide {
                         dst,
                         left,
-                        right: register(self),
+                        right: self.reg_for(*right),
                         remainder: *op == BinOp::Rem,
                         signed,
                         size,

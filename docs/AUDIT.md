@@ -705,6 +705,48 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - a count one decision had edited, and a scan that asked twice
+
+The immediate-operand commit, reviewed.
+
+**The read counts were no longer read counts.** `run` built them, and then *edited* them - a function
+address whose only reader is the call that names it was removed from the map so that nothing would
+materialise it. That was already load-bearing before this commit; what changed is that two more decisions
+began asking the same map "is this read exactly once", and one of them (fusing a comparison into its
+branch) would now be told a count that had been adjusted to make a different decision come out right. The
+field keeps the counts `cir` wrote and the direct-call pass edits a copy. A measurement that has been
+tuned is not a measurement.
+
+**The op list was in two places.** The lowering carried `matches!(op, Add | Sub | And | Or | Xor)` to
+decide what may hold an immediate, and the encoder carried the same five in its `/ext` table with an
+`unreachable!` for anything else. Add a sixth operation and one of the two answers is wrong - and the
+wrong one is the silent one. The table is now `encode::immediate_extension(op) -> Option<u8>`, the
+encoder's own answer, and the lowering asks it.
+
+**The scan was quadratic.** For each constant the code asked "is anything reading this one as an
+immediate operand" by walking every instruction of the function: 4 000 instructions and 1 000 constants is
+four million comparisons, per function. It is two linear passes now - one to note where an immediate field
+can hold a constant, one to collect them. This back end has already paid for one review of a quadratic
+scan (`Positions::new`, and a position-to-block table that was cubic), and neither was hard to see from
+the shape of the loop.
+
+The smaller ones:
+
+- A closure `|lowering: &mut Self| lowering.reg_for(*right)` existed only to hand `self` past the borrow
+  checker; it was a pass-through with a parameter nobody needed, and the arms call the method directly.
+- `binary_immediate`'s target choice was three branches of which two did nothing different: when the
+  destination's register *is* the left operand, `target != left` is already false. One `if`.
+- Moving `immediate_extension` out of the `impl` block cost three attempts and briefly left the file
+  unbalanced - `src/back/x64/encode.rs` would not compile between them. Worth writing down because the
+  tooling that found it was `cargo build`, not a test: a patch applied by script to a file whose shape
+  the script does not know is a patch that needs the compiler's answer before the next one.
+
+**Measured after the review: 418 corpus programs agree, 46 refused, 0 wrong, 73 432 bytes** - byte for
+byte what the commit produced, which is the standard a refactor is held to.
+
+181 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - the skip and the decision, and three comments that lied
 
 Two commits reviewed: the constant forms, and the compare-and-branch fusion.

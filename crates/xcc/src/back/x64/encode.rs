@@ -814,25 +814,17 @@ impl Encoder<'_> {
         size: u8,
         signed: bool,
     ) {
-        let extension = match op {
-            BinOp::Add => 0,
-            BinOp::Or => 1,
-            BinOp::And => 4,
-            BinOp::Sub => 5,
-            BinOp::Xor => 6,
-            other => unreachable!("{other:?} has no immediate form"),
-        };
+        let extension =
+            immediate_extension(op).expect("only an operation with an immediate field gets here");
+        // Three cases collapse into one: the destination's register is the left operand's (compute
+        // there), or it is another register (move the operand in), or it is a spilled destination
+        // whose spare is `rax` (move in as well). A constant has no other operand to collide with, so
+        // unlike `binary` there is no scratch case.
         let left = self.read(left);
         let target = self.destination(dst);
-        let target = if self.is_in(dst, left) {
-            left
-        } else if target != left {
+        if target != left {
             self.mov_reg(target, left);
-            target
-        } else {
-            // The destination is the left operand itself: nothing to move, compute in place.
-            target
-        };
+        }
         self.prefix_w(Reg(0), target);
         if let Ok(small) = i8::try_from(value as i64) {
             self.byte(0x83);
@@ -1714,6 +1706,24 @@ impl Encoder<'_> {
     /// A REX prefix with no 64-bit bit: the only way to name `spl`, `bpl`, `sil` or `dil`.
     fn rex_byte(&mut self, reg: Reg, base: Reg) {
         self.byte(0x40 | ((reg.0 >> 3) << 2) | (base.0 >> 3));
+    }
+}
+
+/// The `/ext` field of the `81`/`83` group for an operation that has one, or `None` for one whose
+/// encoding has no immediate field: `mul` is the two-operand `0F AF`, and a shift's count is a
+/// register.
+///
+/// The lowering asks this same question when it decides whether a constant may travel inside the
+/// instruction instead of being materialised. One answer, so the two cannot disagree about which
+/// operations the encoder can be asked for.
+pub(crate) fn immediate_extension(op: BinOp) -> Option<u8> {
+    match op {
+        BinOp::Add => Some(0),
+        BinOp::Or => Some(1),
+        BinOp::And => Some(4),
+        BinOp::Sub => Some(5),
+        BinOp::Xor => Some(6),
+        _ => None,
     }
 }
 
