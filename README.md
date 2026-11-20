@@ -48,6 +48,11 @@ Stated here rather than discovered later.
 - **A file-scope initialiser may not be an address expression.** `char *p = "hello"` and
   `char *names[] = {"a", "b"}` work (a relocation in the data section); `int *p = &x;` does not,
   because the parser has no symbolic constant to carry it ([ADR-004](docs/ADR-004-data.md)).
+- **`--run` runs at every level, including this compiler's own back end.** `--opt-level=2 --run` loads
+  the code the encoder made, applies its relocations in memory, and calls it - so the constructs that only
+  level 2 compiles (`va_arg`, a floating-point variadic argument, a file-scope address) run in process
+  too. The differential harness still compares the two Cranelift levels; putting the third code generator
+  into it is the next step, and the corpus gate already compares its output through linked objects.
 - **`--run` calls a subset of the C library.** A JIT is not a linker, so it resolves the C
   runtime's own functions itself - `printf`, `malloc`, `qsort`, `fopen` and the rest - from one
   library (the classic runtime, which exports the `printf` family under its own names). What that

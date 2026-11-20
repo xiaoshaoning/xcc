@@ -66,14 +66,29 @@ pub(crate) struct DataSymbol {
 }
 
 /// One function: where its code went, and which symbols it defines.
-struct Placed {
-    name: String,
-    start: u32,
-    relocations: Vec<Relocation>,
+pub(crate) struct Placed {
+    /// Its link name.
+    pub name: String,
+    /// Where it starts within `.text`.
+    pub start: u32,
+    /// The places in its code that name a symbol.
+    pub relocations: Vec<Relocation>,
 }
 
-/// Encode every function, then write the object that holds them and the data they use.
-pub(crate) fn write(functions: &[MachineFunction], data: &Data) -> Vec<u8> {
+/// What one translation unit comes to before it is written: the two sections and the relocations
+/// that tie them together. The object writer fills the relocations in with the linker's help; the
+/// loader fills them in itself, which is why the two halves are separate.
+pub(crate) struct Image {
+    /// The code section.
+    pub text: Vec<u8>,
+    /// The functions in it.
+    pub functions: Vec<Placed>,
+    /// The data section, which the image owns so the loader can keep it.
+    pub data: Data,
+}
+
+/// Encode every function into one image.
+pub(crate) fn assemble(functions: &[MachineFunction], data: Data) -> Image {
     let mut text = Vec::new();
     let mut placed = Vec::new();
     for function in functions {
@@ -86,7 +101,17 @@ pub(crate) fn write(functions: &[MachineFunction], data: &Data) -> Vec<u8> {
         });
         text.extend_from_slice(&encoded.code);
     }
-    write_object(&text, &placed, data)
+    Image {
+        text,
+        functions: placed,
+        data,
+    }
+}
+
+/// Encode every function, then write the object that holds them and the data they use.
+pub(crate) fn write(functions: &[MachineFunction], data: Data) -> Vec<u8> {
+    let image = assemble(functions, data);
+    write_object(&image.text, &image.functions, &image.data)
 }
 
 fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {

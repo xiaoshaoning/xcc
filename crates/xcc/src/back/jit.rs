@@ -18,9 +18,8 @@ use crate::source::SourceFile;
 
 /// A compiled unit that runs.
 pub struct Jit {
-    module: JITModule,
-    /// The name each function was declared by, so a host can ask for it later.
-    names: Vec<(String, FuncId)>,
+    /// The code generator, and what it has produced so far.
+    backend: Backend,
     /// What a call to something this unit does not define may reach: the C runtime's functions and
     /// the host's, by name and address. A JIT resolves symbols when it finalizes, and an
     /// unresolvable one is a panic inside `cranelift-jit`, so the check is made against this where
@@ -31,6 +30,30 @@ pub struct Jit {
     defined: Vec<String>,
 }
 
+/// Cranelift's module and the names it knows. Boxed, so that a `Jit` is one pointer whichever back
+/// end it runs - the two are very different sizes and only one is ever present.
+struct CraneliftModule {
+    /// The module itself.
+    module: JITModule,
+    /// The name each function was declared by.
+    names: Vec<(String, FuncId)>,
+}
+
+/// Which code generator a `Jit` runs, and where the functions it made can be found.
+///
+/// The two are the two back ends `cir` has: Cranelift at levels 0 and 1, and this compiler's own at
+/// level 2. A host asks for a level and gets the same API either way - which is the point of the
+/// user-facing interface being `add_source` and `function` rather than a module.
+enum Backend {
+    /// Cranelift, whose module owns its memory and finalizes it.
+    Cranelift(Box<CraneliftModule>),
+    /// This compiler's own back end: one loaded unit per source added.
+    Own {
+        /// Each source's code, in the order it was added, so a later one may call an earlier one.
+        units: Vec<crate::back::x64::load::Loaded>,
+    },
+}
+
 // SAFETY: what stops `Jit` being `Send` on its own is the C runtime's function addresses, which
 // are process-global, immutable for the life of the process, and carry no ownership. Everything
 // else in it - the module, the name table - is `Send` already, so moving a `Jit` to another thread
@@ -39,14 +62,10 @@ pub struct Jit {
 unsafe impl Send for Jit {}
 
 impl std::fmt::Debug for Jit {
-    /// Cranelift's module has no `Debug` of its own; what a reader wants is which functions are
-    /// in it.
+    /// Neither back end has a `Debug` of its own; what a reader wants is which functions are in it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Jit")
-            .field(
-                "functions",
-                &self.names.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-            )
+            .field("functions", &self.defined)
             .finish()
     }
 }
@@ -98,6 +117,18 @@ impl Jit {
         }
         table.extend(symbols.iter().map(|(name, address)| (*name, *address)));
         let symbols = &table[..];
+        // Level 2 is this compiler's own back end, which needs no Cranelift settings: its code is
+        // made by the encoder the object writer uses and loaded here (ADR-008).
+        if opt_level == 2 {
+            return Ok(Self {
+                backend: Backend::Own { units: Vec::new() },
+                symbols: symbols
+                    .iter()
+                    .map(|(name, address)| ((*name).to_owned(), *address))
+                    .collect(),
+                defined: Vec::new(),
+            });
+        }
         let mut flags = settings::builder();
         let level = crate::back::cranelift_opt_level(opt_level)?;
         flags
@@ -113,8 +144,10 @@ impl Jit {
             builder.symbol(*name, *address);
         }
         Ok(Self {
-            module: JITModule::new(builder),
-            names: Vec::new(),
+            backend: Backend::Cranelift(Box::new(CraneliftModule {
+                module: JITModule::new(builder),
+                names: Vec::new(),
+            })),
             symbols: symbols
                 .iter()
                 .map(|(name, address)| ((*name).to_owned(), *address))
@@ -137,11 +170,11 @@ impl Jit {
         if !errors.is_empty() {
             return Err(errors.join("; "));
         }
-        let mut module: CirModule = parsed.module;
+        let mut unit: CirModule = parsed.module;
         let names = preprocessed.names().clone();
         // The passes run here, in the one place both lowerings come from: `--run` and an object
         // are the same `cir`, so a pass that helps one helps the other.
-        if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
+        if let Err((function, broken)) = crate::cir::pass::optimise(&mut unit) {
             return Err(format!(
                 "the passes broke `{}`: {}",
                 names.resolve(function),
@@ -153,18 +186,13 @@ impl Jit {
         // source instead of half-finalized.
         let mut defined: Vec<String> = self.defined.clone();
         defined.extend(
-            module
-                .globals
-                .iter()
-                .map(|global| global.name.clone())
-                .chain(
-                    module
-                        .funcs
-                        .iter()
-                        .map(|func| names.resolve(func.name).to_owned()),
-                ),
+            unit.globals.iter().map(|global| global.name.clone()).chain(
+                unit.funcs
+                    .iter()
+                    .map(|func| names.resolve(func.name).to_owned()),
+            ),
         );
-        for required in required_symbols(&module) {
+        for required in required_symbols(&unit) {
             let given = self.symbols.iter().any(|(name, _)| *name == required);
             if !defined.contains(&required) && !given {
                 return Err(format!(
@@ -172,13 +200,40 @@ impl Jit {
                 ));
             }
         }
-        let functions = crate::back::lower_into(&mut self.module, &module, &names)
-            .map_err(|error| error.message)?;
-        self.names.extend(functions);
+        let symbols = self.symbols.clone();
+        match &mut self.backend {
+            Backend::Cranelift(cranelift) => {
+                let functions = crate::back::lower_into(&mut cranelift.module, &unit, &names)
+                    .map_err(|error| error.message)?;
+                cranelift.names.extend(functions);
+                cranelift
+                    .module
+                    .finalize_definitions()
+                    .map_err(|error| format!("finalizing: {error}"))?;
+            }
+            Backend::Own { units } => {
+                // What this unit may call: the C runtime, the host's symbols, and the units loaded
+                // before it. The resolver is a closure over all three because a unit is loaded once
+                // and calls through addresses it holds for the rest of its life.
+                let earlier = &*units;
+                let resolve = |name: &str| -> Option<usize> {
+                    if let Some((_, address)) = symbols.iter().find(|(known, _)| known == name) {
+                        return Some(*address as usize);
+                    }
+                    earlier.iter().find_map(|unit| unit.address(name))
+                };
+                // Within reach of the first thing it may call: the region must be inside a
+                // `REL32` of the C runtime, or of whatever the host gave.
+                let near = symbols
+                    .first()
+                    .map(|(_, address)| *address as usize)
+                    .unwrap_or(0x1_0000_0000);
+                let loaded = crate::back::x64::load::load(&unit, &names, &resolve, near)
+                    .map_err(|error| error.message)?;
+                units.push(loaded);
+            }
+        }
         self.defined = defined;
-        self.module
-            .finalize_definitions()
-            .map_err(|error| format!("finalizing: {error}"))?;
         Ok(())
     }
 
@@ -201,8 +256,16 @@ impl Jit {
     /// The caller is responsible for calling it through the right signature: C has no types at
     /// run time, and this is the boundary where that stops being checkable.
     pub fn function(&self, name: &str) -> Option<*const u8> {
-        let (_, id) = self.names.iter().find(|(known, _)| known == name)?;
-        Some(self.module.get_finalized_function(*id))
+        match &self.backend {
+            Backend::Cranelift(cranelift) => {
+                let (_, id) = cranelift.names.iter().find(|(known, _)| known == name)?;
+                Some(cranelift.module.get_finalized_function(*id))
+            }
+            Backend::Own { units } => units
+                .iter()
+                .find_map(|unit| unit.address(name))
+                .map(|address| address as *const u8),
+        }
     }
 }
 

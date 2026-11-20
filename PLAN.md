@@ -558,6 +558,26 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The level-2 JIT: the back end that could not be run, runs.** The gap was measured first - **9
+      corpus programs compiled at `--opt-level=2` and could not be run at all**, and `--run
+      --opt-level=2` refused outright, so a host calling `Jit::with_opt_level(2)` was told the compiler's
+      own code generator could not be JITted. Both halves of that are now false: **`--run` works at every
+      level**, and the embedding API gains the back end that makes the smallest code.
+      The work was a join, not a code generator: the encoder already produced two sections and a list of
+      places naming a symbol, and the object writer handed those places to a linker. `coff::assemble` now
+      answers an `Image` - text, functions, data - and has two consumers, `write` for a file and a new
+      `x64::load` for memory, which allocates, copies, resolves each relocation against the C runtime and
+      the units already loaded, and makes it executable. Nothing in code generation learned that a JIT
+      exists.
+      **Two faults, both found by running it.** A symbol address was the offset inside the allocation
+      rather than the address, so the first `call` went to page zero of the process. And a `REL32` reaches
+      two gigabytes, while the allocator put the region sixteen hundred *gigabytes* from the C runtime -
+      so `VirtualAlloc` is now given an address hint that walks outwards from the first symbol the unit may
+      call, which is what a JIT has to do on an ISA whose calls are relative.
+      **Measured: 444 corpus programs run at `--run --opt-level=2`, 20 refused** - the same 20 as the
+      object path, all of them not C. `va_arg`, a floating-point variadic argument and a file-scope address
+      now run in process, which is what the three constructs had in common: they could be compiled and not
+      run.
 - [x] **The refusals, finished: 45 -> 20, and the 20 are not C.** After the implicit-declaration work, the
       last solvable group was the four programs that assign an implicit call's `int` result to a pointer -
       `char *p = malloc(10)` with nothing declared. C89 let that through because the two were one width

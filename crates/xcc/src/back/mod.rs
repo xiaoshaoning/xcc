@@ -139,20 +139,18 @@ pub(crate) fn check_opt_level(level: u8) -> Result<(), String> {
     }
 }
 
-/// How hard the back end works, as Cranelift spells it - or why this compiler has no such level.
+/// How hard *Cranelift* works, as it spells it.
 ///
-/// One mapping for the three callers: the object path, the JIT (whose flags are set at
-/// construction), and the front end, which reports the refusal to the caller who asked. The plan's
-/// levels 2 and 3 are this compiler's own back end, which is not written, so they are one message
-/// rather than three copies of one.
+/// Level 2 is not Cranelift's: it is this compiler's own back end, which lowers the same `cir` and
+/// loads its own code (ADR-008), so asking this function about it is asking the wrong back end - the
+/// JIT decides first and only comes here for levels 0 and 1.
 pub(crate) fn cranelift_opt_level(level: u8) -> Result<&'static str, String> {
     match level {
         0 => Ok("none"),
         1 => Ok("speed"),
-        2 => Err(
-            "opt level 2 is this compiler's own back end, which cannot be JITted yet; `--run` takes levels 0 and 1"
-                .to_string(),
-        ),
+        2 => Err(String::from(
+            "opt level 2 is this compiler's own back end and does not go through Cranelift",
+        )),
         other => Err(format!(
             "opt level {other} is not written: 0 and 1 are Cranelift's, 2 is this compiler's own back end"
         )),

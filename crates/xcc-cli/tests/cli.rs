@@ -378,6 +378,27 @@ fn run_calls_main_and_leaves_with_its_value() {
 }
 
 #[test]
+fn level_two_runs_what_only_it_compiles() {
+    // `va_arg` and a floating-point argument to a variadic function are level 2's, and the JIT used to
+    // be Cranelift-only: the two constructs this compiler is proudest of could be compiled to an
+    // object and never run in process. They run now, through the same API a host uses.
+    let temp = Temp::new("run2");
+    let source = temp.write(
+        "t.c",
+        "#include <stdarg.h>
+         int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
+             for (i = 0; i < count; i++) total += va_arg(ap, int); va_end(ap); return total; }
+         double pick(int count, ...) { va_list ap; double t = 0.0; int i; va_start(ap, count);
+             for (i = 0; i < count; i++) t = t + va_arg(ap, double); va_end(ap); return t; }
+         int main(void) { return sum(4, 10, 20, 30, 2) + (int)pick(3, 1.5, 2.25, 3.25); }
+",
+    );
+    let output = run(xcc().args(["--run", "--opt-level=2"]).arg(&source));
+    // 62 from the integers, 7 from the doubles.
+    assert_eq!(output.status.code(), Some(69), "{}", stderr(&output));
+}
+
+#[test]
 fn run_gives_main_its_arguments_and_reports_a_missing_one() {
     let temp = Temp::new("runargs");
     let source = temp.write(

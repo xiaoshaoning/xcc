@@ -69,6 +69,18 @@ callee-saved registers, so no argument's value is ever in a register another arg
 saved integer registers *were* stored into frame slots; `push`/`pop` are one byte each. Both changes are
 in the code with their invariants written where a reader meets them.
 
+**The same code runs, without a linker.** The encoder produces two sections and a list of places that
+name a symbol; the object writer leaves those places to the linker, and a JIT fills them in itself. That
+division is the reason `--run --opt-level=2` exists at all: `coff::assemble` answers an `Image` - text,
+functions, data - and two consumers read it, `write` for a file and `load` for memory. Nothing in the code
+generation knows which one asked.
+
+**A JIT region has to be near what it calls.** Every call this back end emits is `E8 rel32`, which reaches
+two gigabytes either way, and the first loader put its code sixteen hundred gigabytes from the C runtime:
+the call jumped into nothing. `VirtualAlloc` honours an address hint, so the allocation walks outwards from
+the first symbol it may call until Windows grants a range in reach. The alternative - an import table and
+`call [rip+disp]` - is what a linker-to-JIT would do, and is not worth a second calling sequence for this.
+
 **A gap is refused where it is found.** The back end returns a `NotYet` with the source span of the
 instruction that asked, and `compile` renders it as an ordinary refusal - `not lowered yet at opt
 level 2: a floating-point value in this back end` - not as `internal:`. A compiler bug is still a

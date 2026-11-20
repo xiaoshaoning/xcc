@@ -23,6 +23,7 @@
 
 pub(crate) mod coff;
 pub(crate) mod encode;
+pub(crate) mod load;
 pub(crate) mod lower;
 pub(crate) mod regalloc;
 
@@ -562,7 +563,7 @@ pub(crate) fn object(
 ) -> Result<Vec<u8>, NotYet> {
     let functions = lower::lower(module, names)?;
     let data = data_section(module)?;
-    Ok(coff::write(&functions, &data))
+    Ok(coff::write(&functions, data))
 }
 
 /// The objects in the data section: their bytes, laid out in the order the module holds them, each
