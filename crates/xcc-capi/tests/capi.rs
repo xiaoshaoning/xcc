@@ -10,7 +10,9 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 
-use xcc_capi::{xcc_add_source, xcc_free, xcc_function, xcc_last_error, xcc_new, xcc_symbol};
+use xcc_capi::{
+    xcc_add_source, xcc_free, xcc_function, xcc_last_error, xcc_new, xcc_new_with, xcc_symbol,
+};
 
 /// A handle that frees itself, so a failing assertion does not leak one.
 struct Compiler(*mut xcc_capi::Handle);
@@ -37,6 +39,17 @@ fn compiler(symbols: &[(&str, *const c_void)]) -> (Compiler, Vec<CString>) {
     let handle = unsafe { xcc_new(table.as_ptr(), table.len()) };
     assert!(!handle.is_null(), "xcc_new never answers NULL");
     (Compiler(handle), names)
+}
+
+/// The same, with the dialect and the back end chosen: what a host asks before it has a handle.
+fn compiler_with(options: (i32, i32)) -> Compiler {
+    let options = xcc_capi::xcc_options {
+        standard: options.0,
+        opt_level: options.1,
+    };
+    let handle = unsafe { xcc_new_with(std::ptr::null(), 0, &options) };
+    assert!(!handle.is_null(), "xcc_new_with never answers NULL");
+    Compiler(handle)
 }
 
 fn error(compiler: &Compiler) -> String {
@@ -179,5 +192,69 @@ fn the_build_is_a_dll_a_python_host_can_call() {
         "the python host failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_host_chooses_the_dialect_and_the_back_end() {
+    // Both of the choices this compiler grew are the host's, not the command line's: C11 for
+    // `_Static_assert` and `_Generic`, and level 2 for `va_arg` and the smallest code. A host that
+    // says nothing gets C99 at level 0, which is what `xcc_new` has always meant.
+    let c11 = compiler_with((xcc_capi::XCC_C11, 0));
+    assert_eq!(
+        add_source(
+            &c11,
+            "_Static_assert(sizeof(int) == 4, \"a 32-bit int\");\n\
+             int pick(void) { return _Generic(1, int: 42, default: 0); }\n"
+        ),
+        0,
+        "C11 is what the host asked for: {}",
+        error(&c11)
+    );
+    // The same source at C99 is refused, naming the flag it would have needed.
+    let plain = compiler_with((xcc_capi::XCC_C99, 0));
+    assert_ne!(
+        add_source(
+            &plain,
+            "int f(void) { return _Generic(1, int: 1, default: 0); }"
+        ),
+        0
+    );
+    assert!(error(&plain).contains("--std=c11"), "{}", error(&plain));
+
+    // Level 2 lowers `va_arg` and a floating-point variadic argument; level 0 refuses them.
+    let ours = compiler_with((xcc_capi::XCC_C99, 2));
+    assert_eq!(
+        add_source(
+            &ours,
+            "#include <stdarg.h>
+             double pick(int n, ...) { va_list ap; double t = 0.0; int i; va_start(ap, n);
+                 for (i = 0; i < n; i++) t = t + va_arg(ap, double); va_end(ap); return t; }
+             int main(void) { return (int)pick(3, 1.5, 2.25, 3.25); }"
+        ),
+        0,
+        "level 2 lowers it: {}",
+        error(&ours)
+    );
+    let cranelift = compiler_with((xcc_capi::XCC_C99, 0));
+    assert_ne!(
+        add_source(
+            &cranelift,
+            "#include <stdarg.h>
+             double pick(int n, ...) { va_list ap; double t = 0.0; int i; va_start(ap, n);
+                 for (i = 0; i < n; i++) t = t + va_arg(ap, double); va_end(ap); return t; }
+             int main(void) { return (int)pick(3, 1.5, 2.25, 3.25); }"
+        ),
+        0,
+        "level 0 refuses what it cannot lower"
+    );
+
+    // A level this compiler does not have is refused, and says so, rather than becoming level 0.
+    let nowhere = compiler_with((xcc_capi::XCC_C99, 3));
+    assert_ne!(add_source(&nowhere, "int f(void) { return 0; }"), 0);
+    assert!(
+        error(&nowhere).contains("not written"),
+        "{}",
+        error(&nowhere)
     );
 }

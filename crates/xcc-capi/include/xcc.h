@@ -34,9 +34,30 @@ typedef struct xcc_symbol {
     const void *address; /* the address C would give it */
 } xcc_symbol;
 
+/* What a host may choose about a compilation.  The defaults are C99 and opt level 0 - the fastest
+ * and the most permissive - so a host that wants neither says nothing. */
+typedef struct xcc_options {
+    /* Which C: XCC_C99 (0, the default) or XCC_C11 (1), which adds `_Static_assert` and
+     * `_Generic`.  The same numbers the command line's `--std` takes. */
+    int standard;
+    /* How hard the back end works: 0 none (the default), 1 speed, 2 this compiler's own x86-64
+     * back end - the smallest code, and the only level that lowers `va_arg` and a floating-point
+     * argument to a variadic function.  A number never means two things. */
+    int opt_level;
+} xcc_options;
+
+/* The values `xcc_options.standard` takes. */
+#define XCC_C99 0
+#define XCC_C11 1
+
 /* Make a compiler that may call `count` host symbols.  Never NULL: a symbol list this cannot read
  * leaves a handle whose first xcc_add_source refuses, with the reason in xcc_last_error. */
 xcc *xcc_new(const xcc_symbol *symbols, size_t count);
+
+/* The same, with the dialect and the back end chosen.  `options` may be NULL, which is `xcc_new`.
+ * An option this compiler does not have - opt level 3, say - is refused on the first
+ * xcc_add_source rather than quietly served by another back end. */
+xcc *xcc_new_with(const xcc_symbol *symbols, size_t count, const xcc_options *options);
 
 /* Compile `source`, adding its functions to the ones already in `compiler`.  0 when every stage
  * was clean, -1 otherwise with every error in xcc_last_error, one per line. */

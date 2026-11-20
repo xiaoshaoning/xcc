@@ -11,7 +11,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use xcc::Jit;
+use xcc::{CStandard, Jit, Options};
 
 /// A function the compiled code may call, by name: the host's `malloc`, or a callback of its own.
 #[repr(C)]
@@ -53,6 +53,60 @@ const NO_HANDLE: &[u8] = b"\0";
 /// NUL-terminated string. `NULL` with `count` 0 is the common case: no symbols.
 #[no_mangle]
 pub unsafe extern "C" fn xcc_new(symbols: *const xcc_symbol, count: usize) -> *mut Handle {
+    // SAFETY: the caller's promise is `xcc_new_with`'s, and nothing is asked about the options.
+    unsafe { build(symbols, count, Options::default()) }
+}
+
+/// `xcc_options.standard`'s values, matching the header's `XCC_C99` and `XCC_C11`.
+pub const XCC_C99: c_int = 0;
+/// C99 plus the C11 pieces this compiler has.
+pub const XCC_C11: c_int = 1;
+
+/// What a host may choose about a compilation, as C spells it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct xcc_options {
+    /// `XCC_C99` (0) or `XCC_C11` (1), the same numbers the command line's `--std` takes.
+    pub standard: c_int,
+    /// 0, 1 or 2: the same numbers `--opt-level` takes.
+    pub opt_level: c_int,
+}
+
+/// Make a compiler with the dialect and the back end the host chose.
+///
+/// `options` may be NULL, which is `xcc_new`: the defaults. An option this compiler does not have -
+/// opt level 3, say - is left for the first `xcc_add_source` to refuse, so a host that checks its
+/// return value checks everything.
+///
+/// # Safety
+///
+/// As `xcc_new`, and `options` must point to a readable `xcc_options` when it is not NULL.
+#[no_mangle]
+pub unsafe extern "C" fn xcc_new_with(
+    symbols: *const xcc_symbol,
+    count: usize,
+    options: *const xcc_options,
+) -> *mut Handle {
+    let options = match unsafe { options.as_ref() } {
+        None => Options::default(),
+        Some(options) => Options {
+            standard: match options.standard {
+                1 => CStandard::C11,
+                _ => CStandard::C99,
+            },
+            // A level this compiler does not have is passed through: `build` refuses it, so the
+            // refusal names the level the host asked for instead of silently turning it into zero.
+            opt_level: options.opt_level.clamp(0, u8::MAX as c_int) as u8,
+            ..Options::default()
+        },
+    };
+    // SAFETY: the caller's promise is `xcc_new`'s.
+    unsafe { build(symbols, count, options) }
+}
+
+/// The one place a handle is made: read the symbol table, then the JIT.
+#[allow(unsafe_code)]
+unsafe fn build(symbols: *const xcc_symbol, count: usize, options: Options) -> *mut Handle {
     // Deliberately not `with_capacity(count)`: `count` comes from the host, and a confused one
     // would have this allocate before a single symbol was checked. The vector grows with the
     // symbols that are actually read.
@@ -83,7 +137,7 @@ pub unsafe extern "C" fn xcc_new(symbols: *const xcc_symbol, count: usize) -> *m
         Some(reason) => Err(reason),
         // SAFETY: the addresses were promised valid for as long as the JIT lives, and it lives
         // until `xcc_free`.
-        None => unsafe { Jit::with_symbols(&table) },
+        None => unsafe { Jit::with_options(&table, &options) },
     };
     let handle = Handle {
         jit,

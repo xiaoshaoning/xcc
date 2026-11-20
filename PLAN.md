@@ -558,6 +558,20 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The embedding API can ask for what the command line can.** The C API was five functions and no
+      options, so a host compiled as C99 at level 0 - and the two things this milestone added, `--std=c11`
+      and `--opt-level=2`, were reachable only from the command line. That is a capability that exists and
+      cannot be used, which is the same defect as a README that lies.
+      One struct, `xcc_options { standard, opt_level }`, and one function, `xcc_new_with` - with
+      `xcc_new(..)` still meaning "the defaults", so nothing that worked stopped working. In the library
+      the `Jit` now *holds* an [`Options`], which is the front end's own struct rather than a second one for
+      the same three questions, and `add_source` uses it: a host embedding this compiler is asking what the
+      command line asks. `Jit::with_options(symbols, options)` replaces `with_symbols`, which was the same
+      function with a dial fixed at zero.
+      **Measured by the tests that now exist**: C11 source compiles through the C API and the same source is
+      refused at C99 naming `--std=c11`; a `va_arg` program with floating-point variadic arguments compiles
+      at level 2 and is refused at level 0; and level 3 - a level nobody wrote - is refused rather than
+      quietly served, which is the rule the whole option set follows.
 - [x] **The level-2 JIT: the back end that could not be run, runs.** The gap was measured first - **9
       corpus programs compiled at `--opt-level=2` and could not be run at all**, and `--run
       --opt-level=2` refused outright, so a host calling `Jit::with_opt_level(2)` was told the compiler's

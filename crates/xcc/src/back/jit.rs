@@ -20,6 +20,8 @@ use crate::source::SourceFile;
 pub struct Jit {
     /// The code generator, and what it has produced so far.
     backend: Backend,
+    /// The dialect and the back end, as the host asked for them.
+    options: Options,
     /// What a call to something this unit does not define may reach: the C runtime's functions and
     /// the host's, by name and address. A JIT resolves symbols when it finalizes, and an
     /// unresolvable one is a panic inside `cranelift-jit`, so the check is made against this where
@@ -87,11 +89,22 @@ impl Jit {
         // every JIT.
         #[allow(unsafe_code)]
         unsafe {
-            Self::build(&[], opt_level)
+            Self::with_options(
+                &[],
+                &Options {
+                    opt_level,
+                    ..Options::default()
+                },
+            )
         }
     }
 
-    /// A JIT that can call the host functions in `symbols`, by name.
+    /// A JIT that can call the host functions in `symbols`, by name, compiling with `options`.
+    ///
+    /// This is the whole of a host's choice: the dialect, how hard the back end works, and what the
+    /// compiled code may call. `options` is the library's own [`crate::Options`] rather than a second
+    /// struct for the same three things - a host embedding this compiler is asking the same
+    /// questions the command line asks.
     ///
     /// # Safety
     ///
@@ -99,13 +112,18 @@ impl Jit {
     /// `Jit` lives: compiled code calls through them, and C has nothing to check with. Symbols
     /// are taken here because Cranelift's builder takes them at construction and nowhere else.
     #[allow(unsafe_code)]
-    pub unsafe fn with_symbols(symbols: &[(&str, *const u8)]) -> Result<Self, String> {
-        Self::build(symbols, 0)
+    pub unsafe fn with_options(
+        symbols: &[(&str, *const u8)],
+        options: &Options,
+    ) -> Result<Self, String> {
+        crate::back::check_opt_level(options.opt_level)?;
+        Self::build(symbols, options.clone())
     }
 
     /// The one place a JIT is made: what it may call, and how hard it works.
     #[allow(unsafe_code)]
-    unsafe fn build(symbols: &[(&str, *const u8)], opt_level: u8) -> Result<Self, String> {
+    unsafe fn build(symbols: &[(&str, *const u8)], options: Options) -> Result<Self, String> {
+        let opt_level = options.opt_level;
         // The C runtime first, then the host's symbols: a host that gives a name the runtime also
         // has means its own function, which is what a host passing `write` or `open` expects.
         let runtime = crate::back::crt::symbols();
@@ -122,6 +140,7 @@ impl Jit {
         if opt_level == 2 {
             return Ok(Self {
                 backend: Backend::Own { units: Vec::new() },
+                options,
                 symbols: symbols
                     .iter()
                     .map(|(name, address)| ((*name).to_owned(), *address))
@@ -148,6 +167,7 @@ impl Jit {
                 module: JITModule::new(builder),
                 names: Vec::new(),
             })),
+            options,
             symbols: symbols
                 .iter()
                 .map(|(name, address)| ((*name).to_owned(), *address))
@@ -159,7 +179,7 @@ impl Jit {
     /// Compile `source` into this JIT. The functions it defines can be asked for afterwards.
     pub fn add_source(&mut self, source: &str) -> Result<(), String> {
         let file = SourceFile::new("<jit>", source);
-        let options = Options::default();
+        let options = self.options.clone();
         let preprocessed = preprocess(&file, &options, &crate::headers::Headers::new(Box::new(())));
         // Both stages report the same way, and every error is reported: a host fixing one
         // mistake at a time is a host that recompiles once per mistake.
@@ -472,8 +492,13 @@ int twice(int a) { return add(a, a); }",
         extern "C" fn host_double(value: i32) -> i32 {
             value * 2
         }
-        let mut jit = unsafe { Jit::with_symbols(&[("host_double", host_double as *const u8)]) }
-            .expect("a JIT");
+        let mut jit = unsafe {
+            Jit::with_options(
+                &[("host_double", host_double as *const u8)],
+                &Options::default(),
+            )
+        }
+        .expect("a JIT");
         jit.add_source(
             "int host_double(int x);
 int twice(int x) { return host_double(x); }",
@@ -1023,7 +1048,7 @@ int twice(int x) { return host_double(x); }",
             ("host_make_wide", host_make_wide as *const u8),
             ("host_pair_after", host_pair_after as *const u8),
         ];
-        let mut jit = unsafe { Jit::with_symbols(symbols) }.expect("a JIT");
+        let mut jit = unsafe { Jit::with_options(symbols, &Options::default()) }.expect("a JIT");
         jit.add_source(
             "struct Tiny { char a; char b; };
              struct Odd { char a; char b; char c; };
