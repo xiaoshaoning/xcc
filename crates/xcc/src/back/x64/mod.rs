@@ -335,9 +335,9 @@ pub(crate) enum Op {
         /// See `Call`: a variadic call through a pointer duplicates its float arguments the same way.
         variadic: bool,
     },
-    /// Call a function by name: `call rel32`. The first four arguments go in registers, staged
-    /// through the frame when one of them would destroy another; the rest go in the function's
-    /// outgoing slots, which is what the frame reserves them for.
+    /// Call a function by name: `call rel32`. The first four arguments go in registers, moved there
+    /// directly - see `place_arguments` for why two of them can never be in each other's way - and
+    /// the rest go in the function's outgoing slots, which is what the frame reserves them for.
     Call {
         dst: Option<VReg>,
         name: String,

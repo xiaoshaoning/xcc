@@ -56,11 +56,18 @@ everything live across one. The price is seven registers instead of fifteen. `ra
 moves the result back. Linear scan (Poletto and Sarkar) with whole-interval spilling is the
 allocator; interval *splitting* is the next improvement, not this one.
 
-**The frame is `rsp`-relative and `rsp` never moves after the prologue.** Shadow space, the saved
-registers, the lowering's frame, spill slots, and the staging area for call arguments are one
-layout, in that order, decided when the function is encoded. No `rbp`, no `push`, no unwinding
-information to get wrong. Arguments are staged through memory before the four argument registers are
-loaded, because two arguments can swap positions and a staging area has no cycle in it.
+**The frame is `rsp`-relative and `rsp` never moves after the prologue but for the pushes.** Shadow
+space, the saved floating-point registers, the lowering's frame and the spill slots are one layout, in
+that order, decided when the function is encoded; the saved *integer* registers are `push`ed above it
+and `pop`ed back, which is four bytes a register instead of ten. No `rbp` and no unwinding information
+to get wrong.
+
+Two decisions in this area were taken back later, and the measurements are why. Arguments *were* staged
+through memory, on the theory that two of them could swap positions - until an instrumented run showed
+that no call in the corpus collides, and that one cannot: a function that calls anything allocates only
+callee-saved registers, so no argument's value is ever in a register another argument needs. And the
+saved integer registers *were* stored into frame slots; `push`/`pop` are one byte each. Both changes are
+in the code with their invariants written where a reader meets them.
 
 **A gap is refused where it is found.** The back end returns a `NotYet` with the source span of the
 instruction that asked, and `compile` renders it as an ordinary refusal - `not lowered yet at opt

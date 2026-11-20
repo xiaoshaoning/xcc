@@ -3,11 +3,15 @@
 //!
 //! Two things worth knowing before reading it:
 //!
-//! - **The frame is a byte offset from `rsp`, and `rsp` never moves after the prologue.** Locals,
-//!   block parameters, spill slots and the staging area for call arguments are one layout decided
-//!   here: shadow space first (the callee writes there), then the callee-saved registers this
-//!   function uses, then the lowering's frame, then spill slots, then the staging area. A `ret`
-//!   undoes exactly that; there is no `rbp` and no `push`.
+//! - **The frame is a byte offset from `rsp`, and `rsp` never moves after the prologue but for the
+//!   pushes.** Shadow space first (the callee writes there), then the callee-saved *floating-point*
+//!   registers this function keeps, then the lowering's frame, then spill slots; the callee-saved
+//!   integer registers are `push`ed above all of it, which is why they need no address. A `ret`
+//!   undoes exactly that; there is no `rbp`.
+//!
+//! - **Call arguments are moved, never staged.** No argument's value can be in the register another
+//!   argument needs, because a function that calls anything allocates only callee-saved registers -
+//!   so the moves are independent and the staging area the layout used to reserve is gone.
 //! - **Scratch registers are the calling convention's, not the allocator's.** `rax`, `rcx`, `rdx`,
 //!   `r10` and `r11` hold nothing that must survive an operation, so an operation may use one as
 //!   room to work. Only the seven allocated registers ever hold a value across operations, and a
@@ -106,12 +110,12 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // integer arguments and four floating ones - was for a case that cannot occur (see
     // `place_arguments`).
     let raw = spill_base + allocation.spill_bytes;
-    // Everything `rsp` is moved for, named: a call (which needs the shadow space and the staging
-    // area), a value that did not fit in a register, a block parameter, a variable whose address
-    // escapes, and a callee-saved register this function had to keep. A function with none of them
-    // has no frame - no `sub rsp`, no `add rsp` - which is fourteen bytes of every such function.
-    // A function with no call has no outgoing slots by construction - the count comes from call
-    // sites - so the call is the only thing that needs naming here.
+    // Everything `rsp` is moved for, named: a call's shadow space and outgoing slots, a value that did
+    // not fit in a register, a block parameter, a variable whose address escapes, and a callee-saved
+    // floating-point register this function had to keep - the integer ones are pushed and counted
+    // separately. A function with none of them has no frame - no `sub rsp`, no `add rsp` - which is
+    // fourteen bytes of every such function. A function with no call has no outgoing slots by
+    // construction, since the count comes from call sites.
     let frameless = !func.makes_call
         && allocation.spill_bytes == 0
         && func.frame_bytes == 0
@@ -1229,9 +1233,8 @@ impl Encoder<'_> {
     ///
     /// A *variadic* call also copies each floating-point argument into the general register of its
     /// own position: Win64 requires it, and it is what makes one eight-byte-per-argument walk read a
-    /// list that mixes the two classes (ADR-006). Only the staged path has a copy to make - the direct
-    /// one is all-integer by its own test - and the copy is the same eight bytes the double was just
-    /// loaded from, so it costs a load and never a store.
+    /// list that mixes the two classes (ADR-006). The copy is `movq`, straight out of the XMM register
+    /// the value is going to.
     fn place_arguments(&mut self, args: &[VReg], variadic: bool) {
         // Where each argument goes: **the position picks the register**, and the argument's class
         // picks which file it is in. `f(int a, double b, double c)` has `b` in `xmm1` and `c` in
@@ -1272,9 +1275,11 @@ impl Encoder<'_> {
         // Nothing collides, and it cannot: a function that makes a call allocates only callee-saved
         // registers - `Registers` gives the caller-saved ones to functions that call nothing - so no
         // argument's value is ever in one of the registers the arguments have to go to. The staging
-        // area this used to need, and the second pass that filled it, are gone; the assertion is here
-        // so that a future pool which allows an argument register says so instead of quietly
-        // clobbering an argument.
+        // area this used to need, and the second pass that filled it, are gone.
+        //
+        // The check is a `debug_assert` because there is nothing to do about the answer: the fallback
+        // it used to select no longer exists. A release build therefore trusts the invariant above,
+        // which is where it belongs - written down, and asserted wherever the tests run.
         debug_assert!(
             !self.arguments_collide(&plan),
             "an argument's value is in another argument's register: the staging area is needed again"
@@ -1339,11 +1344,11 @@ impl Encoder<'_> {
     /// been read yet: an argument whose register is a *later* argument's register.
     /// Whether putting the arguments in their registers would destroy one another: an argument whose
     /// value already sits in the register that *another* position needs is the case, and the answer
-    /// decides whether the staging area is used at all.
+    /// decides the answer to "can the moves be independent".
     ///
     /// Each file is checked against its own, because they are disjoint - an integer in `rdx` is not
     /// disturbed by a `double` going to `xmm1` - and the corpus has no call in which either file
-    /// collides, so the staging area is what pays when one does. A spilled argument is read straight
+    /// collides, so the moves are independent and nothing is staged. A spilled argument is read straight
     /// from its slot into the register that needs it, so it is never in the way.
     fn arguments_collide(&self, plan: &[(VReg, super::Class, Target)]) -> bool {
         plan.iter()
@@ -1372,8 +1377,10 @@ impl Encoder<'_> {
         self.byte(0x66);
         // The prefix takes the same two registers `modrm` does, in the same order: `0F 7E` names the
         // XMM register in the *reg* field and the general one in the *r/m* field, so `R` belongs to
-        // `from` and `B` to `to`. Swapping them here emits `movq %xmm7, %r???` - a register the
-        // instruction never named - and it is the fifth time this back end has paid for that order.
+        // `from` and `B` to `to`. Swapping them emits `movq %xmm15, %rax` where `movq %xmm7, %r8` was
+        // asked for - an instruction that names two registers the operation never mentioned, and
+        // assembles happily. The prefix and `modrm` have to be told the same thing in the same order;
+        // every one of the encoding faults this file has had is that sentence.
         self.prefix_w(from, to);
         self.bytes(&[0x0F, 0x7E]);
         self.modrm(3, from.0, to);

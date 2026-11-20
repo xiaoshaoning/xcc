@@ -705,6 +705,42 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - a module comment that outlived its subject
+
+The staging-area commit, reviewed. No defect this time - the two it exposed were fixed in the commit
+itself - so the finding is about what the code says rather than what it does.
+
+**Five places still described the staging area as a live mechanism.** The module comment at the top of
+`encode.rs` - the first thing a reader of this file meets - said the layout was "shadow space, the
+callee-saved registers, the lowering's frame, spill slots, then the staging area", with "no `push`". Both
+halves were false by the time this commit landed: the staging area is gone, the integer registers *are*
+pushed, and the floats are what stays in the frame. `Op::Call`'s doc said the arguments are "staged through
+the frame when one of them would destroy another", which is the fallback that no longer exists.
+`place_arguments` said "only the staged path has a copy to make", about a path that is gone. And ADR-008
+described the same layout and the same staging, with a rationale - "a staging area has no cycle in it" -
+that is still true and no longer describes the code.
+
+A comment that is wrong is worse than an absent one, and these were wrong in the first paragraph a new
+reader sees. All five are rewritten, and ADR-008 now records the two decisions that were taken back
+*purposefully*, with the measurements that took them back, rather than reading as though the design had
+always been the one that survived.
+
+The smaller ones:
+
+- The `debug_assert` guarding the collision invariant did not say it was a debug-only check, which matters
+  here: there is no longer a fallback to select, so a release build *trusts* the invariant rather than
+  testing it. The comment says so now.
+- `integer_from_float`'s comment claimed "the fifth time this back end has paid for that order", a number
+  nobody can check at the call site. It names the actual failure shape instead - `movq %xmm15, %rax` where
+  `movq %xmm7, %r8` was asked for, an instruction that names two registers the operation never mentioned -
+  and states the rule: the prefix and `modrm` must be told the same thing in the same order.
+
+**Measured after the review: 418 corpus programs agree, 46 refused, 0 wrong, 60 476 bytes** - unchanged,
+which is what a comment review should cost.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - a number that meant two things, and the two out of sixty-six
 
 The push/pop commit, reviewed - and the review found a **wrong answer**, not a smell.
