@@ -556,6 +556,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **An address is made once per block.** Eighth measurement, and the first one whose *prediction* was
+      wrong in an instructive way. Counting address materialisations in the encoder: **584, with 292 of them
+      repeats of an address the same function had already made (50%)**, and nothing can invalidate an
+      address - a symbol's is fixed, a frame slot's is fixed, what changes is the bytes *at* it. So the
+      lowering keeps a map and aliases the second `cir` value to the first register, like the free
+      widening.
+      **Measured: -296 bytes (0.5%)**, against a prediction of ~2 044. The histogram said why: the address
+      ops fell by ~1 400 bytes and the `store` and `load` buckets *grew* by 1 200, because a register
+      shared across a whole function lives from the first mention to the last and the allocator spilled
+      the difference. The reuse was paying for itself in pressure.
+      **So the map is cleared per block** - a block is a straight line, so a repeated address there is
+      close to free, and it is the common case: `p->a` and `p->b` off one base, a global read twice in a
+      row. Measured again: **60 556 -> 59 660 (-1.5%)**, 3.52x -> **3.46x `clang -O2`**. The lesson is the
+      one this back end keeps teaching: an optimisation's *scope* is as much a measurement as its
+      mechanism, and the first version of this one was right about the mechanism and wrong about the
+      scope.
 - [x] **An address in a file-scope initialiser.** The last hole in ADR-004, and the last corpus program
       refused for a compiler gap: `char *p = "hello"` and `char *names[] = {"alpha", "beta"}` - the pointer
       and the table that every C program has, and the one thing the data format could not say. An address

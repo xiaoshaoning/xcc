@@ -54,6 +54,7 @@ fn lower_function(
         direct_calls: HashMap::new(),
         reads: HashMap::new(),
         immediates: HashMap::new(),
+        addresses: HashMap::new(),
     };
     lowerer.run(func)?;
     let makes_call = func.blocks.iter().any(|block| {
@@ -87,6 +88,16 @@ fn lower_function(
         blocks: lowerer.blocks,
         param_offsets: lowerer.param_offsets,
     })
+}
+
+/// An address the lowering can make once and reuse.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Address {
+    /// The address of a named object or function.
+    Symbol(String),
+    /// The address of a frame slot, by its offset: a slot's offset is unique in the frame, and nothing
+    /// moves the frame.
+    Local(i32),
 }
 
 /// A comparison that a branch carries instead of a value: the instruction it replaces, and what the
@@ -124,6 +135,16 @@ struct FunctionLowering<'a> {
     /// a comparison read once is a branch that can compare for itself, a constant read once is an
     /// immediate, and either read twice is a value that has to exist.
     reads: HashMap<Value, usize>,
+    /// The addresses this *block* has already made, so the same one is made once. **Nothing can
+    /// invalidate an address**: a symbol's address is the same for the whole function, and so is a
+    /// frame slot's - what changes is the bytes *at* it.
+    ///
+    /// Per block, not per function, and the measurement is why: sharing the register across a whole
+    /// function removes 232 `lea`s and then pays back 1 200 bytes in spills, because the register now
+    /// lives from the first mention to the last. A block is short enough that the reuse is close to
+    /// free, and a repeated address inside one block is the common case - `p->a` and `p->b` off the
+    /// same base, a global read twice in a row.
+    addresses: HashMap<Address, VReg>,
     /// The constants that never materialise: their value travels in the instruction that reads them.
     /// A constant read once, by an operation whose encoding has an immediate field, needs neither a
     /// register nor a `mov`, and a third of the back end's bytes went into that `mov`.
@@ -229,6 +250,8 @@ impl FunctionLowering<'_> {
             // A comparison whose only reader is this block's branch never has to exist as a value:
             // the branch can compare and jump. That is 45% of the comparisons in the corpus, and it
             // saves the `setcc`, the widening that follows it, and the test the branch would do.
+            // A new block: the addresses the last one made are not in scope for this one's reuse.
+            self.addresses.clear();
             let fused = self.fusable_compare(func, block);
             for (index, inst) in func.block(block).insts.iter().enumerate() {
                 if Some(index) == fused.as_ref().map(|fused| fused.index) {
@@ -310,6 +333,30 @@ impl FunctionLowering<'_> {
             }
         }
         carried
+    }
+
+    /// The register a value has, making the address if this function has not made it already. Two
+    /// `cir` values that name the same address name the same register, which is what a second `lea`
+    /// would have computed anyway.
+    fn address_of(&mut self, what: Address, result: Value, ops: &mut Vec<Op>) -> VReg {
+        if let Some(register) = self.addresses.get(&what) {
+            self.regs[result.0 as usize] = Some(*register);
+            return *register;
+        }
+        let dst = self.reg_for(result);
+        let op = match &what {
+            Address::Symbol(symbol) => Op::SymbolAddress {
+                dst,
+                symbol: symbol.clone(),
+            },
+            Address::Local(offset) => Op::LocalAddress {
+                dst,
+                offset: *offset,
+            },
+        };
+        ops.push(op);
+        self.addresses.insert(what, dst);
+        dst
     }
 
     /// How the operation reads a value: from a register, or as the constant it was made from.
@@ -771,9 +818,8 @@ impl FunctionLowering<'_> {
                 })?;
                 let align = self.types.align_of(*ty).unwrap_or(1);
                 let offset = self.allocate(size, align);
-                let dst = self.reg_for(*result);
+                let dst = self.address_of(Address::Local(offset), *result, ops);
                 self.classify(dst, Class::Integer);
-                ops.push(Op::LocalAddress { dst, offset });
             }
             Inst::VaStart { result, skip, .. } => {
                 let dst = self.reg_for(*result);
@@ -800,12 +846,8 @@ impl FunctionLowering<'_> {
                     // is ever materialised, so this value is defined by being left out. Nothing
                     // reads it, so it never needs a register or a slot.
                 } else {
-                    let dst = self.reg_for(*result);
+                    let dst = self.address_of(Address::Symbol(name.clone()), *result, ops);
                     self.classify(dst, Class::Integer);
-                    ops.push(Op::SymbolAddress {
-                        dst,
-                        symbol: name.clone(),
-                    });
                 }
             }
             Inst::Call {
