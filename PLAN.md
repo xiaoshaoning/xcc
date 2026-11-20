@@ -556,6 +556,25 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The cheapest form of a constant, which was 37.7% of the code.** Measured first: a histogram of
+      the emitted bytes by operation kind over the 418 corpus programs put `const` at **37.7%** - twice
+      anything else, ahead of `compare` (16.0%), `binary` (8.2%), `store` (6.9%) and the prologue and
+      epilogue together (8.0%). The reason is the fold pass's own success: folding initialisers and their
+      address arithmetic makes constants, and each constant was materialised as `mov r64, imm32` (seven
+      bytes) however small it was. A second histogram of the *values*: 4 790 constants, **29.5% of them
+      zero** and **67.9% between one and 255**, 1.9% fitting `u32`, 0.7% signed 32-bit, 10 wide.
+      So two forms: `xor r32, r32` for zero (two bytes, sets all sixty-four) and `mov r32, imm32` for
+      anything non-negative that fits `u32` (five bytes instead of seven). Both are *exactly* the value,
+      never a truncation, because a value arrives canonical for its C type and a non-negative constant's
+      canonical form **is** its zero-extension - which is the invariant the whole encoder rests on, used
+      here to save bytes instead of to explain a load. Predicted **13 755 bytes**; measured
+      **98 776 -> 87 768 (-11.1%)**, 5.74x -> **5.10x `clang -O2`**. The gap between prediction and
+      measurement is the REX prefix on `r8`-`r15`: three of the four short forms are one byte longer there.
+      **And the first attempt was a wrong answer that ran**: in `31 /r` the register sits in the *modrm*
+      field, so `xor r8d, r8d` needs the REX bit for it twice, and naming the extended register through
+      `B` alone emits `xor r8d, eax` - which assembles, executes, and computes something else. It cost four
+      minutes and one segfaulting array program; the construct test's `a[4]` and the corpus ratchet found
+      it, exactly as they found the seven faults of the first slice.
 - [x] **`printf("%f")`: a floating-point argument *to* a variadic function.** The last row of ADR-006,
       and the premise behind its refusal was wrong. Win64 asks the caller to write each variadic
       floating-point argument to a vector register **and** to the general register of its position, and
