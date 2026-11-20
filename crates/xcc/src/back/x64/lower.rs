@@ -247,11 +247,11 @@ impl FunctionLowering<'_> {
                     block_ops.push(Op::LoadLocal { dst, offset });
                 }
             }
+            // A new block, so the addresses the last one made are not in scope for this one's reuse.
+            self.addresses.clear();
             // A comparison whose only reader is this block's branch never has to exist as a value:
             // the branch can compare and jump. That is 45% of the comparisons in the corpus, and it
             // saves the `setcc`, the widening that follows it, and the test the branch would do.
-            // A new block: the addresses the last one made are not in scope for this one's reuse.
-            self.addresses.clear();
             let fused = self.fusable_compare(func, block);
             for (index, inst) in func.block(block).insts.iter().enumerate() {
                 if Some(index) == fused.as_ref().map(|fused| fused.index) {
@@ -335,9 +335,10 @@ impl FunctionLowering<'_> {
         carried
     }
 
-    /// The register a value has, making the address if this function has not made it already. Two
+    /// The register a value has, making the address if this *block* has not made it already. Two
     /// `cir` values that name the same address name the same register, which is what a second `lea`
-    /// would have computed anyway.
+    /// would have computed anyway - and the block is the scope because a register shared further than
+    /// that lives long enough to be spilled.
     fn address_of(&mut self, what: Address, result: Value, ops: &mut Vec<Op>) -> VReg {
         if let Some(register) = self.addresses.get(&what) {
             self.regs[result.0 as usize] = Some(*register);

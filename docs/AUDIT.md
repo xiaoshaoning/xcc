@@ -705,6 +705,39 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - the scope of a fact, and the place it is written
+
+The address-dedupe commit, reviewed. No defect: the two questions it raises have answers that hold by
+construction, and the review's work was to *ask* them and then to fix what the answers made wrong in the
+comments.
+
+**Is the key sound?** `Address::Local(i32)` keys on a frame offset, and that is only a key if two slots
+cannot share one - `allocate` bumps `frame_bytes` and never reuses it, so every slot has its own offset,
+and reusing a slot's address value is therefore reusing that slot's address. `Address::Symbol(String)` keys
+on a link name, unique per object in a translation unit. And the aliasing itself is the same shape as the
+free widening: two `cir` values, one machine value, safe because `cir` defines each value once.
+
+**Is exactly one place making them?** Yes - `address_of` is the only construction site for
+`SymbolAddress` and `LocalAddress` in the lowering, so the map cannot be bypassed by a second path. That is
+worth checking rather than assuming: a second `ops.push(Op::SymbolAddress { .. })` somewhere would dedupe
+nothing and nobody would notice.
+
+What the review did fix is where the facts are *written*:
+
+- The clear that scopes the map per block had been inserted between the comparison-fusion comment and
+  `fusable_compare`, so the comment describing the fusion sat on top of a line about addresses. A comment
+  is attached to the code below it; three lines of prose above an unrelated statement is how a reader
+  learns to skim.
+- `address_of`'s doc said "if this *function* has not made it already", which was true of the first version
+  of this change and false of the one that landed - the scope is the block, and the reason it is the block
+  is a measurement. A comment that keeps the superseded scope of a fact is exactly the kind that survives a
+  review of the *code* and misleads the next person.
+
+**Measured after the review: 419 corpus programs agree, 45 refused, 0 wrong, 59 660 bytes** - unchanged.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - the string that was put where the previous one went
 
 The file-scope-address commit, reviewed - and the review turned up the *neighbouring* initialiser shapes,
