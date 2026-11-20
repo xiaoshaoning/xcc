@@ -492,6 +492,20 @@ fn a_function_address_that_never_escapes_is_still_a_direct_call() {
     );
 }
 
+/// The README quotes the ratchet, so the two move together or this test says so. The number drifted
+/// once - four milestones of shrinking left the README claiming 414 - and a headline that lies is the
+/// documentation equivalent of a wrong answer.
+#[test]
+fn the_readme_quotes_the_ratchet() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+    let readme = std::fs::read_to_string(path).expect("the README is readable");
+    let quoted = format!("{PROGRAMS_THAT_AGREED} of the 464");
+    assert!(
+        readme.contains(&quoted),
+        "the README must quote `{quoted}` - it claims a different number"
+    );
+}
+
 #[test]
 fn the_corpus_agrees_through_both_back_ends() {
     let Some(_) = linker() else {

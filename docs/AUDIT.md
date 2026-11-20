@@ -705,6 +705,37 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-21 - the headline that lied
+
+The refusal-solving commit, reviewed. No defect in the code; the defect was in the file a reader meets
+first.
+
+**`README.md` said two things that were no longer true, and one number four milestones old.** Its "What
+does not work yet" section opened with *"a floating-point argument to a variadic function cannot be passed -
+`printf("%f", 1.5)`"* and *"`va_list`, `va_start`, `va_arg`, and defining a variadic function are refused"*.
+All of it has worked at `--opt-level=2` for several commits. And the lowering row said **"414 of the 464
+corpus programs"** with **"2.6x Cranelift after four rounds of shrinking"** - the number is 439, and the
+size story has been told against `clang -O2` since the seventh round: 7.11x to 3.46x.
+
+A stale line in a table is untidy. **A refusal list that refuses what works is worse than no list**: a
+reader decides the compiler cannot do something it can, and nothing in the build contradicts them, because
+nothing reads the README.
+
+**The fix has two halves, and the second is the interesting one.** The text now says what is true - the two
+false bullets replaced by the real asymmetries (`--opt-level=2` only for variadic calls, definitions and
+`va_arg`; a file-scope initialiser may hold an address but not an address *expression*) - and a test
+asserts that the README quotes `{PROGRAMS_THAT_AGREED} of the 464`. The number lives in one place now, and
+the two cannot drift apart again without the suite saying so.
+
+That is the pattern this project keeps relearning: **a fact that is written down twice is a fact that will
+disagree with itself**, and the way out is not to be careful but to make one copy checked by the build.
+
+**Measured after the review: 439 corpus programs agree, 24 refused, 0 wrong**; the differential at 415 ran,
+5 refused, 0 mismatched.
+
+184 unit, 24 parser, 20 CLI, 4 exe, **4 x64**, 4 hostile, 6 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - the two types that were one type
 
 The `--std=c11` commit, reviewed. It had already found one identity fault while being written - a declared
