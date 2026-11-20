@@ -516,7 +516,9 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       emitted, the frame's immediates in one byte (-1%), and the largest of all - `cir` folding with an
       address rule and dead-code elimination (-18%, and the three only pay together).
       **Measured and dropped, with the numbers**: jump shortening (405 bytes, 0.3%), block-parameter
-      coalescing (2.6% of the stream), interval splitting (254 spill instructions corpus-wide), DCE and
+      coalescing (2.6% of the stream), interval splitting (125 spill accesses over 419 programs, about
+      625 bytes - and this entry used to say "254 spill instructions", a number nobody re-measured until
+      a review did), DCE and
       folding *on the old six-file corpus* (zero opportunities each - they mattered only once the whole
       corpus was measured, which is the caution below in its most useful form).
       **A caution for whoever measures next**: a quick grep of `mov` operands counted 10 048 copies where
@@ -769,9 +771,14 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       lowerings and would call that a mismatch; a variadic program therefore needs the *clang*
       comparison in `tests/x64.rs` instead, and ADR-006 needs a sentence saying the two lowerings
       deliberately differ in what they accept.
-- [ ] `back-x64` shrinking, round six: interval splitting; jump shortening and jump tables for
-      `switch`; and the passes below, on machine code rather than `cir`. For scale, the remaining
-      copies are the return path (partly done), values crossing a call, and spills.
+- [ ] `back-x64` shrinking, round six: **jump tables for `switch`**, which is the one item in this
+      list nobody has measured, and the passes below on machine code rather than `cir`. The other two
+      things this item used to name are settled and must not be re-proposed: jump shortening was
+      measured at **405 bytes (0.3%)** and interval splitting at **125 spill accesses, 81 loads and 44
+      stores, about 625 bytes (1.0%)** - see the dropped list below, where both now live with their
+      numbers. The 2 119 copies that liveness blocks are a *coalescing* ceiling and not a splitting
+      one: a value that could not be coalesced is a `mov`, not a spill, and shortening its live range
+      does not remove it.
 - [x] A differential harness that compiles with both lowerings and compares behaviour, so moving
       work between them is safe. It is the *same* test rather than a second one: each corpus program
       is compiled and run at `--opt-level=0` and at `1` and by `clang -O0`, and every pair of the

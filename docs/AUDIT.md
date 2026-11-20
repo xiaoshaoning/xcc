@@ -705,6 +705,37 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - a number carried from another question
+
+The last commit was two lines of documentation about a dropped optimisation, so the review went looking
+for what the plan *says* - and found a contradiction that had survived several turns of work.
+
+**`interval splitting` was in two lists at once.** One entry lists it under "measured and dropped, with the
+numbers ... (254 spill instructions corpus-wide)"; another, twenty lines later, is an open item whose first
+task is "interval splitting". A reader can follow either and be wrong. It is the worst kind of
+documentation defect: not a stale comment in code the compiler would contradict, but two instructions in
+the same file, neither of which anything tests.
+
+**And the number under it was measured for a different question.** The 6% ceiling that the plan and the
+last several recommendations have carried came from `2 119 copies that liveness blocks` - which is a
+*coalescing* ceiling, not a splitting one. A copy that cannot be coalesced is a `mov`; shortening a live
+range does not remove it. Measured properly, what interval splitting itself can remove is spill traffic:
+**125 accesses over 419 programs, 81 loads and 44 stores, about 625 bytes (1.0%)**. That is less than the
+1.5% the address dedupe won and less than the 2% items already dropped for not paying, so it is recorded
+as dropped with that number, and the round-six item no longer names it.
+
+**What is left in round six is what nobody has measured**: jump tables for `switch`. That is the honest
+state of the list - one unmeasured idea, and five ideas with numbers that say no.
+
+The "254 spill instructions" figure is replaced rather than deleted, because the entry is a record of what
+was believed: it now says what was measured and when it was re-measured.
+
+**Measured after the review: 419 corpus programs agree, 45 refused, 0 wrong, 59 660 bytes** - unchanged,
+since only documentation moved.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - the scope of a fact, and the place it is written
 
 The address-dedupe commit, reviewed. No defect: the two questions it raises have answers that hold by
