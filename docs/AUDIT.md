@@ -705,6 +705,33 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - the two types that were one type
+
+The `--std=c11` commit, reviewed. It had already found one identity fault while being written - a declared
+`long` *was* the `int` type object, which is why `_Generic(l, int: 1, default: 9)` answered 1 - and the
+review found the second of the same shape.
+
+**`signed char` was `char`.** C99 6.2.5p15 makes `char`, `signed char` and `unsigned char` three types; the
+fundamentals table had only two, and the specifier path folded `signed char` into `char` because it keyed on
+`(signed, bits)` and both are a signed byte. A `_Generic` on a `signed char` therefore matched the `char`
+arm. Fixed by adding the third fundamental and by letting the *spelling* choose, as `long` now does: the
+table is a table of types, and a lookup is the only thing that can tell two same-width types apart.
+
+**What is left of the same fault, and why it stays.** `usual_arithmetic` builds its result from the operand
+shapes, so `long + long` is typed `int`. The two are the same width here, so nothing a program *does* can
+observe it - only a generic selection on an arithmetic result, which is a corner of a corner, and fixing it
+means a rank in the type object. That is written at the function now rather than discovered later.
+
+**And one gap this commit makes visible.** The C API has no options at all - a host compiles as C99 at level
+0, and `--std=c11` is a CLI-only flag. That was the right shape for M7's minimal API and it is no longer
+obviously right: a feature the command line can select should be one a host can select. Recorded here rather
+than built, because an options struct is an API decision with a lifetime, not a flag.
+
+**Measured after the review: 419 corpus programs agree, 45 refused, 0 wrong, 59 660 bytes.**
+
+184 unit, 24 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - a number carried from another question
 
 The last commit was two lines of documentation about a dropped optimisation, so the review went looking

@@ -129,8 +129,18 @@ impl Types {
         for (name, ty) in [
             ("void", Type::Void),
             ("_Bool", Type::Bool),
+            // Three types, not one and an alias: `char`, `signed char` and `unsigned char` are
+            // distinct in C (6.2.5p15), and `_Generic` is where that shows. This target's plain
+            // `char` is signed, which is why its first two have the same width.
             (
                 "char",
+                Type::Int {
+                    signed: true,
+                    bits: 8,
+                },
+            ),
+            (
+                "signed char",
                 Type::Int {
                     signed: true,
                     bits: 8,
@@ -693,6 +703,10 @@ impl Types {
         } else {
             right_signed
         };
+        // A known gap, and the one place `_Generic` can still see it: the result is built from the
+        // *shape* of the operands, so `long + long` is typed `int` - the two are the same width here,
+        // and this function has no rank to tell them apart. Nothing a program does can observe it but
+        // a generic selection on an arithmetic result, which is a corner of a corner.
         self.integer_with(signed, bits)
     }
 

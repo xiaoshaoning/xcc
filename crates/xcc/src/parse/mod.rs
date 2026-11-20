@@ -1125,8 +1125,9 @@ impl Parser<'_> {
             count("long") > 0,
             count("long") >= 2,
         ) {
-            (true, ..) if signed => "char",
-            (true, ..) => "unsigned char",
+            (true, ..) if count("signed") > 0 => "signed char",
+            (true, ..) if !signed => "unsigned char",
+            (true, ..) => "char",
             (_, true, ..) if signed => "short",
             (_, true, ..) => "unsigned short",
             // `signed long long` and `signed long` are their own types; `signed int` is `int`.
