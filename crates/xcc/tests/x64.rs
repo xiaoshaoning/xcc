@@ -315,6 +315,16 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             62,
         ),
         (
+            // A branch that compares for itself, in the three shapes that tell fusion from a wrong
+            // fusion: an integer comparison read once, a *floating-point* one read once (which is
+            // not fused - `ucomisd` settles unordered cases with other condition codes), and one
+            // read twice, which has to exist as a value and must not be fused either.
+            "a comparison carried by its branch, and two that are not",
+            "int main(void) { double a = 1.5, b = 2.5; int x = 4, r = 0; if (x > 10) r += 1; if (a < b) r += 2; int both = x < a * 8.0; r += both * 4 + (both ? 8 : 0); return r + (a < b ? 16 : 32); }",
+            30,
+        ),
+
+        (
             // A floating-point argument to a variadic function: the caller writes it to a vector
             // register *and* to the general register of its position, which is what lets the
             // callee's eight-byte-per-argument walk find a `double` where it finds an `int`.

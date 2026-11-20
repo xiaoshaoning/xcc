@@ -86,6 +86,16 @@ fn lower_function(
     })
 }
 
+/// A comparison that a branch carries instead of a value: the instruction it replaces, and what the
+/// terminator needs to make the same decision.
+struct FusedCompare {
+    /// The instruction to leave out of the op list.
+    index: usize,
+    op: crate::cir::CmpOp,
+    left: Value,
+    right: Value,
+}
+
 /// The values of one function, the frame slots they use, and the blocks being filled.
 struct FunctionLowering<'a> {
     types: &'a Types,
@@ -208,17 +218,12 @@ impl FunctionLowering<'_> {
             // saves the `setcc`, the widening that follows it, and the test the branch would do.
             let fused = self.fusable_compare(func, block);
             for (index, inst) in func.block(block).insts.iter().enumerate() {
-                if Some(index) == fused.map(|(index, _, _, _)| index) {
+                if Some(index) == fused.as_ref().map(|fused| fused.index) {
                     continue;
                 }
                 self.lower_inst(func, inst, &mut block_ops)?;
             }
-            let term = self.lower_term(
-                func,
-                block,
-                &mut block_ops,
-                fused.map(|(_, op, left, right)| (op, left, right)),
-            )?;
+            let term = self.lower_term(func, block, &mut block_ops, fused)?;
             self.blocks.push(MachineBlock {
                 ops: block_ops,
                 term,
@@ -758,42 +763,52 @@ impl FunctionLowering<'_> {
         Ok(())
     }
 
-    /// The comparison this block's branch can carry, if it can: the instruction's index, its
-    /// operator and the two values it compares. Nothing is fused unless the comparison is read
-    /// *only* by this branch - a comparison whose answer is also stored or returned has to be
-    /// materialised anyway, and a fused copy would compute it twice.
-    fn fusable_compare(
-        &self,
-        func: &Func,
-        block: Block,
-    ) -> Option<(usize, crate::cir::CmpOp, Value, Value)> {
+    /// The comparison this block's branch can carry, if it can.
+    ///
+    /// Two conditions, and both are checked here rather than half here and half at the terminator:
+    /// **nothing but this branch reads the comparison** - one that is also stored or returned has to
+    /// exist as a value anyway, and a fused copy would compute it twice - and it compares integers.
+    /// A floating-point one is left alone: `ucomisd` settles its unordered cases with condition codes
+    /// `setcc` and the branch do not share.
+    ///
+    /// Returning the instruction *and* the decision to skip it is the point: the caller leaves that
+    /// instruction out of the op list only when this answers, so the skip and the fusion cannot come
+    /// apart. They could when the class was tested after the skip, and the reason it was harmless is
+    /// that the front end wraps every condition in `!= 0` - a wrapper a pass could one day fold away,
+    /// which would have turned this into a branch on a value nothing defines.
+    fn fusable_compare(&self, func: &Func, block: Block) -> Option<FusedCompare> {
         let Some(Term::Branch { condition, .. }) = &func.block(block).term else {
             return None;
         };
         if self.reads.get(condition).copied().unwrap_or(0) != 1 {
             return None;
         }
-        // The comparison must be in this block, and the last of them: a branch cannot carry a
-        // comparison whose operands may have been changed since.
+        // Any of this block's instructions, not just the last one: a `cir` value is defined once and
+        // never written again, so nothing between the comparison and the branch can change what it
+        // reads.
         let insts = &func.block(block).insts;
-        let (index, op, left, right) =
-            insts
-                .iter()
-                .enumerate()
-                .rev()
-                .find_map(|(index, inst)| match inst {
-                    Inst::Compare {
-                        result,
-                        op,
-                        left,
-                        right,
-                        ..
-                    } if result == condition => Some((index, *op, *left, *right)),
-                    _ => None,
-                })?;
-        // Every instruction after it writes something the comparison does not read, or the fusion
-        // would change what the comparison sees.
-        Some((index, op, left, right))
+        let (index, inst) = insts.iter().enumerate().find(
+            |(_, inst)| matches!(inst, Inst::Compare { result, .. } if result == condition),
+        )?;
+        let Inst::Compare {
+            op,
+            ty,
+            left,
+            right,
+            ..
+        } = inst
+        else {
+            unreachable!("the search matched a comparison")
+        };
+        if self.class_of(*ty) == Class::Float {
+            return None;
+        }
+        Some(FusedCompare {
+            index,
+            op: *op,
+            left: *left,
+            right: *right,
+        })
     }
 
     fn lower_term(
@@ -801,7 +816,7 @@ impl FunctionLowering<'_> {
         func: &Func,
         block: Block,
         ops: &mut Vec<Op>,
-        fused: Option<(crate::cir::CmpOp, Value, Value)>,
+        fused: Option<FusedCompare>,
     ) -> Result<BlockTerm, NotYet> {
         let term = func
             .block(block)
@@ -837,22 +852,17 @@ impl FunctionLowering<'_> {
                 self.store_parameters(func, otherwise.0, &otherwise.1, ops);
                 let then = self.order[&then.0];
                 let otherwise = self.order[&otherwise.0];
-                if let Some((op, left, right)) = fused {
-                    let ty = func.value(left).ty;
-                    let (_, signed, class) = self.scalar(ty, func.block(block).span)?;
-                    // A floating-point comparison carries unordered cases that `setcc` and this back
-                    // end's branch code settle differently; left alone, which is not fusing and not
-                    // wrong - the answer is computed and tested as before.
-                    if class != Class::Float {
-                        return Ok(BlockTerm::BranchCompare {
-                            op,
-                            left: self.reg_for(left),
-                            right: self.reg_for(right),
-                            signed,
-                            then,
-                            otherwise,
-                        });
-                    }
+                if let Some(fused) = fused {
+                    let ty = func.value(fused.left).ty;
+                    let (_, signed, _) = self.scalar(ty, func.block(block).span)?;
+                    return Ok(BlockTerm::BranchCompare {
+                        op: fused.op,
+                        left: self.reg_for(fused.left),
+                        right: self.reg_for(fused.right),
+                        signed,
+                        then,
+                        otherwise,
+                    });
                 }
                 BlockTerm::Branch {
                     condition: self.reg_for(condition),

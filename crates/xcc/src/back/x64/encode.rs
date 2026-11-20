@@ -199,6 +199,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
                 otherwise,
             } => {
                 encoder.compare_flags(*left, *right);
+                encoder.release();
                 let taken = condition_code(*op, *signed);
                 // The inverse of a condition code is its low bit: the sixteen of them are eight
                 // pairs, `e`/`ne`, `b`/`ae`, `be`/`a`, and so on.
@@ -738,23 +739,17 @@ impl Encoder<'_> {
     /// A comparison into a 1 or 0: `cmp` the two registers the operands already live in, then `setcc`
     /// into the destination's own low byte and widen it there. The answer has no reason to pass
     /// through `rax`, and 317 of the corpus's copies were it doing so.
-    /// `cmp left, right`, leaving the answer in the flags. The half of a comparison that a branch
-    /// uses when the comparison has no other reader.
+    /// `cmp left, right`, leaving the answer in the flags. The half a comparison has whether or not
+    /// its answer becomes a value, so both shapes share it.
     fn compare_flags(&mut self, left: VReg, right: VReg) {
-        let left = self.read(left);
-        let right = self.read(right);
+        let (left, right) = (self.read(left), self.read(right));
         self.prefix_w(right, left);
         self.byte(0x39); // cmp left, right
         self.modrm(3, right.0, left);
-        self.release();
     }
 
     fn compare(&mut self, dst: VReg, op: crate::cir::CmpOp, left: VReg, right: VReg, signed: bool) {
-        let left = self.read(left);
-        let right = self.read(right);
-        self.prefix_w(right, left);
-        self.byte(0x39); // cmp left, right
-        self.modrm(3, right.0, left);
+        self.compare_flags(left, right);
         let target = self.destination(dst);
         // `setcc` has no 64-bit form, and its operand is the r/m byte: a REX prefix is needed to
         // name `spl`, `bpl`, `sil` and `dil`, and for an extended register's high bit.

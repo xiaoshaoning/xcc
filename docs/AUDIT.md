@@ -705,6 +705,46 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - the skip and the decision, and three comments that lied
+
+Two commits reviewed: the constant forms, and the compare-and-branch fusion.
+
+**The finding is a latent wrong answer.** `fusable_compare` decided *which instruction to skip*, and
+`lower_term` decided *whether to fuse* - separately, with the floating-point test in the second one. The
+instruction was already left out of the op list by the time the second decision was made, so a
+floating-point comparison read only by its branch would have branched on a value nothing defines. It is
+not a live bug, and the reason is luck worth writing down: the front end wraps every condition in
+`!= 0`, so what the branch carries is always an *integer* comparison and the float one is still lowered as
+a value. A pass that folded `cmp ne (cmp x, y), 0` into `cmp x, y` would have made it live. The test is
+now in `fusable_compare` and nothing is skipped that is not also fused - the two decisions are one
+`Option<FusedCompare>`, and the doc says why.
+
+**Three comments asserted checks that do not exist.** The old `fusable_compare` claimed "the comparison
+must be ... the last of them: a branch cannot carry a comparison whose operands may have been changed
+since", and then "every instruction after it writes something the comparison does not read, or the fusion
+would change what the comparison sees". Neither was checked, and neither was needed: a `cir` value is
+defined once and never written again, so nothing between a comparison and its branch can change what it
+reads. A comment that describes a check the code does not make is worse than no comment - the next reader
+either trusts it or re-derives the truth. Both are replaced by the invariant that actually holds.
+
+The rest:
+
+- `fusable_compare` returned a four-tuple that two call sites re-split with `map(|(index, _, _, _)| ...)`
+  and `map(|(_, op, left, right)| ...)`. A named `FusedCompare { index, op, left, right }` says what the
+  four are, and `lower_term` takes one instead of a second tuple shape derived from the first.
+- `compare` and `compare_flags` each encoded `cmp` themselves - four duplicated lines of the one thing a
+  comparison always does. `compare` now calls `compare_flags`, which hands back the two registers, and
+  each caller releases when it is done with them.
+- A construct now pins all three shapes at once: a comparison read once by a branch (fused), a
+  floating-point one read once (not fused, and the reason is the ABI's unordered cases), and one read
+  twice (a value, and it must not be fused). `30` from three paths through one function.
+
+**Measured after the review: 418 corpus programs agree, 46 refused, 0 wrong, 80 936 bytes** - the same
+bytes as before the refactor, which is the point: a review that changes behaviour is a feature.
+
+181 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-19 - the direction nobody had tested, and a knob nobody turned
 
 The `printf("%f")` commit, reviewed. Its feature was three lines; what the review found is that the
