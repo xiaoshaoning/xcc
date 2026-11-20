@@ -54,7 +54,7 @@ const NO_HANDLE: &[u8] = b"\0";
 #[no_mangle]
 pub unsafe extern "C" fn xcc_new(symbols: *const xcc_symbol, count: usize) -> *mut Handle {
     // SAFETY: the caller's promise is `xcc_new_with`'s, and nothing is asked about the options.
-    unsafe { build(symbols, count, Options::default()) }
+    unsafe { build(symbols, count, Ok(Options::default())) }
 }
 
 /// `xcc_options.standard`'s values, matching the header's `XCC_C99` and `XCC_C11`.
@@ -87,18 +87,35 @@ pub unsafe extern "C" fn xcc_new_with(
     count: usize,
     options: *const xcc_options,
 ) -> *mut Handle {
+    // Nothing is quietly rounded. A dialect or a level this compiler does not have is an error the
+    // handle carries, reported by the first `xcc_add_source` like every other refusal - so a host
+    // that checks one return value checks this too. `standard = 7` used to mean C99 and a negative
+    // level used to mean zero, which is the sort of thing a caller finds out from a bug report.
     let options = match unsafe { options.as_ref() } {
-        None => Options::default(),
-        Some(options) => Options {
-            standard: match options.standard {
-                1 => CStandard::C11,
-                _ => CStandard::C99,
-            },
-            // A level this compiler does not have is passed through: `build` refuses it, so the
-            // refusal names the level the host asked for instead of silently turning it into zero.
-            opt_level: options.opt_level.clamp(0, u8::MAX as c_int) as u8,
-            ..Options::default()
-        },
+        None => Ok(Options::default()),
+        Some(options) => {
+            let standard = match options.standard {
+                XCC_C99 => Some(CStandard::C99),
+                XCC_C11 => Some(CStandard::C11),
+                _ => None,
+            };
+            let level = u8::try_from(options.opt_level).ok();
+            match (standard, level) {
+                (Some(standard), Some(opt_level)) => Ok(Options {
+                    standard,
+                    opt_level,
+                    ..Options::default()
+                }),
+                (None, _) => Err(format!(
+                    "standard {} is not one this compiler has: {XCC_C99} is C99 and {XCC_C11} is C11",
+                    options.standard
+                )),
+                (_, None) => Err(format!(
+                    "opt level {} is not one this compiler has: 0, 1 and 2",
+                    options.opt_level
+                )),
+            }
+        }
     };
     // SAFETY: the caller's promise is `xcc_new`'s.
     unsafe { build(symbols, count, options) }
@@ -106,12 +123,25 @@ pub unsafe extern "C" fn xcc_new_with(
 
 /// The one place a handle is made: read the symbol table, then the JIT.
 #[allow(unsafe_code)]
-unsafe fn build(symbols: *const xcc_symbol, count: usize, options: Options) -> *mut Handle {
+unsafe fn build(
+    symbols: *const xcc_symbol,
+    count: usize,
+    options: Result<Options, String>,
+) -> *mut Handle {
     // Deliberately not `with_capacity(count)`: `count` comes from the host, and a confused one
     // would have this allocate before a single symbol was checked. The vector grows with the
     // symbols that are actually read.
     let mut table: Vec<(&str, *const u8)> = Vec::new();
     let mut failure = None;
+    // An option the host got wrong is a failure the handle carries, not a handle that cannot be
+    // made: the API has one error path and this stays in it.
+    let options = match options {
+        Ok(options) => options,
+        Err(reason) => {
+            failure = Some(reason);
+            Options::default()
+        }
+    };
     if count > 0 {
         if symbols.is_null() {
             failure = Some("a symbol count without a symbol array".to_owned());

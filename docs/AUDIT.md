@@ -705,6 +705,35 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-21 - two options that were quietly rounded
+
+The C API's options, reviewed. The code compiled and every test passed; two lines in it were still wrong,
+and one of them said so in a comment.
+
+**`standard = 7` meant C99, and `opt_level = -1` meant zero.** The mapping was `1 => C11, _ => C99` and
+`clamp(0, 255)`. A host that asked for a dialect this compiler does not have, or a negative level, got the
+default and no word about it - the failure discovered from a bug report rather than from the API. Worse, the
+comment above the clamp said the value was *"passed through: `build` refuses it, so the refusal names the
+level the host asked for"*. Nothing refused it, nothing named it: `clamp` had already turned -1 into 0
+before `check_opt_level` could see it. **A comment describing a check the code does not make** is the exact
+fault a review found here three commits ago, in the branch fusion - the same mistake in a new place, which
+is the argument for looking for it by shape rather than by memory.
+
+Both are refused now, with the number the host gave: *"standard 7 is not one this compiler has: 0 is C99
+and 1 is C11"*, *"opt level -1 is not one this compiler has: 0, 1 and 2"*. They come out of the one error
+path the API has - the handle carries the reason and the first `xcc_add_source` reports it - so a host that
+checks one return value checks everything, which is what the API's own documentation promises.
+
+**And the test is the shape the rule needs**: not "level 3 fails" but *every* level in 0..=2 is accepted
+and both ways of asking for nothing sensible are refused with the value named. A test written against the
+one case that was thought of is a test that agrees with the mistake.
+
+**Measured after the review: 443 corpus programs agree, 20 refused, 0 wrong; 8 C API tests.** The
+differential is at 415 ran, 5 refused, 0 mismatched.
+
+184 unit, 25 parser, 21 CLI, 4 exe, 4 x64, 4 hostile, **8 C API**, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-21 - the page that could not be written
 
 The level-2 JIT, reviewed. It found a live fault in the first minute, and then found that two of the

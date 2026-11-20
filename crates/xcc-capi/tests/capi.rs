@@ -258,3 +258,37 @@ fn a_host_chooses_the_dialect_and_the_back_end() {
         error(&nowhere)
     );
 }
+
+#[test]
+fn an_option_this_compiler_does_not_have_is_refused_not_rounded() {
+    // Two ways to ask for nothing sensible: a dialect that is not one, and a level below zero.
+    // Both used to be *silently rounded* - `standard = 7` became C99 and `opt_level = -1` became
+    // zero - which is the answer a caller finds out about from a bug report months later.
+    let odd_standard = compiler_with((7, 0));
+    assert_ne!(add_source(&odd_standard, "int f(void) { return 0; }"), 0);
+    assert!(
+        error(&odd_standard).contains("standard 7"),
+        "{}",
+        error(&odd_standard)
+    );
+
+    let negative = compiler_with((xcc_capi::XCC_C99, -1));
+    assert_ne!(add_source(&negative, "int f(void) { return 0; }"), 0);
+    assert!(
+        error(&negative).contains("opt level -1"),
+        "{}",
+        error(&negative)
+    );
+
+    // And the levels that exist are still accepted, including the one that refuses at compile time
+    // for its own reasons rather than here.
+    for level in 0..=2 {
+        let fine = compiler_with((xcc_capi::XCC_C99, level));
+        assert_eq!(
+            add_source(&fine, "int f(void) { return 0; }"),
+            0,
+            "level {level}: {}",
+            error(&fine)
+        );
+    }
+}
