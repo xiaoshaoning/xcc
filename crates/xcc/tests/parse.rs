@@ -43,6 +43,25 @@ fn parses(source: &str) -> bool {
     true
 }
 
+/// The warnings `source` produced: the diagnostics that do not stop the translation. `check` cannot
+/// see them, because a program with warnings compiles - which is the point of a warning.
+fn warnings(source: &str) -> Vec<String> {
+    match xcc::Compile::new(Options::default()).compile("t.c", source) {
+        Ok(artifact) => artifact
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+        // An error may carry warnings beside it; the tests that ask are about the warning.
+        Err(diagnostics) => diagnostics
+            .items()
+            .iter()
+            .filter(|diagnostic| !diagnostic.is_error())
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+    }
+}
+
 fn refuses(source: &str, expected: &str) {
     let complaints = check(source);
     assert!(
@@ -286,7 +305,10 @@ fn what_is_not_implemented_is_said_not_guessed() {
         "a designator that goes deeper than one level is not implemented yet",
     );
     refuses("int a[2] = {[0 ... 1] = 3};", "not implemented yet");
-    refuses("int f(void) { asm(\"nop\"); }", "`asm` is not declared");
+    refuses(
+        "int f(void) { asm(\"nop\"); }",
+        "`asm` is not supported: this compiler generates no inline assembly",
+    );
     // The refusal comes after the arguments are read, so the argument is still checked.
     refuses(
         "int printf(const char *, ...); int f(void) { return printf(1); }",
@@ -536,7 +558,16 @@ fn switch_and_goto_mistakes_are_caught() {
         r"int a = '\q';",
         "not a character constant this compiler reads",
     );
-    refuses("char s[2] = \"abc\";", "cannot hold this 3-byte string");
+    // C99 6.7.8p14 and 6.7.8p2: too long is a constraint violation, so it is diagnosed - and the
+    // objects are still written, which is what every compiler does with it in the wild. A *warning*
+    // is the difference between "look at this" and "no object".
+    assert!(
+        warnings("char s[2] = \"abc\";")
+            .iter()
+            .any(|message| message.contains("cannot hold this 3-byte string")),
+        "a too-long string is warned about"
+    );
+    parses("char s[2] = \"ab\";");
     refuses("int a[] = \"abc\";", "initialises an array of `char`");
     refuses(
         "int a = \"x\";",
@@ -585,7 +616,13 @@ fn aggregate_mistakes_are_caught() {
         "struct S { int a; }; int f(struct S *p) { return p.a; }",
         "has no members",
     );
-    refuses("int a[2] = {1, 2, 3};", "more were given");
+    // Excess initialisers are the same shape of mistake, and take the same answer.
+    assert!(
+        warnings("int a[2] = {1, 2, 3};")
+            .iter()
+            .any(|message| message.contains("more were given")),
+        "an excess initialiser is warned about"
+    );
     refuses(
         "struct S { int a; }; struct S s = {1, 2};",
         "too many initialisers",

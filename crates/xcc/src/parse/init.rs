@@ -65,12 +65,18 @@ impl Parser<'_> {
             }
             match count {
                 None => self.types.complete_array(ty, literal_bytes.len() as u64),
-                Some(count) if count < literal_bytes.len() as u64 => {
+                // C99 6.7.8p14: the terminating NUL is dropped when there is no room for it, so
+                // `char s[2] = "ab"` is *valid* and `char s[2] = "abc"` is the constraint violation
+                // - "initializer-string for char array is too long", which every compiler reports as
+                // a warning and then initialises what fits. Both halves of that are needed: the
+                // first because refusing it refused a legal program, the second because the
+                // alternative is a silent truncation.
+                Some(count) if count + 1 < literal_bytes.len() as u64 => {
                     let string = literal_bytes.len() as u64 - 1;
-                    self.error(
-                            span,
-                            format!("a {count}-byte array cannot hold this {string}-byte string and its NUL"),
-                        );
+                    self.warning(
+                        span,
+                        format!("a {count}-byte array cannot hold this {string}-byte string"),
+                    );
                 }
                 Some(_) => {}
             }
@@ -252,10 +258,12 @@ impl Parser<'_> {
         }
         match declared {
             None => self.types.complete_array(ty, written),
-            // The list stopped at the last element it had room for; a comma here means more
-            // came, which is one error and then the rest is skipped.
+            // The list stopped at the last element it had room for; a comma here means more came.
+            // C99 6.7.8p2 makes that a constraint violation, so it is diagnosed - and then the surplus
+            // is skipped, which is what every compiler that meets it in the wild does: `int a[3] =
+            // {1,2,3,4}` is a mistake to report and not a reason to refuse the translation.
             Some(declared) if braced && written >= declared && self.at_punct(",") => {
-                self.error(
+                self.warning(
                     span,
                     format!("this array has {declared} elements, more were given"),
                 );

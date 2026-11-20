@@ -558,6 +558,29 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The 45 refusals, sorted into "not ours" and "ours", and 21 of them solved.** The corpus gate
+      counted 45 refused programs; a script ran `clang -std=c99` over every one of them and found that
+      clang refuses 42 - so the number was never a measure of the compiler. What it hid was two places
+      where this compiler was *stricter than the platform*:
+      **A call to a function nothing declared** was an error. C99 6.5.2.2p1 makes it a constraint
+      violation, and MSVC's C4013, GCC's `-std=gnu89` and every 1990s program on Windows take the callee
+      to be a function returning `int`. It is now the same: **a warning**, and the call site's arguments
+      become the signature - which is the *existing* variadic lowering (ADR-006), so the feature cost no
+      new mechanism at all. **24 corpus programs** compiled by that alone.
+      **Excess array initialisers and a too-long string for its array** were errors. C99 6.7.8p2 and
+      6.7.8p14 make them constraint violations too, and every compiler reports and carries on: they are
+      warnings now, and what fits is what is written. That needed a second fix underneath: `char s[2] =
+      "ab"` is *valid* C - 6.7.8p14 drops the terminating NUL when there is no room - and it was being
+      refused. **3 more programs.**
+      **Measured: 45 -> 24 refusals, 419 -> 439 corpus programs that compile, link, run and agree.**
+      What remains is 6 that need MATLAB's header, 11 that are not C at all (assigning to an array or an
+      rvalue, `&` of an rvalue, a wrong argument count, `<<` on a `double`), 3 that want a file-scope
+      initialiser evaluated at startup (a feature, not a diagnostic), and 4 that want C89's habit of
+      treating an implicit `int` result as a pointer.
+      **And one program had to be named as uncomparable**: `pp_pptr` prints `%p` of a local, and a stack
+      address is a property of the run rather than of the source - two builds disagree in exactly the way
+      the comparison looks for. It is excluded by name, with the reason, because "the test cannot see
+      this" and "this disagrees" must never look alike.
 - [x] **`--std=c11`, and the two constructs the matrix had been promising behind it.** The flag did not
       exist, so every "planned behind `--std=c11`" row was unreachable - a support matrix is a promise,
       and this one had a promise with no mechanism for four milestones. `--std=c99` (the default) and

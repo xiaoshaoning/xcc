@@ -72,6 +72,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         bytes: None,
         init_relocations: Vec::new(),
         init_grows: false,
+        implicit: std::collections::HashSet::new(),
         offset: 0,
         init_target: None,
         bits: None,
@@ -263,6 +264,9 @@ struct Parser<'a> {
     /// The addresses written into those bytes: `char *p = "hello"` at file scope is eight bytes the
     /// linker has to fill, not a value this compiler knows.
     init_relocations: Vec<cir::GlobalRelocation>,
+    /// Names taken to be implicitly declared functions, so the warning is one per name rather than
+    /// one per call.
+    implicit: std::collections::HashSet<Symbol>,
     /// Whether the object being initialised still has no size, so its bytes may grow: `int a[] = {1,2,3}`
     /// learns its length from the list. A *complete* object may not grow - writing past it is an error
     /// the brace walker has already reported, and a designator that reaches past the end is one it
@@ -381,6 +385,13 @@ impl Parser<'_> {
 
     fn error(&mut self, span: Span, message: impl Into<String>) {
         self.push(Diagnostic::error(message), span);
+    }
+
+    /// Something C asks to be reported and that a translation can carry on past: an excess array
+    /// initialiser, a call to a function nothing declared. The distinction is the user's - an error
+    /// means "no object", a warning means "built, and you should look".
+    fn warning(&mut self, span: Span, message: impl Into<String>) {
+        self.push(Diagnostic::warning(message), span);
     }
 
     fn push(&mut self, diagnostic: Diagnostic, span: Span) {

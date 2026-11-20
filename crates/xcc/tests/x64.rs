@@ -15,11 +15,16 @@ use std::sync::Mutex;
 
 use xcc::{Compile, Options};
 
+/// Corpus programs that cannot be compared, with the reason. `pp_pptr` prints `%p` of a local, and a
+/// stack address is a property of the run rather than of the source: two builds of the same program
+/// disagree in exactly the way the comparison is looking for. It is named here rather than excluded
+/// silently, because "the test cannot see this" and "this disagrees" must not look alike.
+const NOT_COMPARABLE: &[&str] = &["pp_pptr"];
+
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised - with
-/// Cranelift where it answers and with `clang` where it does not. The 45 the back end still refuses
-/// are named by the run, not by this number - and they are programs `clang` refuses too, or ones that
-/// need a header this machine does not have.
-const PROGRAMS_THAT_AGREED: usize = 419;
+/// Cranelift where it answers and with `clang` where it does not. The 24 the back end still refuses
+/// are named by the run, not by this number.
+const PROGRAMS_THAT_AGREED: usize = 439;
 
 /// How many corpus programs this back end compiles and Cranelift refuses, and which are therefore
 /// compared with `clang` instead. A ratchet like the one above, in the other direction: closing an
@@ -525,6 +530,9 @@ fn the_corpus_agrees_through_both_back_ends() {
                         .expect("a file stem")
                         .to_string_lossy()
                         .into_owned();
+                    if NOT_COMPARABLE.contains(&name.as_str()) {
+                        continue;
+                    }
                     let source = std::fs::read_to_string(path).expect("the source is readable");
                     let Some(optimised) = build_and_run(&source, 2, &dir, &name) else {
                         refused.lock().expect("the refusals").push(name);

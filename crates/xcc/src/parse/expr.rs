@@ -1822,6 +1822,50 @@ impl Parser<'_> {
 
     /// The value of a name: a variable, a function, or an enumeration constant.
     pub(super) fn named_value(&mut self, name: Symbol, span: Span) -> Value {
+        if self.symbols.lookup(name).is_none() && self.at_punct("(") {
+            // A call to a function nothing declared. C99 6.5.2.2p1 makes that a constraint
+            // violation, and every compiler on this platform meets it in real code: MSVC calls it
+            // C4013 and takes the callee to be a function returning `int`, GCC's `-std=gnu89` does
+            // the same. So it is diagnosed - as a warning, because the translation goes on - and the
+            // *call site's* arguments become the signature, which is exactly what this compiler
+            // already does for a variadic call (ADR-006). No new lowering, and the object still
+            // names the symbol the linker will find.
+            let spelling = self.spell_of(name).to_owned();
+            // `asm("nop")` looks like a call and is not one: it is a language extension this
+            // compiler refuses, and taking it for an implicitly declared function would compile it
+            // into a call to a symbol no linker has. Three spellings, because GCC and MSVC each
+            // reserve their own.
+            if matches!(spelling.as_str(), "asm" | "__asm" | "__asm__") {
+                self.error(
+                    span,
+                    format!(
+                        "`{spelling}` is not supported: this compiler generates no inline assembly"
+                    ),
+                );
+                return Value::temporary(self.types.error());
+            }
+            if self.implicit.insert(name) {
+                self.warning(
+                    span,
+                    format!(
+                        "`{spelling}` is not declared; it is taken to be a function returning `int`"
+                    ),
+                );
+            }
+            let int = self
+                .types
+                .fundamental("int")
+                .unwrap_or_else(|| self.types.error());
+            let function = self.types.function(int, Vec::new(), true);
+            let entry = Entry {
+                ty: function,
+                kind: Kind::Function,
+                span,
+                storage: None,
+                defined: false,
+            };
+            let _ = self.symbols.declare(name, entry);
+        }
         let Some(entry) = self.symbols.lookup(name) else {
             let spelling = self.spell_of(name).to_owned();
             self.error(span, format!("`{spelling}` is not declared"));
