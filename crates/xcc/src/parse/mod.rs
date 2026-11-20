@@ -73,6 +73,8 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         init_relocations: Vec::new(),
         init_grows: false,
         implicit: std::collections::HashSet::new(),
+        implicit_types: std::collections::HashSet::new(),
+        implicit_results: std::collections::HashSet::new(),
         offset: 0,
         init_target: None,
         bits: None,
@@ -267,6 +269,11 @@ struct Parser<'a> {
     /// Names taken to be implicitly declared functions, so the warning is one per name rather than
     /// one per call.
     implicit: std::collections::HashSet<Symbol>,
+    /// The function *types* invented for those declarations, so a call can be recognised as theirs,
+    /// and the `cir` values those calls produced. C89 let such a result be assigned to a pointer -
+    /// the two were one width on every ABI of the era - and MSVC still does, with C4047.
+    implicit_types: std::collections::HashSet<TypeId>,
+    implicit_results: std::collections::HashSet<cir::Value>,
     /// Whether the object being initialised still has no size, so its bytes may grow: `int a[] = {1,2,3}`
     /// learns its length from the list. A *complete* object may not grow - writing past it is an error
     /// the brace walker has already reported, and a designator that reaches past the end is one it

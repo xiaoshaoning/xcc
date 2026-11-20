@@ -348,6 +348,25 @@ fn a_variadic_call_passes_both_classes_of_argument() {
 }
 
 #[test]
+fn an_undeclared_function_is_a_warning_and_its_result_is_an_int() {
+    // C89's habit, which MSVC still has: the callee is a function returning `int`, diagnosed once,
+    // and the call goes on. The *call site's* arguments are its signature, so `printf("%d", 1)`
+    // works without a declaration - which is how most 1990s C on Windows is written.
+    let said = warnings("int main(void) { return puts(\"hi\"); }");
+    assert!(
+        said.iter()
+            .any(|message| message.contains("is not declared")),
+        "{said:?}"
+    );
+    parses("int main(void) { return puts(\"hi\"); }");
+    // An `int` from anywhere else still needs a cast: the warning is about the *implicit* return.
+    refuses(
+        "int f(void) { return 1; } int main(void) { char *p; p = f(); return *p; }",
+        "cannot assign int to pointer to char",
+    );
+}
+
+#[test]
 fn c11_is_a_dialect_you_ask_for() {
     // `_Static_assert` and `_Generic` are C11's, and the compiler says so instead of pretending the
     // words were never declared: the note names the flag.

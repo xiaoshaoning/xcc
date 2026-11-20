@@ -558,6 +558,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The refusals, finished: 45 -> 20, and the 20 are not C.** After the implicit-declaration work, the
+      last solvable group was the four programs that assign an implicit call's `int` result to a pointer -
+      `char *p = malloc(10)` with nothing declared. C89 let that through because the two were one width
+      where C89 compilers ran, and MSVC still does with C4047, so it is a **warning** now and the
+      assignment is made. The leniency is *narrow*: it applies only to a value a call to an implicit
+      declaration returned - tracked by the invented function type and the `cir` values those calls
+      produced - so an `int` from anywhere else still needs a cast, which a test pins in both directions.
+      **Measured: 20 refused, 443 of the 464 corpus programs compile, link, run and agree.** The 20 that
+      remain are 6 that need MATLAB's `<mex.h>`, 11 that are not C at all (an array or an rvalue assigned
+      to, `&` of an rvalue, a wrong argument count, `<<` on a `double`), and 3 that want a file-scope
+      initialiser evaluated by a startup prologue - a feature every one of them is also refused by `clang`
+      for, checked program by program rather than assumed.
 - [x] **The 45 refusals, sorted into "not ours" and "ours", and 21 of them solved.** The corpus gate
       counted 45 refused programs; a script ran `clang -std=c99` over every one of them and found that
       clang refuses 42 - so the number was never a measure of the compiler. What it hid was two places

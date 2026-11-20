@@ -112,9 +112,16 @@ impl Parser<'_> {
         }
         let null_pointer = self.null_pointer_constant(&right);
         if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
-            let (to, from) = (self.describe(left.ty), self.describe(right.ty));
-            self.error(span, format!("cannot assign {from} to {to}"));
-            return Some(Value::temporary(left.ty));
+            if self.types.is_pointer(left.ty) && self.returned_by_an_implicit_call(&right) {
+                self.warning(
+                    span,
+                    "a function nothing declared returns `int`, and its result is assigned to a                      pointer: taken to be the address it was with C89's compilers and is with MSVC                      (C4047)",
+                );
+            } else {
+                let (to, from) = (self.describe(left.ty), self.describe(right.ty));
+                self.error(span, format!("cannot assign {from} to {to}"));
+                return Some(Value::temporary(left.ty));
+            }
         }
         let converted = self.convert(right, left.ty, span);
         if let Some((start, width)) = left.bits {
@@ -1336,7 +1343,25 @@ impl Parser<'_> {
                 *slot = self.convert(argument, promoted, span);
             }
         }
-        self.emit_call(callee, &params, values, variadic, result, span)
+        let implicit = self.implicit_types.contains(&function);
+        let called = self.emit_call(callee, &params, values, variadic, result, span);
+        if implicit {
+            if let Some(value) = called.cir {
+                self.implicit_results.insert(value);
+            }
+        }
+        called
+    }
+
+    /// Whether this value is what a call to a function nothing declared returned.
+    ///
+    /// C89 took such a result to be an `int` and let it be assigned to a pointer, because where C89
+    /// compilers ran, the two were one width; MSVC still does, with warning C4047. That is the one
+    /// place this compiler follows it - an `int` from anywhere *else* still needs a cast.
+    fn returned_by_an_implicit_call(&self, value: &Value) -> bool {
+        value
+            .cir
+            .is_some_and(|cir| self.implicit_results.contains(&cir))
     }
 
     /// The call itself: arguments converted to the parameter types, and the result value.
@@ -1857,6 +1882,7 @@ impl Parser<'_> {
                 .fundamental("int")
                 .unwrap_or_else(|| self.types.error());
             let function = self.types.function(int, Vec::new(), true);
+            self.implicit_types.insert(function);
             let entry = Entry {
                 ty: function,
                 kind: Kind::Function,

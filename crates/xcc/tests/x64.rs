@@ -22,9 +22,9 @@ use xcc::{Compile, Options};
 const NOT_COMPARABLE: &[&str] = &["pp_pptr"];
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised - with
-/// Cranelift where it answers and with `clang` where it does not. The 24 the back end still refuses
+/// Cranelift where it answers and with `clang` where it does not. The 20 the back end still refuses
 /// are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 439;
+const PROGRAMS_THAT_AGREED: usize = 443;
 
 /// How many corpus programs this back end compiles and Cranelift refuses, and which are therefore
 /// compared with `clang` instead. A ratchet like the one above, in the other direction: closing an
