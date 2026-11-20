@@ -346,7 +346,8 @@ pub(crate) enum Op {
         signed: bool,
         /// Whether the call passes more arguments than the callee declares. A variadic call also
         /// duplicates each floating-point argument into the general register of its position, and
-        /// tells the callee how many vector registers it used - which is what `AL` is for.
+        /// answers `AL` - Win64's count of the vector registers the call used - with zero, so that a
+        /// callee reads the general registers, where the copies are.
         variadic: bool,
     },
 }

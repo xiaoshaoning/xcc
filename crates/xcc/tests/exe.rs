@@ -260,11 +260,19 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
         double pick(int count, ...);
         int main(void) { return (int)((g(1, 2.5, 3.5) + pick(3, 1.5, 2.25, 3.25)) * 2.0); }
     "#;
+    // Our caller against a callee *clang* compiled, reading a double through `va_arg`: the direction
+    // that can see our half of the duplicate rule, because clang's callee spills its vector registers
+    // according to `AL` and reads the general ones when we say none were used - which is where our
+    // copies are. `pick(3, 1.5, 2.25, 3.25)` is 7.0, so the answer is 28.
+    let caller_calling_variadic = r#"
+        double pick(int count, ...);
+        int main(void) { return (int)(pick(3, 1.5, 2.25, 3.25) * 4.0); }
+    "#;
+    // `g(1, 2.5, 3.5)` is 7.0, so the fixed-argument answer is 14.
     let caller_calling_fixed = r#"
         double g(int a, double b, double c);
         int main(void) { return (int)(g(1, 2.5, 3.5) * 2.0); }
     "#;
-    // `g(1, 2.5, 3.5)` is 7.0 and `pick(3, 1.5, 2.25, 3.25)` is 7.0, so the answers are 28 and 14.
     let cases = [
         (
             "xcc callee, clang caller",
@@ -273,10 +281,16 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
             28,
         ),
         (
-            "clang callee, xcc caller",
+            "clang callee, xcc caller, fixed arguments",
             fixed_callee,
             caller_calling_fixed,
             14,
+        ),
+        (
+            "xcc caller, clang callee, variadic",
+            caller_calling_variadic,
+            variadic_callee,
+            28,
         ),
     ];
     let dir = temp_dir("abi");

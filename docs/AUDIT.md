@@ -705,6 +705,48 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-19 - the direction nobody had tested, and a knob nobody turned
+
+The `printf("%f")` commit, reviewed. Its feature was three lines; what the review found is that the
+*test* for it was half a test.
+
+**A convention has two sides, and only one of them was foreign.** The interop test put a clang-compiled
+caller against our callee (variadic, doubles) and, in the other direction, a clang-compiled *`g`* against
+our caller - but `g` takes fixed arguments, so the one thing our caller had just learned to do, write a
+variadic `double` into **both** register files, was never checked against a callee that did not come from
+this repository. That case is now in the table: our caller, clang's `pick` reading `va_arg(ap, double)`.
+It is the only test that fails when the duplicate is removed - the other two pass without it, because a
+clang *caller* duplicates for us and our own callee reads what we wrote. Measured by deleting the two
+lines: `exited with Some(0), expected 28`.
+
+**`not_lowered_with(span, what, note)` had no caller left.** The `note` parameter was added for the varargs
+refusal - the one gap whose reason was a fact about the ABI rather than about the source - and the same
+commit that closed the gap left the parameter behind, called from exactly one place with `None`. A knob
+nobody turns is dead code with a name, so it is gone; `Diagnostic::notes` stays, because it is the host's
+API and `render.rs` shows it.
+
+The rest, small:
+
+- `no_vector_arguments` became `no_vector_registers_used`. The old name described the *policy* and was
+  false about the call: we do pass vector arguments - in both files - and what we say in `AL` is that a
+  callee should read none of them. A name that contradicts what the code does is worse than a vague one.
+- The Cranelift refusal was the only message in `back/mod.rs` using `concat!` and `.to_owned()`; its
+  neighbours use one continued literal and `.into()`. Now it matches, and it ends in the same words as
+  the `va_arg` refusal above it - "Level 2 passes both".
+- `place_arguments`'s new doc said a variadic call copies each float into both files without saying that
+  only the *staged* path has a copy to make. The direct path is all-integer by its own test, so it has
+  none; a reader should not have to derive that from a condition forty lines below.
+- The support matrix's M8 row still said a callee that reads `AL` "finds it at whatever it was", which the
+  new M10 row directly contradicts. Fixed, and it now says what is true: a call with no floating-point
+  argument leaves `AL` alone, which is harmless because the callee reads no vector registers.
+
+**Measured after the review: 418 corpus programs agree through the own back end, 46 refused, 0 wrong**,
+98 776 bytes of `.text` (5.74x `clang -O2`), and the ABI test now covers three directions instead of two.
+
+181 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
+fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-19 - a rule written twice is a rule broken once, and 60 bytes that proved it
 
 Four commits reviewed together: `va_arg` of a `double`, and the ABI fixes its test forced.

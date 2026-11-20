@@ -570,7 +570,7 @@ impl Encoder<'_> {
                 // placement writes. A spilled callee is loaded after, into a scratch.
                 let target = self.read(*callee);
                 if *variadic {
-                    self.no_vector_arguments();
+                    self.no_vector_registers_used();
                 }
                 self.call_through(target);
                 self.finish_call(*dst, *size, *signed);
@@ -585,7 +585,7 @@ impl Encoder<'_> {
             } => {
                 self.place_arguments(args, *variadic);
                 if *variadic {
-                    self.no_vector_arguments();
+                    self.no_vector_registers_used();
                 }
                 self.call(name);
                 self.finish_call(*dst, *size, *signed);
@@ -1130,7 +1130,9 @@ impl Encoder<'_> {
     ///
     /// A *variadic* call also copies each floating-point argument into the general register of its
     /// own position: Win64 requires it, and it is what makes one eight-byte-per-argument walk read a
-    /// list that mixes the two classes (ADR-006).
+    /// list that mixes the two classes (ADR-006). Only the staged path has a copy to make - the direct
+    /// one is all-integer by its own test - and the copy is the same eight bytes the double was just
+    /// loaded from, so it costs a load and never a store.
     fn place_arguments(&mut self, args: &[VReg], variadic: bool) {
         // Where each argument goes: **the position picks the register**, and the argument's class
         // picks which file it is in. `f(int a, double b, double c)` has `b` in `xmm1` and `c` in
@@ -1402,12 +1404,13 @@ impl Encoder<'_> {
         }
     }
 
-    /// `AL` is Win64's count of the vector registers a variadic call used. This back end duplicates
-    /// each floating-point argument into the general register of its position instead, so the answer
-    /// that makes a callee read the copies is zero - and no vector save area has to exist at all.
-    /// `clang` leaves `AL` unspecified at such a call and relies on the same duplicate; a zero is the
-    /// same answer made deterministic, which is the difference between working by luck and working.
-    fn no_vector_arguments(&mut self) {
+    /// Say that a variadic call used no vector registers. This back end passes each floating-point
+    /// argument in *both* files - the vector register the ABI names and the general register of its
+    /// position - so the count in `AL` that makes a callee read the copies is zero, and no vector save
+    /// area has to exist at all. `clang` leaves `AL` unspecified at such a call and relies on the same
+    /// duplicate; a zero is the same answer made deterministic, which is the difference between
+    /// working by luck and working.
+    fn no_vector_registers_used(&mut self) {
         self.byte(0xB0); // mov al, imm8
         self.byte(0);
     }

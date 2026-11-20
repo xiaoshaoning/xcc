@@ -798,13 +798,13 @@ impl<M: Module> Lowerer<'_, M> {
                         .iter()
                         .any(|arg| self.types.is_float(func.value(*arg).ty))
                     {
-                        let message = concat!(
-                            "a floating-point argument to a variadic function: Win64 passes it in both a ",
-                            "vector register and the general register of its position, and this lowerer ",
-                            "writes only the vector one; `--opt-level=2` passes both ",
-                            "(docs/ADR-006-varargs.md)"
-                        );
-                        return Err(LoweringError::not_lowered(message.to_owned(), *span));
+                        return Err(LoweringError::not_lowered(
+                            "a floating-point argument to a variadic function: Win64 passes it in a \
+                             vector register and in the general register of its position, and this \
+                             lowerer writes only the vector one. Level 2 passes both"
+                                .into(),
+                            *span,
+                        ));
                     }
                     let params: Vec<TypeId> = args.iter().map(|arg| func.value(*arg).ty).collect();
                     let result_ty = match result {
