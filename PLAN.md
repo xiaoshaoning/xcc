@@ -556,6 +556,17 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [ ] **Branch threading, measured and dropped: 136 bytes of 59 660 (0.2%).** The count that suggested it
+      was real: **415 of the corpus's 2 203 `cir` blocks are "hallways"** - no instructions, no
+      parameters, and a jump for a terminator, so a jump to one is a jump to somewhere else. Threading
+      them is sound (the parameter half of the condition is what makes it so) and the pass found all 415;
+      it saved **136 bytes**, because the encoder already emits *no* jump when the target is the next block
+      and the layout puts a hallway immediately before its destination almost every time. The upper bound
+      had assumed a `jmp` per hallway; the fall-through rule had already collected them.
+      **Cross-jumping, closed by the same measurement**: 7 blocks in the whole corpus duplicate another
+      block. That is not a pass, it is a rounding error, and it does not go on the list.
+      Both numbers are here rather than in a deleted comment, because "we thought about it" without a
+      number is what this list is for.
 - [x] **An address is made once per block.** Eighth measurement, and the first one whose *prediction* was
       wrong in an instructive way. Counting address materialisations in the encoder: **584, with 292 of them
       repeats of an address the same function had already made (50%)**, and nothing can invalidate an
