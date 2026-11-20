@@ -556,6 +556,19 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **A callee-saved register is pushed, not stored.** Sixth measurement, and the first on the frame
+      rather than on an operation: the prologue and epilogue were 12.2% of the bytes between them, and
+      **351 integer saves** across 514 functions were costing ten bytes each - `mov [rsp+disp8], r64` to
+      keep it and the same to restore. `push r64` and `pop r64` are one byte each. Measured
+      **64 156 -> 60 964 (-5.0%)**, 3.73x -> **3.54x `clang -O2`**.
+      What makes it safe is arithmetic rather than care: the pushes go *outside* the frame, so the two
+      of them together move `rsp` by the same total that the frame alone used to, and **every
+      `rsp`-relative offset in the function is unchanged**. The total is rounded up from whichever is
+      larger - the frame's own body or the pushes - so the alignment rule (`rsp` 16-byte aligned inside
+      the function) still holds and the subtraction is never negative; a function with seven saved
+      registers and nothing else in its frame is the case that made `max` necessary.
+      The registers are restored by pop order, so nothing ever addresses them - which is why the
+      `saved_base` slot they used to own is gone from the encoder.
 - [x] **A widening conversion is free, and 96% of conversions are widenings.** Fifth measurement, and the
       first one that cost nothing to act on: `canonical` was 6.5% of the bytes, so a breakdown of those
       operations by width was next. **4 239 of 4 427 canonicalise to sixty-four bits** - and a

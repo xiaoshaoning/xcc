@@ -94,9 +94,12 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // argument count long before that: a call site cannot spend more tokens than the whole source.
     let outgoing_base = 32;
     let outgoing_bytes = func.outgoing_slots as i32 * 8;
-    let saved_base = outgoing_base + outgoing_bytes;
-    // An XMM register is sixteen bytes and `movups` does not care where they are.
-    let saved_float_base = saved_base + allocation.saved.len() as i32 * 8;
+    // The integer registers a function keeps are *pushed*, not stored into slots: `push rbx` is one
+    // byte where `mov [rsp+disp8], rbx` is five, and the pop restores it without an address. They sit
+    // in the eight bytes each that the frame still reserves for them, at the top of it, which is where
+    // pushes put things - so the layout keeps its shape and nothing addresses them.
+    let pushed = 8 * allocation.saved.len() as i32;
+    let saved_float_base = outgoing_base + outgoing_bytes;
     let body_base = saved_float_base + allocation.saved_floats.len() as i32 * 16;
     let spill_base = body_base + func.frame_bytes;
     let staging_base = spill_base + allocation.spill_bytes;
@@ -116,11 +119,16 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         && allocation.saved_floats.is_empty();
     // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
     // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
-    let frame = if frameless {
+    // The pushes and the `sub rsp` together have to move `rsp` by a total that leaves it 16-byte
+    // aligned - `frame` is that total, and `rsp` inside the function is `entry - frame` either way, so
+    // every offset below is unchanged. The subtraction is what is left of the total after the pushes,
+    // and the total is rounded up from whichever is larger, its own body or the pushes themselves.
+    let total = if frameless {
         0
     } else {
-        (raw + 15) / 16 * 16 + 8
+        (raw.max(pushed) + 15) / 16 * 16 + 8
     };
+    let frame = total - pushed;
 
     let mut encoder = Encoder {
         code: Vec::new(),
@@ -133,7 +141,6 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         staging_base,
         outgoing_base,
         outgoing_bytes,
-        saved_base,
         saved_float_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
@@ -239,8 +246,7 @@ struct Encoder<'a> {
     outgoing_base: i32,
     /// How many bytes those slots take, which everything after them is displaced by.
     outgoing_bytes: i32,
-    /// Where the saved general registers start, from `rsp`: after the outgoing slots.
-    saved_base: i32,
+
     /// Where the saved XMM registers start, from `rsp`: after those, sixteen bytes each.
     saved_float_base: i32,
     /// Where the lowering's frame starts, from `rsp`: after the shadow space and the saved
@@ -267,6 +273,12 @@ impl Encoder<'_> {
     // ---------------------------------------------------------------- frame
 
     fn prologue(&mut self, variadic: bool) {
+        // The pushes come first, so they are outside the frame and need no address: the subtraction
+        // is `frame` shorter instead, which is exactly what the layout reserved for them.
+        let saved = self.allocation.saved.clone();
+        for register in &saved {
+            self.push(*register);
+        }
         if self.frame != 0 {
             self.sub_rsp(self.frame);
         }
@@ -279,10 +291,6 @@ impl Encoder<'_> {
                 self.mov_memory_from_reg(offset, *register);
             }
         }
-        let saved = self.allocation.saved.clone();
-        for (index, register) in saved.iter().enumerate() {
-            self.mov_memory_from_reg(self.saved_base + index as i32 * 8, *register);
-        }
         let saved_floats = self.allocation.saved_floats.clone();
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
@@ -291,11 +299,6 @@ impl Encoder<'_> {
     }
 
     fn epilogue(&mut self) {
-        let saved = self.allocation.saved.clone();
-        let saved_base = self.saved_base;
-        for (index, register) in saved.iter().enumerate() {
-            self.mov_reg_from_memory(*register, saved_base + index as i32 * 8);
-        }
         let saved_floats = self.allocation.saved_floats.clone();
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
@@ -303,6 +306,11 @@ impl Encoder<'_> {
         }
         if self.frame != 0 {
             self.add_rsp(self.frame);
+        }
+        // Popped in the reverse of the order they were pushed, which is all the addressing they need.
+        let saved = self.allocation.saved.clone();
+        for register in saved.iter().rev() {
+            self.pop(*register);
         }
         self.byte(0xC3); // ret
     }
@@ -1591,6 +1599,19 @@ impl Encoder<'_> {
     /// bytes a function is six bytes over five hundred functions.
     fn sub_rsp(&mut self, bytes: i32) {
         self.adjust_rsp(5, bytes);
+    }
+
+    /// `push r64`: one byte for the first eight registers, two for the rest, and it does the
+    /// bookkeeping - `rsp` moves, which is why the frame's subtraction is that much shorter.
+    fn push(&mut self, register: Reg) {
+        self.prefix(Reg(0), register);
+        self.byte(0x50 | (register.0 & 7));
+    }
+
+    /// `pop r64`, the same in reverse.
+    fn pop(&mut self, register: Reg) {
+        self.prefix(Reg(0), register);
+        self.byte(0x58 | (register.0 & 7));
     }
 
     /// `add rsp, bytes`, likewise.
