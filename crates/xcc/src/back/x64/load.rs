@@ -46,11 +46,6 @@ impl Loaded {
             .find(|(known, _)| known == name)
             .map(|(_, offset)| *offset)
     }
-
-    /// The names it defines, in the order they were laid out.
-    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
-        self.symbols.iter().map(|(name, _)| name.as_str())
-    }
 }
 
 #[allow(unsafe_code)]
@@ -102,6 +97,8 @@ extern "system" {
     fn VirtualProtect(address: *mut u8, size: usize, protect: u32, previous: *mut u32) -> i32;
 }
 
+/// One page of memory, which has one protection for everything in it.
+const PAGE: usize = 0x1000;
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const MEM_RELEASE: u32 = 0x8000;
@@ -129,9 +126,11 @@ pub(crate) fn load(
         functions,
         data,
     } = image;
-    // The data section starts at the next sixteen bytes: an object's alignment is at most sixteen on
-    // this ABI, and one allocation cannot honour more than it is told.
-    let data_start = text.len().div_ceil(16) * 16;
+    // The data section starts at the next *page*: the two are protected differently - code is
+    // executable and read-only, data is writable and not executable - and a page has one protection
+    // for everything in it. Sixteen bytes would do for alignment; four kilobytes is what keeps
+    // `static int n; n++` from faulting on the page holding the code that ran it.
+    let data_start = text.len().div_ceil(PAGE) * PAGE;
     let size = (data_start + data.bytes.len()).max(1);
 
     // **The allocation has to be near what the code calls.** A call this back end emits is
@@ -230,16 +229,33 @@ pub(crate) fn load(
     }
 
     let mut previous = 0u32;
-    // SAFETY: the region is ours, fully written, and about to be executed.
-    let changed =
-        unsafe { VirtualProtect(memory, size, PAGE_EXECUTE_READ, &mut previous as *mut u32) };
-    if changed == 0 {
+    let span = module
+        .funcs
+        .first()
+        .map_or_else(|| crate::diag::Span::at(0), |func| func.entry_span());
+    // SAFETY: both ranges are inside the allocation, fully written, and each is given the protection
+    // its contents need: code that may run, data that may be written.
+    let code = unsafe {
+        VirtualProtect(
+            memory,
+            data_start,
+            PAGE_EXECUTE_READ,
+            &mut previous as *mut u32,
+        )
+    };
+    let data_ok = data.bytes.is_empty()
+        || unsafe {
+            VirtualProtect(
+                memory.add(data_start),
+                size - data_start,
+                PAGE_READWRITE,
+                &mut previous as *mut u32,
+            )
+        } != 0;
+    if code == 0 || !data_ok {
         return Err(NotYet {
             message: String::from("the loaded code could not be made executable"),
-            span: module
-                .funcs
-                .first()
-                .map_or_else(|| crate::diag::Span::at(0), |func| func.entry_span()),
+            span,
         });
     }
     Ok(loaded)

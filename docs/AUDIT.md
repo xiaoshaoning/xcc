@@ -705,6 +705,41 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-21 - the page that could not be written
+
+The level-2 JIT, reviewed. It found a live fault in the first minute, and then found that two of the
+measurements taken while writing it were measuring nothing.
+
+**`.data` was made executable and read-only along with `.text`.** The loader protects its one allocation
+after the relocations are applied - code must be executable, data must be writable - and the first version
+applied one protection to both, page granularity being what it is. So `static int n; n++` faulted: the
+program was running code it had just made read-only from code that had just written to it. The two sections
+now start on separate pages (`data_start` rounds up to 4096) and each gets the protection its contents
+need. Found by asking the question the corpus measurement had not: *does a program that writes a global
+work?* - thirty seconds of test, one program.
+
+**And two measurements were wrong in the same way.** The first said "444 corpus programs run at
+`--opt-level=2`", counting a program that segfaults as one that ran, because the check was "the compiler
+did not refuse" rather than "the program did what it should". The second classified every exit status above
+128 as a crash, so `return 321;` was reported as 39 crashes. Both are the same mistake: **a measurement
+without an oracle is a measurement of the compiler's opinion of itself.** With clang as the oracle and
+*disagreement* as the only signal: **439 agreed, 24 refused, 1 difference.**
+
+**The one difference is not ours.** `%e` printed `1.250000e+000` where clang's program printed
+`1.250000e+00` - and the *same object*, linked by clang against the modern runtime, prints `e+00`, while the
+JIT resolves `printf` from the classic one. The code is identical; the library that formats a float is not.
+That is exactly what the README's `--run` caveat already said, now with a number behind it.
+
+The smaller ones: `Loaded::names` had no caller - an accessor written for a use that never came - and is
+gone.
+
+**Measured after the review: 443 corpus programs agree through the object path, 20 refused, 0 wrong; 439
+agree through `--run --opt-level=2` against clang, 24 refused (the four `open` programs among them, which no
+loaded runtime exports), 1 difference that is the C runtime's.**
+
+184 unit, 25 parser, 21 CLI, 4 exe, 4 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-21 - the headline that lied
 
 The refusal-solving commit, reviewed. No defect in the code; the defect was in the file a reader meets
