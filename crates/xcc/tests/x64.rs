@@ -330,10 +330,17 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             // data section now carries a relocation for. Both shapes every C program has - a pointer
             // to a string, and a table of them.
             "a file-scope pointer to a string, and a table of them",
+            // A `char` array of arrays is the other table: the literal initialises the element, not
+            // its first `char`, and a local's copy has to land at the element's offset in the frame.
             "char *p = \"hello\"; char *names[] = {\"alpha\", \"beta\"}; int table[] = {3, 4, 5};
-             int main(void) { return p[1] + names[1][0] + table[2] - 200; }",
-            // 'e' is 101, 'b' is 98, table[2] is 5: 101 + 98 + 5 - 200 = 4.
-            4,
+             char grid[2][4] = {\"ab\", \"cd\"};
+             struct entry { char *name; int value; };
+             struct entry entries[] = {{\"x\", 7}, {\"y\", 8}};
+             int local(void) { char g[2][4] = {\"ef\", \"gh\"}; return g[1][0]; }
+             int main(void) { return p[1] + names[1][0] + table[2] + grid[0][1] + entries[1].name[0]
+                                    + entries[0].value + local() - 400; }",
+            // 101 + 98 + 5 + 'b'(98) + 'y'(121) + 7 + 'g'(103) - 400 = 133 - ... see below.
+            133,
         ),
         (
             // A variadic function that *also* calls something: the call makes it keep its integers in

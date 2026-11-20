@@ -23,117 +23,126 @@ impl Parser<'_> {
             return;
         };
         if token.kind == crate::lex::TokenKind::Str {
-            // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
-            let span = self.span();
-            let (literal, name, literal_bytes) = self.string_literal();
-            if let Type::Array { element, count } = *self.types.kind(ty) {
-                // C99 6.7.8p14: an array of character type, which `int` is not even though a
-                // `char` converts to one.
-                if !matches!(self.types.kind(element), Type::Int { bits: 8, .. }) {
-                    let element = self.describe(element);
-                    self.error(
-                        span,
-                        format!("a string literal initialises an array of `char`, not {element}"),
-                    );
-                    return;
-                }
-                match count {
-                    None => self.types.complete_array(ty, literal_bytes.len() as u64),
-                    Some(count) if count < literal_bytes.len() as u64 => {
-                        let string = literal_bytes.len() as u64 - 1;
-                        self.error(
-                            span,
-                            format!("a {count}-byte array cannot hold this {string}-byte string and its NUL"),
-                        );
-                    }
-                    Some(_) => {}
-                }
-                let Some(filled) =
-                    crate::parse::bytes::string_literal_bytes(&self.types, ty, &literal_bytes)
-                else {
-                    return;
-                };
-                // One destination: a file-scope object's bytes, or a local's stores. The tail
-                // of a sized array is the zeroes those bytes already hold (C99 6.7.8p21).
-                if let Some(target) = self.init_target {
-                    let char = self.types.fundamental("char").unwrap();
-                    for (offset, byte) in filled.into_iter().enumerate() {
-                        let value = self.constant_of(char, i64::from(byte), span);
-                        self.store_leaf(target, offset, char, value, span);
-                    }
-                } else if let Some(out) = self.bytes.as_mut() {
-                    let at = self.offset;
-                    let end = at + filled.len();
-                    // The array's size may have come from this literal, so the buffer can
-                    // still be the empty one it started as.
-                    if out.len() < end {
-                        out.resize(end, 0);
-                    }
-                    out[at..end].copy_from_slice(&filled);
-                }
-                return;
-            }
-            // Anything else takes the literal as the `char *` it decays to.
-            let pointer = self.types.decay(literal);
-            if !self.types.is_assignable(ty, pointer) {
-                let (from, to) = (self.describe(pointer), self.describe(ty));
-                self.error(span, format!("cannot initialise {to} with {from}"));
-                return;
-            }
-            // In a body the value is the address of the anonymous object the literal became
-            // (ADR-004). At file scope it is eight bytes the *linker* fills: the object is written
-            // with a relocation that names the literal, so `char *p = "hello"` and
-            // `char *names[] = {"a", "b"}` are both an address in the data section and both work.
-            if self.init_target.is_none() {
-                let at = self.offset as u32;
-                self.init_relocations.push(crate::cir::GlobalRelocation {
-                    offset: at,
-                    symbol: name.clone(),
-                });
-                if let Some(out) = self.bytes.as_mut() {
-                    let end = self.offset + 8;
-                    if out.len() < end {
-                        out.resize(end, 0);
-                    }
-                    out[self.offset..end].fill(0);
-                    self.offset = end;
-                }
-                return;
-            }
-            // A block that already ended writes nothing, and says nothing: dead code is not an
-            // initialiser this compiler cannot lower.
-            if let Some(address) = self.emit(|builder| builder.global_address(name, pointer, span))
-            {
-                let value = Value {
-                    ty: pointer,
-                    constant: None,
-                    lvalue: false,
-                    cir: Some(address),
-                    place: None,
-                    bits: None,
-                };
-                self.write_leaf(ty, value);
-            }
+            self.literal_initialiser(ty);
             return;
         }
-
-        // C99 6.7.8p1: an initialiser is a brace list or an assignment-expression. `{1,2,3,4}`
-        // reached the list walker above, and brace *elision* happens inside a list; here what
-        // follows is one expression, which is how `struct P q = p;` copies a struct.
+        // C99 6.7.8p1: an initialiser is a brace list or an assignment-expression. Brace *elision*
+        // happens inside a list, so what reaches here is one expression - which is how
+        // `struct P q = p;` copies a struct.
         let value = self.conditional_expression();
         self.skip_until(&[",", ";"], false);
         if value.is_none() {
             let span = self.span();
             self.error(span, "expected an initialiser");
         }
-        // A file-scope object's bytes are written from the same value the type checker sees;
-        // a local's slot is written the same way.
+        // A file-scope object's bytes are written from the same value the type checker sees; a
+        // local's slot is written the same way.
         match value {
             Some(value) => {
                 let value = self.decay(value);
                 self.write_leaf(ty, value);
             }
             None => self.bytes = None,
+        }
+    }
+
+    /// A string literal as the whole initialiser for `ty`: the bytes of a `char` array - with the
+    /// array's length taken from the literal when it has none - or an address for a pointer.
+    fn literal_initialiser(&mut self, ty: TypeId) {
+        // A string literal gives a `char` array its length, NUL included (C99 6.7.8p14).
+        let span = self.span();
+        let (literal, name, literal_bytes) = self.string_literal();
+        if let Type::Array { element, count } = *self.types.kind(ty) {
+            // C99 6.7.8p14: an array of character type, which `int` is not even though a
+            // `char` converts to one.
+            if !matches!(self.types.kind(element), Type::Int { bits: 8, .. }) {
+                let element = self.describe(element);
+                self.error(
+                    span,
+                    format!("a string literal initialises an array of `char`, not {element}"),
+                );
+                return;
+            }
+            match count {
+                None => self.types.complete_array(ty, literal_bytes.len() as u64),
+                Some(count) if count < literal_bytes.len() as u64 => {
+                    let string = literal_bytes.len() as u64 - 1;
+                    self.error(
+                            span,
+                            format!("a {count}-byte array cannot hold this {string}-byte string and its NUL"),
+                        );
+                }
+                Some(_) => {}
+            }
+            let Some(filled) =
+                crate::parse::bytes::string_literal_bytes(&self.types, ty, &literal_bytes)
+            else {
+                return;
+            };
+            // One destination: a file-scope object's bytes, or a local's stores. The tail
+            // of a sized array is the zeroes those bytes already hold (C99 6.7.8p21).
+            if let Some(target) = self.init_target {
+                let char = self.types.fundamental("char").unwrap();
+                // The literal's own bytes go where the *object* is, not at offset zero of it: an
+                // element of `char grid[2][4] = {"ab", "cd"}` starts four bytes in, and a store at
+                // `offset` alone put the second string on top of the first.
+                let at = self.offset;
+                for (offset, byte) in filled.into_iter().enumerate() {
+                    let value = self.constant_of(char, i64::from(byte), span);
+                    self.store_leaf(target, at + offset, char, value, span);
+                }
+                self.offset = at + literal_bytes.len();
+            } else if let Some(out) = self.bytes.as_mut() {
+                let at = self.offset;
+                let end = at + filled.len();
+                // The array's size may have come from this literal, so the buffer can
+                // still be the empty one it started as.
+                if out.len() < end {
+                    out.resize(end, 0);
+                }
+                out[at..end].copy_from_slice(&filled);
+            }
+            return;
+        }
+        // Anything else takes the literal as the `char *` it decays to.
+        let pointer = self.types.decay(literal);
+        if !self.types.is_assignable(ty, pointer) {
+            let (from, to) = (self.describe(pointer), self.describe(ty));
+            self.error(span, format!("cannot initialise {to} with {from}"));
+            return;
+        }
+        // In a body the value is the address of the anonymous object the literal became
+        // (ADR-004). At file scope it is eight bytes the *linker* fills: the object is written
+        // with a relocation that names the literal, so `char *p = "hello"` and
+        // `char *names[] = {"a", "b"}` are both an address in the data section and both work.
+        if self.init_target.is_none() {
+            let at = self.offset as u32;
+            self.init_relocations.push(crate::cir::GlobalRelocation {
+                offset: at,
+                symbol: name.clone(),
+            });
+            if let Some(out) = self.bytes.as_mut() {
+                let end = self.offset + 8;
+                if out.len() < end {
+                    out.resize(end, 0);
+                }
+                out[self.offset..end].fill(0);
+                self.offset = end;
+            }
+            return;
+        }
+        // A block that already ended writes nothing, and says nothing: dead code is not an
+        // initialiser this compiler cannot lower.
+        if let Some(address) = self.emit(|builder| builder.global_address(name, pointer, span)) {
+            let value = Value {
+                ty: pointer,
+                constant: None,
+                lvalue: false,
+                cir: Some(address),
+                place: None,
+                bits: None,
+            };
+            self.write_leaf(ty, value);
         }
     }
 
@@ -156,6 +165,23 @@ impl Parser<'_> {
     /// after its capacity to the list around it (C99 6.7.8p20). A designator (`[3] = `, `.x = `)
     /// moves the cursor, and the list carries on from after the element it named (6.7.8p17).
     fn initializer_body(&mut self, ty: TypeId, braced: bool) {
+        // A string literal initialises the whole object at *this* level when that object is an array
+        // of `char` - aside from `wchar`, the only thing a literal can be. Without this test an array
+        // of `char` arrays - `char grid[2][4] = {"ab", "cd"}` - descends to the inner array's
+        // elements and tries to put the literal in one `char`. An array of *pointers* is not this
+        // case: each of its elements takes a literal, and they reach `initializer_value`.
+        let char_array = matches!(
+            self.types.kind(ty),
+            Type::Array { element, .. }
+                if matches!(self.types.kind(*element), Type::Int { bits: 8, .. })
+        );
+        let literal = self
+            .peek()
+            .is_some_and(|token| token.kind == crate::lex::TokenKind::Str);
+        if char_array && literal {
+            self.literal_initialiser(ty);
+            return;
+        }
         match self.types.kind(ty) {
             Type::Array { element, count } => {
                 let (element, declared) = (*element, *count);

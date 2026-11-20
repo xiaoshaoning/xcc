@@ -705,6 +705,44 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-20 - the string that was put where the previous one went
+
+The file-scope-address commit, reviewed - and the review turned up the *neighbouring* initialiser shapes,
+which had never been tried.
+
+**A string literal in a brace list initialised one `char`.** `char grid[2][4] = {"ab", "cd"}` descended
+from the array to the inner array to its four `char`s, and tried to put a `char[3]` into one of them:
+"cannot initialise char with pointer to char". It had always done that, inside a body as well as at file
+scope - a table of `char` arrays, which is how every C program spells a list of short strings, was simply
+not a thing this initialiser reader could do. The literal now initialises the object at the level it
+belongs to, which is a `char` array: `char_array && literal` in `initializer_body`, and one
+`literal_initialiser` that both the top-level and the element path reach instead of two copies of the same
+twenty lines.
+
+**The first attempt at that guard was too wide, and the tests said so within the minute.** "The next token
+is a literal" is not the question; "the next token is a literal *and this level is a `char` array*" is.
+The wide version fired on `char *names[] = {"a", "b"}` - whose elements each take a literal - and on
+`struct entry t[] = {{"x", 1}}`, and refused both with "a string literal initialises an array of `char`,
+not pointer to char". A guard is a statement about the shape it accepts; this one had been written about
+the shape it hoped for.
+
+**And a store at the wrong offset, found by making the case reachable.** The local path wrote each byte of
+a literal at `offset`, the literal's offset from zero, rather than at the *object's* offset plus it - so in
+`char grid[2][4] = {"ab", "cd"}` the second string landed on top of the first, and a program whose answer
+should have been `'a'` answered `'c'`. Nothing could reach that code before, because the element case never
+got there; the fix is `at + offset` and a `self.offset` advance that the file-scope path already did.
+
+**The corpus says the neighbour is not rare.** `char *p = "hello"`, the table of strings, the table of
+`char` arrays, a struct array whose members are strings, and the static pointer inside a function - five
+shapes, and the construct now runs all five through one function whose answer is checked against nothing
+but arithmetic.
+
+**Measured after the review: 419 corpus programs agree, 45 refused, 0 wrong, 60 556 bytes** - unchanged,
+because the corpus had no `char` array of arrays to gain.
+
+184 unit, 23 parser, 20 CLI, 4 exe, 3 x64, 4 hostile, 6 C API, 4 bcc20-sys, differential (412 ran, 8
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-20 - a module comment that outlived its subject
 
 The staging-area commit, reviewed. No defect this time - the two it exposed were fixed in the commit
