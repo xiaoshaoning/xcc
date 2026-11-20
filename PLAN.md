@@ -556,6 +556,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **A widening conversion is free, and 96% of conversions are widenings.** Fifth measurement, and the
+      first one that cost nothing to act on: `canonical` was 6.5% of the bytes, so a breakdown of those
+      operations by width was next. **4 239 of 4 427 canonicalise to sixty-four bits** - and a
+      canonicalisation to sixty-four bits is a no-op by construction, because a value in a register is
+      already canonical for its own C type and every type of size eight *is* its own sixty-four bits.
+      `(long)x` is `x`: sign-extended for an `int`, zero-extended for an `unsigned`, and neither needs an
+      instruction here because the register already holds that form. So the lowering *aliases* the two
+      `cir` values to one machine value instead of emitting an instruction that copies a register to
+      itself, and narrowing is the only conversion left with work to do.
+      **Measured 67 868 -> 64 156 (-5.5%)**, 3.94x -> **3.73x `clang -O2`**; 418 programs still agree.
+      The saving is larger than the bytes the instruction printed (3 801), because a no-op operation still
+      owns an interval: the two values had to be given registers and sometimes paid a `mov` to be made
+      equal. Saying they are one value removes the question.
+      **The risk is the one this back end keeps meeting** - a `cir` value with no definition is a wrong
+      answer waiting for a reader, which is what the branch-fusion review found. Here the definition is
+      not removed: both names point at the *same* `VReg`, whose definition is the source's. The corpus
+      ratchet and the construct tests are what say so.
 - [x] **The truth test of a truth value is the value.** Fourth measurement: `binary` led at 18.5%, but the
       question behind `compare`'s 13.1% was bigger. Counting the corpus's `cir`: **530 of 1 177 comparisons
       (45%) are `cmp ne (cmp ...), 0`** - the front end's literal truth test, because `if (a < b)` asks for
