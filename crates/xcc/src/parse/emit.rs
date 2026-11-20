@@ -25,6 +25,12 @@ impl Parser<'_> {
         Some(emit(&mut body.builder()))
     }
 
+    /// Whether an initialiser is writing an object's bytes rather than emitting stores: true at file
+    /// scope, where a `cir` value has nowhere to go and the bytes are the whole answer.
+    pub(super) fn at_file_scope(&self) -> bool {
+        self.init_target.is_none() && self.bytes.is_some()
+    }
+
     /// Whether code is being generated: false inside a declaration, true inside a body.
     pub(super) fn in_body(&self) -> bool {
         self.body.is_some()

@@ -21,6 +21,9 @@ const TEXT_FLAGS: u32 = 0x6000_0020;
 const DATA_FLAGS: u32 = 0xC050_0040;
 /// `IMAGE_SCN_LNK_INFO`'s absence is the default for code; this is the "4-byte relative" reloc.
 const REL32: u16 = 0x0004;
+/// `IMAGE_REL_AMD64_ADDR64`: a sixty-four-bit absolute address. A global's initialiser may hold the
+/// address of another object - `char *p = "hello"` - and this is how the linker is told which one.
+const ADDR64: u16 = 0x0001;
 /// `IMAGE_SYM_CLASS_EXTERNAL`.
 const EXTERNAL: u8 = 2;
 /// `IMAGE_SYM_CLASS_STATIC`, which is what a section symbol is.
@@ -38,6 +41,17 @@ pub(crate) struct Data {
     pub symbols: Vec<DataSymbol>,
     /// Names the file needs from somewhere else.
     pub undefined: Vec<String>,
+    /// The places in those bytes that hold an address rather than a value.
+    pub relocations: Vec<DataRelocation>,
+}
+
+/// One address inside the data section.
+#[derive(Debug)]
+pub(crate) struct DataRelocation {
+    /// Where it goes, in bytes from the section's start.
+    pub offset: u32,
+    /// The symbol whose address it is.
+    pub symbol: String,
 }
 
 /// One object in the data section.
@@ -100,6 +114,15 @@ fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
         ));
     }
     let mut externals: Vec<String> = data.undefined.clone();
+    for relocation in &data.relocations {
+        let defined = data
+            .symbols
+            .iter()
+            .any(|object| object.name == relocation.symbol);
+        if !defined && !externals.contains(&relocation.symbol) {
+            externals.push(relocation.symbol.clone());
+        }
+    }
     for function in placed {
         for relocation in &function.relocations {
             let defined = placed.iter().any(|other| other.name == relocation.symbol);
@@ -125,6 +148,18 @@ fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
         }
     }
 
+    let data_relocations: Vec<(u32, u32, u16)> = data
+        .relocations
+        .iter()
+        .map(|relocation| {
+            let index = symbols
+                .iter()
+                .position(|(name, ..)| *name == relocation.symbol)
+                .expect("every relocation names a symbol") as u32;
+            (relocation.offset, index, ADDR64)
+        })
+        .collect();
+
     let text_size = text.len();
     let text_padded = text_size.div_ceil(4) * 4;
     let data_padded = data.bytes.len().div_ceil(4) * 4;
@@ -134,7 +169,8 @@ fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
     let text_at = header_size;
     let relocations_at = text_at + text_padded;
     let data_at = relocations_at + relocations.len() * 10;
-    let symbol_table_at = data_at + data_padded;
+    let data_relocations_at = data_at + data_padded;
+    let symbol_table_at = data_relocations_at + data_relocations.len() * 10;
 
     // The file header.
     push_u16(&mut bytes, MACHINE_AMD64);
@@ -167,9 +203,9 @@ fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
         push_u32(&mut bytes, 0); // virtual address
         push_u32(&mut bytes, data_padded as u32);
         push_u32(&mut bytes, data_at as u32);
-        push_u32(&mut bytes, 0); // no relocations in the data section
+        push_u32(&mut bytes, data_relocations_at as u32);
         push_u32(&mut bytes, 0); // no line numbers
-        push_u16(&mut bytes, 0);
+        push_u16(&mut bytes, data_relocations.len() as u16);
         push_u16(&mut bytes, 0);
         push_u32(&mut bytes, DATA_FLAGS);
     }
@@ -185,6 +221,13 @@ fn write_object(text: &[u8], placed: &[Placed], data: &Data) -> Vec<u8> {
 
     bytes.extend_from_slice(&data.bytes);
     bytes.resize(data_at + data_padded, 0);
+
+    for (offset, symbol, kind) in &data_relocations {
+        push_u32(&mut bytes, *offset);
+        push_u32(&mut bytes, *symbol);
+        push_u16(&mut bytes, *kind);
+    }
+    bytes.resize(symbol_table_at, 0);
 
     // The symbol table, then the string table: names of eight bytes or fewer are stored in place,
     // longer ones as an offset into the string table, whose first four bytes are its own length.

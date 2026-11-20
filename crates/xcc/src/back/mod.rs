@@ -413,6 +413,17 @@ impl<M: Module> Lowerer<'_, M> {
         } else {
             Linkage::Local
         };
+        // An initialiser that holds an address needs a relocation in the data section. Our own back
+        // end writes one; this one cannot name the symbol the way `cranelift-object` wants it, so it
+        // refuses instead of writing eight zero bytes and calling that a pointer (ADR-004).
+        if !global.relocations.is_empty() {
+            return Err(LoweringError::not_lowered(
+                "an initialiser that holds an address of another object - `char *p = \"hello\"` at \
+                 file scope. Level 2 writes the relocation"
+                    .into(),
+                global.span,
+            ));
+        }
         let id = self
             .object
             .declare_data(&global.name, linkage, true, false)?;

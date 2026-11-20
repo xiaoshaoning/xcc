@@ -72,6 +72,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | full C99 operator set and precedence, assignment operators, conditional, comma | `sound` (M3.2), with C's usual arithmetic conversions, array-to-pointer decay and constant folding of integer expressions |
 | casts, `sizeof` a type, `sizeof` an expression | `sound` (M3.2) |
 | `sizeof` a VLA, `offsetof` | `planned` (with VLAs) |
+| an address in a file-scope initialiser: `char *p = "hello"`, `char *t[] = {"a", "b"}` | `sound` (M10) **at `--opt-level=2`**: the object's bytes hold eight zeroes and the data section carries a relocation naming the object the address is for, which the linker fills. An address *expression* - `int *p = &x;`, `arr + 2` - is still refused, because the parser has no symbolic constant to carry it ([ADR-004](ADR-004-data.md)) |
 | compound literals, brace initialisers with C's brace elision | `sound` (M6) in a function - a compound literal gets a slot of its own and the walker fills it; at file scope a compound literal is refused (there is no frame to put it in) |
 | designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |
 | constant expressions (`#if` apart): arithmetic, `sizeof` a type, enumerators, character constants | `sound` (M3.1); an *integer* constant expression is required where C asks for one, so `int a[1.5]` and `case 1.5:` are refused rather than read as the float's bits |

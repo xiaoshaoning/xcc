@@ -905,10 +905,23 @@ pub struct Global {
     pub defined: bool,
     /// The bytes it is initialised with, when it is defined and its value is known.
     pub init: Option<Vec<u8>>,
+    /// The places in those bytes that are the *address* of a symbol rather than a value: eight bytes
+    /// each, filled in by the linker. ADR-004 said a global's initialiser is bytes, and a C
+    /// initialiser may also be `&something` - `char *p = "hello"` being the one every program has.
+    pub relocations: Vec<GlobalRelocation>,
     /// Whether the name is visible outside this translation unit.
     pub external: bool,
     /// Where in the source.
     pub span: Span,
+}
+
+/// An address inside a global object's initialiser.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalRelocation {
+    /// Where the address goes, in bytes from the object's start.
+    pub offset: u32,
+    /// What it is the address of.
+    pub symbol: String,
 }
 
 /// A translation unit.

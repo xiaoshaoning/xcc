@@ -16,14 +16,15 @@ use std::sync::Mutex;
 use xcc::{Compile, Options};
 
 /// How many corpus programs agreed, through this back end, when the ratchet was last raised - with
-/// Cranelift where it answers and with `clang` where it does not. The 46 the back end still refuses
-/// are named by the run, not by this number.
-const PROGRAMS_THAT_AGREED: usize = 418;
+/// Cranelift where it answers and with `clang` where it does not. The 45 the back end still refuses
+/// are named by the run, not by this number - and they are programs `clang` refuses too, or ones that
+/// need a header this machine does not have.
+const PROGRAMS_THAT_AGREED: usize = 419;
 
 /// How many corpus programs this back end compiles and Cranelift refuses, and which are therefore
 /// compared with `clang` instead. A ratchet like the one above, in the other direction: closing an
 /// ABI gap raises it, and losing one lowers it.
-const PROGRAMS_ONLY_THIS_BACK_END_COMPILES: usize = 4;
+const PROGRAMS_ONLY_THIS_BACK_END_COMPILES: usize = 5;
 
 /// A linker for the object this back end writes: `clang` first, because it drives `lld-link` and
 /// the object is COFF.
@@ -323,6 +324,16 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             "a double converted to a 64-bit integer",
             "int main(void) { double d = 3.75e9; long long a = (long long)d; long long b = (long long)1.5; return (int)(a / 1000000000 + b + 3); }",
             7,
+        ),
+        (
+            // An address inside a global's initialiser: eight bytes the *linker* fills, which the
+            // data section now carries a relocation for. Both shapes every C program has - a pointer
+            // to a string, and a table of them.
+            "a file-scope pointer to a string, and a table of them",
+            "char *p = \"hello\"; char *names[] = {\"alpha\", \"beta\"}; int table[] = {3, 4, 5};
+             int main(void) { return p[1] + names[1][0] + table[2] - 200; }",
+            // 'e' is 101, 'b' is 98, table[2] is 5: 101 + 98 + 5 - 200 = 4.
+            4,
         ),
         (
             // A variadic function that *also* calls something: the call makes it keep its integers in

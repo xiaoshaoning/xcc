@@ -421,12 +421,17 @@ fn a_variable_needs_a_complete_type() {
         "int f(void) { int x = \"abc\"; return x; }",
         "cannot initialise int with pointer to char",
     );
-    // At file scope a pointer to a literal needs a relocation, so it is refused rather than
-    // left null - which is what it silently was.
+    // A pointer to a string literal at file scope is an address, which level 2 writes as a
+    // relocation. Level 0 is what `check` compiles with, and it refuses rather than leaving the
+    // pointer null - which is what it silently was before either existed.
     refuses(
         "char *p = \"abc\"; int f(void) { return 0; }",
-        "a pointer to a string literal in a file-scope initialiser is not lowered yet",
+        "an initialiser that holds an address",
     );
+    // The front end says nothing about it at either level: it wrote the bytes and the relocation,
+    // and which lowerings can honour them is their own business.
+    parses("char *p = \"abc\"; char *t[] = {\"a\", \"b\"};");
+    parses("int a[] = {1, 2, 3}; struct { int x; } s = {4};");
 }
 
 #[test]

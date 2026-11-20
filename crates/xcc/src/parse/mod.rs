@@ -70,6 +70,8 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         last_declared: None,
         function_buffer: None,
         bytes: None,
+        init_relocations: Vec::new(),
+        init_grows: false,
         offset: 0,
         init_target: None,
         bits: None,
@@ -258,6 +260,14 @@ struct Parser<'a> {
     /// traversal that checks an initialiser fills this, so the bytes and the diagnostics come
     /// from one reading of the source (ADR-004).
     bytes: Option<Vec<u8>>,
+    /// The addresses written into those bytes: `char *p = "hello"` at file scope is eight bytes the
+    /// linker has to fill, not a value this compiler knows.
+    init_relocations: Vec<cir::GlobalRelocation>,
+    /// Whether the object being initialised still has no size, so its bytes may grow: `int a[] = {1,2,3}`
+    /// learns its length from the list. A *complete* object may not grow - writing past it is an error
+    /// the brace walker has already reported, and a designator that reaches past the end is one it
+    /// reports by refusing the initialiser.
+    init_grows: bool,
     /// The offset into `bytes` that the initialiser being read is at, in bytes from the
     /// object's start - for a local it is the same offset, from the slot's address.
     offset: usize,
@@ -597,9 +607,9 @@ impl Parser<'_> {
                 } else {
                     let before = self.error_count();
                     match self.initializer_bytes(ty) {
-                        Some(bytes) => {
+                        Some((bytes, relocations)) => {
                             if let Some(name) = name {
-                                self.define_global(name, ty, Some(bytes), span);
+                                self.define_global(name, ty, Some((bytes, relocations)), span);
                             }
                         }
                         // C99 6.7.8p4 wants a constant expression here, and an object this
@@ -681,6 +691,7 @@ impl Parser<'_> {
             ty,
             defined: true,
             init: Some(init.clone()),
+            relocations: Vec::new(),
             external: false,
             span,
         });
@@ -701,7 +712,13 @@ impl Parser<'_> {
     /// (which makes visibility matter) is the place to read it. Until then every object claims
     /// to be external, which is wrong for a `static` and harmless only because nothing reads the
     /// flag.
-    fn define_global(&mut self, name: Symbol, ty: TypeId, init: Option<Vec<u8>>, span: Span) {
+    fn define_global(
+        &mut self,
+        name: Symbol,
+        ty: TypeId,
+        init: Option<(Vec<u8>, Vec<cir::GlobalRelocation>)>,
+        span: Span,
+    ) {
         // A tentative definition defines nothing yet: `int x;` may be followed by `int x = 1;`.
         let already = self.symbols.here(name).is_some_and(|entry| entry.defined);
         if init.is_some() {
@@ -718,19 +735,26 @@ impl Parser<'_> {
             (Some(index), Some(_)) => {
                 // The tentative definition becomes the real one: it is what gives the object its
                 // bytes, and its size when the initialiser is what completed the type.
+                let (bytes, relocations) = init.expect("the arm matched Some");
                 self.globals[index].ty = ty;
-                self.globals[index].init = init;
+                self.globals[index].init = Some(bytes);
+                self.globals[index].relocations = relocations;
             }
             (Some(_), None) => {
                 // `int x;` after anything: a tentative definition says nothing new.
             }
             (None, _) => {
+                let (init, relocations) = match init {
+                    Some((bytes, relocations)) => (Some(bytes), relocations),
+                    None => (None, Vec::new()),
+                };
                 self.globals_by_name.insert(name, self.globals.len());
                 self.globals.push(cir::Global {
                     name: self.spell_of(name).to_owned(),
                     ty,
                     defined: true,
                     init,
+                    relocations,
                     external: true,
                     span,
                 });
@@ -760,9 +784,11 @@ impl Parser<'_> {
         } else {
             None
         };
-        let Some(init) =
-            written.or_else(|| self.types.size_of(ty).map(|size| vec![0u8; size as usize]))
-        else {
+        let Some((init, relocations)) = written.or_else(|| {
+            self.types
+                .size_of(ty)
+                .map(|size| (vec![0u8; size as usize], Vec::new()))
+        }) else {
             return;
         };
         self.globals.push(cir::Global {
@@ -770,6 +796,7 @@ impl Parser<'_> {
             ty,
             defined: true,
             init: Some(init),
+            relocations,
             external: false,
             span,
         });
@@ -786,17 +813,20 @@ impl Parser<'_> {
     /// The traversal is `initializer`'s - brace elision, designators, and every diagnostic are
     /// unchanged - with `bytes` set so the leaves land at their offsets. There is no second
     /// reader: that was tried twice and failed both times (ADR-004).
-    fn initializer_bytes(&mut self, ty: TypeId) -> Option<Vec<u8>> {
+    fn initializer_bytes(&mut self, ty: TypeId) -> Option<(Vec<u8>, Vec<cir::GlobalRelocation>)> {
         // `char s[] = "hi"` has no size until the initialiser gives it one, so the buffer grows
         // as the traversal learns; it is cut to the type's size at the end.
         let size = self.types.size_of(ty).map(|size| size as usize);
         self.bytes = Some(vec![0u8; size.unwrap_or(0)]);
         self.offset = 0;
+        self.init_grows = size.is_none();
         self.initializer(ty);
+        self.init_grows = false;
         let mut bytes = self.bytes.take()?;
+        let relocations = std::mem::take(&mut self.init_relocations);
         let size = self.types.size_of(ty).map(|size| size as usize)?;
         bytes.resize(size, 0);
-        Some(bytes)
+        Some((bytes, relocations))
     }
 
     /// How a type is written in a diagnostic, with its tags: `pointer to struct Point`. The

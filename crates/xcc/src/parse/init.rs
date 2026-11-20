@@ -81,14 +81,23 @@ impl Parser<'_> {
                 return;
             }
             // In a body the value is the address of the anonymous object the literal became
-            // (ADR-004). At file scope a pointer to an object is a relocation, which the bytes
-            // ADR-004 gives a global cannot express: refused, because leaving it out made the
-            // pointer null rather than the literal's address.
+            // (ADR-004). At file scope it is eight bytes the *linker* fills: the object is written
+            // with a relocation that names the literal, so `char *p = "hello"` and
+            // `char *names[] = {"a", "b"}` are both an address in the data section and both work.
             if self.init_target.is_none() {
-                self.error(
-                    span,
-                    "a pointer to a string literal in a file-scope initialiser is not lowered yet",
-                );
+                let at = self.offset as u32;
+                self.init_relocations.push(crate::cir::GlobalRelocation {
+                    offset: at,
+                    symbol: name.clone(),
+                });
+                if let Some(out) = self.bytes.as_mut() {
+                    let end = self.offset + 8;
+                    if out.len() < end {
+                        out.resize(end, 0);
+                    }
+                    out[self.offset..end].fill(0);
+                    self.offset = end;
+                }
                 return;
             }
             // A block that already ended writes nothing, and says nothing: dead code is not an
@@ -396,21 +405,47 @@ impl Parser<'_> {
             return;
         }
         let written = crate::parse::bytes::constant_bytes(&self.types, ty, value);
-        match (self.bytes.as_mut(), written) {
-            (Some(out), Some(bytes)) if at + bytes.len() <= out.len() => match self.bits {
-                None => out[at..at + bytes.len()].copy_from_slice(&bytes),
-                // A global's bytes start as zeroes, but two bitfields share one unit: the
-                // second merges into what the first left there.
-                Some((start, width)) => {
-                    crate::parse::bytes::merge_bits(out, at, &bytes, start, width);
-                }
-            },
-            _ => self.bytes = None,
+        let grows = self.init_grows;
+        let Some(bytes) = written else {
+            self.bytes = None;
+            return;
+        };
+        let Some(out) = self.bytes.as_mut() else {
+            return;
+        };
+        // An object with no size yet learns it from the list, so the bytes reach as far as the list
+        // does. One whose size is known may not: past its end is an error the brace walker reports.
+        if at + bytes.len() > out.len() {
+            if !grows {
+                self.bytes = None;
+                return;
+            }
+            out.resize(at + bytes.len(), 0);
+        }
+        match self.bits {
+            None => out[at..at + bytes.len()].copy_from_slice(&bytes),
+            // A global's bytes start as zeroes, but two bitfields share one unit: the second merges
+            // into what the first left there.
+            Some((start, width)) => {
+                crate::parse::bytes::merge_bits(out, at, &bytes, start, width);
+            }
         }
     }
 
     /// One value in a brace list, checked against what it initialises.
     fn initializer_value(&mut self, ty: TypeId) {
+        // At file scope a string literal is bytes rather than an expression - `char *names[] = {"a",
+        // "b"}` is an array of addresses the linker fills - so it goes to the same place a whole
+        // initialiser that is one goes. Inside a body the expression reader already has a value for
+        // it, an address the emitter mints.
+        let literal = self.at_file_scope()
+            && self
+                .peek()
+                .is_some_and(|token| token.kind == crate::lex::TokenKind::Str);
+        if literal {
+            self.initializer(ty);
+            return;
+        }
         let Some(value) = self.assignment_expression().map(|value| self.decay(value)) else {
             return;
         };

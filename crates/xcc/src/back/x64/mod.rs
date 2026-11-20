@@ -589,6 +589,14 @@ fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
             offset: data.bytes.len() as u32,
             external: global.external,
         });
+        // The object's own start in the section, so the addresses inside it can be named from there.
+        let start = data.bytes.len() as u32;
+        for relocation in &global.relocations {
+            data.relocations.push(coff::DataRelocation {
+                offset: start + relocation.offset,
+                symbol: relocation.symbol.clone(),
+            });
+        }
         match &global.init {
             Some(init) => data.bytes.extend_from_slice(init),
             None => {

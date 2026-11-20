@@ -135,6 +135,27 @@ Implemented in the fifth attempt; the test is
 `back::jit::tests::array_locals_are_their_own_address_and_decay_by_bitcast`, and what it cost
 is in [AUDIT.md](AUDIT.md#array-locals-the-fifth-attempt---2026-11-16---adr-004s-answer-implemented).
 
+## Amendment: an object's bytes may hold an address
+
+The decision above says a global's initialiser is bytes the front end evaluates, and that was true of
+every initialiser the corpus had until one wrote `char *p = "hello"` - the pointer every C program has,
+and the one a relocation exists for.
+
+An address is not a value the front end can write: it is eight bytes the *linker* fills once it knows
+where the object went. So the bytes keep their meaning and gain a second thing beside them: a
+`cir::Global` now carries a list of `GlobalRelocation { offset, symbol }`, and the back end turns each
+into a relocation at that offset in the data section - `IMAGE_REL_AMD64_ADDR64` in COFF. Nothing about
+the front end's evaluation changed; what changed is that "the bytes" was never the whole story.
+
+Cranelift cannot name a data symbol the way its own relocation type wants it, so levels 0 and 1 refuse an
+initialiser that holds an address, with the span, rather than writing eight zeroes. That is the third
+construct where the two lowerings differ on purpose, after `va_arg` and a floating-point argument to a
+variadic call, and it is recorded for the same reason: a level is a promise about what it compiles.
+
+`int *p = &x;` is still refused, and the reason is worth stating because it is not the same: the address
+of an object needs a symbolic constant in the parser's `Value`, and that is a change to the parser's
+currency rather than to the data format.
+
 ## Consequences
 
 - `cir::Global` gains no fields, which is the test of whether the shape was right at M4.

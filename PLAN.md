@@ -556,6 +556,24 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **An address in a file-scope initialiser.** The last hole in ADR-004, and the last corpus program
+      refused for a compiler gap: `char *p = "hello"` and `char *names[] = {"alpha", "beta"}` - the pointer
+      and the table that every C program has, and the one thing the data format could not say. An address
+      is eight bytes the *linker* fills, so a `cir::Global` now carries relocations beside its bytes and
+      the COFF writer turns each into `IMAGE_REL_AMD64_ADDR64`. Levels 0 and 1 refuse it with the span,
+      because `cranelift-object` cannot name a data symbol the way its relocation type wants - the third
+      deliberate asymmetry, recorded in ADR-004 with the two others.
+      **It needed a second fix that the string table found**: `int a[] = {1,2,3}` at file scope was refused
+      too, and had been all along. An object with no size yet learns its length from the brace list, but
+      the byte writer refused to grow past a buffer of zero bytes and abandoned the whole initialiser -
+      `self.bytes = None`, and the caller's "cannot evaluate" - so a file-scope array whose length comes
+      from its initialiser was a gap nobody had looked at. The writer grows the buffer only when the
+      object's size is *unknown*; a complete object may not grow, which is the error the brace walker
+      already reports.
+      **Measured 418 -> 419 corpus programs compile and agree at `--opt-level=2`, 45 refused** - and every
+      one of those 45 is a program `clang -std=c99` refuses too, or one that needs a header this machine
+      does not have. That is the milestone worth recording: the corpus no longer contains a program this
+      compiler cannot compile for a reason of its own.
 - [x] **The argument staging area was for a case that cannot happen.** Seventh measurement: with the
       frame's operations accounted for, the call path was next. Instrumented per call, **no call in the
       corpus collides in either register file** - an argument's value is never in a register another
