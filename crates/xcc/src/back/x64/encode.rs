@@ -102,10 +102,10 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let saved_float_base = outgoing_base + outgoing_bytes;
     let body_base = saved_float_base + allocation.saved_floats.len() as i32 * 16;
     let spill_base = body_base + func.frame_bytes;
-    let staging_base = spill_base + allocation.spill_bytes;
-    // Eight slots: four integer arguments and four floating ones can be in registers at once, and
-    // every one of them is staged when any could collide.
-    let raw = staging_base + if func.makes_call { 64 } else { 0 };
+    // The frame ends where the spills do: the staging area this used to hold - eight slots, for four
+    // integer arguments and four floating ones - was for a case that cannot occur (see
+    // `place_arguments`).
+    let raw = spill_base + allocation.spill_bytes;
     // Everything `rsp` is moved for, named: a call (which needs the shadow space and the staging
     // area), a value that did not fit in a register, a block parameter, a variable whose address
     // escapes, and a callee-saved register this function had to keep. A function with none of them
@@ -119,14 +119,16 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         && allocation.saved_floats.is_empty();
     // Otherwise, eight extra bytes so that `rsp` is 16-byte aligned inside the function, which is
     // what a call requires: it is 8-aligned on entry, and an odd multiple of eight puts it right.
-    // The pushes and the `sub rsp` together have to move `rsp` by a total that leaves it 16-byte
-    // aligned - `frame` is that total, and `rsp` inside the function is `entry - frame` either way, so
-    // every offset below is unchanged. The subtraction is what is left of the total after the pushes,
-    // and the total is rounded up from whichever is larger, its own body or the pushes themselves.
+    // The pushes sit *above* everything the body uses, not beside it: the body grows up from `rsp` and
+    // the pushed registers end where `rsp` began, so the total the prologue moves is the two added
+    // together, rounded so that `rsp` stays 16-byte aligned inside the function. Adding is what makes
+    // the pushed area and the body disjoint; taking the larger of the two looked right and put a
+    // function's locals on top of its saved registers the moment the body grew past the pushes - a
+    // fault that 64 bytes of now-removed padding had been hiding.
     let frame = if frameless {
         0
     } else {
-        (raw.max(pushed) + 15) / 16 * 16 + 8
+        (raw + pushed + 15) / 16 * 16 + 8
     };
 
     let mut encoder = Encoder {
@@ -137,7 +139,6 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         allocation,
         body_base,
         spill_base,
-        staging_base,
         outgoing_base,
         outgoing_bytes,
         saved_float_base,
@@ -254,8 +255,6 @@ struct Encoder<'a> {
     body_base: i32,
     /// Where spill slots start, from `rsp`; no spills, no references.
     spill_base: i32,
-    /// Where the argument staging area starts, from `rsp`; unused unless the function calls.
-    staging_base: i32,
     /// Which label the epilogue is at.
     epilogue: usize,
     /// The scratch registers an operation may clobber, which belong to the function.
@@ -1270,66 +1269,38 @@ impl Encoder<'_> {
             }
             self.release();
         }
-        let all_integer = plan
-            .iter()
-            .all(|(_, class, _)| *class == super::Class::Integer);
-        if all_integer && !self.arguments_collide(args) {
-            for (argument, _, target) in &plan {
-                match target {
-                    Target::Integer(register) => {
-                        self.read_into(*argument, *register);
-                    }
-                    // A stack argument is already where it belongs.
-                    Target::Stack(_) => {}
-                    Target::Float(_) => {
-                        unreachable!("an integer argument in a floating-point register")
-                    }
-                }
-            }
-            return;
-        }
-        // Otherwise every register argument is staged, whatever its class, and then loaded: one may
-        // be in the register another has to go to, and an XMM argument can share a position with an
-        // integer one without either being wrong. The position travels with it, because a variadic
-        // call's float copy goes in the general register of the position the argument holds.
-        let staged: Vec<_> = plan
-            .iter()
-            .enumerate()
-            .filter(|(_, (_, _, target))| !matches!(target, Target::Stack(_)))
-            .collect();
-        for (index, (_, (argument, class, _))) in staged.iter().enumerate() {
-            let offset = self.staging_base + index as i32 * 8;
-            match class {
-                super::Class::Integer => {
-                    let register = self.read(*argument);
-                    self.mov_memory_from_reg(offset, register);
-                }
-                super::Class::Float => {
-                    let register = self.read_float(*argument);
-                    self.float_move(register, Reg::RSP, offset, 8, Move::Store);
-                }
-            }
-            self.release();
-        }
-        for (index, (position, (_, class, target))) in staged.iter().enumerate() {
-            let offset = self.staging_base + index as i32 * 8;
+        // Nothing collides, and it cannot: a function that makes a call allocates only callee-saved
+        // registers - `Registers` gives the caller-saved ones to functions that call nothing - so no
+        // argument's value is ever in one of the registers the arguments have to go to. The staging
+        // area this used to need, and the second pass that filled it, are gone; the assertion is here
+        // so that a future pool which allows an argument register says so instead of quietly
+        // clobbering an argument.
+        debug_assert!(
+            !self.arguments_collide(&plan),
+            "an argument's value is in another argument's register: the staging area is needed again"
+        );
+        for (position, (argument, class, target)) in plan.iter().enumerate() {
             match (class, target) {
                 (super::Class::Integer, Target::Integer(register)) => {
-                    self.mov_reg_from_memory(*register, offset);
+                    self.read_into(*argument, *register);
                 }
                 (super::Class::Float, Target::Float(register)) => {
-                    self.float_move(*register, Reg::RSP, offset, 8, Move::Load);
+                    let source = self.read_float(*argument);
+                    if source != *register {
+                        self.float_move(*register, source, 0, 8, Move::Register);
+                    }
                     if variadic {
-                        // The same eight bytes, into the general register of the same position. A
-                        // callee that reads the list one eight-byte slot at a time - which is every
-                        // callee, `va_arg` among them - then finds an `int` and a `double` in the
-                        // same place, and needs no vector save area.
-                        let copy = super::ARGUMENT_REGISTERS[*position];
-                        self.mov_reg_from_memory(copy, offset);
+                        // The same sixty-four bits, into the general register of the same position:
+                        // Win64's duplicate, which is what lets a callee read the list one eight-byte
+                        // slot at a time (ADR-006).
+                        self.integer_from_float(super::ARGUMENT_REGISTERS[position], source);
                     }
                 }
-                _ => unreachable!("an argument that is not where its class says"),
+                // A stack argument is already where it belongs.
+                (_, Target::Stack(_)) => {}
+                (class, target) => unreachable!("a {class:?} argument at {target:?}"),
             }
+            self.release();
         }
     }
 
@@ -1366,21 +1337,46 @@ impl Encoder<'_> {
 
     /// Whether moving the arguments into their registers, in order, can destroy one that has not
     /// been read yet: an argument whose register is a *later* argument's register.
-    fn arguments_collide(&self, args: &[VReg]) -> bool {
-        args.iter().enumerate().any(|(index, arg)| {
-            match self.allocation.location(*arg) {
-                // A floating-point argument is refused before a call is lowered: the ABI's XMM
-                // registers are not part of this back end yet.
-                Location::Float(_) => false,
-                Location::Register(register) => super::ARGUMENT_REGISTERS
-                    .iter()
-                    .position(|target| *target == register)
-                    .is_some_and(|position| position != index),
-                // A spilled argument is read straight out of its slot into the register that needs
-                // it, so it cannot be in the way.
-                Location::Spill(_) => false,
-            }
-        })
+    /// Whether putting the arguments in their registers would destroy one another: an argument whose
+    /// value already sits in the register that *another* position needs is the case, and the answer
+    /// decides whether the staging area is used at all.
+    ///
+    /// Each file is checked against its own, because they are disjoint - an integer in `rdx` is not
+    /// disturbed by a `double` going to `xmm1` - and the corpus has no call in which either file
+    /// collides, so the staging area is what pays when one does. A spilled argument is read straight
+    /// from its slot into the register that needs it, so it is never in the way.
+    fn arguments_collide(&self, plan: &[(VReg, super::Class, Target)]) -> bool {
+        plan.iter()
+            .enumerate()
+            .any(|(position, (argument, class, target))| {
+                let held = match self.allocation.location(*argument) {
+                    Location::Register(register) => register,
+                    Location::Float(register) => register,
+                    Location::Spill(_) => return false,
+                };
+                let file: &[Reg] = match (class, target) {
+                    (super::Class::Integer, Target::Integer(_)) => &super::ARGUMENT_REGISTERS,
+                    (super::Class::Float, Target::Float(_)) => &super::FLOAT_ARGUMENTS,
+                    // A stack argument is written before any register is touched, so it is read only.
+                    _ => return false,
+                };
+                file.iter()
+                    .position(|register| *register == held)
+                    .is_some_and(|other| other != position)
+            })
+    }
+
+    /// `movq r64, xmm`: the value's sixty-four bits, into a general register. Used for the variadic
+    /// duplicate, where the same `double` has to reach a callee that reads the general file.
+    fn integer_from_float(&mut self, to: Reg, from: Reg) {
+        self.byte(0x66);
+        // The prefix takes the same two registers `modrm` does, in the same order: `0F 7E` names the
+        // XMM register in the *reg* field and the general one in the *r/m* field, so `R` belongs to
+        // `from` and `B` to `to`. Swapping them here emits `movq %xmm7, %r???` - a register the
+        // instruction never named - and it is the fifth time this back end has paid for that order.
+        self.prefix_w(from, to);
+        self.bytes(&[0x0F, 0x7E]);
+        self.modrm(3, from.0, to);
     }
 
     /// A register for a spilled operand: the function's two scratch registers, and no third. An

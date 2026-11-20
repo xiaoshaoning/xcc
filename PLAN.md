@@ -556,6 +556,28 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The argument staging area was for a case that cannot happen.** Seventh measurement: with the
+      frame's operations accounted for, the call path was next. Instrumented per call, **no call in the
+      corpus collides in either register file** - an argument's value is never in a register another
+      position needs - so every call was paying for a staging area it did not use: four stores and four
+      loads, in a 64-byte frame reservation, on the *chance* of a collision.
+      The chance is nil by construction, which is the part worth writing down: `Registers` gives the
+      **caller-saved** set - which contains `r8` and `r9`, two of the four integer argument registers - to
+      functions that call **nothing**, and a function that calls nothing places no arguments. So the
+      staging path, its second pass and its 64 bytes are gone, replaced by a `debug_assert` that names the
+      invariant so a future pool which allows an argument register says so instead of quietly clobbering
+      one.
+      **Measured 60 964 -> 60 476 (-0.8%)** - small, and smaller than the 4 KB I estimated, because the
+      estimate counted *calls with register arguments* rather than *calls that stage*; all-integer calls
+      already took the direct path. The commits that pay for themselves in size are not always the ones
+      that pay for themselves in clarity, and this one is the second kind.
+      **And it exposed two layout faults**, which is the real story: removing the padding made
+      `cc32_byval` crash. The total the prologue moved was `max(body, pushes)` where it had to be
+      `body + pushes` - the pushed registers sit *above* the body, so taking the larger of the two put a
+      function's locals on top of its saved registers as soon as the body outgrew them. The 64 bytes of
+      staging had been hiding that since the pushes landed, in the previous commit. One wrong answer
+      (`va_start` pointing into the frame) was found by the last review; this one was found by a corpus
+      program that copies a struct into a local.
 - [x] **A callee-saved register is pushed, not stored.** Sixth measurement, and the first on the frame
       rather than on an operation: the prologue and epilogue were 12.2% of the bytes between them, and
       **351 integer saves** across 514 functions were costing ten bytes each - `mov [rsp+disp8], r64` to
