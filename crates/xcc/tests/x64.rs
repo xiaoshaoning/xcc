@@ -43,6 +43,17 @@ fn corpus() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus")
 }
 
+/// The corpus, sorted, so two tests cannot disagree about which files it holds.
+fn corpus_files() -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(corpus())
+        .expect("the corpus is in the repository")
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .collect();
+    files.sort();
+    files
+}
+
 /// What running a program came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Ran {
@@ -489,6 +500,62 @@ fn a_function_address_that_never_escapes_is_still_a_direct_call() {
         ran.status,
         Some(7),
         "the call went to the function it names"
+    );
+}
+
+/// Every program this compiler refuses is one `clang -std=c99` refuses too.
+///
+/// The corpus gate reports a **count** of refusals, and a count of refusals hides the only thing worth
+/// knowing about them: whether the reason is the program's or the compiler's. Twenty are refused today,
+/// and every one of them is a program no C compiler accepts - a deliberate negative like `// Negative:
+/// too many array initializers must error`, a program that needs MATLAB's `<mex.h>`, or a program that
+/// uses another compiler's `word` extension. **A refusal only this compiler makes would look exactly
+/// like those in a count**, so what is pinned here is not how many are refused but that none of them is
+/// ours: clang is the oracle, and a gap is a program clang accepts and this does not.
+#[test]
+fn every_program_refused_here_is_refused_by_clang_too() {
+    let Ok(clang) = std::process::Command::new("clang")
+        .arg("--version")
+        .output()
+    else {
+        eprintln!("no clang on this machine: the refusal oracle is skipped");
+        return;
+    };
+    assert!(clang.status.success(), "clang answers");
+    let mut refused = 0usize;
+    let mut gaps: Vec<String> = Vec::new();
+    for path in corpus_files() {
+        let source = std::fs::read_to_string(&path).expect("the source is readable");
+        let options = Options {
+            opt_level: 2,
+            ..Options::default()
+        };
+        if Compile::new(options).compile("t.c", &source).is_ok() {
+            continue;
+        }
+        refused += 1;
+        let theirs = std::process::Command::new("clang")
+            .args(["-std=c99", "-fsyntax-only"])
+            .arg(&path)
+            .output()
+            .expect("clang runs");
+        if theirs.status.success() {
+            gaps.push(
+                path.file_name()
+                    .expect("a name")
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    eprintln!(
+        "refusal oracle: {refused} refused, {} of them only here",
+        gaps.len()
+    );
+    assert!(
+        gaps.is_empty(),
+        "refused here and accepted by clang -std=c99: {}",
+        gaps.join(", ")
     );
 }
 

@@ -558,6 +558,17 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The last twenty refusals are asked of an oracle, not assumed.** "Solve the 20 refused" has a
+      truthful answer only if the number means something, and it did not: a *count* of refusals hides the
+      only thing worth knowing - whether the reason is the program's or the compiler's. `clang -std=c99`
+      was run over all twenty: **it refuses every one**, for the same reasons the corpus's own comments
+      give - `// Negative: too many array initializers must error`, `<mex.h>` (MATLAB's), and `word` (a
+      comment in `cc26_word.c` says *"`word` is a cc_int extension, so gcc cannot be the oracle"*).
+      So the count is not a defect list and "solving" it would mean compiling C that no compiler accepts.
+      **What was worth doing is pinning the invariant that the count was hiding**:
+      `every_program_refused_here_is_refused_by_clang_too` runs both compilers over the corpus and fails on
+      a program clang accepts and this does not - printed as *"refusal oracle: 20 refused, 0 of them only
+      here"*. A gap now has nowhere to hide in the arithmetic.
 - [x] **The C11 row finished: `_Alignof`, `_Alignas`, `_Atomic`.** `--std=c11` had two constructs; the
       matrix promised five. `_Alignof` is `sizeof` for alignment; `_Atomic T` and `_Atomic(T)` declare an
       object of type `T` - the atomicity of the accesses is not implemented, and the matrix says so rather
