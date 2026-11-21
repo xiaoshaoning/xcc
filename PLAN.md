@@ -558,6 +558,26 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **`cJSON.c` compiles, and its output is byte-identical to clang's.** The three bugs real code found,
+      all in constructs the corpus never uses:
+      **One symbol, and every address works.** A file-scope initialiser holding an address had been
+      limited to a *string literal*: `static struct hooks hooks = { my_malloc, my_free };` - a table of
+      callbacks, which is how every C program with a vtable is written - was refused, and so were `&x` and
+      an array's name. The `cir`-less paths threw the symbol away instead of keeping it; `Value` now carries
+      the symbol whose address it is, and the initialiser writes a relocation. That is the ADR-004 hole
+      closed for every address *expression* C allows at file scope, not just the literal case.
+      **A `switch` on a narrow type was ill-typed.** C99 6.8.4.2p5 promotes the controlling expression;
+      `switch (c)` with `unsigned char c` compared an `unsigned char` with `int` case labels, and `cir` is
+      typed. cJSON's number parser is written exactly that way.
+      **And the verifier said the wrong thing about it.** The front end's `cir` was never verified before
+      the first pass, so a type error the *front end* wrote was reported as *"a pass broke `parse_number`"*
+      - and the pass had done nothing wrong. `optimise` now verifies what the front end wrote before it runs
+      anything, and the message says what is true (`internal: `parse_number` is not valid: ...`) rather than
+      guessing which half of the compiler did it. That cost an hour of bisecting to find out, which is what
+      a message that names the wrong layer always costs.
+      **Measured: `cJSON.c` (3 206 lines, MIT) compiles, links, and parses/prints JSON with output
+      byte-identical to a clang build of the same source.** 443 corpus programs still agree, 20 refused, and
+      the refusal oracle is now 19 - the function-address initialiser became a construct that works.
 - [x] **Real code, and the two bugs 443 corpus programs could not find.** The audit discipline says a
       milestone ends with a run over code nobody here wrote, and it had not been done since M3: every
       corpus program is this project's own. `cJSON.c` - 3 206 lines, MIT, nobody here wrote it - was

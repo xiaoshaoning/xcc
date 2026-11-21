@@ -147,6 +147,7 @@ impl Parser<'_> {
                 cir: Some(address),
                 place: None,
                 bits: None,
+                address: None,
             };
             self.write_leaf(ty, value);
         }
@@ -430,6 +431,26 @@ impl Parser<'_> {
             return;
         }
         let at = self.offset;
+        // An *address* is eight bytes the linker fills, and the placeholder is zero because the
+        // relocation adds the symbol to it: `static hooks = { my_malloc }` is how every C program with
+        // a vtable is written.
+        if let Some(symbol) = value.address {
+            let name = self.spell_of(symbol).to_owned();
+            let Some(out) = self.bytes.as_mut() else {
+                return;
+            };
+            let end = at + 8;
+            if out.len() < end {
+                out.resize(end, 0);
+            }
+            out[at..end].fill(0);
+            self.init_relocations.push(crate::cir::GlobalRelocation {
+                offset: at as u32,
+                symbol: name,
+            });
+            self.offset = end;
+            return;
+        }
         // What the bytes need is a constant, not silence: inside a body a constant *also* emits an
         // instruction (nothing else has a value there), and that instruction being unused is no
         // reason to refuse the bytes - which is what a `static` local's initialiser needs, and a

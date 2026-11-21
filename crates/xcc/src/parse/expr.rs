@@ -138,6 +138,7 @@ impl Parser<'_> {
                         constant: None,
                         lvalue: false,
                         bits: None,
+                        address: None,
                         cir: Some(place),
                         place: Some(place),
                     });
@@ -730,7 +731,9 @@ impl Parser<'_> {
         // is a bitcast to `pointer to element` - and every use sees only the result. A record or
         // a pointer returns above: neither decays, and a record is not loaded anywhere.
         let Some(address) = value.cir else {
-            return Value::temporary(ty);
+            // At file scope the array's address is the symbol itself, and the decay is a change of
+            // type with nothing to compute.
+            return Value::new(ty, None, false).with_address(value.address);
         };
         let span = self.span();
         let from = if self.types.value_is_address(value.ty) {
@@ -856,6 +859,12 @@ impl Parser<'_> {
                     return Some(Value::new(pointer, None, false));
                 }
                 let Some(place) = value.place else {
+                    // A place with no code: a file-scope object, whose address is its symbol. Anything
+                    // reached through it - `&x`, `&s`, `arr` - is that address; `&s.member` and `a + 1`
+                    // are an address plus an offset, which is the next step and not this one.
+                    if let Some(symbol) = value.address {
+                        return Some(Value::new(pointer, None, false).with_address(Some(symbol)));
+                    }
                     self.not_lowered(span, "the address of this kind of place");
                     return Some(Value::temporary(self.types.error()));
                 };
@@ -1473,6 +1482,7 @@ impl Parser<'_> {
             cir: Some(buffer),
             place: Some(buffer),
             bits: None,
+            address: None,
         }
     }
 
@@ -1625,6 +1635,7 @@ impl Parser<'_> {
                     cir: None,
                     place: None,
                     bits: Some(bits),
+                    address: None,
                 },
                 None => Value::new(member_ty, None, true),
             };
@@ -1657,6 +1668,7 @@ impl Parser<'_> {
             cir,
             place: Some(address),
             bits: Some((start, width)),
+            address: None,
         };
         let signed = matches!(self.types.kind(ty), Type::Int { signed: true, .. });
         // Arithmetic shifts for a signed field, logical ones for an unsigned field: the
@@ -1920,10 +1932,14 @@ impl Parser<'_> {
                         constant: None,
                         lvalue: false,
                         bits: None,
+                        address: None,
                         cir: Some(address),
                         place: Some(address),
                     },
-                    None => Value::new(pointer, None, false),
+                    // No code to hold the address - a file-scope initialiser, where it is a
+                    // relocation. `static hooks = { my_malloc, my_free };` is how every C program
+                    // with a vtable is written, and cJSON is one.
+                    None => Value::new(pointer, None, false).with_address(Some(name)),
                 }
             }
             Kind::Typedef => {
@@ -1944,7 +1960,9 @@ impl Parser<'_> {
                         match self.emit(|builder| builder.global_address(link_name, pointer, span))
                         {
                             Some(address) => self.read_place(ty, address, span),
-                            None => Value::new(ty, None, true),
+                            // At file scope there is no code: the value *is* the symbol, which is what
+                            // `int *p = &x;` and `char *s = str;` need to say.
+                            None => Value::new(ty, None, true).with_address(Some(name)),
                         }
                     }
                 }

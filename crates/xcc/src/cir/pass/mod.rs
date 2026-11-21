@@ -49,6 +49,13 @@ impl Changes {
 pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, Broken)> {
     let mut changes = Changes::default();
     for func in &mut module.funcs {
+        // First, the cir the *front end* wrote. A function that is already ill-typed here has a
+        // front-end bug, and verifying before the first pass is what tells the two layers apart:
+        // without it, a `switch` on an `unsigned char` that compared itself with `int` case labels
+        // was reported as "a pass broke `parse_number`", and the pass had done nothing wrong.
+        if let Err(broken) = func.verify(&module.types) {
+            return Err((func.name, broken));
+        }
         let before = mem2reg::count_memory(func);
         changes.slots += mem2reg::run(func, &module.types);
         let after = mem2reg::count_memory(func);

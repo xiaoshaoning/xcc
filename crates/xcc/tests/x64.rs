@@ -342,6 +342,26 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             7,
         ),
         (
+            // A `switch` on a narrow type: C99 6.8.4.2p5 promotes the controlling expression, and a
+            // `switch` on an `unsigned char` that compared itself with `int` case labels was a
+            // `cir` the verifier refused. `cJSON.c`'s number parser is written exactly this way.
+            "a switch on an unsigned char",
+            "int classify(unsigned char c) { switch (c) { case '0': case '1': return 7;
+                       case 'x': return 11; default: return 0; } }
+             int main(void) { return classify('1') + classify((unsigned char)'x') + classify('q'); }",
+            18,
+        ),
+        (
+            // An address in a global's initialiser: a function's, which is how every C program with a
+            // table of callbacks is written.
+            "a function address in a global's initialiser",
+            "int my_malloc(int n) { return n; } int my_free(int n) { return n; }
+             struct hooks { int (*allocate)(int); int (*release)(int); };
+             static struct hooks global = { my_malloc, my_free };
+             int main(void) { return global.allocate(40) + global.release(2); }",
+            42,
+        ),
+        (
             // `->` on an array of structs: C99 6.3.2.1p3 decays the array to a pointer before the
             // operator applies, and every flexible-array member in real C is written this way. The
             // first version decayed only for the type test and computed the address from the array,

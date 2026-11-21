@@ -168,8 +168,12 @@ impl Compile {
         let opt_level = self.options.opt_level;
         if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
             diagnostics.push(
+                // Neither layer is named: `optimise` verifies the front end's `cir` before its first
+                // pass, so this covers both, and the function is named either way. The message says
+                // what is true - the compiler wrote something the verifier refuses - rather than
+                // guessing which half of it did.
                 Diagnostic::error(format!(
-                    "internal: a pass broke `{}`: {}",
+                    "internal: `{}` is not valid: {}",
                     preprocessed.names().resolve(function),
                     broken.message
                 ))

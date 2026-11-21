@@ -534,8 +534,21 @@ impl Parser<'_> {
                 self.error(span, format!("`switch` needs an integer, not {ty}"));
             }
         }
-        let value = condition.and_then(|condition| condition.cir);
-        let condition_type = condition.map(|condition| self.types.promote(condition.ty));
+        // C99 6.8.4.2p5: the controlling expression is promoted - a `switch` on an `unsigned char`
+        // compares `unsigned char`s with `int` case labels otherwise, and `cir` is typed. The value is
+        // converted *here*, once, because the compare against each case label is built from it.
+        let (value, condition_type) = match condition {
+            Some(condition) => {
+                let promoted = self.types.promote(condition.ty);
+                let converted = if promoted == condition.ty {
+                    condition
+                } else {
+                    self.convert(condition, promoted, span)
+                };
+                (converted.cir, Some(promoted))
+            }
+            None => (None, None),
+        };
         let (exit, test) = match (value, self.in_body()) {
             (Some(_), true) => (self.new_block(span), self.new_block(span)),
             _ => (None, None),
