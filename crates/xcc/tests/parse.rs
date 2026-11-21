@@ -367,6 +367,53 @@ fn an_undeclared_function_is_a_warning_and_its_result_is_an_int() {
 }
 
 #[test]
+fn a_declaration_can_begin_with_every_specifier() {
+    // The list of words that start a declaration (`SPECIFIERS`) and the reader that accepts them are
+    // two places knowing one thing, and nothing used to say so: `_Alignas(16) int x;` inside a
+    // function was read as a *call* to a function called `_Alignas`, because the list decides whether
+    // a statement is a declaration. Every word is tried at block scope here, which is the direction
+    // that fails when the two drift apart.
+    let c11 = Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    };
+    let declarations = [
+        "typedef int T;",
+        "extern int e;",
+        "static int s;",
+        "auto int a;",
+        "register int r;",
+        "const int c = 1;",
+        "volatile int v;",
+        "restrict int re;",
+        "inline int in;",
+        "void *p;",
+        "_Bool b;",
+        "char ch;",
+        "short sh;",
+        "int i;",
+        "long l;",
+        "float f;",
+        "double d;",
+        "signed int si;",
+        "unsigned int ui;",
+        "struct S { int member; };",
+        "union U { int member; };",
+        "enum E { A };",
+        "_Atomic int atom;",
+        "_Alignas(16) int aligned;",
+    ];
+    for declaration in declarations {
+        let source = format!("int f(void) {{ {declaration} return 0; }}");
+        let complaints = check_with(c11.clone(), &source);
+        assert!(
+            complaints.is_empty(),
+            "{declaration:?} should begin a declaration, but: {complaints:?}"
+        );
+    }
+}
+
+#[test]
 fn c11_is_a_dialect_you_ask_for() {
     // `_Static_assert` and `_Generic` are C11's, and the compiler says so instead of pretending the
     // words were never declared: the note names the flag.

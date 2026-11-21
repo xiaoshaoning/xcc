@@ -298,6 +298,10 @@ pub enum Inst {
         result: Value,
         /// The type of what the slot holds.
         ty: TypeId,
+        /// The alignment C11's `_Alignas` asked for, when it asked for one: zero means the type's
+        /// own. It is the object's alignment, not its type's - `_Alignas(16) int x` is a sixteen-byte
+        /// object holding an `int` - so it cannot live in the type.
+        alignas: u64,
         /// Where in the source.
         span: Span,
     },
@@ -828,8 +832,18 @@ impl<'a> Builder<'a> {
     /// Stack space for a C variable of type `ty`; the value is a `pointer` to it. The caller
     /// has the type arena, so it says what a pointer to `ty` is.
     pub fn slot(&mut self, ty: TypeId, pointer: TypeId, span: Span) -> Value {
+        self.aligned_slot(ty, pointer, 0, span)
+    }
+
+    /// The same, with the alignment `_Alignas` asked for; zero means the type's own.
+    pub fn aligned_slot(&mut self, ty: TypeId, pointer: TypeId, alignas: u64, span: Span) -> Value {
         let result = self.func.mint(pointer, self.current);
-        self.push(Inst::Slot { result, ty, span });
+        self.push(Inst::Slot {
+            result,
+            ty,
+            alignas,
+            span,
+        });
         result
     }
 
@@ -905,6 +919,8 @@ pub struct Global {
     pub defined: bool,
     /// The bytes it is initialised with, when it is defined and its value is known.
     pub init: Option<Vec<u8>>,
+    /// The alignment `_Alignas` asked for, when it asked for one: zero means the type's own.
+    pub alignas: u64,
     /// The places in those bytes that are the *address* of a symbol rather than a value: eight bytes
     /// each, filled in by the linker. ADR-004 said a global's initialiser is bytes, and a C
     /// initialiser may also be `&something` - `char *p = "hello"` being the one every program has.

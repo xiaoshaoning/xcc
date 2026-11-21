@@ -558,6 +558,29 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **The C11 row finished: `_Alignof`, `_Alignas`, `_Atomic`.** `--std=c11` had two constructs; the
+      matrix promised five. `_Alignof` is `sizeof` for alignment; `_Atomic T` and `_Atomic(T)` declare an
+      object of type `T` - the atomicity of the accesses is not implemented, and the matrix says so rather
+      than implying it; `_Alignas` raises an object's alignment in the frame and in the data section.
+      **Three things had to be true for `_Alignas` to be honest rather than decorative.** The alignment is
+      the *object's*, not its type's, so it travels with the slot and the global rather than being inferred
+      from the type - `_Alignas(16) int x` is a sixteen-byte object holding an `int`. The frame's body base
+      had to be rounded to sixteen, because `saved_float_base` sits after an odd number of eight-byte
+      pushes as often as an even one and a sixteen-aligned *offset* from an eight-aligned base is not a
+      sixteen-aligned object. And above sixteen is an *extended* alignment, which C11 6.7.5p6 lets an
+      implementation decline: `_Alignas(32)` is refused with the number named instead of quietly
+      under-aligning.
+      **And it found a list that had drifted.** `_Alignas(16) int x;` inside a *function* was read as a call
+      to a function called `_Alignas`, because `SPECIFIERS` - the words that start a declaration - decides
+      whether a statement is a declaration, and the specifier reader had learned the word without the list.
+      The comment above that list claimed *"a test pins it against the specifier reader so the two cannot
+      drift apart"*. **There was no such test.** There is now:
+      `a_declaration_can_begin_with_every_specifier` runs all twenty-four words at block scope, which is
+      the direction that fails when the two drift.
+      **Measured: 443 corpus programs agree, 20 refused, 0 wrong, 3.45x `clang -O2`.** The frame rounding
+      costs **60 bytes over 444 programs** (79 592 -> 79 652) - measured by stashing the commit and
+      rebuilding, because the corpus had also grown by twenty-five programs in between and the two numbers
+      were not comparable.
 - [x] **The embedding API can ask for what the command line can.** The C API was five functions and no
       options, so a host compiled as C99 at level 0 - and the two things this milestone added, `--std=c11`
       and `--opt-level=2`, were reachable only from the command line. That is a capability that exists and

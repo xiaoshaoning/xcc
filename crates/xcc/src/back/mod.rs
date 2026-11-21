@@ -584,14 +584,22 @@ impl<M: Module> Lowerer<'_, M> {
                 };
                 values.insert(*result, constant);
             }
-            Inst::Slot { result, ty, .. } => {
+            Inst::Slot {
+                result,
+                ty,
+                alignas,
+                ..
+            } => {
                 let size = self.types.size_of(*ty).ok_or_else(|| {
                     LoweringError::bug("a slot for an incomplete type".to_owned())
                 })?;
+                // The third field is the slot's alignment shift: `_Alignas(16)` on a `char` has to
+                // be a sixteen-byte object, and C11 6.7.5p6 says it may raise, never lower, one.
+                let align = self.types.align_of(*ty).unwrap_or(1).max(*alignas).max(1);
                 let slot = builder.create_sized_stack_slot(ir::StackSlotData::new(
                     ir::StackSlotKind::ExplicitSlot,
                     size as u32,
-                    0,
+                    align.trailing_zeros() as u8,
                 ));
                 let address = builder.ins().stack_addr(pointer, slot, 0);
                 values.insert(*result, address);

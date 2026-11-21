@@ -104,7 +104,10 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // pushes put things - so the layout keeps its shape and nothing addresses them.
     let pushed = 8 * allocation.saved.len() as i32;
     let saved_float_base = outgoing_base + outgoing_bytes;
-    let body_base = saved_float_base + allocation.saved_floats.len() as i32 * 16;
+    // Rounded up to sixteen: `_Alignas(16)` on a local is only true if the frame's own base is
+    // sixteen-aligned, and `saved_float_base` sits after an odd number of eight-byte pushes as often
+    // as an even one. The cost is at most eight bytes of frame in a function that has saves.
+    let body_base = (saved_float_base + allocation.saved_floats.len() as i32 * 16 + 15) / 16 * 16;
     let spill_base = body_base + func.frame_bytes;
     // The frame ends where the spills do: the staging area this used to hold - eight slots, for four
     // integer arguments and four floating ones - was for a case that cannot occur (see

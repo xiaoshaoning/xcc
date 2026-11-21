@@ -183,13 +183,21 @@ impl Value {
     }
 }
 
-/// The words that can begin a declaration: storage classes, qualifiers, type specifiers and
-/// the tag keywords. `starts_specifier` asks this list, and a test pins it against the
-/// specifier reader so the two cannot drift apart.
+/// The largest alignment this compiler supports: sixteen bytes, which is `max_align_t` on this ABI
+/// and what the stack guarantees. C11 6.7.5p6 lets an implementation decline the *extended*
+/// alignments above it, and this one does, with a diagnostic naming the number asked for.
+const FUNDAMENTAL_ALIGNMENT: u64 = 16;
+
+/// The words that can begin a declaration: storage classes, qualifiers, type specifiers and the tag
+/// keywords. `starts_specifier` asks this list, and **a word the specifier reader accepts and this
+/// list does not is a word that only works at file scope** - `_Alignas(16) int x;` inside a function
+/// was read as a call to a function called `_Alignas`, because the list is what decides whether a
+/// statement is a declaration. `a_declaration_can_begin_with_every_specifier` runs each of these
+/// words at block scope, which is the direction that fails when they drift.
 const SPECIFIERS: &[&str] = &[
     "typedef", "extern", "static", "auto", "register", "const", "volatile", "restrict", "inline",
     "void", "_Bool", "char", "short", "int", "long", "float", "double", "signed", "unsigned",
-    "struct", "union", "enum",
+    "struct", "union", "enum", "_Atomic", "_Alignas",
 ];
 
 /// One `switch` being read: the `case` values seen so far, so a duplicate is caught
@@ -434,6 +442,57 @@ impl Parser<'_> {
                 self.bump();
             }
         }
+    }
+
+    /// `_Alignas (...)`'s operand: a type name's alignment, or an integer constant expression.
+    fn alignment_in_parentheses(&mut self) -> Option<u64> {
+        // `parenthesised_type` reads both parentheses, and rewinds when what is inside is not a type
+        // - which is exactly the "is this `_Alignas(16)` or `_Alignas(double)`" question.
+        if let Some(ty) = self.parenthesised_type() {
+            return self.types.align_of(ty);
+        }
+        if !self.eat("(") {
+            self.error_at_current("expected `(` after `_Alignas`");
+            return None;
+        }
+        let saved = std::mem::replace(&mut self.unevaluated, true);
+        let value = self.conditional_expression();
+        self.unevaluated = saved;
+        let span = self.span();
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after `_Alignas`");
+        }
+        let value = value?;
+        match value.constant {
+            Some(constant) if constant > 0 => Some(constant as u64),
+            _ => {
+                self.error(
+                    span,
+                    "`_Alignas` takes a type or a positive constant expression",
+                );
+                None
+            }
+        }
+    }
+
+    /// `_Alignof ( type-name )` - C11 6.5.3.1. Unlike `sizeof` there is no expression form, so the
+    /// operand is a type name or a diagnostic.
+    fn alignof_expression(&mut self, span: Span) -> Value {
+        if self.preprocessed.standard == crate::options::CStandard::C99 {
+            self.error(span, "`_Alignof` is C11: compile with `--std=c11`");
+        }
+        let size_type = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        let Some(ty) = self.parenthesised_type() else {
+            self.error(span, "`_Alignof` takes a type in parentheses");
+            return Value::temporary(size_type);
+        };
+        // A constant, but one with code behind it: a `return` of a value that only exists at compile
+        // time has nothing to hand back, which is a `ud2` and an illegal instruction at run time.
+        let align = self.types.align_of(ty).unwrap_or(1);
+        self.constant_of(size_type, align as i64, span)
     }
 
     /// `_Static_assert ( constant-expression , string-literal ) ;` - C11 6.7.10.
@@ -728,7 +787,10 @@ impl Parser<'_> {
                 if let Some(name) = name {
                     let pointer = self.pointer_to(ty);
                     let span = self.span();
-                    if let Some(slot) = self.emit(|builder| builder.slot(ty, pointer, span)) {
+                    let alignas = specs.alignas;
+                    if let Some(slot) =
+                        self.emit(|builder| builder.aligned_slot(ty, pointer, alignas, span))
+                    {
                         if let Some(entry) = self.symbols.here_mut(name) {
                             entry.storage = Some(slot);
                         }
@@ -741,7 +803,7 @@ impl Parser<'_> {
             if object && !self.in_body() && !self.at_punct("=") {
                 if let Some(name) = name {
                     let span = self.span();
-                    self.define_global(name, ty, None, span);
+                    self.define_global(name, ty, None, specs.alignas, span);
                 }
             }
             if static_local {
@@ -770,7 +832,13 @@ impl Parser<'_> {
                     match self.initializer_bytes(ty) {
                         Some((bytes, relocations)) => {
                             if let Some(name) = name {
-                                self.define_global(name, ty, Some((bytes, relocations)), span);
+                                self.define_global(
+                                    name,
+                                    ty,
+                                    Some((bytes, relocations)),
+                                    specs.alignas,
+                                    span,
+                                );
                             }
                         }
                         // C99 6.7.8p4 wants a constant expression here, and an object this
@@ -853,6 +921,7 @@ impl Parser<'_> {
             defined: true,
             init: Some(init.clone()),
             relocations: Vec::new(),
+            alignas: 0,
             external: false,
             span,
         });
@@ -878,6 +947,7 @@ impl Parser<'_> {
         name: Symbol,
         ty: TypeId,
         init: Option<(Vec<u8>, Vec<cir::GlobalRelocation>)>,
+        alignas: u64,
         span: Span,
     ) {
         // A tentative definition defines nothing yet: `int x;` may be followed by `int x = 1;`.
@@ -916,6 +986,7 @@ impl Parser<'_> {
                     defined: true,
                     init,
                     relocations,
+                    alignas,
                     external: true,
                     span,
                 });
@@ -958,6 +1029,7 @@ impl Parser<'_> {
             defined: true,
             init: Some(init),
             relocations,
+            alignas: 0,
             external: false,
             span,
         });
@@ -1042,6 +1114,29 @@ impl Parser<'_> {
                 "const" | "volatile" | "restrict" | "inline" => {
                     self.at += 1; // qualifiers carry no meaning in M3.1
                 }
+                // C11 6.7.5: `_Alignas(type-name)` or `_Alignas(constant-expression)`. It raises the
+                // object's alignment and may not lower it, so a value below the type's own is a
+                // diagnostic rather than a smaller object.
+                "_Alignas" => {
+                    if self.preprocessed.standard == crate::options::CStandard::C99 {
+                        let span = self.span();
+                        self.error(span, "`_Alignas` is C11: compile with `--std=c11`");
+                    }
+                    self.at += 1;
+                    if let Some(align) = self.alignment_in_parentheses() {
+                        if align > FUNDAMENTAL_ALIGNMENT {
+                            let span = self.span();
+                            self.error(
+                                span,
+                                format!(
+                                    "`_Alignas({align})` is an extended alignment, and this compiler supports {FUNDAMENTAL_ALIGNMENT} and below - what the ABI guarantees"
+                                ),
+                            );
+                        } else {
+                            specs.alignas = specs.alignas.max(align);
+                        }
+                    }
+                }
                 "void" | "_Bool" | "char" | "short" | "int" | "long" | "float" | "double"
                 | "signed" | "unsigned" => {
                     spelled.push(word);
@@ -1057,6 +1152,23 @@ impl Parser<'_> {
                     specs.ty = Some(self.enum_specifier());
                     specs.declares_tag = true;
                     return self.finish_specifiers(specs, spelled);
+                }
+                // C11 6.7.2p1: `_Atomic` is a type specifier when a parenthesised type follows it
+                // and a qualifier otherwise. Both mean the type C would give it; the atomicity of
+                // the *access* is a promise this compiler does not make, and the matrix says so.
+                "_Atomic" if specs.ty.is_none() && !specs.has_type_specifier => {
+                    if self.preprocessed.standard == crate::options::CStandard::C99 {
+                        let span = self.span();
+                        self.error(span, "`_Atomic` is C11: compile with `--std=c11`");
+                    }
+                    self.at += 1;
+                    if let Some(ty) = self.parenthesised_type() {
+                        specs.ty = Some(ty);
+                        specs.has_type_specifier = true;
+                        return self.finish_specifiers(specs, spelled);
+                    }
+                    // A qualifier: keep reading the specifiers.
+                    continue;
                 }
                 "struct" | "union" => {
                     if specs.ty.is_some() {
@@ -1605,6 +1717,8 @@ impl Parser<'_> {
 #[derive(Debug, Default)]
 struct Specifiers {
     ty: Option<TypeId>,
+    /// The alignment `_Alignas` asked for, when it did: zero means the type's own.
+    alignas: u64,
     is_typedef: bool,
     /// Whether `static` was one of the specifiers: inside a function that means storage duration
     /// and not linkage, which is the one place the word changes what a declaration *is*.

@@ -812,12 +812,18 @@ impl FunctionLowering<'_> {
                     },
                 });
             }
-            Inst::Slot { result, ty, .. } => {
+            Inst::Slot {
+                result,
+                ty,
+                alignas,
+                ..
+            } => {
                 let size = self.types.size_of(*ty).ok_or_else(|| NotYet {
                     message: format!("a local of incomplete type {}", self.types.describe(*ty)),
                     span,
                 })?;
-                let align = self.types.align_of(*ty).unwrap_or(1);
+                // `_Alignas` raises an object's alignment and never lowers it (C11 6.7.5p6).
+                let align = self.types.align_of(*ty).unwrap_or(1).max(*alignas);
                 let offset = self.allocate(size, align);
                 let dst = self.address_of(Address::Local(offset), *result, ops);
                 self.classify(dst, Class::Integer);

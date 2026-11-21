@@ -894,6 +894,10 @@ impl Parser<'_> {
                 Some(self.sizeof_expression())
             }
             "_Generic" => self.generic_selection(),
+            "_Alignof" => {
+                self.bump();
+                Some(self.alignof_expression(span))
+            }
             "__builtin_offsetof" => {
                 self.bump();
                 Some(self.offsetof_expression(span))
