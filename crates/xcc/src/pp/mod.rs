@@ -1342,6 +1342,10 @@ impl Preprocessor<'_> {
     }
 
     fn splice_front(&mut self, expansion: Vec<Raw>) {
+        // The expanded tokens keep the `starts_line` the lexer gave them, which is a fact about where
+        // the *body* was written and not about where the expansion lands. Nothing reads it here: the
+        // only consumer is `directive`, and a macro is expanded after its directive's line has been
+        // gathered - so an expansion can never end a line it is not on.
         if self.pending.len() + expansion.len() > self.budgets.max_tokens {
             let span = expansion
                 .first()

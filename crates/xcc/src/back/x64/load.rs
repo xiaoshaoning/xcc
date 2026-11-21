@@ -221,10 +221,14 @@ pub(crate) fn load(
             });
         };
         let place = base + data_start + relocation.offset as usize;
-        // SAFETY: the place is inside the data we just copied, and eight bytes wide, which is
-        // what `ADDR64` names.
+        // `ADDR64` means `symbol + addend`, and the addend is whatever the field already holds -
+        // zero today, because the front end only writes plain addresses, and added rather than
+        // overwritten so that an address *plus an offset* cannot become a silent wrong answer later.
+        // SAFETY: the place is inside the data we just copied, and eight bytes wide, which is what
+        // `ADDR64` names.
         unsafe {
-            std::ptr::write_unaligned(place as *mut u64, target as u64);
+            let addend = std::ptr::read_unaligned(place as *const u64);
+            std::ptr::write_unaligned(place as *mut u64, target as u64 + addend);
         }
     }
 

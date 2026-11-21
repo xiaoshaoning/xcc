@@ -705,6 +705,36 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - a fact that was true in one of the two places it lived
+
+The cJSON commit, reviewed. Its three fixes hold; what the review found is the same defect repeated in the
+place the commit forgot, and one claim that was true only by luck.
+
+**"The passes broke it" was still the message in the JIT.** The commit fixed that wording in `compile` - the
+front end's `cir` is now verified before the first pass, so a type error is the front end's - and left the
+identical sentence in `back/jit.rs`, which runs the same `optimise` and would have blamed the same innocent
+pass, in `--run`, with the same hour of bisecting to pay. **Two copies of one message is how one of them gets
+fixed.**
+
+**`ADDR64` wrote the symbol and dropped the addend.** The loader replaced the eight bytes at a data
+relocation with the symbol's address, which is right exactly as long as every addend is zero - true today,
+because the front end writes only plain addresses, and *false* by construction the moment `&s.member` or
+`a + 2` reaches an initialiser. It now reads what the field holds and adds, which is what the relocation
+means, so the assumption cannot become a silent wrong answer.
+
+**And a flag that is true in the wrong place.** An expanded token keeps the `starts_line` the lexer gave the
+macro's *body*, which describes where the body was written, not where the expansion lands. Nothing reads it
+there - `directive` is the only consumer, and a macro is expanded after its directive's line has been
+gathered - but "nothing reads it there" was undocumented, which is the shape of an invariant that decays. It
+has a comment now, next to the splice that creates it.
+
+**Measured after the review: cJSON still compiles and its output still matches clang byte for byte; 443
+corpus programs agree, 20 refused, 0 wrong, refusal oracle 19 against clang.** The differential is at 415
+ran, 5 refused, 0 mismatched.
+
+185 unit, 27 parser, 21 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-21 - the two operands C11 names, and neither of the ones built
 
 The `_Alignof`/`_Alignas`/`_Atomic` commit, reviewed. It works on the cases that were tried, and the two
