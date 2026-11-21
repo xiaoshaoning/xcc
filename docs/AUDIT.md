@@ -705,6 +705,38 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-21 - the two operands C11 names, and neither of the ones built
+
+The `_Alignof`/`_Alignas`/`_Atomic` commit, reviewed. It works on the cases that were tried, and the two
+cases C11 names explicitly are the two it got wrong.
+
+**`_Alignas(0)` was an error.** C11 6.7.5p4 says *"An alignment specification of zero has no effect"* - so
+zero is a legal operand of the feature, meaning *none*, and a compiler that refuses it refuses something the
+standard permits. Every other number was accepted, including the ones that are not alignments at all.
+
+**`_Alignas(3)` was accepted.** C11 6.7.5p3 wants a power of two; three is not a small alignment, it is not
+an alignment, and the frame's allocator would have rounded to it without complaint. clang's own words are
+*"requested alignment is not a power of 2"*, and a compiler that accepts it is a compiler that agrees with a
+program no other compiler builds.
+
+Both are the shape a boundary case takes when the implementation was written from the examples rather than
+from the clause: **the two values the standard bothers to name are exactly the two that were missed.**
+
+**And a `static` local dropped the alignment in silence.** `static _Alignas(16) int s;` inside a function is
+an object with static storage duration - the specification travels with the object, not with the storage
+class - and `static_local` was passed no alignment, so the request vanished. A silently ignored attribute is
+worse than a refused one: the program compiles, runs, and is not aligned.
+
+The verification is now behavioural in all three cases: a program that *checks its own addresses* and
+returns 0 only if they are what was asked for, run at both levels. That is the only kind of test an
+alignment can have - the addresses are the feature.
+
+**Measured after the review: 443 corpus programs agree, 20 refused, 0 wrong.** Differential at 415 ran, 5
+refused, 0 mismatched.
+
+184 unit, **27 parser**, 21 CLI, 4 exe, 4 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched), crt, pp gate, fuzz - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-21 - two options that were quietly rounded
 
 The C API's options, reviewed. The code compiled and every test passed; two lines in it were still wrong,

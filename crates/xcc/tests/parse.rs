@@ -367,6 +367,39 @@ fn an_undeclared_function_is_a_warning_and_its_result_is_an_int() {
 }
 
 #[test]
+fn alignas_is_read_the_way_c11_reads_it() {
+    let c11 = Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    };
+    // C11 6.7.5p4: zero has no effect, so it is an operand the reader must accept - in C11, where
+    // the word exists at all.
+    let complaints = check_with(
+        c11.clone(),
+        "int f(void) { _Alignas(0) int z = 1; return z; }",
+    );
+    assert!(complaints.is_empty(), "{complaints:?}");
+    // p3: an alignment is a power of two. Three is not a small alignment, it is not an alignment.
+    assert!(
+        check_with(
+            c11.clone(),
+            "int f(void) { _Alignas(3) int x = 1; return x; }"
+        )
+        .iter()
+        .any(|message| message.contains("power of two")),
+        "a non-power-of-two alignment is refused"
+    );
+    // p6: an implementation may decline an extended alignment - and this one says which it declined
+    // rather than quietly aligning to sixteen.
+    assert!(
+        check_with(c11, "int f(void) { _Alignas(32) int x = 1; return x; }")
+            .iter()
+            .any(|message| message.contains("extended alignment")),
+        "an extended alignment is refused, with the number"
+    );
+}
+
+#[test]
 fn a_declaration_can_begin_with_every_specifier() {
     // The list of words that start a declaration (`SPECIFIERS`) and the reader that accepts them are
     // two places knowing one thing, and nothing used to say so: `_Alignas(16) int x;` inside a

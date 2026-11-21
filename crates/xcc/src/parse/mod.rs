@@ -464,11 +464,18 @@ impl Parser<'_> {
         }
         let value = value?;
         match value.constant {
-            Some(constant) if constant > 0 => Some(constant as u64),
+            // C11 6.7.5p4: "An alignment specification of zero has no effect" - so zero is a legal
+            // operand meaning *none*, not a mistake.
+            Some(0) => Some(0),
+            // p3: an alignment must be a power of two. Three is not a small alignment, it is not an
+            // alignment at all, and the frame's allocator would happily round to it.
+            Some(constant) if constant > 0 && (constant as u64).is_power_of_two() => {
+                Some(constant as u64)
+            }
             _ => {
                 self.error(
                     span,
-                    "`_Alignas` takes a type or a positive constant expression",
+                    "`_Alignas` takes a type or a constant expression whose value is zero or a power of two",
                 );
                 None
             }
@@ -809,7 +816,7 @@ impl Parser<'_> {
             if static_local {
                 if let Some(name) = name {
                     let span = self.span();
-                    self.static_local(name, ty, span);
+                    self.static_local(name, ty, specs.alignas, span);
                 } else if self.eat("=") {
                     // No name to give it: read the initialiser for its own mistakes.
                     self.initializer(ty);
@@ -1001,7 +1008,7 @@ impl Parser<'_> {
     /// which no C identifier can spell, so two functions may each have their own `static int n`
     /// (6.2.2p3). The local name means its *address* inside the body, which is what a frame slot
     /// would have been too, so nothing else in the parser changes.
-    fn static_local(&mut self, name: Symbol, ty: TypeId, span: Span) {
+    fn static_local(&mut self, name: Symbol, ty: TypeId, alignas: u64, span: Span) {
         let mangled = match self.current_function {
             Some(function) => format!("{}.{}", self.spell_of(function), self.spell_of(name)),
             None => self.spell_of(name).to_owned(),
@@ -1029,7 +1036,7 @@ impl Parser<'_> {
             defined: true,
             init: Some(init),
             relocations,
-            alignas: 0,
+            alignas,
             external: false,
             span,
         });
@@ -1124,7 +1131,9 @@ impl Parser<'_> {
                     }
                     self.at += 1;
                     if let Some(align) = self.alignment_in_parentheses() {
-                        if align > FUNDAMENTAL_ALIGNMENT {
+                        if align == 0 {
+                            // No effect, exactly as C11 6.7.5p4 says.
+                        } else if align > FUNDAMENTAL_ALIGNMENT {
                             let span = self.span();
                             self.error(
                                 span,
