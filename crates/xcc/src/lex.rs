@@ -149,6 +149,10 @@ pub struct Token {
     pub text: Symbol,
     /// Its bytes in the original source.
     pub span: Span,
+    /// Whether a newline that phase 2 did not splice away comes before it: the only thing that ends
+    /// a preprocessor directive. A `\`-continued macro is one line however many it covers, and the
+    /// line *number* cannot say so.
+    pub starts_line: bool,
 }
 
 /// The tokens of a source, and whatever was wrong with it.
@@ -185,6 +189,7 @@ pub fn lex(prepared: &Prepared, file: &str, interner: &mut Interner) -> Lexed {
         at: 0,
         interner,
         lexed: Lexed::default(),
+        starts_line: true,
     };
     lexer.run();
     lexer.lexed
@@ -197,6 +202,10 @@ struct Lexer<'a> {
     at: usize,
     interner: &'a mut Interner,
     lexed: Lexed,
+    /// Whether a newline that phase 2 did *not* splice away has been skipped since the last token -
+    /// the only thing that ends a preprocessor directive. It starts true: the first token of a file
+    /// begins its first line.
+    starts_line: bool,
 }
 
 impl Lexer<'_> {
@@ -239,7 +248,13 @@ impl Lexer<'_> {
     fn skip_blank(&mut self) {
         while let Some(&byte) = self.bytes.get(self.at) {
             match byte {
-                b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r' => self.at += 1,
+                // A newline in the *prepared* text is one phase 2 let through, so it ends the logical
+                // line a directive is read from - and the token after it begins a new one.
+                b'\n' => {
+                    self.starts_line = true;
+                    self.at += 1;
+                }
+                b' ' | b'\t' | 0x0b | 0x0c | b'\r' => self.at += 1,
                 b'/' if self.peek(1) == Some(b'/') => {
                     while let Some(&byte) = self.bytes.get(self.at) {
                         self.at += 1;
@@ -373,7 +388,13 @@ impl Lexer<'_> {
     fn push(&mut self, kind: TokenKind, text: &str, start: usize, end: usize) {
         let span = self.span(start, end);
         let text = self.interner.intern(text);
-        self.lexed.tokens.push(Token { kind, text, span });
+        let starts_line = std::mem::replace(&mut self.starts_line, false);
+        self.lexed.tokens.push(Token {
+            kind,
+            text,
+            span,
+            starts_line,
+        });
     }
 
     /// Push the token that scanning has just passed, spelled as it is written. The spelling is
@@ -383,7 +404,13 @@ impl Lexer<'_> {
         let prepared = self.prepared;
         let text = self.interner.intern(&prepared.text[start..self.at]);
         let span = self.span(start, self.at);
-        self.lexed.tokens.push(Token { kind, text, span });
+        let starts_line = std::mem::replace(&mut self.starts_line, false);
+        self.lexed.tokens.push(Token {
+            kind,
+            text,
+            span,
+            starts_line,
+        });
     }
 
     /// A span in the original source: a spliced token covers from its first byte to its last.

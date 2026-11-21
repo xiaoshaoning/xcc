@@ -558,6 +558,24 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `tests/x64.rs` compares them against clang instead. `va_arg` of a floating-point type is still
       refused, because the vector half of Win64's duplicate needs `AL` and `cir` does not carry the
       count.
+- [x] **Real code, and the two bugs 443 corpus programs could not find.** The audit discipline says a
+      milestone ends with a run over code nobody here wrote, and it had not been done since M3: every
+      corpus program is this project's own. `cJSON.c` - 3 206 lines, MIT, nobody here wrote it - was
+      fetched and compiled. **Two bugs, both in constructs the corpus never uses:**
+      **A `\`-continued macro was a syntax error.** C99 5.1.1.2 phase 2 splices backslash-newline, so a
+      directive ends at a newline, not at a *line number* - and `directive()` grouped a directive's tokens
+      by `span` line, so every continued macro in real C was cut in half. **No corpus file has a
+      line-ending backslash** (checked: zero of 464), which is why 443 compiled programs, 415 differential
+      programs and a fuzz target never saw it. The lexer now says which side of a *surviving* newline each
+      token is on (`PpToken::starts_line`), because only phase 2 knows.
+      **`p->x` on an array of structs was refused.** C99 6.3.2.1p3 decays the array before `->` applies,
+      and every flexible-array member in real C is written that way. The first fix decayed only for the
+      type test and computed the field's address from the array - which the verifier caught by name
+      ("loads a value of another type than its address points to"), the second time this milestone that a
+      verifier message turned a wrong answer into a sentence.
+      **What is left in `cJSON.c` is one blocker**: a file-scope initialiser holding *function* addresses
+      (`static internal_hooks hooks = { my_malloc, my_free };`) - the same ADR-004 relocation that works for
+      a string literal, one symbolic constant away.
 - [x] **The last twenty refusals are asked of an oracle, not assumed.** "Solve the 20 refused" has a
       truthful answer only if the number means something, and it did not: a *count* of refusals hides the
       only thing worth knowing - whether the reason is the program's or the compiler's. `clang -std=c99`

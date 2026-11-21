@@ -32,6 +32,14 @@ pub struct PpToken {
     pub span: Span,
     /// Which file: an index into [`Preprocessed::files`].
     pub file: u16,
+    /// Whether a newline **that survived phase 2** comes before this token.
+    ///
+    /// The line a token sits on is not the question a directive asks - the phase-2 splice removes a
+    /// newline from the text, and the tokens either side of it are one logical line however many
+    /// physical lines they cover. `#define ADD(a, b) \` and its body are a macro, and reading them
+    /// as two lines made `\`-continued macros a syntax error, which real C uses everywhere and this
+    /// corpus never once did.
+    pub starts_line: bool,
 }
 
 /// The name the command line's own text is reported under.
@@ -324,6 +332,9 @@ impl Preprocessor<'_> {
                     text: token.text,
                     span: token.span,
                     file,
+                    // The lexer is the only thing that knows: a newline it spliced away does not end
+                    // the logical line a directive is read from.
+                    starts_line: token.starts_line,
                 },
                 hide: Vec::new(),
                 spliced: false,
@@ -350,6 +361,7 @@ impl Preprocessor<'_> {
                     text: token.text,
                     span: token.span,
                     file: 0,
+                    starts_line: token.starts_line,
                 },
                 hide: Vec::new(),
                 spliced: false,
@@ -426,11 +438,16 @@ impl Preprocessor<'_> {
         }
     }
 
-    fn directive(&mut self, hash: Raw) {
-        let line = self.line(hash.token.span);
+    fn directive(&mut self, _hash: Raw) {
+        // The directive runs to the next newline **that survived phase 2**, not to the next line
+        // *number*: `#define ADD(a, b) \` and its body are one line, and reading them by number made
+        // every continued macro in real C a syntax error - which is how this was found, by compiling
+        // something nobody here wrote.
         let mut words = Vec::new();
         while let Some(next) = self.peek() {
-            if next.token.kind == TokenKind::Eof || self.line(next.token.span) != line {
+            // A token that begins a logical line ends the directive - including the first one, which
+            // is what makes `#` alone a null directive: nothing on its own line comes after it.
+            if next.token.kind == TokenKind::Eof || next.token.starts_line {
                 break;
             }
             words.push(self.next().expect("peeked and present"));
@@ -686,6 +703,7 @@ impl Preprocessor<'_> {
                     text: zero,
                     span: raw.token.span,
                     file: raw.token.file,
+                    starts_line: false,
                 });
             } else {
                 tokens.push(raw.token);
@@ -746,6 +764,7 @@ impl Preprocessor<'_> {
                 text,
                 span: token.span,
                 file: token.file,
+                starts_line: false,
             });
         }
         Some(out)
@@ -984,6 +1003,7 @@ impl Preprocessor<'_> {
                 text,
                 span: raw.token.span,
                 file: raw.token.file,
+                starts_line: false,
             },
             hide: Vec::new(),
             spliced: true,
@@ -1086,6 +1106,7 @@ impl Preprocessor<'_> {
                                 text,
                                 span: token.span,
                                 file: token.file,
+                                starts_line: false,
                             },
                             hide: hide.clone(),
                             spliced: true,
@@ -1207,6 +1228,7 @@ impl Preprocessor<'_> {
                     text: token.text,
                     span: spanned,
                     file: left.token.file,
+                    starts_line: false,
                 },
                 hide: left.hide.clone(),
                 spliced: true,
@@ -1263,6 +1285,7 @@ impl Preprocessor<'_> {
                 text: self.interner.intern(","),
                 span,
                 file: self.current,
+                starts_line: false,
             };
             let mut joined = Vec::new();
             for (position, part) in arguments.iter().enumerate().skip(params.names.len()) {
@@ -1353,10 +1376,6 @@ impl Preprocessor<'_> {
 
     fn file(&self) -> &FileEntry {
         &self.files[self.current as usize]
-    }
-
-    fn line(&self, span: Span) -> u32 {
-        self.file().source.position(span.start).line
     }
 
     fn is_punct(&self, token: &PpToken, spelling: &str) -> bool {
@@ -2112,6 +2131,30 @@ yes
 
         let (spells, _) = run_options("__DATE__", &Options::default(), &());
         assert_eq!(spells, ["\"Jan  1 1970\""], "no clock is ever read");
+    }
+
+    #[test]
+    fn a_macro_can_continue_across_lines() {
+        // C99 5.1.1.2 phase 2 removes a backslash-newline, so what follows it is part of the *same*
+        // logical line - and a directive ends at a newline, not at a line number. Reading directives
+        // by line number made every continued macro a syntax error, and no corpus file has a
+        // line-ending backslash: it took compiling a real one (`cJSON.c`) to find it.
+        let source = "#define ADD(a, b) \
+    ((a) + (b))
+int f(void) { return ADD(20, 22); }";
+        let file = SourceFile::new("t.c", source);
+        let options = Options::default();
+        let preprocessed = preprocess(&file, &options, &());
+        assert!(!preprocessed.has_errors(), "{:?}", preprocessed.diagnostics);
+        // The macro is defined with both parts of its body: the expansion spells them.
+        let spelled: Vec<&str> = preprocessed
+            .tokens
+            .iter()
+            .filter(|token| token.kind != TokenKind::Eof)
+            .map(|token| preprocessed.text(token))
+            .collect();
+        let text = spelled.join(" ");
+        assert!(text.contains("( 20 ) + ( 22 )"), "{text}");
     }
 
     #[test]

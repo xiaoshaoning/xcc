@@ -1565,6 +1565,11 @@ impl Parser<'_> {
         if self.types.is_error(base.ty) {
             return Value::temporary(self.types.error());
         }
+        // `->` takes a pointer to an aggregate, and C99 6.3.2.1p3 decays an array to one before the
+        // operator is applied: `struct P { int x; } p[1]; p->x` is legal, and every flexible-array
+        // member in real C is written that way. The decay binds here rather than inside the test,
+        // because the field's address is computed from `base` too. `cJSON.c` is what found this.
+        let base = if arrow { self.decay(base) } else { base };
         let aggregate = if arrow {
             if !self.types.is_pointer(base.ty) {
                 let ty = self.describe(base.ty);

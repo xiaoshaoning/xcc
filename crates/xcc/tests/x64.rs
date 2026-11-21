@@ -342,6 +342,17 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             7,
         ),
         (
+            // `->` on an array of structs: C99 6.3.2.1p3 decays the array to a pointer before the
+            // operator applies, and every flexible-array member in real C is written this way. The
+            // first version decayed only for the type test and computed the address from the array,
+            // which the verifier caught as "loads a value of another type than its address points to".
+            "a struct's member through an array of one",
+            "struct P { int x; int y; }; struct Q { int n; struct P p[1]; };
+             int main(void) { struct Q q; q.n = 1; q.p->x = 20; q.p->y = 22;
+                              return q.p->x + q.p->y + q.n - 1; }",
+            42,
+        ),
+        (
             // An address inside a global's initialiser: eight bytes the *linker* fills, which the
             // data section now carries a relocation for. Both shapes every C program has - a pointer
             // to a string, and a table of them.
