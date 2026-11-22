@@ -141,6 +141,10 @@ const C_RUNTIME: &[&str] = &[
     "tanh",
     // errno.h: the accessor, not an object, because the C library keeps one per thread.
     "_errno",
+    // setjmp.h: `setjmp` is `_setjmp` with the frame argument this ABI passes, and `longjmp` is its
+    // own name. See the header for why the one is a macro.
+    "_setjmp",
+    "longjmp",
     // locale.h, signal.h
     "localeconv",
     "setlocale",

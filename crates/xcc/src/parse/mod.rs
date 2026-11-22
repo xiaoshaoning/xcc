@@ -455,6 +455,21 @@ impl Parser<'_> {
                 self.bump();
             }
         }
+        // C99 6.9.2p2: a tentative definition of incomplete array type is completed at the end of the
+        // translation unit as if it had one element. `int open[];` on its own is therefore an object
+        // of one `int` - and until this was done, it reached the back end with no size at all and came
+        // back as an internal error.
+        for global in &mut self.globals {
+            if global.defined && global.init.is_none() {
+                if let Type::Array {
+                    element,
+                    count: None,
+                } = *self.types.kind(global.ty)
+                {
+                    global.ty = self.types.array(element, Some(1));
+                }
+            }
+        }
     }
 
     /// `_Alignas (...)`'s operand: a type name's alignment, or an integer constant expression.

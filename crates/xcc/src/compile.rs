@@ -184,12 +184,12 @@ impl Compile {
             return Err(Diagnostics::new(items, sources));
         }
 
-        // A module with no function is a translation unit of declarations only: nothing to
-        // lower, and an object is still what the caller asked for.
-        let mut explained = None;
-        let object = if module.funcs.is_empty() {
-            Vec::new()
-        } else {
+        // A module with no function is a translation unit of *objects* - a table, a constant, the
+        // bytes of a lookup - and they still need an object file: `lopcodes.c` in Lua is one such
+        // file, and skipping the back end when the function list was empty wrote a zero-byte object
+        // whose symbols then "did not exist" at link time. There is one path, and it handles both.
+        let explained;
+        let object = {
             match crate::back::object(&module, preprocessed.names(), explain, opt_level) {
                 Ok(lowered) => {
                     explained =
@@ -266,7 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn a_translation_unit_of_declarations_gives_an_empty_object() {
+    fn a_translation_unit_of_objects_still_writes_an_object() {
+        // `lopcodes.c` in Lua is a table and nothing else. This used to write a zero-byte file, so
+        // every symbol it defined was missing at link time - and the compile reported success.
         let mut compiler = Compile::new(Options::default());
         let artifact = compiler
             .compile(
@@ -274,7 +276,8 @@ mod tests {
 ",
             )
             .expect("no error");
-        assert!(artifact.object().is_empty(), "nothing to lower");
+        assert_eq!(&artifact.object()[0..2], &[0x64, 0x86], "x86-64 COFF");
+        assert!(artifact.object().len() > 20 + 40, "a header and a section");
     }
 
     #[test]

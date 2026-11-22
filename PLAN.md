@@ -931,7 +931,15 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       lowerings and would call that a mismatch; a variadic program therefore needs the *clang*
       comparison in `tests/x64.rs` instead, and ADR-006 needs a sentence saying the two lowerings
       deliberately differ in what they accept.
-- [ ] **`.pdata` / `.xdata`: the frame table.** Measured, not assumed: `setjmp.h` was written to the
+- [x] **`.pdata` / `.xdata`: the frame table.** Done: the codes are recorded as the prologue emits them,
+      `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
+      `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
+      `--run`; Lua's 34 files compile and link; the interpreter faults in `lauxlib`'s wake (see below).
+- [ ] **Lua runs.** The remaining blocker, reproducible in twenty lines: with only `lauxlib.c` compiled here,
+      `luaL_newstate` + `luaL_requiref(L, "_G", luaopen_base, 1)` faults *inside clang-compiled*
+      `luaV_finishget` called from clang-compiled `init_registry` - so the mismatch is data our `lauxlib`
+      produces. The driver is `drv.c`; the next step is to narrow it to one function of `lauxlib.c`.
+- [ ] **`.pdata` / `.xdata`: the frame table (done, kept for the record).** Measured, not assumed: `setjmp.h` was written to the
       ABI (256 bytes, 16-byte aligned, `_setjmp(buf, 0)`) and `longjmp` **faulted** even in the same
       frame, because the C library's `longjmp` calls `RtlUnwindEx`, which demands a
       `RUNTIME_FUNCTION` for every frame it passes. clang emits `.pdata` + `.xdata` (12 bytes each

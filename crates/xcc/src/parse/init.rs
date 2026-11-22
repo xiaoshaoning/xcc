@@ -264,11 +264,23 @@ impl Parser<'_> {
             // is skipped, which is what every compiler that meets it in the wild does: `int a[3] =
             // {1,2,3,4}` is a mistake to report and not a reason to refuse the translation.
             Some(declared) if braced && written >= declared && self.at_punct(",") => {
-                self.warning(
-                    span,
-                    format!("this array has {declared} elements, more were given"),
-                );
-                self.skip_until(&["}"], false);
+                // A comma before the brace is the trailing one every real initialiser list is
+                // written with, and it introduces nothing: `int a[3] = {1, 2, 3,}` has three
+                // elements. Only a comma with an element behind it is the surplus 6.7.8p2 forbids.
+                let trailing = {
+                    let saved = self.at;
+                    self.bump();
+                    let nothing_follows = self.at_punct("}");
+                    self.at = saved;
+                    nothing_follows
+                };
+                if !trailing {
+                    self.warning(
+                        span,
+                        format!("this array has {declared} elements, more were given"),
+                    );
+                    self.skip_until(&["}"], false);
+                }
             }
             Some(_) => {}
         }

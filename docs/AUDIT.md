@@ -705,6 +705,54 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 - 2026-11-22 - the frame table: `.pdata` and `.xdata`, and the three bugs it uncovered
+
+The unwinder's tables, written the way the measurement said they had to be. The oracle was already written:
+a `longjmp` out of three of this compiler's own frames, which faulted before and prints `42` now - on the
+object path at both levels and in the JIT.
+
+**The codes are recorded where the prologue is emitted.** `encode::prologue` writes pushes, one `sub rsp`, and
+the XMM saves; each call now records a `UNWIND_CODE` - the end offset of the instruction, the operation, the
+register or size - so no second function has to reconstruct what the first one did. `coff::unwind_info` turns
+them into the format's header and slots, in the *decreasing* order the format requires, and the frame table is
+laid out once (`unwind_layout`) for both consumers: the object writer turns entries into `ADDR32NB` relocations,
+the loader into addresses, because `.pdata` holds image-relative addresses and `RtlAddFunctionTable` reads them
+against the base.
+
+**And the object writer became a loop over sections.** It had two hard-coded sections; `.pdata` and `.xdata`
+would have been two more copies of the same fourteen lines. A section is now bytes, named symbols, and
+relocations, written by one loop - and the test that counts the bytes of an empty object still holds.
+
+**Three bugs the work uncovered, none of them in the frame table.**
+
+*A translation unit with no functions wrote a zero-byte object, silently.* `compile` skipped the back end
+whenever the function list was empty, on the theory that there was "nothing to lower" - so `lopcodes.c` and
+`lctype.c`, two files in Lua that are a table and nothing else, produced empty objects and their symbols "did
+not exist" at link time. The comment said an object was still what the caller asked for, and the code handed
+back nothing.
+
+*A tentative definition of an incomplete array was never completed.* C99 6.9.2p2 completes `int open[];` to one
+element at the end of the translation unit; the parser left it incomplete, and the back end refused it as an
+object with no size. Invisible until the short-circuit above was removed, which is what a bug behind another
+bug looks like.
+
+*The loader subtracted the image base from something that was already an offset* - `xdata_start - base` - which
+only a unit *with* unwind data could reach, and the first such unit panicked.
+
+**And a false diagnostic.** `int a[3] = {1, 2, 3,}` warned "this array has 3 elements, more were given", because
+the check saw the trailing comma and not what followed it. A trailing comma introduces nothing; the warning now
+asks whether anything follows before it fires. It was found by the `--opt-level=0` reading of Lua, which spells
+its opcode table with leading commas.
+
+**Measured: Lua 5.4.7 is 34 files, all 34 compile at `--opt-level=2`, and they link into an interpreter - which
+then faults.** The fault is reproducible in a twenty-line driver and lands in *clang's* `luaV_finishget`,
+called from *clang's* `init_registry`, while only `lauxlib.c` is this compiler's: so it is a mismatch our
+`lauxlib` produces rather than a bad instruction of ours, and it is where this milestone stops. It is the next
+item in `PLAN.md`, with the driver already written.
+
+190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - a private copy of somebody else's object
 
 Two commits reviewed: the four Lua fixes and the frame-table work. The second one's defect was a *wrong

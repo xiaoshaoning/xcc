@@ -54,6 +54,47 @@ pub(crate) struct Encoded {
     pub relocations: Vec<Relocation>,
     /// How many bytes the frame is: the prologue subtracts exactly this.
     pub frame: i32,
+    /// What the prologue did, for the unwinder. `None` when it did nothing at all: the unwinder reads
+    /// a function with no `.pdata` entry as a leaf, which is what a function with no prologue is.
+    pub unwind: Option<Unwind>,
+}
+
+/// `UWOP_PUSH_NONVOL`: `push r64`.
+pub(crate) const UWOP_PUSH_NONVOL: u8 = 0;
+/// `UWOP_ALLOC_LARGE`: `sub rsp, imm`.
+pub(crate) const UWOP_ALLOC_LARGE: u8 = 1;
+/// `UWOP_ALLOC_SMALL`: `sub rsp, imm` of at most 128 bytes.
+pub(crate) const UWOP_ALLOC_SMALL: u8 = 2;
+/// `UWOP_SAVE_XMM128`: sixteen bytes of an XMM register stored into the frame.
+pub(crate) const UWOP_SAVE_XMM128: u8 = 8;
+/// `UWOP_SAVE_XMM128_FAR`: the same, at an offset no multiple of sixteen would name.
+pub(crate) const UWOP_SAVE_XMM128_FAR: u8 = 9;
+
+/// One operation the prologue performed, described the way the unwinder needs to read it: PE/COFF's
+/// `UNWIND_CODE`, plus the extra slot some operations take.
+///
+/// Recorded *as the prologue emits*, never recomputed: a second function that worked out what the
+/// prologue had done would have to agree with the encoder about the length of every instruction, and
+/// the day it did not would be a crashed unwinder rather than a failing test.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UnwindCode {
+    /// The offset of the *end* of the instruction that did it, from the function's start.
+    pub at: u8,
+    /// Which `UWOP_*`.
+    pub operation: u8,
+    /// The `op_info` field: a register number, or a size in eight-byte units.
+    pub info: u8,
+    /// The extra slot the operation takes: a size, or an `xmm` save's offset in sixteen-byte units.
+    pub extra: Option<u32>,
+}
+
+/// A prologue, described for the unwinder: its length, and every operation in it.
+#[derive(Debug, Clone)]
+pub(crate) struct Unwind {
+    /// How many bytes the prologue is.
+    pub prologue: u8,
+    /// The operations, in the order the prologue performed them.
+    pub codes: Vec<UnwindCode>,
 }
 
 /// The two XMM registers the encoder uses as scratch for floating-point operands; nothing is
@@ -153,9 +194,14 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         scratch: func.registers().scratch,
         classes: &func.classes,
         scratches: Vec::new(),
+        unwind: Vec::new(),
         frame,
     };
+    let prologue_started = encoder.code.len();
     encoder.prologue(func.variadic);
+    // The prologue's own length, which the unwinder reads to know how far into the function the
+    // instructions it describes reach.
+    let prologue = (encoder.code.len() - prologue_started) as u8;
     let last = func.blocks.len().saturating_sub(1);
     for (index, block) in func.blocks.iter().enumerate() {
         encoder.label(index);
@@ -227,10 +273,19 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     encoder.label(func.blocks.len());
     encoder.epilogue();
     encoder.patch();
+    let unwind = if encoder.unwind.is_empty() {
+        None
+    } else {
+        Some(Unwind {
+            prologue,
+            codes: encoder.unwind,
+        })
+    };
     Encoded {
         code: encoder.code,
         relocations: encoder.relocations,
         frame,
+        unwind,
     }
 }
 
@@ -270,6 +325,8 @@ struct Encoder<'a> {
     classes: &'a [super::Class],
     /// The scratch registers the operation being encoded is holding.
     scratches: Vec<Reg>,
+    /// What the prologue did, recorded as it does it: see [`Unwind`].
+    unwind: Vec<UnwindCode>,
     /// How far `rsp` is below its value on entry: the frame's own bytes plus the bytes the pushes
     /// moved. **Every offset in the function is measured from there**, which is why the offsets use
     /// this number and the `sub`/`add rsp` use it minus the pushes - the two add up to the same place.
@@ -285,11 +342,23 @@ impl Encoder<'_> {
         let saved = self.allocation.saved.clone();
         for register in &saved {
             self.push(*register);
+            self.record_unwind(UWOP_PUSH_NONVOL, register.0, None);
         }
         // What is left to subtract after the pushes have moved `rsp` by their own bytes.
         let remaining = self.frame - self.pushed();
         if remaining != 0 {
             self.sub_rsp(remaining);
+            // `ALLOC_SMALL` names up to 128 bytes in the `op_info` field, in eight-byte units and off
+            // by one; `ALLOC_LARGE` takes a slot instead, and a second slot when the size is not a
+            // multiple of eight or does not fit sixteen bits of units.
+            let units = remaining / 8;
+            if remaining % 8 == 0 && units <= 0xFFFF && remaining <= 128 {
+                self.record_unwind(UWOP_ALLOC_SMALL, (units - 1) as u8, None);
+            } else if remaining % 8 == 0 && units <= 0xFFFF {
+                self.record_unwind(UWOP_ALLOC_LARGE, 0, Some(units as u32));
+            } else {
+                self.record_unwind(UWOP_ALLOC_LARGE, 1, Some(remaining as u32));
+            }
         }
         if variadic {
             // Win64's home area, which is where `va_start` points: the caller reserved it, and a
@@ -304,7 +373,25 @@ impl Encoder<'_> {
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
             self.float_move(*register, Reg::RSP, offset, 16, Move::StoreUnaligned);
+            // Sixteen bytes of an `xmm` at an offset in sixteen-byte units, when the offset is one;
+            // otherwise the far form, which takes a slot and names the byte offset itself.
+            if offset % 16 == 0 {
+                self.record_unwind(UWOP_SAVE_XMM128, register.0, Some((offset / 16) as u32));
+            } else {
+                self.record_unwind(UWOP_SAVE_XMM128_FAR, register.0, Some(offset as u32));
+            }
         }
+    }
+
+    /// Record what the instruction just emitted did, so the unwinder can be told. The offset is the
+    /// *end* of the instruction, which is the only thing the encoder knows once it has written it.
+    fn record_unwind(&mut self, operation: u8, info: u8, extra: Option<u32>) {
+        self.unwind.push(UnwindCode {
+            at: self.code.len() as u8,
+            operation,
+            info,
+            extra,
+        });
     }
 
     fn epilogue(&mut self) {

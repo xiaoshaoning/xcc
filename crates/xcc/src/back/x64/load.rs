@@ -95,6 +95,9 @@ extern "system" {
     fn VirtualAlloc(address: *mut u8, size: usize, allocation: u32, protect: u32) -> *mut u8;
     fn VirtualFree(address: *mut u8, size: usize, free_type: u32) -> i32;
     fn VirtualProtect(address: *mut u8, size: usize, protect: u32, previous: *mut u32) -> i32;
+    /// The unwinder's own register: `RtlAddFunctionTable(table, count, base)` takes the entries and
+    /// the base their image-relative addresses are measured from.
+    fn RtlAddFunctionTable(table: *const u8, count: u32, base: *const u8) -> u8;
 }
 
 /// One page of memory, which has one protection for everything in it.
@@ -125,13 +128,21 @@ pub(crate) fn load(
         text,
         functions,
         data,
+        unwind,
     } = image;
+    // The unwinder's tables go into the same allocation as the code, for one reason: `.pdata` holds
+    // *image-relative* addresses, so `RtlAddFunctionTable` reads them against this base and every
+    // entry must be inside it. `unwind_layout` is the same function the object writer uses, so the
+    // two cannot lay the tables out differently.
+    let unwinder = coff::unwind_layout(&unwind);
     // The data section starts at the next *page*: the two are protected differently - code is
     // executable and read-only, data is writable and not executable - and a page has one protection
     // for everything in it. Sixteen bytes would do for alignment; four kilobytes is what keeps
     // `static int n; n++` from faulting on the page holding the code that ran it.
     let data_start = text.len().div_ceil(PAGE) * PAGE;
-    let size = (data_start + data.bytes.len()).max(1);
+    let xdata_start = data_start + data.bytes.len();
+    let pdata_start = (xdata_start + unwinder.xdata.len()).div_ceil(8) * 8;
+    let size = (pdata_start + unwinder.entries.len() * 12).max(1);
 
     // **The allocation has to be near what the code calls.** A call this back end emits is
     // `E8 rel32`, which reaches two gigabytes either way, and a region the allocator puts a hundred
@@ -162,6 +173,24 @@ pub(crate) fn load(
             memory.add(data_start),
             data.bytes.len(),
         );
+        std::ptr::copy_nonoverlapping(
+            unwinder.xdata.as_ptr(),
+            memory.add(xdata_start),
+            unwinder.xdata.len(),
+        );
+        // Three words per entry, all of them offsets from this allocation's start: the function's
+        // address, its end, and where its description lives in `.xdata`.
+        let mut place = memory.add(pdata_start);
+        for entry in &unwinder.entries {
+            let begin = functions
+                .iter()
+                .find(|function| function.name == entry.name)
+                .map_or(0, |function| function.start);
+            for word in [begin, begin + entry.size, xdata_start as u32 + entry.info] {
+                std::ptr::write_unaligned(place.cast::<u32>(), word);
+                place = place.add(4);
+            }
+        }
     }
     for function in &functions {
         loaded
@@ -261,6 +290,25 @@ pub(crate) fn load(
             message: String::from("the loaded code could not be made executable"),
             span,
         });
+    }
+    // The frame table, so that a `longjmp` or an exception crossing this code can walk it. Without
+    // this, the unwinder sees functions it knows nothing about - which is what made a `longjmp` from
+    // a compiled function fault rather than jump.
+    if !unwinder.entries.is_empty() {
+        #[allow(unsafe_code)]
+        let added = unsafe {
+            RtlAddFunctionTable(
+                memory.add(pdata_start),
+                unwinder.entries.len() as u32,
+                memory,
+            )
+        };
+        if added == 0 {
+            return Err(NotYet {
+                message: String::from("the frame table could not be registered with the unwinder"),
+                span,
+            });
+        }
     }
     Ok(loaded)
 }

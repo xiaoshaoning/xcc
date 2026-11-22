@@ -349,6 +349,41 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // `longjmp` out of three of this compiler's own frames: the C library's `longjmp` calls
+            // `RtlUnwindEx`, which walks `.pdata` - and without a frame table this faulted rather
+            // than jumped. The deepest check there is for the frame table.
+            "longjmp out of three frames",
+            "#include <setjmp.h>
+
+             static jmp_buf env;
+
+             static void deep(int n) { if (n == 0) longjmp(env, 42); else deep(n - 1); }
+
+             int main(void) { int jumped = setjmp(env); if (jumped == 0) deep(3); return jumped; }",
+            42,
+        ),
+        (
+            // `signal.h` in anger: the declarator that returns a handler, the handler itself, and
+            // `raise` calling it. A header that ships is one a program can use.
+            "signal and raise",
+            "#include <signal.h>
+
+             static int got;
+
+             static void handler(int number) { got = number; }
+
+             int main(void) {
+
+                 void (*previous)(int) = signal(SIGINT, handler);
+
+                 if (previous == SIG_ERR) return 1;
+
+                 raise(SIGINT);
+
+                 return got == SIGINT ? 42 : 2; }",
+            42,
+        ),
+        (
             // A block-scope `extern` declaration refers to the object with external linkage
             // (C99 6.2.2p4) and does not make one. The check needs the global read from somewhere
             // else afterwards: a private frame slot would still return the value just written.
