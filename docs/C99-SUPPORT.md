@@ -100,10 +100,12 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 
 | construct | status |
 |---|---|
-| freestanding: `stddef.h`, `stdarg.h`, `stdbool.h`, `stdint.h`, `limits.h`, `float.h` | `sound` (M8) - they ship inside the compiler, twelve clean-room headers consulted after the host's, so no `-I` is needed and `-I` still shadows them. `stdarg.h` is the exception: it refuses with the reason in [ADR-006](ADR-006-varargs.md) |
+| freestanding: `stddef.h`, `stdarg.h`, `stdbool.h`, `stdint.h`, `limits.h`, `float.h` | `sound` (M8) - they ship inside the compiler, consulted after the host's, so no `-I` is needed and `-I` still shadows them. `stdarg.h` was planned as the exception and is a real header now ([ADR-006](ADR-006-varargs.md)) |
 | hosted: `stdio.h`, `stdlib.h`, `string.h`, `ctype.h`, `math.h`, `time.h` | `partial` (M8) - the declarations ship and a linked program uses the host's C runtime; `--run` resolves every function the headers declare out of one loaded C runtime, except `snprintf`, which no Windows runtime exports directly |
-| `setjmp.h` | `planned`, with the caveat that a JIT'ed frame cannot be long-jumped out of without unwind information |
-| `signal.h`, `locale.h`, `wchar.h`, `wctype.h` | `refused` for now - a diagnostic when included, rather than a header that pretends |
+| `assert.h` | `sound` (M10) - `assert` is a macro over the C library's `fprintf` and `abort`, so the header needs no runtime of its own; `NDEBUG` gives 7.2p1's void expression. Verified both ways, and `errno`/`strtol` overflow read back `ERANGE` |
+| `errno.h`, `iso646.h` | `sound` (M10) - `errno` is `#define errno (*_errno())`, because the C library keeps one per thread, and the `E*` values are the target's own; `iso646.h` is its eleven macros |
+| `setjmp.h` | `refused` - and the diagnostic says why: `jmp_buf`'s layout is the ABI's, not the C library's, and a JIT'ed frame cannot be long-jumped out of without unwind information |
+| `locale.h`, `signal.h`, `inttypes.h`, `complex.h`, `fenv.h`, `tgmath.h`, `wchar.h`, `wctype.h` | `refused` - each with its reason in the message, never `cannot find`. Which headers exist and what happens to each is **one table** in `src/headers.rs`, walked by a test against C99 7.1.2's own list |
 
 ## Refusals, gathered
 

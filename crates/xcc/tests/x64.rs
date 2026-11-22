@@ -342,6 +342,37 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             7,
         ),
         (
+            // `errno` is the C library's, reached through a function because it is one per thread:
+            // the header is `#define errno (*_errno())` and the overflow is `strtol`'s own.
+            "errno is the C library's",
+            "#include <errno.h>
+#include <stdlib.h>
+
+             int main(void) { errno = 0; strtol(\"99999999999999999999\", 0, 10);
+                 return errno == ERANGE ? 42 : 1; }",
+            42,
+        ),
+        (
+            // `assert` with `NDEBUG`: the same header, the other arm of its `#ifdef`, and the
+            // failing condition is never evaluated - so a program that would abort does not.
+            "assert with NDEBUG",
+            "#define NDEBUG
+#include <assert.h>
+
+             int main(void) { assert(0); return 7; }",
+            7,
+        ),
+        (
+            // The spellings `iso646.h` asks for, in an expression rather than a statement.
+            "the iso646 spellings",
+            "#include <iso646.h>
+
+             int main(void) { int a = 1; int b = 0;
+                 if (a and not b) return ((a bitand 3) == 1) and (((a bitor b) xor 0) == 1) ? 42 : 1;
+                 return 0; }",
+            42,
+        ),
+        (
             // A `switch` on a narrow type: C99 6.8.4.2p5 promotes the controlling expression, and a
             // `switch` on an `unsigned char` that compared itself with `int` case labels was a
             // `cir` the verifier refused. `cJSON.c`'s number parser is written exactly this way.

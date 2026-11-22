@@ -705,6 +705,44 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 - 2026-11-22 - the ledger of headers, and the two C99 requires that were in no list
+
+A real library failed on `#include <assert.h>` - C99 7.2, the header every library includes before it
+asserts anything - and finding out why uncovered a worse fault than the missing header.
+
+**Which headers exist was written in three places**: `builtin`'s match arm, the shipped list in a test, and the
+*absent* list in another test. `assert.h` and `errno.h` were in none of them, so both fell through the gaps
+between the lists and a program including either was told `cannot find` - the message a **typo** gets.
+`src/headers.rs` now holds **one table**: every header in C99 7.1.2's table, each `Shipped(text)` or
+`Refused(reason)`. Both behaviours derive from it, and a test walks it against the standard's own list, so a
+header cannot be added to one and forgotten in the other.
+
+**And the refusal message the docs promised did not exist.** The refused list was covered by a test that only
+asked whether *something* failed, under a comment saying the message names the reason "(CONSTRAINTS 3)" - it
+did not, and the test could not tell. `<setjmp.h>` now says *"not available: `jmp_buf`'s layout is the ABI's,
+not the C library's"*, and the test checks the reason reaches the reader. **A comment describing a check the
+code does not make** is this project's most-repeated finding, and here it had hidden a missing header for two
+milestones.
+
+**Three headers became real.** `assert.h` is 7.2p2's macro over the C library's `fprintf` and `abort`, so it
+needs no runtime of its own - which is why it can exist where `setjmp.h` cannot; `NDEBUG` gives 7.2p1's void
+expression. `errno.h` is `#define errno (*_errno())`, because the C library keeps one per thread, and the `E*`
+values are the target's. `iso646.h` was eight lines nothing in the corpus used and nothing in real code should
+have to lack.
+
+**Measured:** `assert` both ways, `errno`/`ERANGE` from a real `strtol` overflow, and every `iso646` spelling,
+each against clang; the refusal message names its reason for the nine headers that refuse. **sds.c (BSD, 1 328
+lines) now gets past `assert.h`** and fails at `sys/types.h` - POSIX, not C99, so that refusal is ours to
+explain and not to fix. cJSON still compiles and still matches clang byte for byte; 443 corpus programs agree,
+20 refused, 0 wrong.
+
+**The README said "twelve clean-room C headers" while fifteen shipped.** Its row is now compared to the table
+by name - every header that ships is named there, and nothing that refuses is - which is a fact the build
+checks instead of a number a reader has to trust.
+
+185 unit, 27 parser, 21 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - a fact that was true in one of the two places it lived
 
 The cJSON commit, reviewed. Its three fixes hold; what the review found is the same defect repeated in the

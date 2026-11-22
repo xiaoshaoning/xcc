@@ -804,7 +804,13 @@ impl Preprocessor<'_> {
                 return;
             }
         }
-        self.error(span, format!("cannot find `{name}`"));
+        match crate::headers::refusal(&name) {
+            // A name from C99's own table: the compiler is declining on purpose, and the message
+            // says so. `cannot find` is what a misspelt name gets, and calling `setjmp.h` a typo
+            // hides the reason a reader needs.
+            Some(reason) => self.error(span, format!("`<{name}>` is not available: {reason}")),
+            None => self.error(span, format!("cannot find `{name}`")),
+        }
     }
 
     /// The file name an `#include` asks for, and whether it was written `<>` or `""`.

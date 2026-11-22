@@ -11,23 +11,136 @@
 
 use crate::pp::Includes;
 
+/// What this compiler does with one of the headers C99 requires of a hosted implementation.
+///
+/// There are exactly two answers and both are deliberate: a header either ships, or it refuses and
+/// says why.  A third - `cannot find` - is the message a *typo* gets, and it tells a reader nothing
+/// about whether the facility exists at all, so nothing may fall through to it.
+enum Header {
+    Shipped(&'static str),
+    Refused(&'static str),
+}
+
+/// Every header in C99's 7.1.2 table, and what happens to it. **The one place** that decides; the
+/// test below walks it against the standard's own list so that a header cannot be added to one and
+/// forgotten in the other, which is how `assert.h` and `errno.h` came to be in neither.
+const C99_HEADERS: &[(&str, Header)] = &[
+    (
+        "assert.h",
+        Header::Shipped(include_str!("../include/assert.h")),
+    ),
+    (
+        "complex.h",
+        Header::Refused("`_Complex` and `_Imaginary` are not implemented"),
+    ),
+    (
+        "ctype.h",
+        Header::Shipped(include_str!("../include/ctype.h")),
+    ),
+    (
+        "errno.h",
+        Header::Shipped(include_str!("../include/errno.h")),
+    ),
+    (
+        "fenv.h",
+        Header::Refused("there is no access to the floating-point environment"),
+    ),
+    (
+        "float.h",
+        Header::Shipped(include_str!("../include/float.h")),
+    ),
+    (
+        "inttypes.h",
+        Header::Refused("not implemented; `<stdint.h>` and `printf` cover today's need"),
+    ),
+    (
+        "iso646.h",
+        Header::Shipped(include_str!("../include/iso646.h")),
+    ),
+    (
+        "limits.h",
+        Header::Shipped(include_str!("../include/limits.h")),
+    ),
+    (
+        "locale.h",
+        Header::Refused("not implemented; the C library's `localeconv` is not declared"),
+    ),
+    ("math.h", Header::Shipped(include_str!("../include/math.h"))),
+    (
+        "setjmp.h",
+        Header::Refused("not implemented; `jmp_buf`'s layout is the ABI's, not the C library's"),
+    ),
+    (
+        "signal.h",
+        Header::Refused("not implemented; the C library's `signal` is not declared"),
+    ),
+    (
+        "stdarg.h",
+        Header::Shipped(include_str!("../include/stdarg.h")),
+    ),
+    (
+        "stdbool.h",
+        Header::Shipped(include_str!("../include/stdbool.h")),
+    ),
+    (
+        "stddef.h",
+        Header::Shipped(include_str!("../include/stddef.h")),
+    ),
+    (
+        "stdint.h",
+        Header::Shipped(include_str!("../include/stdint.h")),
+    ),
+    (
+        "stdio.h",
+        Header::Shipped(include_str!("../include/stdio.h")),
+    ),
+    (
+        "stdlib.h",
+        Header::Shipped(include_str!("../include/stdlib.h")),
+    ),
+    (
+        "string.h",
+        Header::Shipped(include_str!("../include/string.h")),
+    ),
+    (
+        "tgmath.h",
+        Header::Refused("not implemented; its macros need `_Generic`"),
+    ),
+    ("time.h", Header::Shipped(include_str!("../include/time.h"))),
+    (
+        "wchar.h",
+        Header::Refused("not implemented; wide characters and `L\"...\"` literals are not"),
+    ),
+    (
+        "wctype.h",
+        Header::Refused("not implemented; wide characters are not"),
+    ),
+];
+
 /// The text of a header this compiler ships, by the name an `#include` uses.
 pub(crate) fn builtin(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "ctype.h" => include_str!("../include/ctype.h"),
-        "float.h" => include_str!("../include/float.h"),
-        "limits.h" => include_str!("../include/limits.h"),
-        "math.h" => include_str!("../include/math.h"),
-        "stdarg.h" => include_str!("../include/stdarg.h"),
-        "stdbool.h" => include_str!("../include/stdbool.h"),
-        "stddef.h" => include_str!("../include/stddef.h"),
-        "stdint.h" => include_str!("../include/stdint.h"),
-        "stdio.h" => include_str!("../include/stdio.h"),
-        "stdlib.h" => include_str!("../include/stdlib.h"),
-        "string.h" => include_str!("../include/string.h"),
-        "time.h" => include_str!("../include/time.h"),
-        _ => return None,
-    })
+    match disposition(name) {
+        Some(Header::Shipped(text)) => Some(text),
+        _ => None,
+    }
+}
+
+/// Why a standard header is not available, when the reason is this compiler's to give.
+///
+/// The distinction matters to the reader of a diagnostic: `cannot find` is what a misspelt name
+/// gets, and a name from C99's own table deserves better than being called a typo.
+pub(crate) fn refusal(name: &str) -> Option<&'static str> {
+    match disposition(name) {
+        Some(Header::Refused(reason)) => Some(reason),
+        _ => None,
+    }
+}
+
+fn disposition(name: &str) -> Option<&Header> {
+    C99_HEADERS
+        .iter()
+        .find(|(header, _)| *header == name)
+        .map(|(_, disposition)| disposition)
 }
 
 /// What a compilation reads its includes from: the host's files, then the compiler's headers.
@@ -59,58 +172,128 @@ impl Includes for Headers {
 mod tests {
     use super::*;
 
+    /// C99 7.1.2's table of the headers a hosted implementation must provide - the oracle for
+    /// [`C99_HEADERS`]. Written from the standard and not from the table, so that a header added to
+    /// one and forgotten in the other is a failure rather than a gap.
+    const C99_TABLE: &[&str] = &[
+        "assert.h",
+        "complex.h",
+        "ctype.h",
+        "errno.h",
+        "fenv.h",
+        "float.h",
+        "inttypes.h",
+        "iso646.h",
+        "limits.h",
+        "locale.h",
+        "math.h",
+        "setjmp.h",
+        "signal.h",
+        "stdarg.h",
+        "stdbool.h",
+        "stddef.h",
+        "stdint.h",
+        "stdio.h",
+        "stdlib.h",
+        "string.h",
+        "tgmath.h",
+        "time.h",
+        "wchar.h",
+        "wctype.h",
+    ];
+
+    #[test]
+    fn the_readme_names_the_headers_that_ship_and_no_others() {
+        // The README's header row is a hand-written list, and it said "twelve" while fifteen shipped.
+        // A count would only be a second number to drift, so the test compares the *names*: every
+        // header that ships is named there, and nothing that refuses is.
+        let readme = include_str!("../../../README.md");
+        let row = readme
+            .lines()
+            .find(|line| line.starts_with("| headers |"))
+            .expect("the README has a headers row");
+        for (name, disposition) in C99_HEADERS {
+            let stem = name.trim_end_matches(".h");
+            match disposition {
+                Header::Shipped(_) => assert!(
+                    row.contains(&format!("`{stem}`")),
+                    "the README should name `{stem}`, which ships"
+                ),
+                Header::Refused(_) => assert!(
+                    !row.contains(&format!("`{stem}`")),
+                    "the README should not name `{stem}`, which refuses"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_ledger_is_c99s_table() {
+        // `assert.h` and `errno.h` were in neither of the two lists this replaces, so a program that
+        // included either was told the name did not exist. Two hand-written lists and one table in
+        // three places is how that happens; this compares them to the standard instead.
+        let named: Vec<&str> = C99_HEADERS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(named, C99_TABLE);
+    }
+
     #[test]
     fn every_header_ships_and_compiles_as_itself() {
         // The whole point of the module: a header is a file the preprocessor reads, so a header
         // with a mistake in it is a mistake in every program that includes it. This parses each
         // one on its own, which is also the only way `stdarg.h` can be checked: it refuses.
-        for name in [
-            "ctype.h",
-            "float.h",
-            "limits.h",
-            "math.h",
-            "stdbool.h",
-            "stddef.h",
-            "stdint.h",
-            "stdio.h",
-            "stdlib.h",
-            "string.h",
-            "time.h",
-        ] {
-            let text = builtin(name).unwrap_or_else(|| panic!("{name} ships"));
+        for (name, disposition) in C99_HEADERS {
+            let Header::Shipped(text) = disposition else {
+                continue; // refused headers have no text to parse; `a_header_...` covers them
+            };
             let mut compiler = crate::Compile::new(crate::Options::default());
             compiler
                 .preprocess(name, text)
                 .unwrap_or_else(|diagnostics| panic!("{name}: {diagnostics:?}"));
             compiler
-                .compile(name, &format!("#include <{name}>\n"))
+                .compile(
+                    name,
+                    &format!(
+                        "#include <{name}>
+"
+                    ),
+                )
                 .unwrap_or_else(|diagnostics| panic!("{name}: {diagnostics:?}"));
         }
     }
 
     #[test]
     fn a_header_that_cannot_be_honoured_refuses_with_the_reason() {
-        // The headers that are promises this compiler cannot keep are the ones for facilities it has
-        // no implementation of at all - `setjmp.h`, `signal.h`, `locale.h`, `wchar.h`. They refuse
-        // rather than declaring something that would fail later, and the message says which
-        // (CONSTRAINTS 3).
+        // The headers that are promises this compiler cannot keep refuse *with the reason*, and the
+        // test checks the reason reaches the reader: before this, `#include <setjmp.h>` said
+        // `cannot find`, which is what a misspelt name gets, and this test only asked whether
+        // *something* failed - so the comment above it was true of no case at all.
         //
-        // `stdarg.h` used to be on this list: it refused because a `va_list` is the ABI's variadic
-        // convention rather than a declaration. It is a real header now, and a program that reads an
-        // unnamed argument compiles - the premise of this test went with it.
-        for absent in ["setjmp.h", "signal.h", "locale.h", "wchar.h"] {
+        // `stdarg.h` used to refuse because a `va_list` is the ABI's variadic convention rather
+        // than a declaration. It is a real header now, and a program that reads an unnamed argument
+        // compiles - the premise of this test went with it.
+        for (name, disposition) in C99_HEADERS {
+            let Header::Refused(reason) = disposition else {
+                continue;
+            };
             let mut compiler = crate::Compile::new(crate::Options::default());
-            assert!(
-                compiler
-                    .compile(
-                        "t.c",
-                        &format!(
-                            "#include <{absent}>
+            let errors = compiler
+                .compile(
+                    "t.c",
+                    &format!(
+                        "#include <{name}>
 "
-                        )
-                    )
-                    .is_err(),
-                "{absent} should refuse"
+                    ),
+                )
+                .expect_err(name);
+            let message = errors
+                .items()
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(
+                message.contains(reason),
+                "{name} should refuse with {reason:?}, said {message:?}"
             );
         }
     }
