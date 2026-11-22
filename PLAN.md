@@ -948,6 +948,8 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `lauxlib`, `lcode`, `ldo`, `llex`, `lparser`, `ltable`, `lvm` - and **every one that Cranelift can compile
       fails at `--opt-level=1` as well**, so the shared half is at fault: parser, `cir`, or a `cir` pass. That is a
       narrowing no bisect of the back end could have given, and it rules out everything this milestone changed.
+      (Four compiled at level 1 at first: `lcode`'s refusal was itself a bug - an `extern` object reported as an
+      internal error - and fixing it moved `lcode` from *untested* to *tested and failing at both levels*.)
 
       **Two of the seven now have a function named.** `ltable` hangs, and a `SIGINT` sample lands in `luaH_newkey` -
       the `while (othern + gnext(othern) != mp)` chain walk. `llex` dies of `SIGILL`, which is this compiler's own
