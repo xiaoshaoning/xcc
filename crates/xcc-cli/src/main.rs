@@ -137,7 +137,31 @@ impl From<FormatArg> for xcc::Format {
     }
 }
 
+/// How much stack the compiler thread gets.
+///
+/// The parser is recursive descent with a budget of 256 nested levels, and a level's frame is whatever
+/// the compiler chose to make it: a debug build's frames are several times a release build's, and the
+/// main thread of a Windows process has one megabyte. Measured, not assumed - a source nested twenty
+/// thousand parens deep was refused on this machine running the release binary and overflowed the
+/// stack running the debug one, from the same source and the same compiler. So the work happens on a
+/// thread whose stack is stated here, and the budget's promise ("refused, not crashed") holds in both.
+const COMPILER_STACK: usize = 16 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    // The thread below owns the whole compile, so a panic in it still ends the process with a
+    // failure: `join` maps both a panic and an exit code onto one answer.
+    let compiler = std::thread::Builder::new()
+        .stack_size(COMPILER_STACK)
+        .spawn(compile_command_line)
+        .expect("a thread with a stated stack");
+    match compiler.join() {
+        Ok(status) => status,
+        Err(_) => ExitCode::from(1),
+    }
+}
+
+/// The command line as it was before the stack mattered.
+fn compile_command_line() -> ExitCode {
     // parse_from wants argv[0]: the program's own name stays in front of the arguments
     let mut argv: Vec<OsString> = std::env::args_os().collect();
     let program = argv.remove(0);

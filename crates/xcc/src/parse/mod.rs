@@ -1143,10 +1143,7 @@ impl Parser<'_> {
     fn declaration_specifiers(&mut self) -> Specifiers {
         let mut specs = Specifiers::default();
         let mut spelled: Vec<String> = Vec::new();
-        loop {
-            let Some(token) = self.peek().copied() else {
-                break;
-            };
+        while let Some(token) = self.peek().copied() {
             let word = self.spell(&token).to_owned();
             match word.as_str() {
                 "typedef" | "extern" | "static" | "auto" | "register" => {
