@@ -342,6 +342,36 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             7,
         ),
         (
+            // A cast in an integer constant expression: C99 6.6p6 allows one, and Lua sizes a
+            // buffer exactly this way - `char b[((int)(16 * sizeof(void *) * sizeof(double)))]`.
+            "a cast in an integer constant expression",
+            "int main(void) { char b[((int)(16 * sizeof(void *) * sizeof(double)))];                 return (int)sizeof b == 1024 ? 42 : 1; }",
+            42,
+        ),
+        (
+            // `&f` where `f` names a function: C99 6.5.3.2p3 says the result is the designator,
+            // because a function name already is an address and is never an lvalue. Lua hands a
+            // handler over as `lua_atpanic(L, &panic)`.
+            "the address of a function",
+            "int panic(int n) { return n * 2; }
+
+             int call(int (*handler)(int)) { return handler(21); }
+
+             int main(void) { return call(&panic); }",
+            42,
+        ),
+        (
+            // An `extern` declaration of an incomplete array is a declaration and not a definition
+            // (C99 6.9.2p2): `lua.h` says `extern const char lua_ident[];`, and laying down bytes
+            // for it would invent an object of incomplete type in every file that includes the
+            // header.
+            "an extern declaration of an incomplete array",
+            "extern const char lua_ident[];
+
+             int main(void) { return 42; }",
+            42,
+        ),
+        (
             // `errno` is the C library's, reached through a function because it is one per thread:
             // the header is `#define errno (*_errno())` and the overflow is `strtol`'s own.
             "errno is the C library's",

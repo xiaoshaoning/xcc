@@ -45,6 +45,8 @@ const C_RUNTIME: &[&str] = &[
     "rewind",
     "scanf",
     "setbuf",
+    "setvbuf",
+    "tmpnam",
     "snprintf",
     "sprintf",
     "sscanf",
@@ -139,6 +141,11 @@ const C_RUNTIME: &[&str] = &[
     "tanh",
     // errno.h: the accessor, not an object, because the C library keeps one per thread.
     "_errno",
+    // locale.h, signal.h
+    "localeconv",
+    "setlocale",
+    "raise",
+    "signal",
     // time.h
     "clock",
     "difftime",

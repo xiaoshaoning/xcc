@@ -106,7 +106,8 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `errno.h`, `iso646.h` | `sound` (M10) - `errno` is `#define errno (*_errno())`, because the C library keeps one per thread, and the `E*` values are the target's own; `iso646.h` is its eleven macros. Both work under `--run`: `_errno` is in the runtime's symbol list, and a test compares that list with what the headers actually name |
 | a `FILE *` stream (`stdin`, `stdout`, `stderr`) under `--run` | `refused` - the headers spell the streams for the *universal* runtime (`__acrt_iob_func`), and `--run` loads the classic one, which exports `_iob` instead. One runtime per process is deliberate (two keep two heaps and two sets of buffers), so `--run` reports the symbol and the reason. `printf`/`fprintf` need no `FILE *` and work. **This is why `assert` runs only on the object path**: its diagnostic needs `stderr` |
 | `setjmp.h` | `refused` - and the diagnostic says why: `jmp_buf`'s layout is the ABI's, not the C library's, and a JIT'ed frame cannot be long-jumped out of without unwind information |
-| `locale.h`, `signal.h`, `inttypes.h`, `complex.h`, `fenv.h`, `tgmath.h`, `wchar.h`, `wctype.h` | `refused` - each with its reason in the message, never `cannot find`. Which headers exist and what happens to each is **one table** in `src/headers.rs`, walked by a test against C99 7.1.2's own list |
+| `locale.h`, `signal.h` | `sound` (M10) - `setlocale`, `localeconv` and `struct lconv` in the standard's own member order; `signal`, `raise`, `sig_atomic_t` and the target's six signals. `localeconv()->decimal_point` is what a program writing a decimal number by hand reads |
+| `inttypes.h`, `complex.h`, `fenv.h`, `tgmath.h`, `wchar.h`, `wctype.h` | `refused` - each with its reason in the message, never `cannot find`. Which headers exist and what happens to each is **one table** in `src/headers.rs`, walked by a test against C99 7.1.2's own list |
 
 ## Refusals, gathered
 

@@ -27,6 +27,10 @@ FILE *__acrt_iob_func(unsigned index);
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
+/* 7.19.5.6: the three buffering modes `setvbuf` takes, and the values are the target's. */
+#define _IOFBF 0
+#define _IOLBF 64
+#define _IONBF 4
 
 int remove(const char *path);
 int rename(const char *from, const char *to);
@@ -36,6 +40,7 @@ int fflush(FILE *stream);
 FILE *fopen(const char *restrict path, const char *restrict mode);
 FILE *freopen(const char *restrict path, const char *restrict mode, FILE *restrict stream);
 void setbuf(FILE *restrict stream, char *restrict buffer);
+int setvbuf(FILE *restrict stream, char *restrict buffer, int mode, size_t size);
 
 int fprintf(FILE *restrict stream, const char *restrict format, ...);
 int fscanf(FILE *restrict stream, const char *restrict format, ...);
@@ -67,5 +72,9 @@ void clearerr(FILE *stream);
 int feof(FILE *stream);
 int ferror(FILE *stream);
 void perror(const char *text);
+/* 7.19.4.4: a name for a file that did not exist a moment ago. C99 deprecated it, and C11 replaced
+ * it with `tmpnam_s`; it is what real C written against C99 calls, and the declaration is the whole
+ * difference between a call and an implicit `int` returned into a pointer comparison. */
+char *tmpnam(char *name);
 
 #endif

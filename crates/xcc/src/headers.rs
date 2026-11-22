@@ -63,7 +63,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "locale.h",
-        Disposition::Refused("not implemented; the C library's `localeconv` is not declared"),
+        Disposition::Shipped(include_str!("../include/locale.h")),
     ),
     (
         "math.h",
@@ -77,7 +77,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "signal.h",
-        Disposition::Refused("not implemented; the C library's `signal` is not declared"),
+        Disposition::Shipped(include_str!("../include/signal.h")),
     ),
     (
         "stdarg.h",

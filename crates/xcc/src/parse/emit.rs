@@ -183,7 +183,15 @@ impl Parser<'_> {
             return self.truth_value(value, span);
         }
         let Some(source) = value.cir else {
-            return Value::new(wanted, None, false);
+            // Nothing is being emitted, so nothing will compute this - but a *constant expression* is
+            // read in exactly this state, and C99 6.6p6 lets one hold a cast to an integer type. A
+            // cast is the one operator that had a constant on each side and produced none, and
+            // `char b[((int)(16 * sizeof(void *) * sizeof(double)))]` - how Lua sizes a buffer - is
+            // the shape real code writes.
+            let folded = value
+                .constant
+                .and_then(|constant| self.fold_conversion(value.ty, wanted, constant));
+            return Value::new(wanted, folded, false);
         };
         let Some(op) = self.conversion(value.ty, wanted) else {
             let (from, to) = (self.describe(value.ty), self.describe(wanted));
@@ -206,6 +214,54 @@ impl Parser<'_> {
             Some(cir) => Value::code(ty, cir).with_constant(Some(value)),
             None => Value::constant(ty, value),
         }
+    }
+
+    /// The constant an integer conversion of a constant produces, or `None` when the conversion is
+    /// not one a constant expression may hold (C99 6.6p6 allows only arithmetic-to-integer casts).
+    ///
+    /// The work is the conversion's own, read from [`Self::conversion`] so that the fold and the
+    /// instruction cannot disagree about what a `Truncate` means.
+    pub(super) fn fold_conversion(&self, from: TypeId, to: TypeId, value: i64) -> Option<i64> {
+        let width = |ty: TypeId| match self.types.kind(ty) {
+            Type::Int { bits, .. } => Some(*bits),
+            Type::Bool => Some(8),
+            _ => None,
+        };
+        let signed = |ty: TypeId| matches!(self.types.kind(ty), Type::Int { signed: true, .. });
+        let (from_bits, to_bits) = (width(from)?, width(to)?);
+        // The low `bits` bits of `value`, and those bits read as a two's-complement number.
+        let truncated = |value: i64, bits: u8| {
+            if bits >= 64 {
+                value
+            } else {
+                value & ((1i64 << bits) - 1)
+            }
+        };
+        let extended = |value: i64, bits: u8| {
+            if bits >= 64 {
+                value
+            } else {
+                let shift = 64 - bits;
+                (value << shift) >> shift
+            }
+        };
+        Some(match self.conversion(from, to)? {
+            cir::ConvertOp::Bitcast => value,
+            cir::ConvertOp::Truncate => {
+                let bits = truncated(value, to_bits);
+                if signed(to) {
+                    extended(bits, to_bits)
+                } else {
+                    bits
+                }
+            }
+            cir::ConvertOp::SignExtend => extended(value, from_bits),
+            cir::ConvertOp::ZeroExtend => truncated(value, from_bits),
+            // A float on either side: narrowing `width` above, and a float's constant is its bit
+            // pattern rather than its value - so there is nothing here to fold and 6.6p6 does not
+            // ask for one (an integer constant expression holds no float but a cast's operand).
+            _ => return None,
+        })
     }
 
     /// `pointer +/- integer`: the index is scaled by the pointee's size, and the arithmetic

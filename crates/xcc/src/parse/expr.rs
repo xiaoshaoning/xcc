@@ -833,6 +833,20 @@ impl Parser<'_> {
             }
             "&" => {
                 self.bump();
+                // C99 6.5.3.2p3: the `&` of a function designator is that designator, because a
+                // function name already *is* an address and is never an lvalue - so the rule below
+                // refuses it. `lua_atpanic(L, &panic)` is how Lua hands a function over, and the
+                // value the name produces is exactly the pointer this operator would return.
+                if let Some(token) = self.peek().copied() {
+                    let names_a_function = self
+                        .symbols
+                        .lookup(token.text)
+                        .is_some_and(|entry| matches!(entry.kind, Kind::Function));
+                    let function = token.kind == crate::lex::TokenKind::Ident && names_a_function;
+                    if function {
+                        return self.primary_expression();
+                    }
+                }
                 let value = self.unary_expression()?;
                 if self.types.is_error(value.ty) {
                     return Some(Value::temporary(self.types.error()));

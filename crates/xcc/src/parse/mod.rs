@@ -820,7 +820,12 @@ impl Parser<'_> {
             // At file scope an object is data, not a slot: ADR-004. A tentative definition
             // (`int x;`) is defined and zero-filled; an initialiser is the list walker's work
             // and is still refused, because a global with no bytes would be a wrong program.
-            if object && !self.in_body() && !self.at_punct("=") {
+            //
+            // `extern` with no initialiser is the exception, and it is not a small one: `lua.h`
+            // declares `extern const char lua_ident[];`, which has no size until the file that
+            // defines it says one - so laying down bytes here invents an object of incomplete type
+            // in every file that merely includes the header.
+            if object && !self.in_body() && !self.at_punct("=") && !specs.is_extern {
                 if let Some(name) = name {
                     let span = self.span();
                     self.define_global(name, ty, None, specs.alignas, span);
@@ -1128,6 +1133,9 @@ impl Parser<'_> {
                     }
                     if word == "static" {
                         specs.is_static = true;
+                    }
+                    if word == "extern" {
+                        specs.is_extern = true;
                     }
                     self.at += 1; // a storage class is not part of the type
                 }
@@ -1745,6 +1753,10 @@ struct Specifiers {
     /// Whether `static` was one of the specifiers: inside a function that means storage duration
     /// and not linkage, which is the one place the word changes what a declaration *is*.
     is_static: bool,
+    /// Whether `extern` was one of them: with no initialiser that makes a declaration and not a
+    /// definition (C99 6.9.2p2), so the object belongs to another translation unit and this one must
+    /// not lay down bytes for it.
+    is_extern: bool,
     /// Whether the specifiers named a tag (`enum E { ... }`), which C lets stand alone as a
     /// declaration that declares nothing.
     declares_tag: bool,

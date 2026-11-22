@@ -705,6 +705,41 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 - 2026-11-22 - Lua, measured: four causes, and only one of them a missing header
+
+The plan's last product claim is M7's acceptance, which needed an interpreter. `lua-5.4.7/src` is 34 files; **two
+compiled.** The 32 refusals had exactly four causes, and the count is what made the order obvious:
+17 `<signal.h>`, 9 `expected a constant expression`, 5 `<locale.h>`, 1 `<setjmp.h>`. Nothing else - no fifth
+thing hiding behind the first four.
+
+**The nine were a bug, not a gap.** C99 6.6p6 lets an integer constant expression hold a cast to an integer type,
+and `convert` - the one function that asks "is this conversion legal" - emitted an instruction and kept no
+constant, which is right in a body and wrong while a constant expression is being read. A cast was the only
+operator that had a constant on each side and produced none. `fold_conversion` now folds it from the *same*
+`conversion` table the instruction comes from, so the fold and the code cannot disagree about what a `Truncate`
+means. `char b[((int)(16 * sizeof(void *) * sizeof(double)))]` - how Lua sizes a buffer - is 1024 bytes.
+
+**`&f` was refused.** C99 6.5.3.2p3: the `&` of a function designator *is* that designator, because a function
+name is already an address and is never an lvalue - so the lvalue rule that guards `&x` refused `&panic`, and
+`lua_atpanic(L, &panic)` is how Lua hands a function over.
+
+**And `extern` was defining objects.** `lua.h` declares `extern const char lua_ident[];`, which has no size until
+the file that defines it says one. The parser laid down bytes for every file-scope object with no initialiser -
+so merely *including the header* invented an object of incomplete type, and the back end said so in its own
+words. `extern` without an initialiser is a declaration (6.9.2p2) and now is one.
+
+**`signal.h` and `locale.h` became real** - the two the previous commit had written a reason for, both
+declarations over exports both C runtimes have. `stdio.h` also gained `setvbuf` with its three modes and
+`tmpnam`, which was a declared-nothing function returning `int` compared against `NULL`.
+
+**Measured: 33 of Lua's 34 files compile at `--opt-level=2`.** The last one, `ldo.c`, needs `setjmp.h` - the
+header whose refusal reason ("`jmp_buf`'s layout is the ABI's") is a statement about *writing the layout down*,
+which is the next step and not a blocker of a different kind. `cJSON.c` still compiles and still matches clang
+byte for byte; 443 corpus programs agree, 20 refused, 0 wrong.
+
+188 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - two lists that had to agree, and nothing that compared them
 
 The header ledger, reviewed. The ledger holds; next door sat the same defect it had just fixed.
