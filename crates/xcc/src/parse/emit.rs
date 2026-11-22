@@ -148,6 +148,11 @@ impl Parser<'_> {
         op: cir::CmpOp,
         span: Span,
     ) -> Option<cir::Value> {
+        // C99 6.3.2.1p3 first: an array is a pointer wherever a value is wanted, and a boolean
+        // context is one. Lua writes `api_check(L, (idx <= top) && "unacceptable index")`, whose
+        // right operand *is* a string literal; without the decay this compared two arrays with each
+        // other - an ill-typed `cmp` the verifier refused, and had it not, a branch on nonsense.
+        let value = self.decay(value);
         if self.types.is_error(value.ty) {
             return None;
         }

@@ -752,7 +752,13 @@ impl Parser<'_> {
         if self.types.is_error(value.ty) {
             return;
         }
-        if !self.types.is_scalar(value.ty) {
+        // An array is a scalar here because it does not stay one: C99 6.3.2.1p3 decays it to a
+        // pointer wherever a value is wanted, and a condition is such a place - every caller reaches
+        // `compare_to_zero`, which decays. Lua's `api_check(L, (idx <= top) && "index")` writes a
+        // string literal as a condition, and this check refused it before the decay could happen.
+        if !self.types.is_scalar(value.ty)
+            && !matches!(self.types.kind(value.ty), Type::Array { .. })
+        {
             let ty = self.describe(value.ty);
             let span = self.span();
             self.error(span, format!("{what} must be a scalar, not {ty}"));

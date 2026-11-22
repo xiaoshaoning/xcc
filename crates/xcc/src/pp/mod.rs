@@ -211,6 +211,13 @@ struct Raw {
     /// Whether this token came from an expansion rather than the source: only source tokens
     /// can begin a directive.
     spliced: bool,
+    /// Where the macro that produced this token was *invoked*, when it came from one.
+    ///
+    /// C99 6.10.8p1 makes `__LINE__` "the line number of the current source line", and during an
+    /// expansion the current source line is the *invocation's*: a `assert(e)` in a program reports
+    /// the program's line, not line 28 of `assert.h`. The token's own span still points into the
+    /// macro body, which is what a diagnostic wants.
+    invoked_at: Option<(u16, Span)>,
 }
 
 /// What a macro's parameter list says.
@@ -338,6 +345,7 @@ impl Preprocessor<'_> {
                 },
                 hide: Vec::new(),
                 spliced: false,
+                invoked_at: None,
             })
             .collect();
         for raw in tokens.into_iter().rev() {
@@ -365,6 +373,7 @@ impl Preprocessor<'_> {
                 },
                 hide: Vec::new(),
                 spliced: false,
+                invoked_at: None,
             })
             .collect();
         match words.get(2) {
@@ -690,6 +699,7 @@ impl Preprocessor<'_> {
                 token: *token,
                 hide: Vec::new(),
                 spliced: true,
+                invoked_at: None,
             })
             .collect();
         let expanded = self.expand_tokens(&spelled);
@@ -974,14 +984,18 @@ impl Preprocessor<'_> {
     /// The macros the language defines itself: `__FILE__`, `__LINE__`, and the standard's.
     fn predefined(&mut self, raw: &Raw) -> Option<Vec<Raw>> {
         let spelling = self.spell(raw.token.text).to_owned();
-        let entry = &self.files[raw.token.file as usize];
+        // `__LINE__` and `__FILE__` name the line *being read*, which during an expansion is where the
+        // macro was invoked - not where its body was written. Without this a program's `assert(e)`
+        // reported line 28 of `assert.h` and the file `"assert.h"`.
+        let (site_file, site_span) = raw.invoked_at.unwrap_or((raw.token.file, raw.token.span));
+        let entry = &self.files[site_file as usize];
         let quoted =
             |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
         let (kind, text) = match spelling.as_str() {
             "__FILE__" => (TokenKind::Str, quoted(&entry.logical)),
             "__LINE__" => (
                 TokenKind::Number,
-                entry.logical_line(raw.token.span.start).to_string(),
+                entry.logical_line(site_span.start).to_string(),
             ),
             "__DATE__" => (TokenKind::Str, quoted(&self.stamp.date)),
             "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
@@ -1013,12 +1027,17 @@ impl Preprocessor<'_> {
             },
             hide: Vec::new(),
             spliced: true,
+            invoked_at: None,
         }])
     }
 
     fn object_like(&self, definition: &Macro, raw: &Raw) -> Vec<Raw> {
         let mut hide = raw.hide.clone();
         hide.push(raw.token.text);
+        // The same rule `substitute` follows: these are the body's tokens, but `__LINE__` and
+        // `__FILE__` among them report where the macro was *called* (C99 6.10.8p1). Two paths expand a
+        // body, and fixing only one left `#define HERE __LINE__` reporting the `#define`'s line.
+        let invoked_at = Some(raw.invoked_at.unwrap_or((raw.token.file, raw.token.span)));
         definition
             .body
             .iter()
@@ -1026,6 +1045,7 @@ impl Preprocessor<'_> {
                 token: *token,
                 hide: hide.clone(),
                 spliced: true,
+                invoked_at,
             })
             .collect()
     }
@@ -1093,6 +1113,17 @@ impl Preprocessor<'_> {
     ) -> Vec<Raw> {
         let mut hide = invocation.hide.clone();
         hide.push(invocation.token.text);
+        // `__LINE__` and `__FILE__` name the invocation's line, not the body's (C99 6.10.8p1), so every
+        // token this produces is stamped with where the macro was called. An expansion already
+        // carrying a site keeps it: the outermost invocation is the "current source line", because a
+        // nested expansion's caller is a line inside another macro.
+        //
+        // Stamped once, at the end, rather than at each place a token is built: the body's tokens are
+        // cloned from `definition.body` in several branches, and one of them answered `__LINE__` with
+        // the header's own line for exactly that reason.
+        let invoked_at = invocation
+            .invoked_at
+            .unwrap_or((invocation.token.file, invocation.token.span));
 
         let mut out: Vec<Raw> = Vec::new();
         let mut at = 0;
@@ -1116,6 +1147,7 @@ impl Preprocessor<'_> {
                             },
                             hide: hide.clone(),
                             spliced: true,
+                            invoked_at: Some(invoked_at),
                         });
                         at += 2;
                         continue;
@@ -1176,6 +1208,7 @@ impl Preprocessor<'_> {
                 out.extend(expansion.into_iter().map(|raw| Raw {
                     hide: hide.clone(),
                     spliced: true,
+                    invoked_at: Some(invoked_at),
                     ..raw
                 }));
                 at += 1;
@@ -1186,8 +1219,14 @@ impl Preprocessor<'_> {
                 token,
                 hide: hide.clone(),
                 spliced: true,
+                invoked_at: Some(invoked_at),
             });
             at += 1;
+        }
+        for raw in &mut out {
+            if raw.invoked_at.is_none() {
+                raw.invoked_at = Some(invoked_at);
+            }
         }
         out
     }
@@ -1206,12 +1245,14 @@ impl Preprocessor<'_> {
                 token,
                 hide: Vec::new(),
                 spliced: true,
+                invoked_at: None,
             }],
         };
         side.into_iter()
             .map(|raw| Raw {
                 hide: hide.to_vec(),
                 spliced: true,
+                invoked_at: None,
                 ..raw
             })
             .collect()
@@ -1238,6 +1279,7 @@ impl Preprocessor<'_> {
                 },
                 hide: left.hide.clone(),
                 spliced: true,
+                invoked_at: None,
             },
             _ => {
                 let spelling = text.clone();
@@ -1249,6 +1291,7 @@ impl Preprocessor<'_> {
                     token: left.token,
                     hide: left.hide.clone(),
                     spliced: true,
+                    invoked_at: None,
                 }
             }
         }
@@ -1300,6 +1343,7 @@ impl Preprocessor<'_> {
                         token: comma,
                         hide: Vec::new(),
                         spliced: true,
+                        invoked_at: None,
                     });
                 }
                 joined.extend(part.iter().cloned());
@@ -1450,6 +1494,29 @@ mod tests {
         let file = SourceFile::new("t.c", source);
         let preprocessed = preprocess(&file, options, includes);
         (preprocessed.spellings(), preprocessed.diagnostics)
+    }
+
+    #[test]
+    fn a_macro_reports_the_line_it_was_called_on() {
+        // C99 6.10.8p1: `__LINE__` is "the line number of the current source line", and during an
+        // expansion the current line is the *invocation's*. A program's `assert(e)` used to report
+        // line 28 of `assert.h` and the file `"assert.h"`, because the token being expanded carried
+        // the span of the macro's body. Found by compiling Lua with `-DLUAI_ASSERT`, which turns every
+        // `api_check` into an `assert`, and every `assert` into a report of its own file and line.
+        let source = "#define HERE __LINE__
+#define WHERE __FILE__
+                      int a = HERE;
+                      char *name = WHERE;
+                      int b = HERE;
+";
+        let spells = spelled(source);
+        // `int a = 3;` and `int b = 5;`: the invocation's lines, not the body's (line 1 and 2).
+        assert!(spells.iter().any(|spelling| spelling == "3"), "{spells:?}");
+        assert!(spells.iter().any(|spelling| spelling == "5"), "{spells:?}");
+        assert!(
+            spells.iter().any(|spelling| spelling == "\"t.c\""),
+            "`__FILE__` names the file being read: {spells:?}"
+        );
     }
 
     /// The spellings, asserting nothing went wrong.

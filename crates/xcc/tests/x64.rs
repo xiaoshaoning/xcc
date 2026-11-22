@@ -472,6 +472,23 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A string literal in a boolean context: C99 6.3.2.1p3 decays an array wherever a value is
+            // wanted, and `&&`'s operand is one. Lua writes `api_check(L, (idx <= top) && "index")`,
+            // whose right operand *is* a string - without the decay this compared two arrays, an
+            // ill-typed `cmp` the verifier refused.
+            "an array in a boolean context",
+            "int f(int x) { return x && \"index\"; }
+
+             int g(int x) { return x || \"index\"; }
+
+             int h(void) { return !\"non-empty\"; }
+
+             int main(void) {
+
+                 return f(0) == 0 && f(1) == 1 && g(0) == 1 && g(1) == 1 && h() == 0 ? 42 : 1; }",
+            42,
+        ),
+        (
             // A `switch` arm that ends in a `?:` and falls through to the next arm: the fall-through
             // link has to be made from wherever control actually is, and the `?:` leaves it in a join
             // block of its own. Linking from the arm's first block instead left the join with no
