@@ -202,6 +202,18 @@ impl FileEntry {
     }
 }
 
+/// Where a macro was invoked from: the file, and the span inside it.
+///
+/// A type rather than a tuple because the two halves are read apart (`site.file` names the file
+/// `__FILE__` reports, `site.span` the line `__LINE__` does), and `(u16, Span)` reads as neither.
+#[derive(Debug, Clone, Copy)]
+struct Site {
+    /// Which file the invocation is in.
+    file: u16,
+    /// Where in it.
+    span: Span,
+}
+
 /// A working token: what the parser will see, plus the names that may not expand it.
 #[derive(Debug, Clone)]
 struct Raw {
@@ -217,7 +229,7 @@ struct Raw {
     /// expansion the current source line is the *invocation's*: a `assert(e)` in a program reports
     /// the program's line, not line 28 of `assert.h`. The token's own span still points into the
     /// macro body, which is what a diagnostic wants.
-    invoked_at: Option<(u16, Span)>,
+    invoked_at: Option<Site>,
 }
 
 /// What a macro's parameter list says.
@@ -987,15 +999,18 @@ impl Preprocessor<'_> {
         // `__LINE__` and `__FILE__` name the line *being read*, which during an expansion is where the
         // macro was invoked - not where its body was written. Without this a program's `assert(e)`
         // reported line 28 of `assert.h` and the file `"assert.h"`.
-        let (site_file, site_span) = raw.invoked_at.unwrap_or((raw.token.file, raw.token.span));
-        let entry = &self.files[site_file as usize];
+        let site = raw.invoked_at.unwrap_or(Site {
+            file: raw.token.file,
+            span: raw.token.span,
+        });
+        let entry = &self.files[site.file as usize];
         let quoted =
             |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
         let (kind, text) = match spelling.as_str() {
             "__FILE__" => (TokenKind::Str, quoted(&entry.logical)),
             "__LINE__" => (
                 TokenKind::Number,
-                entry.logical_line(site_span.start).to_string(),
+                entry.logical_line(site.span.start).to_string(),
             ),
             "__DATE__" => (TokenKind::Str, quoted(&self.stamp.date)),
             "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
@@ -1037,7 +1052,10 @@ impl Preprocessor<'_> {
         // The same rule `substitute` follows: these are the body's tokens, but `__LINE__` and
         // `__FILE__` among them report where the macro was *called* (C99 6.10.8p1). Two paths expand a
         // body, and fixing only one left `#define HERE __LINE__` reporting the `#define`'s line.
-        let invoked_at = Some(raw.invoked_at.unwrap_or((raw.token.file, raw.token.span)));
+        let invoked_at = Some(raw.invoked_at.unwrap_or(Site {
+            file: raw.token.file,
+            span: raw.token.span,
+        }));
         definition
             .body
             .iter()
@@ -1121,9 +1139,10 @@ impl Preprocessor<'_> {
         // Stamped once, at the end, rather than at each place a token is built: the body's tokens are
         // cloned from `definition.body` in several branches, and one of them answered `__LINE__` with
         // the header's own line for exactly that reason.
-        let invoked_at = invocation
-            .invoked_at
-            .unwrap_or((invocation.token.file, invocation.token.span));
+        let invoked_at = invocation.invoked_at.unwrap_or(Site {
+            file: invocation.token.file,
+            span: invocation.token.span,
+        });
 
         let mut out: Vec<Raw> = Vec::new();
         let mut at = 0;

@@ -760,6 +760,29 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the decay belongs where the value is used, and a pair is not a fact
+
+The `LUAI_ASSERT` commit, reviewed. Its two fixes hold on every shape I could think of, and the review found one
+design fault of the kind this project names again and again: a fact with no name.
+
+**`(u16, Span)` for "where the macro was invoked".** The two halves are read apart - the file is what `__FILE__`
+reports, the span is the line `__LINE__` does - so a tuple made every use site say which half it meant. It is a
+`Site` now, with a doc comment saying what each field answers.
+
+**What the fixes were checked against**, since a fix that only makes one program work is a coincidence: `if`, `while`,
+`do ... while`, `for`, `?:`, `!`, `&&` and `||` with a string literal all agree with clang; `_Bool b = "abc"` agrees;
+a two-level macro chain (`#define A B`, `#define B __LINE__`) reports the *outermost* invocation's line, which is
+what the standard means by "the current source line"; and `assert(1 == 1)` in a file named `asrt.c` reports
+`"asrt.c", 2` where it used to report `"assert.h", 28`.
+
+**One thing checked and found already right**: every `require_scalar` caller ends at `compare_to_zero`, which is
+where the decay now happens - so widening the check to accept arrays could not open a hole, and the reasoning is
+written where the widening is.
+
+191 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - a `switch` arm that ends in a `?:` fell off its own end
 
 The front-end bug behind two of Lua's seven failing files, found by reducing a `SIGILL` in `llex`'s `read_string`
