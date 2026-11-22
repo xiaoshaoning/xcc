@@ -705,6 +705,37 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - two lists that had to agree, and nothing that compared them
+
+The header ledger, reviewed. The ledger holds; next door sat the same defect it had just fixed.
+
+**`errno.h` declared `_errno`, and `--run`'s symbol list had never heard of it.** `back/crt.rs` resolves a
+*hand-written list* of names from the loaded C runtime, and the headers are a second list of the same names -
+so `--run` could not run the `errno` example the previous commit's own test used, and nothing said so until
+someone tried. The two lists now have a test that reads the shipped header text, extracts every name followed
+by `(`, and requires each to be in the runtime list or in a named exception. `_errno` was the whole gap.
+
+**And `UNAVAILABLE` is the exceptions, with reasons.** Two names a header reaches for and no Windows runtime
+offers: `snprintf` (the universal runtime spells it as an inline wrapper), and **`__acrt_iob_func`** - which
+the review found *live*: `assert.h` pulls `stdio.h`, `stdio.h` spells `stderr` with the universal runtime's
+accessor, and `--run` loads the classic runtime, which exports `_iob`. So a program that `#include <assert.h>`
+could no longer be run, and the message named a symbol the program never wrote. It now quotes the reason, and
+the matrix says which streams `--run` cannot reach and why one runtime per process is deliberate.
+
+**Two smaller faults in the same commit.** The refusal message wrapped the name in `<>` even when the program
+wrote `"..."`; and `headers::c99_headers` was a test-only accessor without `#[cfg(test)]`, which is a warning
+the release build only escapes because the test module uses it.
+
+**A comment in `crt.rs` cited the `snprintf` fact that now lives in `UNAVAILABLE`** - the same fact in two
+places, which is where this project keeps finding its bugs.
+
+**Measured after the review: `--run --opt-level=2` reads `errno == ERANGE` from the C runtime's own `strtol`
+(42), with a CLI test that would have failed before `_errno` was added; 126 header-declared names against 126
+runtime names, exactly; 443 corpus programs agree, 20 refused, 0 wrong; cJSON byte-identical to clang.**
+
+188 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the ledger of headers, and the two C99 requires that were in no list
 
 A real library failed on `#include <assert.h>` - C99 7.2, the header every library includes before it

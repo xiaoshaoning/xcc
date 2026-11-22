@@ -16,7 +16,7 @@ use crate::pp::Includes;
 /// There are exactly two answers and both are deliberate: a header either ships, or it refuses and
 /// says why.  A third - `cannot find` - is the message a *typo* gets, and it tells a reader nothing
 /// about whether the facility exists at all, so nothing may fall through to it.
-enum Header {
+pub(crate) enum Disposition {
     Shipped(&'static str),
     Refused(&'static str),
 }
@@ -24,103 +24,118 @@ enum Header {
 /// Every header in C99's 7.1.2 table, and what happens to it. **The one place** that decides; the
 /// test below walks it against the standard's own list so that a header cannot be added to one and
 /// forgotten in the other, which is how `assert.h` and `errno.h` came to be in neither.
-const C99_HEADERS: &[(&str, Header)] = &[
+const C99_HEADERS: &[(&str, Disposition)] = &[
     (
         "assert.h",
-        Header::Shipped(include_str!("../include/assert.h")),
+        Disposition::Shipped(include_str!("../include/assert.h")),
     ),
     (
         "complex.h",
-        Header::Refused("`_Complex` and `_Imaginary` are not implemented"),
+        Disposition::Refused("`_Complex` and `_Imaginary` are not implemented"),
     ),
     (
         "ctype.h",
-        Header::Shipped(include_str!("../include/ctype.h")),
+        Disposition::Shipped(include_str!("../include/ctype.h")),
     ),
     (
         "errno.h",
-        Header::Shipped(include_str!("../include/errno.h")),
+        Disposition::Shipped(include_str!("../include/errno.h")),
     ),
     (
         "fenv.h",
-        Header::Refused("there is no access to the floating-point environment"),
+        Disposition::Refused("there is no access to the floating-point environment"),
     ),
     (
         "float.h",
-        Header::Shipped(include_str!("../include/float.h")),
+        Disposition::Shipped(include_str!("../include/float.h")),
     ),
     (
         "inttypes.h",
-        Header::Refused("not implemented; `<stdint.h>` and `printf` cover today's need"),
+        Disposition::Refused("not implemented; `<stdint.h>` and `printf` cover today's need"),
     ),
     (
         "iso646.h",
-        Header::Shipped(include_str!("../include/iso646.h")),
+        Disposition::Shipped(include_str!("../include/iso646.h")),
     ),
     (
         "limits.h",
-        Header::Shipped(include_str!("../include/limits.h")),
+        Disposition::Shipped(include_str!("../include/limits.h")),
     ),
     (
         "locale.h",
-        Header::Refused("not implemented; the C library's `localeconv` is not declared"),
+        Disposition::Refused("not implemented; the C library's `localeconv` is not declared"),
     ),
-    ("math.h", Header::Shipped(include_str!("../include/math.h"))),
+    (
+        "math.h",
+        Disposition::Shipped(include_str!("../include/math.h")),
+    ),
     (
         "setjmp.h",
-        Header::Refused("not implemented; `jmp_buf`'s layout is the ABI's, not the C library's"),
+        Disposition::Refused(
+            "not implemented; `jmp_buf`'s layout is the ABI's, not the C library's",
+        ),
     ),
     (
         "signal.h",
-        Header::Refused("not implemented; the C library's `signal` is not declared"),
+        Disposition::Refused("not implemented; the C library's `signal` is not declared"),
     ),
     (
         "stdarg.h",
-        Header::Shipped(include_str!("../include/stdarg.h")),
+        Disposition::Shipped(include_str!("../include/stdarg.h")),
     ),
     (
         "stdbool.h",
-        Header::Shipped(include_str!("../include/stdbool.h")),
+        Disposition::Shipped(include_str!("../include/stdbool.h")),
     ),
     (
         "stddef.h",
-        Header::Shipped(include_str!("../include/stddef.h")),
+        Disposition::Shipped(include_str!("../include/stddef.h")),
     ),
     (
         "stdint.h",
-        Header::Shipped(include_str!("../include/stdint.h")),
+        Disposition::Shipped(include_str!("../include/stdint.h")),
     ),
     (
         "stdio.h",
-        Header::Shipped(include_str!("../include/stdio.h")),
+        Disposition::Shipped(include_str!("../include/stdio.h")),
     ),
     (
         "stdlib.h",
-        Header::Shipped(include_str!("../include/stdlib.h")),
+        Disposition::Shipped(include_str!("../include/stdlib.h")),
     ),
     (
         "string.h",
-        Header::Shipped(include_str!("../include/string.h")),
+        Disposition::Shipped(include_str!("../include/string.h")),
     ),
     (
         "tgmath.h",
-        Header::Refused("not implemented; its macros need `_Generic`"),
+        Disposition::Refused("not implemented; its macros need `_Generic`"),
     ),
-    ("time.h", Header::Shipped(include_str!("../include/time.h"))),
+    (
+        "time.h",
+        Disposition::Shipped(include_str!("../include/time.h")),
+    ),
     (
         "wchar.h",
-        Header::Refused("not implemented; wide characters and `L\"...\"` literals are not"),
+        Disposition::Refused("not implemented; wide characters and `L\"...\"` literals are not"),
     ),
     (
         "wctype.h",
-        Header::Refused("not implemented; wide characters are not"),
+        Disposition::Refused("not implemented; wide characters are not"),
     ),
 ];
+
+/// Every header in C99's table with what happens to it, for the test in `back::crt` that compares
+/// this compiler's promises with the C runtime's answers.
+#[cfg(test)]
+pub(crate) fn c99_headers() -> &'static [(&'static str, Disposition)] {
+    C99_HEADERS
+}
 
 /// The text of a header this compiler ships, by the name an `#include` uses.
 pub(crate) fn builtin(name: &str) -> Option<&'static str> {
     match disposition(name) {
-        Some(Header::Shipped(text)) => Some(text),
+        Some(Disposition::Shipped(text)) => Some(text),
         _ => None,
     }
 }
@@ -131,12 +146,12 @@ pub(crate) fn builtin(name: &str) -> Option<&'static str> {
 /// gets, and a name from C99's own table deserves better than being called a typo.
 pub(crate) fn refusal(name: &str) -> Option<&'static str> {
     match disposition(name) {
-        Some(Header::Refused(reason)) => Some(reason),
+        Some(Disposition::Refused(reason)) => Some(reason),
         _ => None,
     }
 }
 
-fn disposition(name: &str) -> Option<&Header> {
+fn disposition(name: &str) -> Option<&Disposition> {
     C99_HEADERS
         .iter()
         .find(|(header, _)| *header == name)
@@ -215,11 +230,11 @@ mod tests {
         for (name, disposition) in C99_HEADERS {
             let stem = name.trim_end_matches(".h");
             match disposition {
-                Header::Shipped(_) => assert!(
+                Disposition::Shipped(_) => assert!(
                     row.contains(&format!("`{stem}`")),
                     "the README should name `{stem}`, which ships"
                 ),
-                Header::Refused(_) => assert!(
+                Disposition::Refused(_) => assert!(
                     !row.contains(&format!("`{stem}`")),
                     "the README should not name `{stem}`, which refuses"
                 ),
@@ -242,7 +257,7 @@ mod tests {
         // with a mistake in it is a mistake in every program that includes it. This parses each
         // one on its own, which is also the only way `stdarg.h` can be checked: it refuses.
         for (name, disposition) in C99_HEADERS {
-            let Header::Shipped(text) = disposition else {
+            let Disposition::Shipped(text) = disposition else {
                 continue; // refused headers have no text to parse; `a_header_...` covers them
             };
             let mut compiler = crate::Compile::new(crate::Options::default());
@@ -272,7 +287,7 @@ mod tests {
         // than a declaration. It is a real header now, and a program that reads an unnamed argument
         // compiles - the premise of this test went with it.
         for (name, disposition) in C99_HEADERS {
-            let Header::Refused(reason) = disposition else {
+            let Disposition::Refused(reason) = disposition else {
                 continue;
             };
             let mut compiler = crate::Compile::new(crate::Options::default());

@@ -137,6 +137,8 @@ const C_RUNTIME: &[&str] = &[
     "sqrt",
     "tan",
     "tanh",
+    // errno.h: the accessor, not an object, because the C library keeps one per thread.
+    "_errno",
     // time.h
     "clock",
     "difftime",
@@ -145,6 +147,23 @@ const C_RUNTIME: &[&str] = &[
     "mktime",
     "strftime",
     "time",
+];
+
+/// The names a shipped header reaches for that `--run` cannot provide, each with the reason.
+///
+/// `symbols()` answers with what the loaded C runtime exports, so a header may declare something no
+/// runtime offers under that name - and then `--run` fails at load with a message about a symbol the
+/// program never wrote. These are the exceptions the headers are allowed to have, and the message
+/// quotes the reason so the reader learns why instead of guessing.
+pub const UNAVAILABLE: &[(&str, &str)] = &[
+    (
+        "__acrt_iob_func",
+        "the universal C runtime's stream accessor; the classic runtime that `--run` loads exports `_iob` instead, so `--run` reaches no `FILE *` stream (printf needs none, and works)",
+    ),
+    (
+        "snprintf",
+        "no Windows runtime exports it; the universal runtime's header spells it as an inline wrapper this compiler cannot reproduce",
+    ),
 ];
 
 /// Every C runtime function this machine has, by name.
@@ -229,8 +248,7 @@ mod tests {
         }
         assert!(!found.is_empty(), "the C runtime has something");
         // The four a program cannot do without, and the one that made this module necessary.
-        // (`snprintf` is not among them: no Windows C runtime exports it, and the UCRT's header
-        // spells it as an inline wrapper this compiler cannot reproduce. `--run` says so.)
+        // (`snprintf` is not among them: it is in `UNAVAILABLE`, with the reason `--run` quotes.)
         for required in [
             "printf", "fprintf", "sprintf", "malloc", "strlen", "qsort", "fopen",
         ] {
@@ -241,6 +259,124 @@ mod tests {
                 "the C runtime has no `{required}`"
             );
         }
+    }
+
+    #[test]
+    fn the_runtime_list_is_what_the_headers_reach_for() {
+        // Two lists that must agree - the functions the shipped headers name, and the functions the
+        // C runtime is asked for - and nothing compared them, which is how `_errno` came to be
+        // declared by `errno.h` and absent here: `--run` then failed at load with a message about a
+        // symbol the program never wrote.
+        //
+        // The extraction is the header text itself: an identifier followed by `(`, on a declaration
+        // or on a macro body (a macro is how `stderr` reaches `__acrt_iob_func`). A function-like
+        // macro's own name is skipped, and so are the type words that look like calls.
+        const KEYWORDS: &[&str] = &[
+            "int", "void", "char", "unsigned", "long", "short", "float", "double", "struct",
+            "union", "enum", "const", "static", "extern", "typedef", "sizeof", "defined",
+        ];
+        let mut declared = std::collections::BTreeSet::new();
+        for (_, disposition) in crate::headers::c99_headers() {
+            let crate::headers::Disposition::Shipped(text) = disposition else {
+                continue;
+            };
+            // Prose is not a promise: a comment naming `printf` is not a declaration of it.
+            let text = without_comments(text);
+            for line in text.lines() {
+                let body = match line.trim_start().strip_prefix('#') {
+                    // A macro: scan its body, and not the name being defined. A function-like
+                    // macro's parameter list is part of its name for this purpose, which is why the
+                    // body is what follows the first whitespace.
+                    Some(directive) => match directive.trim_start().strip_prefix("define") {
+                        Some(define) => define
+                            .trim_start()
+                            .split_once(char::is_whitespace)
+                            .map(|(_, body)| body),
+                        None => None,
+                    },
+                    None => Some(line),
+                };
+                let Some(body) = body else { continue };
+                for name in names_called(body) {
+                    // A `__builtin_` is this compiler's own, not the C runtime's.
+                    if !KEYWORDS.contains(&name.as_str()) && !name.starts_with("__builtin_") {
+                        declared.insert(name);
+                    }
+                }
+            }
+        }
+        assert!(
+            declared.contains("printf") && declared.contains("__acrt_iob_func"),
+            "the extraction reads the headers: {declared:?}"
+        );
+        let available: std::collections::BTreeSet<&str> = C_RUNTIME.iter().copied().collect();
+        let unavailable: std::collections::BTreeSet<&str> =
+            UNAVAILABLE.iter().map(|(name, _)| *name).collect();
+        let missing: Vec<&str> = declared
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !available.contains(name) && !unavailable.contains(name))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these names are in no list: {missing:?} - add each to C_RUNTIME, or to UNAVAILABLE with the reason"
+        );
+        // And the other way: a runtime name no header names is a symbol `--run` can call and no
+        // program can declare, which is a promise to nobody.
+        let unreachable: Vec<&str> = C_RUNTIME
+            .iter()
+            .copied()
+            .filter(|name| !declared.contains(*name))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "the runtime list has names no header declares: {unreachable:?}"
+        );
+    }
+
+    /// `text` with its `/* ... */` comments removed, newlines kept so lines still line up.
+    fn without_comments(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("/*") {
+            out.push_str(&rest[..start]);
+            match rest[start..].find("*/") {
+                Some(end) => {
+                    out.extend(rest[start..start + end].chars().filter(|c| {
+                        *c == "
+"
+                        .chars()
+                        .next()
+                        .unwrap()
+                    }));
+                    rest = &rest[start + end + 2..];
+                }
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Every identifier in `line` that is followed by `(` - what a header *calls*, as opposed to what
+    /// it merely mentions.
+    fn names_called(line: &str) -> Vec<String> {
+        let mut names = Vec::new();
+        for (position, _) in line.match_indices('(') {
+            let before = line[..position].trim_end();
+            let reversed: String = before
+                .chars()
+                .rev()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            // The name's *first* character is the last one read, because the scan ran backwards: a
+            // name never starts with a digit, so that is what tells a name from a number.
+            let starts_with_digit = reversed.chars().last().is_some_and(|c| c.is_ascii_digit());
+            if !reversed.is_empty() && !starts_with_digit {
+                names.push(reversed.chars().rev().collect());
+            }
+        }
+        names
     }
 
     #[test]

@@ -399,6 +399,25 @@ fn level_two_runs_what_only_it_compiles() {
 }
 
 #[test]
+fn run_reaches_the_runtimes_errno() {
+    // `errno.h` names `_errno`, so `--run` must have it: the JIT resolves only what its symbol list
+    // holds, and nothing compared that list with what the headers declare until `_errno` was found
+    // missing from it. The program does not merely include the header - it reads the value the C
+    // runtime's own `strtol` sets.
+    let temp = Temp::new("runerrno");
+    let source = temp.write(
+        "t.c",
+        "#include <errno.h>
+         #include <stdlib.h>
+         int main(void) { errno = 0; strtol(\"99999999999999999999\", 0, 10);
+             return errno == ERANGE ? 42 : 1; }
+",
+    );
+    let output = run(xcc().args(["--run", "--opt-level=2"]).arg(&source));
+    assert_eq!(output.status.code(), Some(42), "{}", stderr(&output));
+}
+
+#[test]
 fn run_gives_main_its_arguments_and_reports_a_missing_one() {
     let temp = Temp::new("runargs");
     let source = temp.write(

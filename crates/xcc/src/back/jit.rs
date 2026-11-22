@@ -217,8 +217,16 @@ impl Jit {
         for required in required_symbols(&unit) {
             let given = self.symbols.iter().any(|(name, _)| *name == required);
             if !defined.contains(&required) && !given {
+                // A name a header declares and no runtime offers is a known exception with a
+                // recorded reason; quoting it is the difference between a reader learning why and
+                // guessing at a symbol the program never wrote.
+                let reason = crate::back::crt::UNAVAILABLE
+                    .iter()
+                    .find(|(name, _)| *name == required)
+                    .map(|(_, reason)| format!(" - {reason}"))
+                    .unwrap_or_default();
                 return Err(format!(
-                    "`{required}` is not defined in this compilation and was not given as a host symbol; a JIT can only call what it has"
+                    "`{required}` is not defined in this compilation and was not given as a host symbol; a JIT can only call what it has{reason}"
                 ));
             }
         }
