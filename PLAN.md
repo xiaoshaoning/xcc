@@ -931,6 +931,16 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       lowerings and would call that a mismatch; a variadic program therefore needs the *clang*
       comparison in `tests/x64.rs` instead, and ADR-006 needs a sentence saying the two lowerings
       deliberately differ in what they accept.
+- [ ] **`.pdata` / `.xdata`: the frame table.** Measured, not assumed: `setjmp.h` was written to the
+      ABI (256 bytes, 16-byte aligned, `_setjmp(buf, 0)`) and `longjmp` **faulted** even in the same
+      frame, because the C library's `longjmp` calls `RtlUnwindEx`, which demands a
+      `RUNTIME_FUNCTION` for every frame it passes. clang emits `.pdata` + `.xdata` (12 bytes each
+      for one function); this compiler emits neither, so a debugger cannot walk our frames, a C++
+      exception cannot pass through them, and Lua's `pcall` - its `setjmp` - cannot exist. The
+      oracle is that same program: it either prints `same frame: 42` or faults. The prologue shape
+      is already known in one place (`x64/mod.rs`), which is what makes this a transcription rather
+      than a computation: `UWOP_PUSH_NONVOL` per saved register, `UWOP_ALLOC_SMALL`/`_LARGE` for the
+      frame, one `RUNTIME_FUNCTION` per function, sorted by address.
 - [ ] `back-x64` shrinking, round six: **jump tables for `switch`**, which is the one item in this
       list nobody has measured, and the passes below on machine code rather than `cir`. The other two
       things this item used to name are settled and must not be re-proposed: jump shortening was

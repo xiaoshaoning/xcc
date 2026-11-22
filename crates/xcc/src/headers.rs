@@ -71,8 +71,12 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "setjmp.h",
+        // Measured, not assumed: the header was written (256 bytes, 16-byte aligned, `_setjmp` with
+        // this ABI's frame argument) and a `longjmp` from a compiled function faulted - because the
+        // C library's `longjmp` walks the frame table, and this compiler emits no `.pdata`. So the
+        // refusal names the *thing that is missing* rather than the shape of a struct.
         Disposition::Refused(
-            "not implemented; `jmp_buf`'s layout is the ABI's, not the C library's",
+            "`longjmp` walks the frame table, and this compiler emits no `.pdata` yet: a jump out of a compiled function faults (ADR-003)",
         ),
     ),
     (

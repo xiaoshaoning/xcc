@@ -705,6 +705,42 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 - 2026-11-22 - the frame table, found by trying to write the header it is missing
+
+`signal.h` and `locale.h` are real now, so Lua was down to `ldo.c` and `setjmp.h`. Writing that header
+meant writing the ABI's `jmp_buf` down - 256 bytes, 16-byte aligned, `_setjmp(buffer, 0)` - which
+surfaced two things, one fixed and one measured into the plan.
+
+**A member's `_Alignas` was silently ignored.** C11 6.7.5 lets a member raise its own alignment, and the
+layout code only ever asked for the *type's*. `struct { _Alignas(16) unsigned long long p[2]; }` was 16
+bytes with align 8, so `offsetof` of it in a larger struct was 8, not 16. It compiled, it was wrong, and
+nothing failed - which is why it took a header that needs the alignment for a `movaps` to find it.
+`Member` now carries its own `alignas` and the layout honours it.
+
+**And a C99 program cannot spell that.** `_Alignas` is gated on `--std=c11` by design, and a *header* may
+not ask the program to change its standard. Our headers are already written in `__builtin_` terms
+(`offsetof`, `va_arg`, `va_start`), so `__builtin_alignas(n)` is the same specifier without the gate, and
+`setjmp.h` used it.
+
+**Then `longjmp` faulted.** The buffer was written correctly - `frame` and `rip` both plausible - and the
+jump crashed even *inside one frame*, because the C library's `longjmp` calls `RtlUnwindEx`, which demands
+a `RUNTIME_FUNCTION` for every frame it passes. clang emits `.pdata` + `.xdata` (12 bytes each for a
+one-function file); this compiler emits neither. **So the header was deleted and the refusal rewritten to
+name the missing thing rather than the shape of a struct**: *"`longjmp` walks the frame table, and this
+compiler emits no `.pdata` yet"* - a fact that was measured by trying, not assumed from ADR-003.
+
+That is the next milestone, and it now has an oracle rather than a description: the same program either
+prints `same frame: 42` or faults, and the prologue it must describe is already known in one place. It is
+also the difference between "a debugger can walk our frames, C++ exceptions pass through, Lua's `pcall`
+works" and none of those.
+
+**Measured: 33 of Lua's 34 files compile at `--opt-level=2`**, the last waiting on the frame table. Two new
+constructs pin the work: an aligned member's `offsetof` and the locale's decimal point. 443 corpus programs
+agree, 20 refused, 0 wrong; cJSON byte-identical to clang.
+
+188 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - Lua, measured: four causes, and only one of them a missing header
 
 The plan's last product claim is M7's acceptance, which needed an interpreter. `lua-5.4.7/src` is 34 files; **two

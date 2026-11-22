@@ -1145,8 +1145,15 @@ impl Parser<'_> {
                 // C11 6.7.5: `_Alignas(type-name)` or `_Alignas(constant-expression)`. It raises the
                 // object's alignment and may not lower it, so a value below the type's own is a
                 // diagnostic rather than a smaller object.
-                "_Alignas" => {
-                    if self.preprocessed.standard == crate::options::CStandard::C99 {
+                //
+                // `__builtin_alignas` is the same specifier without the standard gate, because a
+                // *header* cannot ask the program to change its standard: `setjmp.h` needs 16
+                // bytes of alignment for the ABI's jump buffer, and a C99 program is entitled to
+                // include it.
+                "_Alignas" | "__builtin_alignas" => {
+                    if word == "_Alignas"
+                        && self.preprocessed.standard == crate::options::CStandard::C99
+                    {
                         let span = self.span();
                         self.error(span, "`_Alignas` is C11: compile with `--std=c11`");
                     }
@@ -1427,6 +1434,7 @@ impl Parser<'_> {
                         ty: base,
                         offset: 0,
                         bits: Some((0, width)),
+                        alignas: specs.alignas,
                     });
                 } else {
                     let Some(tree) = self.declarator(false) else {
@@ -1445,6 +1453,7 @@ impl Parser<'_> {
                         ty,
                         offset: 0,
                         bits,
+                        alignas: specs.alignas,
                     });
                 }
                 if !self.eat(",") {

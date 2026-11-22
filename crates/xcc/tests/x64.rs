@@ -349,6 +349,30 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A member's `_Alignas` (C11 6.7.5) is the *member's* alignment: `offsetof` moves, and
+            // so does the struct's own alignment - which is what the ABI's `movaps` needs and what a
+            // struct of two 8-byte integers does not have.
+            "an aligned struct member",
+            "#include <stddef.h>
+
+             struct unit { __builtin_alignas(16) unsigned long long part[2]; };
+
+             struct outer { char c; struct unit u; };
+
+             int main(void) { return (int)offsetof(struct outer, u) == 16 && (int)sizeof(struct unit) == 16 ? 42 : 1; }",
+            42,
+        ),
+        (
+            // `localeconv`'s decimal point: the reason `locale.h` matters to a program that never
+            // calls `setlocale`, and a header is only real if a program can read through it.
+            "the locale's decimal point",
+            "#include <locale.h>
+
+             int main(void) { char point = localeconv()->decimal_point[0];
+                 return point == '.' ? 42 : 1; }",
+            42,
+        ),
+        (
             // `&f` where `f` names a function: C99 6.5.3.2p3 says the result is the designator,
             // because a function name already is an address and is never an lvalue. Lua hands a
             // handler over as `lua_atpanic(L, &panic)`.

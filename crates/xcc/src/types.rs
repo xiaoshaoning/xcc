@@ -86,6 +86,10 @@ pub(crate) struct Member {
     pub offset: u64,
     /// For a bitfield: the bit it starts at within its unit, and how many bits it has.
     pub bits: Option<(u8, u8)>,
+    /// The alignment the declaration asked for, when it asked: zero means the type's own. It is the
+    /// *member's* alignment and not the type's, which is why it lives here - `jmp_buf`'s 16 bytes
+    /// are what the ABI's `movaps` needs and `unsigned long long[2]` does not have.
+    pub alignas: u64,
 }
 
 /// A struct or union: its members once it is complete, and its layout.
@@ -299,7 +303,7 @@ impl Types {
 
         let mut laid_out: Vec<Member> = Vec::with_capacity(members.len());
         for mut member in members {
-            let member_align = self.align_of(member.ty).unwrap_or(1);
+            let member_align = self.align_of(member.ty).unwrap_or(1).max(member.alignas);
             if matches!(member.bits, Some((_, 0))) {
                 // `int :0` is a marker: it closes the unit being packed and is otherwise
                 // nothing - no offset of its own, no size, and no alignment to raise. That is
