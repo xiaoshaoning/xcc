@@ -736,6 +736,30 @@ refused, 0 wrong; cJSON byte-identical to clang.
 190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the release note was wrong about the one number nobody can edit later
+
+The switch fix, reviewed, and the release it was published in.
+
+**The switch fix holds, and it is now the same shape as every other construct.** `if`, `while`, `for` and `do` all
+ask `current_is_open()` at the moment they need to link; the `switch` was the one that kept a block from earlier
+and asked about *it* instead. Five shapes that the change touches were checked against clang and agree: a label at
+the end of an arm reached by `goto` from an earlier arm, an arm that ends in a nested `switch` and falls through,
+`continue` inside a `switch` inside a loop, an arm that ends in `?:`, and one that ends in `if`.
+
+**And the tag was wrong.** Its message said "188 unit" while this commit has 190 - copied from an older audit entry
+rather than measured. A tag message is the one place a number cannot be corrected quietly: everything else is a
+commit away from being fixed, and the tag is what a reader quotes a year later. It was re-annotated and force-pushed
+within the hour, and the number now comes from a test run at that commit.
+
+**The version was the same class of fault, one level down**: `Cargo.toml` said `0.0.1` while the tags said `0.1.2`,
+so `xcc --version` and `git describe` disagreed about which release the binary was. Both now say 0.1.3, and the tag
+series resumes after five milestones of silence - a tag per milestone is the only map of which state was verified
+when.
+
+190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - a `switch` arm that ends in a `?:` fell off its own end
 
 The front-end bug behind two of Lua's seven failing files, found by reducing a `SIGILL` in `llex`'s `read_string`
