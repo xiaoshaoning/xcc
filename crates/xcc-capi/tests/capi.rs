@@ -176,14 +176,12 @@ fn a_handle_that_never_was_one_is_refused_rather_than_dereferenced() {
 /// interpreter to be one. A CI runner without `python` on `PATH` is not a compiler that fails this test,
 /// so it is skipped the way the clang tests are skipped without a linker: loudly, and by name.
 fn python() -> Option<&'static str> {
-    ["python", "python3", "py"]
-        .into_iter()
-        .find(|candidate| {
-            std::process::Command::new(candidate)
-                .arg("--version")
-                .output()
-                .is_ok()
-        })
+    ["python", "python3", "py"].into_iter().find(|candidate| {
+        std::process::Command::new(candidate)
+            .arg("--version")
+            .output()
+            .is_ok()
+    })
 }
 
 #[test]
