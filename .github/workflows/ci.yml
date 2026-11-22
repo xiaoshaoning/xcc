@@ -31,7 +31,19 @@ jobs:
           fi
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # A failing test is reported *as an annotation*, so the failure is visible on the check without
+      # opening a log - and so it can be read by anything that can read the API, which is what a
+      # maintainer without the browser needs.
       - name: Test
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Report the failing tests
+        if: failure()
+        shell: bash
+        run: |
+          grep -E '^(    [A-Za-z0-9_:]+$|thread .* panicked at|test result: FAILED)' "$RUNNER_TEMP/test.log"             | head -40             | while IFS= read -r line; do echo "::error::xcc ci: $line"; done
+          exit 1
       - name: Release build
         run: cargo build --workspace --release
