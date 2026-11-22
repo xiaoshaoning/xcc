@@ -935,7 +935,9 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link; the interpreter faults in `lauxlib`'s wake (see below).
-- [ ] **Lua runs: seven files, and the bug is in the front end.** Narrowing done, and the first two attempts at it
+- [ ] **Lua runs: five files left, and the bug is in the front end.** (`lcode` and `llex` were the first two,
+      fixed by the switch fall-through link below: an arm that ends in a `?:` was linked from its first block
+      instead of from where control is.) Narrowing done, and the first two attempts at it
       were wrong in a way worth recording.
 
       **A driver that faults under clang is measuring the driver.** A twenty-line `main` that called

@@ -472,6 +472,43 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A `switch` arm that ends in a `?:` and falls through to the next arm: the fall-through
+            // link has to be made from wherever control actually is, and the `?:` leaves it in a join
+            // block of its own. Linking from the arm's first block instead left the join with no
+            // terminator, and the arm fell off its own end into a trap.
+            "a switch arm that ends in a conditional",
+            "struct Z { int n; int *p; }; struct LS { int current; struct Z *z; };
+
+             static int fill(void) { return 0; }
+
+             #define zgetc(z) (((z)->n--)>0 ? *(z)->p++ : fill())
+
+             static int walk(struct LS *ls) {
+
+                 int seen = 0;
+
+                 while (ls->current != 0) {
+
+                     switch (ls->current) { default: ls->current = zgetc(ls->z); seen += 1; }
+
+                 }
+
+                 return seen; }
+
+             int main(void) { int d[3] = {1, 2, 0}; struct Z z = {3, d};
+
+                 struct LS ls = {9, &z}; return walk(&ls) == 3 ? 42 : 1; }",
+            42,
+        ),
+        (
+            // The same shape one construct over: an arm that ends in an `if` join.
+            "a switch arm that ends in an if",
+            "int f(int c) { int r = 0; switch (c) { case 1: if (c) r = 5; r += 1; } return r; }
+
+             int main(void) { return f(1) == 6 ? 42 : 1; }",
+            42,
+        ),
+        (
             // A `switch` on a narrow type: C99 6.8.4.2p5 promotes the controlling expression, and a
             // `switch` on an `unsigned char` that compared itself with `int` case labels was a
             // `cir` the verifier refused. `cJSON.c`'s number parser is written exactly this way.

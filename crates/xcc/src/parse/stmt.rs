@@ -577,6 +577,12 @@ impl Parser<'_> {
         self.statement();
         self.targets.pop();
         let switch = self.switches.pop().expect("the switch being read");
+        // The statements that ended the body fall through to the exit, from wherever they left the
+        // cursor - the last arm is not special, it is the arm with no arm after it.
+        if self.current_is_open() {
+            let exit = switch.exit.expect("the switch's exit block");
+            self.jump(exit, span);
+        }
         self.emit_switch_chain(&switch, span);
         // Whatever comes after the switch belongs to the exit block: without this, trailing
         // statements land in the last arm's body, `exit` is never filled, and a `break` jumps
@@ -627,21 +633,24 @@ impl Parser<'_> {
         }
         let last = default.unwrap_or(exit);
         self.jump(last, span);
-        for (position, (_, body)) in switch.arms.iter().enumerate() {
-            let next = switch
-                .arms
-                .get(position + 1)
-                .map_or(exit, |(_, next)| *next);
-            if !self.terminated(*body) {
-                self.switch_to(*body);
-                self.jump(next, span);
-            }
-        }
     }
 
     /// Start a `case` or `default` body and remember it for the chain.
     fn open_arm(&mut self, value: Option<i64>, span: Span) -> Option<cir::Block> {
         let body = self.new_block(span)?;
+        // The arm that just ended falls through into this one, and the link belongs where control
+        // actually *is* - not to the block the arm started in. A `?:` or an `if` leaves the cursor in
+        // a join block of its own, so linking from the arm's first block left that join with no
+        // terminator at all, and a `switch` whose arm ended in `?:` fell off the end of the arm and
+        // trapped. Nothing is linked into the first arm: statements before the first `case` are
+        // unreachable in C.
+        let first = self
+            .switches
+            .last()
+            .is_none_or(|switch| switch.arms.is_empty());
+        if !first && self.current_is_open() {
+            self.jump(body, span);
+        }
         if let Some(switch) = self.switches.last_mut() {
             switch.arms.push((value, body));
         }

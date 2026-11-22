@@ -736,6 +736,30 @@ refused, 0 wrong; cJSON byte-identical to clang.
 190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
 
+### M10 - 2026-11-22 - a `switch` arm that ends in a `?:` fell off its own end
+
+The front-end bug behind two of Lua's seven failing files, found by reducing a `SIGILL` in `llex`'s `read_string`
+to twelve lines and then reading the `cir`.
+
+**The fall-through link was made from the wrong block.** A `switch` arm that reaches the next `case` without a
+`break` must be linked from wherever control *is* when the arm ends. The old code deferred that to after the whole
+body was read, and linked from the block the arm *started* in - which is right only if the arm's last block is its
+first. A `?:` (and equally an `if`, or any construct with a join) leaves the cursor in a join block of its own, so
+the join got no terminator at all and the arm fell off its end into the `unreachable` block the lowering emits
+there. The program then executed `ud2`: `SIGILL`, from code whose `cir` the verifier had passed.
+
+**The fix is smaller than the bug**: the link is made in `open_arm`, when the next arm is opened, and at the end of
+the body for the last arm. The deferred loop is gone, and with it the question "which block ended this arm?".
+
+**Measured: two of Lua's seven failing files now pass** - `lcode` and `llex` compile and run in the real
+interpreter - and the reduction is pinned by two constructs: an arm ending in a `?:` inside a `while`, and an arm
+ending in an `if`. Five files still fail: `lauxlib`, `ldo`, `lparser` (a parse error raised into the unwinder),
+`ltable` (a hang sampled inside `luaH_newkey`), `lvm`.
+
+190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - an `extern` object was a compiler bug at one level and a feature at the other
 
 The narrowing commit, reviewed. Its text holds, and its evidence had a defect in it: the line that said `lcode` could
