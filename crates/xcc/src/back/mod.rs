@@ -871,9 +871,21 @@ impl<M: Module> Lowerer<'_, M> {
                     Type::Function { result, params, .. } => (params.clone(), *result),
                     // An object: its address is the symbol value the linker will resolve.
                     _ => {
-                        let id = self.data.get(name.as_str()).copied().ok_or_else(|| {
-                            LoweringError::bug(format!("`{name}` is not declared here"))
-                        })?;
+                        let id = match self.data.get(name.as_str()).copied() {
+                            Some(id) => id,
+                            // A name this unit only *declares* - `extern int table[];` here and the
+                            // object in another file. Our own back end names it in a relocation; this
+                            // one needs a data declaration, and an imported one is exactly that: no
+                            // bytes of its own, and the linker supplies the address. Without this the
+                            // reference was reported as a compiler bug, which it was not.
+                            None => {
+                                let id = self
+                                    .object
+                                    .declare_data(name.as_str(), Linkage::Import, true, false)?;
+                                self.data.insert(name.clone(), id);
+                                id
+                            }
+                        };
                         let address = self.object.declare_data_in_func(id, builder.func);
                         let value = builder.ins().symbol_value(ir::types::I64, address);
                         values.insert(*result, value);

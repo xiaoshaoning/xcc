@@ -736,6 +736,33 @@ refused, 0 wrong; cJSON byte-identical to clang.
 190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - an `extern` object was a compiler bug at one level and a feature at the other
+
+The narrowing commit, reviewed. Its text holds, and its evidence had a defect in it: the line that said `lcode` could
+not be tested at `--opt-level=1` was a lie the commit had not noticed, because the error it got back was an
+**internal** one.
+
+**`extern int table[];` in one file and the definition in another** is the most ordinary thing in C, and Lua is
+full of it - `lcode.c` reads `luaP_opmodes`, which `lopcodes.c` defines. Our own back end names the symbol in a
+relocation and works. The Cranelift path looked the name up in a map of the globals *this unit defines*, found
+nothing, and reported `internal: `luaP_opmodes` is not declared here` - **a construct that one level compiles
+reported as a compiler bug by the other**, which is the worst shape a diagnostic can take: it says "the compiler
+is broken" about a program that is not. The path now declares an *imported* data symbol - no bytes of its own,
+the linker supplies the address - which is what an external declaration means.
+
+Verified: a two-file program through level 1 returns 20 where it used to be refused, and **`lcode.c` now compiles at
+`--opt-level=1`** - where it still fails to run, which is the point of the exercise: it moves `lcode` from *untested*
+to *tested and failing*, and the failure is at both levels, so it is the front end's.
+
+**Two probes cleared while looking for it**, both worth keeping: Lua's own instruction-encoding macros
+(`MASK1`/`SETARG_A`/`GETARG_sBx`, all shifts and masks on `unsigned int`) agree with clang over a 256-iteration
+sweep, and the `Node`/`Table`/`TValue` layouts agree byte for byte - so the bit manipulation and the aggregate
+layouts in the failing files are not the bug.
+
+190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - the frame table: `.pdata` and `.xdata`, and the three bugs it uncovered
 
 The unwinder's tables, written the way the measurement said they had to be. The oracle was already written:
