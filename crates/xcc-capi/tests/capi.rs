@@ -170,8 +170,28 @@ fn a_handle_that_never_was_one_is_refused_rather_than_dereferenced() {
     let _ = std::ptr::null::<c_char>();
 }
 
+/// Whether a Python a host could be written in is on this machine.
+///
+/// The test below is the M7 acceptance test - a host that is not Rust, calling the DLL - and it needs an
+/// interpreter to be one. A CI runner without `python` on `PATH` is not a compiler that fails this test,
+/// so it is skipped the way the clang tests are skipped without a linker: loudly, and by name.
+fn python() -> Option<&'static str> {
+    ["python", "python3", "py"]
+        .into_iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .is_ok()
+        })
+}
+
 #[test]
 fn the_build_is_a_dll_a_python_host_can_call() {
+    let Some(interpreter) = python() else {
+        eprintln!("no python on this machine: the C API's host test is skipped");
+        return;
+    };
     // A host that is not Rust: the acceptance test M7 names.
     let target = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug");
     let status = std::process::Command::new(env!("CARGO"))
@@ -182,7 +202,7 @@ fn the_build_is_a_dll_a_python_host_can_call() {
     let library = target.join("xcc_capi.dll");
     assert!(library.is_file(), "no {} to call", library.display());
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/host.py");
-    let output = std::process::Command::new("python")
+    let output = std::process::Command::new(interpreter)
         .arg(script)
         .arg(&library)
         .output()
