@@ -67,8 +67,6 @@ pub(crate) const UWOP_ALLOC_LARGE: u8 = 1;
 pub(crate) const UWOP_ALLOC_SMALL: u8 = 2;
 /// `UWOP_SAVE_XMM128`: sixteen bytes of an XMM register stored into the frame.
 pub(crate) const UWOP_SAVE_XMM128: u8 = 8;
-/// `UWOP_SAVE_XMM128_FAR`: the same, at an offset no multiple of sixteen would name.
-pub(crate) const UWOP_SAVE_XMM128_FAR: u8 = 9;
 
 /// One operation the prologue performed, described the way the unwinder needs to read it: PE/COFF's
 /// `UNWIND_CODE`, plus the extra slot some operations take.
@@ -144,7 +142,11 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     // in the eight bytes each that the frame still reserves for them, at the top of it, which is where
     // pushes put things - so the layout keeps its shape and nothing addresses them.
     let pushed = 8 * allocation.saved.len() as i32;
-    let saved_float_base = outgoing_base + outgoing_bytes;
+    // Sixteen-byte aligned, because `UWOP_SAVE_XMM128` names the save offset in units of sixteen: a
+    // save at 8 mod 16 would need the far form, which takes two slots - and an unwind table that
+    // describes the wrong bytes is a crash in the unwinder, not a wrong number. An odd outgoing slot
+    // count costs at most eight bytes here.
+    let saved_float_base = (outgoing_base + outgoing_bytes + 15) / 16 * 16;
     // Rounded up to sixteen: `_Alignas(16)` on a local is only true if the frame's own base is
     // sixteen-aligned, and `saved_float_base` sits after an odd number of eight-byte pushes as often
     // as an even one. The cost is at most eight bytes of frame in a function that has saves.
@@ -373,19 +375,21 @@ impl Encoder<'_> {
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
             self.float_move(*register, Reg::RSP, offset, 16, Move::StoreUnaligned);
-            // Sixteen bytes of an `xmm` at an offset in sixteen-byte units, when the offset is one;
-            // otherwise the far form, which takes a slot and names the byte offset itself.
-            if offset % 16 == 0 {
-                self.record_unwind(UWOP_SAVE_XMM128, register.0, Some((offset / 16) as u32));
-            } else {
-                self.record_unwind(UWOP_SAVE_XMM128_FAR, register.0, Some(offset as u32));
-            }
+            // Sixteen bytes of an `xmm`, named in units of sixteen - which the aligned base above
+            // makes exact, so the far form (two slots, for an offset past a megabyte) never applies.
+            self.record_unwind(UWOP_SAVE_XMM128, register.0, Some((offset / 16) as u32));
         }
     }
 
     /// Record what the instruction just emitted did, so the unwinder can be told. The offset is the
     /// *end* of the instruction, which is the only thing the encoder knows once it has written it.
     fn record_unwind(&mut self, operation: u8, info: u8, extra: Option<u32>) {
+        // The offset is one byte of a two-byte record, and a prologue longer than 255 bytes is one
+        // nobody wrote: eight pushes, one subtraction, and ten float saves.
+        debug_assert!(
+            self.code.len() <= usize::from(u8::MAX),
+            "the prologue outgrew its record"
+        );
         self.unwind.push(UnwindCode {
             at: self.code.len() as u8,
             operation,

@@ -705,6 +705,37 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - a table that outlives the memory it describes
+
+The frame-table commit, reviewed. Its unwind format is right and its oracle passes; what the review found is
+one malformed table and one dangling registration.
+
+**`UWOP_SAVE_XMM128_FAR` was emitted with one slot and the wrong units.** The far form takes *two* slots and its
+offset is scaled by sixteen, like the small form; the encoder wrote one slot holding a raw byte offset. It fired
+whenever a float save landed at 8 mod 16 - which is whenever a function's outgoing slot count was odd - so a
+function that both calls with many arguments and keeps an XMM register across the call had an unwind table the
+unwinder would misread. **The fix is not the far form: it is the alignment.** The float save area is now sixteen
+bytes aligned, so the *small* form always applies, the far branch and its constant are gone, and the invariant is
+"the offset is a multiple of sixteen" rather than "…unless". Cost: **8 bytes over 445 corpus objects** (202 230 →
+202 238), measured by `git stash`.
+
+**And `Loaded` freed memory that its frame table still pointed at.** `Drop` called `VirtualFree` and never
+`RtlDeleteFunctionTable`, so after a `Jit` was dropped the process's unwind tables kept entries naming released
+pages - read by the *next* exception anywhere in the process, which is the worst possible place to find out.
+`Loaded` now holds the table it registered and deletes it before the release; the field's doc says why the
+pointer is kept.
+
+**Two small ones in the same commit.** `compile`'s single-path change left a redundant brace block around a
+`match` (`let object = { match … }`), and the `Loaded` doc still described an allocation of two sections when it
+now holds four.
+
+**Measured after the review:** the oracle still passes on all three paths (a `longjmp` out of three compiled
+frames returns 42 through the object writer at levels 0 and 2 and through the JIT); 443 corpus programs agree, 20
+refused, 0 wrong; cJSON byte-identical to clang.
+
+190 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the frame table: `.pdata` and `.xdata`, and the three bugs it uncovered
 
 The unwinder's tables, written the way the measurement said they had to be. The oracle was already written:

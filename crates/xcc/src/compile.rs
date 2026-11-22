@@ -189,32 +189,29 @@ impl Compile {
         // file, and skipping the back end when the function list was empty wrote a zero-byte object
         // whose symbols then "did not exist" at link time. There is one path, and it handles both.
         let explained;
-        let object = {
-            match crate::back::object(&module, preprocessed.names(), explain, opt_level) {
-                Ok(lowered) => {
-                    explained =
-                        explain.then(|| crate::explain::render(&lowered.explained, &sources));
-                    lowered.bytes
-                }
-                // A gap the back end has not lowered yet is refused at the expression that asked
-                // for it, like every other thing this compiler does not do; anything else is a
-                // compiler bug and says so rather than blaming the source (CONSTRAINTS 6).
-                Err(error) => {
-                    let diagnostic = match error.not_lowered {
-                        Some(span) => Diagnostic::error(format!(
-                            "not lowered yet at opt level {}: {}",
-                            self.options.opt_level, error.message
-                        ))
+        let object = match crate::back::object(&module, preprocessed.names(), explain, opt_level) {
+            Ok(lowered) => {
+                explained = explain.then(|| crate::explain::render(&lowered.explained, &sources));
+                lowered.bytes
+            }
+            // A gap the back end has not lowered yet is refused at the expression that asked
+            // for it, like every other thing this compiler does not do; anything else is a
+            // compiler bug and says so rather than blaming the source (CONSTRAINTS 6).
+            Err(error) => {
+                let diagnostic = match error.not_lowered {
+                    Some(span) => Diagnostic::error(format!(
+                        "not lowered yet at opt level {}: {}",
+                        self.options.opt_level, error.message
+                    ))
+                    .with_file(name)
+                    .with_span(span),
+                    None => Diagnostic::error(format!("internal: {error}"))
                         .with_file(name)
-                        .with_span(span),
-                        None => Diagnostic::error(format!("internal: {error}"))
-                            .with_file(name)
-                            .with_span(Span::at(0)),
-                    };
-                    diagnostics.push(diagnostic);
-                    let items = truncate_diagnostics(diagnostics, &self.options);
-                    return Err(Diagnostics::new(items, sources));
-                }
+                        .with_span(Span::at(0)),
+                };
+                diagnostics.push(diagnostic);
+                let items = truncate_diagnostics(diagnostics, &self.options);
+                return Err(Diagnostics::new(items, sources));
             }
         };
         let items = truncate_diagnostics(diagnostics, &self.options);

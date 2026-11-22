@@ -15,10 +15,16 @@ use crate::intern::Interner;
 
 /// What a loaded translation unit is: executable memory, and where each of its names landed.
 pub(crate) struct Loaded {
-    /// The allocation: `.text` at offset zero, `.data` after it.
+    /// The allocation: `.text` at offset zero, then `.data`, then the unwinder's `.xdata` and
+    /// `.pdata` - all in one range because `.pdata` names addresses relative to its start.
     memory: *mut u8,
     /// How many bytes were allocated, for the release.
     size: usize,
+    /// Where this unit's frame table starts, or null when it registered none.
+    ///
+    /// It is held so that `Drop` can *delete* the table: a registration left behind names memory
+    /// that has been released, and the next exception anywhere in the process would read it.
+    frame_table: *mut u8,
     /// The names this unit defines, and where they are in the allocation.
     symbols: Vec<(String, usize)>,
 }
@@ -51,6 +57,14 @@ impl Loaded {
 #[allow(unsafe_code)]
 impl Drop for Loaded {
     fn drop(&mut self) {
+        // Before the memory goes: the unwinder must stop being told about a table that is about to
+        // be unmapped.
+        #[allow(unsafe_code)]
+        if !self.frame_table.is_null() {
+            unsafe {
+                RtlDeleteFunctionTable(self.frame_table);
+            }
+        }
         if !self.memory.is_null() {
             // SAFETY: the pointer came from `VirtualAlloc` with this size and is released once.
             unsafe {
@@ -98,6 +112,8 @@ extern "system" {
     /// The unwinder's own register: `RtlAddFunctionTable(table, count, base)` takes the entries and
     /// the base their image-relative addresses are measured from.
     fn RtlAddFunctionTable(table: *const u8, count: u32, base: *const u8) -> u8;
+    /// The undo, so that a unit which is released stops being described to the unwinder.
+    fn RtlDeleteFunctionTable(table: *mut u8) -> u8;
 }
 
 /// One page of memory, which has one protection for everything in it.
@@ -162,6 +178,7 @@ pub(crate) fn load(
     let mut loaded = Loaded {
         memory,
         size,
+        frame_table: std::ptr::null_mut(),
         symbols: Vec::new(),
     };
     let base = memory as usize;
@@ -309,6 +326,8 @@ pub(crate) fn load(
                 span,
             });
         }
+        // SAFETY: `pdata_start` is inside the allocation, as every offset here is.
+        loaded.frame_table = unsafe { memory.add(pdata_start) };
     }
     Ok(loaded)
 }
