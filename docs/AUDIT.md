@@ -705,6 +705,42 @@ instead of miscompiled.
 refused, 44 skipped, 0 timed out, 0 mismatched across three compilers), crt, pp gate, fuzz - green;
 fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - a private copy of somebody else's object
+
+Two commits reviewed: the four Lua fixes and the frame-table work. The second one's defect was a *wrong
+answer*, which is the only kind that matters.
+
+**A block-scope `extern` declaration made a frame slot.** C99 6.2.2p4 makes `extern int g;` inside a function
+*refer* to the object that has external linkage - it is a declaration and not a definition, which the previous
+commit had just taught the file-scope path. The block-scope path was not taught: it allocated a slot, and
+`g = 7` wrote the slot. Nothing in 443 corpus programs could show it, because the check needs the global read
+from somewhere else afterwards:
+
+```c
+int g = 5; int read(void) { return g; }
+int main(void) { extern int g; g = 7; return read(); }   /* 5 before, 7 now; clang says 7 */
+```
+
+**A comment describing a check the code does not make, found again** - and this time in the docs:
+*"There is no `gnu89` mode, **no extensions beyond what C99 defines**, and no C++"*, in a compiler whose own
+headers are spelled in `__builtin_offsetof`, `__builtin_va_start`, `__builtin_va_arg` and now
+`__builtin_alignas`. The sentence now names them and says why each exists: a `__builtin_` is there when a
+header *cannot* be written in C, which is exactly the reason a keyword is defensible.
+
+**And the matrix row for `setjmp.h` still cited the reason the commit had just measured to be wrong** -
+"`jmp_buf`'s layout is the ABI's" - when the layout was written and the jump faulted for an unrelated cause.
+It now names the frame table, which is where the milestone is.
+
+**Verified, not assumed:** six casts in integer constant expressions (`(char)300`, `(unsigned char)-1`,
+`(long)(signed char)-1`, `(int)(unsigned long long)-1`, `(short)70000`, `(unsigned short)-1`) all agree with
+clang; `signal`/`raise` behaves as clang's does, which is a header that ships being a header a program can
+use; the aligned member's `offsetof`, the locale's decimal point, the block-scope `extern` and the constant
+casts are four constructs now pinned. 443 corpus programs agree, 20 refused, 0 wrong; cJSON byte-identical to
+clang; 33 of Lua's 34 files compile.
+
+188 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5
+refused, 44 skipped, 0 timed out, 0 mismatched) - green; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the frame table, found by trying to write the header it is missing
 
 `signal.h` and `locale.h` are real now, so Lua was down to `ldo.c` and `setjmp.h`. Writing that header

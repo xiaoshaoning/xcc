@@ -801,8 +801,15 @@ impl Parser<'_> {
             // A `static` local is not in the frame: it has static storage duration, one object
             // for the whole run, initialised once (C99 6.2.4p3), so it is handled with the
             // initialiser below as a global of its own.
+            //
+            // Neither is an `extern` one: C99 6.2.2p4 makes a block-scope `extern` declaration
+            // *refer* to an object that has external linkage somewhere, not to make one of its own.
+            // Without this, `int main(void) { extern int g; g = 7; }` gave `g` a slot in the frame
+            // and wrote to that - a wrong answer no corpus program could show, because it needs the
+            // global to be read from somewhere else afterwards.
             let static_local = object && self.in_body() && specs.is_static;
-            if object && self.in_body() && !static_local {
+            let frame_local = object && self.in_body() && !static_local && !specs.is_extern;
+            if frame_local {
                 // A local variable is a slot in the function's frame (ADR-002 invariant 3).
                 if let Some(name) = name {
                     let pointer = self.pointer_to(ty);

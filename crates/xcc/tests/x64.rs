@@ -349,6 +349,16 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A block-scope `extern` declaration refers to the object with external linkage
+            // (C99 6.2.2p4) and does not make one. The check needs the global read from somewhere
+            // else afterwards: a private frame slot would still return the value just written.
+            "a block-scope extern declaration",
+            "int g = 5; int read(void) { return g; }
+
+             int main(void) { extern int g; g = 7; return read(); }",
+            7,
+        ),
+        (
             // A member's `_Alignas` (C11 6.7.5) is the *member's* alignment: `offsetof` moves, and
             // so does the struct's own alignment - which is what the ABI's `movaps` needs and what a
             // struct of two 8-byte integers does not have.

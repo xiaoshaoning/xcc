@@ -19,7 +19,13 @@ and the `planned` rows.
 ## Language baseline
 
 `--std=c99` (default) is the 1999 standard. `--std=c11` adds the C11 pieces a host meets in
-practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and no C++.
+practice. There is no `gnu89` mode and no C++.
+
+A `__builtin_` name exists only where a header cannot be written in C itself: `__builtin_offsetof`
+(6.7.8p3's macro needs an address for a member of nothing), `__builtin_va_start`/`__builtin_va_arg`
+(what `va_arg` expands to, and the only form a compiler can lower), and `__builtin_alignas`, which
+is `_Alignas` without the C11 gate - because C99 has no alignment specifier at all, and a *header*
+may not ask the program to change its standard.
 
 ## Lexing and preprocessing
 
@@ -105,7 +111,7 @@ practice. There is no `gnu89` mode, no extensions beyond what C99 defines, and n
 | `assert.h` | `sound` (M10) - `assert` is a macro over the C library's `fprintf` and `abort`, so the header needs no runtime of its own; `NDEBUG` gives 7.2p1's void expression. Verified both ways, and `errno`/`strtol` overflow read back `ERANGE` |
 | `errno.h`, `iso646.h` | `sound` (M10) - `errno` is `#define errno (*_errno())`, because the C library keeps one per thread, and the `E*` values are the target's own; `iso646.h` is its eleven macros. Both work under `--run`: `_errno` is in the runtime's symbol list, and a test compares that list with what the headers actually name |
 | a `FILE *` stream (`stdin`, `stdout`, `stderr`) under `--run` | `refused` - the headers spell the streams for the *universal* runtime (`__acrt_iob_func`), and `--run` loads the classic one, which exports `_iob` instead. One runtime per process is deliberate (two keep two heaps and two sets of buffers), so `--run` reports the symbol and the reason. `printf`/`fprintf` need no `FILE *` and work. **This is why `assert` runs only on the object path**: its diagnostic needs `stderr` |
-| `setjmp.h` | `refused` - and the diagnostic says why: `jmp_buf`'s layout is the ABI's, not the C library's, and a JIT'ed frame cannot be long-jumped out of without unwind information |
+| `setjmp.h` | `refused`, and the diagnostic names what is missing rather than the shape of a struct: the header was written to the ABI (256 bytes, 16-byte aligned, `_setjmp(buffer, 0)`) and `longjmp` **faulted**, because the C library's `longjmp` calls `RtlUnwindEx` and this compiler emits no `.pdata` frame table. `.pdata`/`.xdata` is a milestone of its own in `PLAN.md`, with that program as its oracle |
 | `locale.h`, `signal.h` | `sound` (M10) - `setlocale`, `localeconv` and `struct lconv` in the standard's own member order; `signal`, `raise`, `sig_atomic_t` and the target's six signals. `localeconv()->decimal_point` is what a program writing a decimal number by hand reads |
 | `inttypes.h`, `complex.h`, `fenv.h`, `tgmath.h`, `wchar.h`, `wctype.h` | `refused` - each with its reason in the message, never `cannot find`. Which headers exist and what happens to each is **one table** in `src/headers.rs`, walked by a test against C99 7.1.2's own list |
 
