@@ -935,10 +935,27 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link; the interpreter faults in `lauxlib`'s wake (see below).
-- [ ] **Lua runs.** The remaining blocker, reproducible in twenty lines: with only `lauxlib.c` compiled here,
-      `luaL_newstate` + `luaL_requiref(L, "_G", luaopen_base, 1)` faults *inside clang-compiled*
-      `luaV_finishget` called from clang-compiled `init_registry` - so the mismatch is data our `lauxlib`
-      produces. The driver is `drv.c`; the next step is to narrow it to one function of `lauxlib.c`.
+- [ ] **Lua runs: seven files, and the bug is in the front end.** Narrowing done, and the first two attempts at it
+      were wrong in a way worth recording.
+
+      **A driver that faults under clang is measuring the driver.** A twenty-line `main` that called
+      `luaL_requiref` and `luaL_getsubtable` faulted, and looked like a narrow reproducer; the same source
+      compiled by *clang* faulted identically, because Lua's API may only be called from inside a call frame
+      (`lua_pcall`), which is where `pmain` calls it. **Every reproducer needs an all-clang control.** With one,
+      `luaL_requiref(L, "_G", luaopen_base, 1)` from inside a `lua_pcall` is *correct* through this compiler.
+
+      **The remaining failures are the front end's, not the back end's.** Seven files break the interpreter alone -
+      `lauxlib`, `lcode`, `ldo`, `llex`, `lparser`, `ltable`, `lvm` - and **every one that Cranelift can compile
+      fails at `--opt-level=1` as well**, so the shared half is at fault: parser, `cir`, or a `cir` pass. That is a
+      narrowing no bisect of the back end could have given, and it rules out everything this milestone changed.
+
+      **Two of the seven now have a function named.** `ltable` hangs, and a `SIGINT` sample lands in `luaH_newkey` -
+      the `while (othern + gnext(othern) != mp)` chain walk. `llex` dies of `SIGILL`, which is this compiler's own
+      `ud2` block, in `read_string`: a path the lowering called unreachable was reached. Probes that agree with
+      clang already: the layouts of `Node`/`Table`/`TValue`, pointer differences through three element sizes,
+      `switch` with and without `default`, fall-through, and a switch inside a loop. So the next step is the shape
+      those two have in common - a nested `switch` with `break` inside a `switch`, and a `while` whose condition
+      reads a field - and failing that, `cir` for a reduced `read_string`.
 - [ ] **`.pdata` / `.xdata`: the frame table (done, kept for the record).** Measured, not assumed: `setjmp.h` was written to the
       ABI (256 bytes, 16-byte aligned, `_setjmp(buf, 0)`) and `longjmp` **faulted** even in the same
       frame, because the C library's `longjmp` calls `RtlUnwindEx`, which demands a
