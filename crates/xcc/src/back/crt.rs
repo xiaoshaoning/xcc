@@ -150,6 +150,48 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "setlocale",
     "raise",
     "signal",
+    // math.h, the C99 additions: every one is exported by the universal runtime, and a name the
+    // headers declare that `--run` cannot resolve is a header that lies.
+    "acosh",
+    "asinh",
+    "atanh",
+    "cbrt",
+    "copysign",
+    "erf",
+    "erfc",
+    "exp2",
+    "expm1",
+    "fdim",
+    "fma",
+    "fmax",
+    "fmin",
+    "hypot",
+    "ilogb",
+    "lgamma",
+    "llrint",
+    "llround",
+    "log1p",
+    "log2",
+    "logb",
+    "lrint",
+    "lround",
+    "nan",
+    "nearbyint",
+    "nextafter",
+    "nexttoward",
+    "remainder",
+    "remquo",
+    "rint",
+    "round",
+    "scalbln",
+    "scalbn",
+    "tgamma",
+    "trunc",
+    // inttypes.h
+    "imaxabs",
+    "imaxdiv",
+    "strtoimax",
+    "strtoumax",
     // time.h
     "clock",
     "difftime",
@@ -176,6 +218,21 @@ pub const UNAVAILABLE: &[(&str, &str)] = &[
         "no Windows runtime exports it; the universal runtime's header spells it as an inline wrapper this compiler cannot reproduce",
     ),
 ];
+
+/// Why a name the headers declare cannot be called by a JIT on this machine, when the answer is known.
+///
+/// Two different facts, one question. `UNAVAILABLE` is the names no Windows runtime exports; the
+/// second is the names the *classic* runtime lacks while the universal one has them - which is a
+/// property of which runtime a JIT loads, not of the name. Both are ours to explain: a reader who
+/// wrote `log2` should not have to discover that this runtime is the older one.
+pub(crate) fn missing_reason(name: &str) -> Option<&'static str> {
+    if let Some((_, reason)) = UNAVAILABLE.iter().find(|(absent, _)| *absent == name) {
+        return Some(reason);
+    }
+    C_RUNTIME.contains(&name).then_some(
+        "the C runtime `--run` loads does not export this name, though the headers declare it and the universal runtime has it; link the program instead of running it",
+    )
+}
 
 /// Every C runtime function this machine has, by name.
 ///
@@ -287,12 +344,29 @@ mod tests {
             "union", "enum", "const", "static", "extern", "typedef", "sizeof", "defined",
         ];
         let mut declared = std::collections::BTreeSet::new();
+        // The names the headers define as macros: a body that calls one of these calls nothing.
+        let mut ours: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (_, disposition) in crate::headers::c99_headers() {
             let crate::headers::Disposition::Shipped(text) = disposition else {
                 continue;
             };
             // Prose is not a promise: a comment naming `printf` is not a declaration of it.
             let text = without_comments(text);
+            // Nor is a name this header defines itself: `isfinite`'s body calls `isnan`, which is
+            // this header's own macro and not something to look up in a library at all.
+            for line in text.lines() {
+                if let Some(defined) = line.trim_start().strip_prefix("#define") {
+                    if let Some(name) = defined
+                        .trim_start()
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                    {
+                        if !name.is_empty() {
+                            ours.insert(name.to_owned());
+                        }
+                    }
+                }
+            }
             for line in text.lines() {
                 let body = match line.trim_start().strip_prefix('#') {
                     // A macro: scan its body, and not the name being defined. A function-like
@@ -326,6 +400,7 @@ mod tests {
         let missing: Vec<&str> = declared
             .iter()
             .map(String::as_str)
+            .filter(|name| !ours.contains(*name))
             .filter(|name| !available.contains(name) && !unavailable.contains(name))
             .collect();
         assert!(

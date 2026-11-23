@@ -472,6 +472,52 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // C99 7.12's additions to `math.h`, and 7.8's `inttypes.h`: the functions are the
+            // library's, the classification macros are the header's own, and the `PRI` macros are
+            // what a program uses to print a type whose width it does not know.
+            "the C99 additions to math.h and inttypes.h",
+            "#include <inttypes.h>
+
+             #include <math.h>
+
+             #include <stdio.h>
+
+             #include <string.h>
+
+             int main(void) {
+
+                 char text[32];
+
+                 imaxdiv_t parts = imaxdiv(17, 5);
+
+                 snprintf(text, sizeof text, \"%\" PRIdMAX \":%\" PRIxMAX, (intmax_t)-2, (intmax_t)255);
+
+                 if (strcmp(text, \"-2:ff\") != 0) return 1;
+
+                 if (parts.quot != 3 || parts.rem != 2) return 2;
+
+                 if (imaxabs((intmax_t)-7) != 7) return 3;
+
+                 if (log2(8.0) != 3.0 || exp2(5.0) != 32.0) return 4;
+
+                 if (cbrt(27.0) != 3.0 || hypot(3.0, 4.0) != 5.0) return 5;
+
+                 if (round(2.5) != 3.0 || trunc(-2.7) != -2.0) return 6;
+
+                 if (copysign(3.0, -1.0) != -3.0) return 7;
+
+                 if (fmin(2.0, 3.0) != 2.0 || fmax(2.0, 3.0) != 3.0) return 8;
+
+                 if (!(nextafter(1.0, 2.0) > 1.0)) return 9;
+
+                 if (!(isnan(0.0 / 0.0) && isinf(HUGE_VAL) && !isinf(1.0))) return 10;
+
+                 if (!(signbit(-1.0) && isnormal(1.0) && fpclassify(1.0) == FP_NORMAL)) return 11;
+
+                 return 42; }",
+            42,
+        ),
+        (
             // A parameter that takes no frame slot still takes a *position*: a record passed by
             // reference is the caller's copy, so it has no slot - and without a placeholder the
             // parameters after it moved one place earlier, which made `va_start` point at the

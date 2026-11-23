@@ -51,7 +51,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "inttypes.h",
-        Disposition::Refused("not implemented; `<stdint.h>` and `printf` cover today's need"),
+        Disposition::Shipped(include_str!("../include/inttypes.h")),
     ),
     (
         "iso646.h",

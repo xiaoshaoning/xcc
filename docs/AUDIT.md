@@ -760,6 +760,40 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - `math.h` was a third of C99, and `inttypes.h` was refused for no reason
+
+Two headers, and both were lying by omission in a way a real program notices.
+
+**`math.h` declared 22 of C99 7.12's 36 functions.** The missing fourteen are the ones modern code reaches
+for - `log2`, `cbrt`, `hypot`, `round`, `trunc`, `copysign`, `fmin`/`fmax`, `nextafter`, `fma` - and Lua's
+`lmathlib` warned *"`log2` is not declared"* on every build of it, which is what "undefined" looks like when the
+declaration is the only thing missing. All 36 are exported by the universal runtime, so all 36 are declared now,
+with the five classification macros (`isnan`, `isinf`, `isfinite`, `isnormal`, `signbit`, `fpclassify`) written as
+macros over them: a program that only asks *whether* a number is a number links no call to find out.
+
+**`inttypes.h` was the one C99 header refused for "not implemented"** rather than "cannot" - and it is four
+declarations and sixty macro spellings, all of which the runtime exports. `PRIdMAX`, `PRIu64`, `SCNx32`: the header
+exists so a program never has to know that this target's `long long` is 64 bits.
+
+**The two ratchets did their job while I was writing it.** The ledger test that compares the headers against the
+runtime's symbol list refused the build until every new name was in `C_RUNTIME`, and the README test refused it
+until `inttypes` was named there. The ledger also caught a flaw in *itself*: it counted `isnan` - a macro this
+header defines - as a call into the library, so it now ignores names the shipped headers define, while
+`#define stdout __acrt_iob_func(1)` still counts the accessor it really calls.
+
+**Measured against clang, call for call**: twenty-one functions and twelve macros give byte-identical output, and
+the construct in `tests/x64.rs` pins the arithmetic rather than the printing (`log2(8) = 3`, `hypot(3,4) = 5`,
+`trunc(-2.7) = -2`, `PRIdMAX` of `-2` is `-2` while `PRIxMAX` of 255 is `ff`).
+
+**And `--run` says which runtime it is.** `log2` works in a linked program and not under `--run`, because the
+classic runtime that a JIT loads does not export the C99 additions. The message said only *"a JIT can only call what
+it has"*; it now says that this runtime lacks the name, that the headers declare it, and to link the program - a
+`missing_reason` in one place, next to the reason table it extends.
+
+194 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - eight things nothing called, hidden by one `allow` that had outlived its reason
 
 The codebase-read commit, reviewed. Its two fixes hold; what the review found is a *blind spot* of exactly the kind
