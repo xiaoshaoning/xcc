@@ -934,47 +934,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
 - [x] **`.pdata` / `.xdata`: the frame table.** Done: the codes are recorded as the prologue emits them,
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
-      `--run`; Lua's 34 files compile and link; the interpreter faults in `lauxlib`'s wake (see below).
+      `--run`; Lua's 34 files compile and link, and the interpreter runs.
 - [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
       nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
       Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.
 - [ ] **Lua's test suite, past the first difference.** It runs into `main.lua` and stops at `getoutput`'s
       `os.execute` round trip, which is the next thread to pull.
-- [ ] **Lua runs (older note, five files left).** (`lcode` and `llex` were the first two,
-      fixed by the switch fall-through link below: an arm that ends in a `?:` was linked from its first block
-      instead of from where control is.) Narrowing done, and the first two attempts at it
-      were wrong in a way worth recording.
-
-      **A driver that faults under clang is measuring the driver.** A twenty-line `main` that called
-      `luaL_requiref` and `luaL_getsubtable` faulted, and looked like a narrow reproducer; the same source
-      compiled by *clang* faulted identically, because Lua's API may only be called from inside a call frame
-      (`lua_pcall`), which is where `pmain` calls it. **Every reproducer needs an all-clang control.** With one,
-      `luaL_requiref(L, "_G", luaopen_base, 1)` from inside a `lua_pcall` is *correct* through this compiler.
-
-      **The remaining failures are the front end's, not the back end's.** Seven files break the interpreter alone -
-      `lauxlib`, `lcode`, `ldo`, `llex`, `lparser`, `ltable`, `lvm` - and **every one that Cranelift can compile
-      fails at `--opt-level=1` as well**, so the shared half is at fault: parser, `cir`, or a `cir` pass. That is a
-      narrowing no bisect of the back end could have given, and it rules out everything this milestone changed.
-      (Four compiled at level 1 at first: `lcode`'s refusal was itself a bug - an `extern` object reported as an
-      internal error - and fixing it moved `lcode` from *untested* to *tested and failing at both levels*.)
-
-      **Two of the seven now have a function named.** `ltable` hangs, and a `SIGINT` sample lands in `luaH_newkey` -
-      the `while (othern + gnext(othern) != mp)` chain walk. `llex` dies of `SIGILL`, which is this compiler's own
-      `ud2` block, in `read_string`: a path the lowering called unreachable was reached. Probes that agree with
-      clang already: the layouts of `Node`/`Table`/`TValue`, pointer differences through three element sizes,
-      `switch` with and without `default`, fall-through, and a switch inside a loop. So the next step is the shape
-      those two have in common - a nested `switch` with `break` inside a `switch`, and a `while` whose condition
-      reads a field - and failing that, `cir` for a reduced `read_string`.
-- [ ] **`.pdata` / `.xdata`: the frame table (done, kept for the record).** Measured, not assumed: `setjmp.h` was written to the
-      ABI (256 bytes, 16-byte aligned, `_setjmp(buf, 0)`) and `longjmp` **faulted** even in the same
-      frame, because the C library's `longjmp` calls `RtlUnwindEx`, which demands a
-      `RUNTIME_FUNCTION` for every frame it passes. clang emits `.pdata` + `.xdata` (12 bytes each
-      for one function); this compiler emits neither, so a debugger cannot walk our frames, a C++
-      exception cannot pass through them, and Lua's `pcall` - its `setjmp` - cannot exist. The
-      oracle is that same program: it either prints `same frame: 42` or faults. The prologue shape
-      is already known in one place (`x64/mod.rs`), which is what makes this a transcription rather
-      than a computation: `UWOP_PUSH_NONVOL` per saved register, `UWOP_ALLOC_SMALL`/`_LARGE` for the
-      frame, one `RUNTIME_FUNCTION` per function, sorted by address.
 - [ ] `back-x64` shrinking, round six: **jump tables for `switch`**, which is the one item in this
       list nobody has measured, and the passes below on machine code rather than `cir`. The other two
       things this item used to name are settled and must not be re-proposed: jump shortening was

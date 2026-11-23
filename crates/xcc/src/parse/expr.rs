@@ -145,6 +145,17 @@ impl Parser<'_> {
                 }
                 Some(Value::code(left.ty, value))
             }
+            // No place and no body: this is a file-scope initialiser, where C99 6.6p7 wants a
+            // *constant* expression. `static int a[1] = { x = 5 };` is not one, and it was accepted
+            // and written as zero - a wrong answer rather than a diagnostic, which is the one thing
+            // this compiler may not do.
+            (None, _) if !self.in_body() && !self.types.is_error(left.ty) => {
+                self.error(
+                    span,
+                    "a file-scope initialiser must be a constant expression",
+                );
+                Some(Value::new(left.ty, None, false))
+            }
             (None, _) if self.in_body() && !self.types.is_error(left.ty) => {
                 // A place the emitter cannot name yet: a global, a member, an element.
                 self.not_lowered(span, "this kind of assignment");

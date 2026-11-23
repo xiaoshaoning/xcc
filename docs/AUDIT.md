@@ -760,6 +760,33 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - a wrong answer is the one thing that may not be accepted
+
+The commit that made Lua run, reviewed. Its two fixes hold - the whole corpus and 33 of Lua's 33 objects agree - and
+the review found the *other* half of the initialiser bug, still open: a form of it that produced a wrong answer
+instead of a diagnostic.
+
+**`static int a[1] = { x = 5 };` compiled into zero.** C99 6.6p7 wants a *constant* expression in a file-scope
+initialiser, and an assignment is not one; clang refuses it. This compiler accepted it, wrote nothing, and the
+program read zero. The `assign` path that returns a value for a file-scope initialiser had no error for "not in a
+body" - the arm existed for block scope only, so the file-scope case fell through to a silent value. It is a
+diagnostic now, and block scope still assigns happily.
+
+**And the plan had grown a habit of keeping its dead bullets.** Three bullets said what Lua's state was - one
+closed, one new, one an "older note" describing seven failing files that no longer exist - and two said `.pdata` was
+both done and "kept for the record". A plan that keeps every superseded paragraph stops being a plan; the history is
+what the AUDIT is for. The duplicates are gone and the surviving bullet says what is true now: Lua runs, and its
+test suite is the next thread.
+
+**Checked while there**, because the fix touched the same function: the brace-list path already parsed an
+assignment-expression (`initializer_value` calls `assignment_expression`), so the two paths now agree and the bug was
+only ever on the non-braced one; and a bare `return;` behaves the same at all three optimisation levels, which the
+Lua build (level 2 only) could not have shown.
+
+191 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - Lua runs: a `return;` that emitted nothing, and an initialiser that was not one
 
 M7's acceptance item is closed. Lua 5.4.7 compiles, links and **runs**: every one of its 33 objects is correct on
