@@ -333,7 +333,7 @@ mod tests {
         let artifact = crate::Compile::new(options)
             .compile("t.c", source)
             .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
-        assert!(!artifact.object().is_empty());
+        assert!(!artifact.bytes().is_empty());
     }
 
     #[test]

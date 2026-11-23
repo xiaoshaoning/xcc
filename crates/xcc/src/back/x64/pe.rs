@@ -443,13 +443,14 @@ fn import_table_size(libraries: &[Library<'_>]) -> u32 {
     descriptors + lookups + names + libraries_named
 }
 
-/// `.rdata`'s import table, and the address table's contents that go with it.
+/// `.rdata`'s import table, and what `.data`'s address table must hold before the loader runs.
 #[derive(Default)]
 struct ImportTables {
     /// The section's bytes.
     bytes: Vec<u8>,
-    /// One hint/name RVA per import, in the order `.data` reserved its slots.
-    address_table: Vec<u64>,
+    /// The hint/name entry of each import, in the order `.data` reserved its slots - the same RVAs
+    /// the lookup table holds, because the loader reads a zero slot as no import at all.
+    lookup_rvas: Vec<u32>,
 }
 
 /// One section, as both the header writer and the byte writer see it: its name, its flags, where it
@@ -748,12 +749,12 @@ impl<'a> Writer<'a> {
         );
         ImportTables {
             bytes: table,
-            address_table: name_rvas.into_iter().flatten().map(u64::from).collect(),
+            lookup_rvas: name_rvas.into_iter().flatten().collect(),
         }
     }
 
-    /// `.data` with the address table filled in: the import table's hint/name RVAs, in the order the
-    /// slots were reserved in.
+    /// `.data` with the address table filled in: the lookup table's RVAs, in the order the slots
+    /// were reserved in.
     fn data_with(&self, tables: &ImportTables) -> Vec<u8> {
         let mut data = self.program.data.clone();
         let slots: Vec<u32> = self
@@ -763,9 +764,9 @@ impl<'a> Writer<'a> {
             .flat_map(|library| &library.functions)
             .map(|function| function.slot)
             .collect();
-        assert_eq!(slots.len(), tables.address_table.len());
-        for (slot, value) in slots.into_iter().zip(&tables.address_table) {
-            data[slot as usize..slot as usize + 8].copy_from_slice(&value.to_le_bytes());
+        assert_eq!(slots.len(), tables.lookup_rvas.len());
+        for (slot, rva) in slots.into_iter().zip(&tables.lookup_rvas) {
+            data[slot as usize..slot as usize + 8].copy_from_slice(&u64::from(*rva).to_le_bytes());
         }
         data
     }

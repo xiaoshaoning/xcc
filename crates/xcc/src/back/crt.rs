@@ -5,10 +5,10 @@
 //! one it cannot find. So the C runtime's own functions are looked up here, by name, from the same
 //! DLL that a linked program would import them from.
 //!
-//! The list is the headers': every function `crates/xcc/include` declares is here, because a
-//! header that declares what `--run` cannot resolve is a header that lies. A name the library
-//! does not export is left out rather than faked, which is why the list is a search rather than an
-//! assertion.
+//! The list is the headers' and the runtime source's: every function `crates/xcc/include` declares
+//! is here, because a header that declares what `--run` cannot resolve is a header that lies, and so
+//! are the two names the C runtime's own `printf` front ends call. A name the library does not
+//! export is left out rather than faked, which is why the list is a search rather than an assertion.
 
 /// Every function the C headers declare. `stdarg`'s macros are not functions and are absent;
 /// everything variadic is here, because a *call* to one is lowered as an indirect call and only a
@@ -219,7 +219,7 @@ pub const UNAVAILABLE: &[(&str, &str)] = &[
     ),
     (
         "snprintf",
-        "no Windows runtime exports it; the universal runtime's header spells it as an inline wrapper this compiler cannot reproduce",
+        "no Windows runtime exports it, and the layer that carries it is the C runtime a *link* compiles in - a JIT has no linker to bring that layer, so link the program instead of running it",
     ),
 ];
 

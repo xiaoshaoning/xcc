@@ -228,13 +228,7 @@ fn compile_command_line() -> ExitCode {
         };
 
         let source = SourceFile::new(name.clone(), text.clone());
-        let options = Options {
-            standard: args.standard.into(),
-            defines: args.defines.clone(),
-            undefines: args.undefines.clone(),
-            opt_level,
-            ..Options::default()
-        };
+        let options = options(&args, opt_level);
         let includes = Box::new(Directories {
             roots: args.include_paths.clone(),
         });
@@ -265,7 +259,7 @@ fn compile_command_line() -> ExitCode {
                     .output
                     .clone()
                     .unwrap_or_else(|| input.with_extension("obj"));
-                if let Err(error) = std::fs::write(&path, artifact.object()) {
+                if let Err(error) = std::fs::write(&path, artifact.bytes()) {
                     eprintln!("xcc: cannot write {}: {error}", path.display());
                     return ExitCode::from(2);
                 }
@@ -284,6 +278,18 @@ fn compile_command_line() -> ExitCode {
     }
 
     status
+}
+
+/// The options a mode compiles with. `opt_level` is the mode's answer, not the flag's: a link has
+/// one back end that can produce an image, so the level comes from the mode.
+fn options(args: &Args, opt_level: u8) -> Options {
+    Options {
+        standard: args.standard.into(),
+        defines: args.defines.clone(),
+        undefines: args.undefines.clone(),
+        opt_level,
+        ..Options::default()
+    }
 }
 
 /// Link every source into one `.exe`, with the C runtime that makes `main` a program.
@@ -310,24 +316,27 @@ fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
         .iter()
         .map(|(name, text)| (name.as_str(), text.as_str()))
         .collect();
-    let options = Options {
-        standard: args.standard.into(),
-        defines: args.defines.clone(),
-        undefines: args.undefines.clone(),
-        opt_level,
-        ..Options::default()
-    };
+    let sources: Vec<SourceFile> = units
+        .iter()
+        .map(|(name, text)| SourceFile::new(name.clone(), text.clone()))
+        .collect();
     let includes = Box::new(Directories {
         roots: args.include_paths.clone(),
     });
-    let mut compiler = Compile::with_includes(options, includes);
+    let mut compiler = Compile::with_includes(options(args, opt_level), includes);
     match compiler.link(&borrowed) {
-        Ok(image) => {
+        Ok(artifact) => {
+            if !artifact.diagnostics().is_empty() {
+                eprintln!(
+                    "{}",
+                    xcc::render_all(artifact.diagnostics(), &sources, format)
+                );
+            }
             let path = args
                 .output
                 .clone()
                 .unwrap_or_else(|| args.inputs[0].with_extension("exe"));
-            match std::fs::write(&path, image) {
+            match std::fs::write(&path, artifact.bytes()) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("xcc: cannot write {}: {error}", path.display());

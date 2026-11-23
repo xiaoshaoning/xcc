@@ -33,7 +33,7 @@ fn a_program_links_and_exits_with_its_return_value() {
     let dir = temp_dir("exit");
     let object = dir.join("t.o");
     let exe = dir.join("t.exe");
-    std::fs::write(&object, artifact.object()).expect("the object is written");
+    std::fs::write(&object, artifact.bytes()).expect("the object is written");
     let link = Command::new(linker)
         .arg("-o")
         .arg(&exe)
@@ -86,7 +86,7 @@ int main(void) {
     let dir = temp_dir("clib");
     let object = dir.join("t.o");
     let exe = dir.join("t.exe");
-    std::fs::write(&object, artifact.object()).expect("the object is written");
+    std::fs::write(&object, artifact.bytes()).expect("the object is written");
     let link = Command::new(linker)
         .arg("-o")
         .arg(&exe)
@@ -133,7 +133,7 @@ fn a_program_that_prints_links_and_prints_the_same_as_clang() {
     let dir = temp_dir("printf");
     let object = dir.join("t.o");
     let exe = dir.join("t.exe");
-    std::fs::write(&object, artifact.object()).expect("the object is written");
+    std::fs::write(&object, artifact.bytes()).expect("the object is written");
     let link = Command::new(linker)
         .arg("-o")
         .arg(&exe)
@@ -196,7 +196,7 @@ fn linked_with_clang(
     })
     .compile("ours.c", ours)
     .map_err(|diagnostics| format!("{diagnostics:?}"))?;
-    std::fs::write(&object, artifact.object()).expect("the object is written");
+    std::fs::write(&object, artifact.bytes()).expect("the object is written");
     let their_source = dir.join("theirs.c");
     std::fs::write(&their_source, theirs).expect("the other source is written");
     let exe = dir.join("t.exe");
@@ -333,10 +333,10 @@ int main(void) {
     let image = compiler.link(&[("t.c", source)]).expect("it links");
     let dir = temp_dir("ownlink");
     let exe = dir.join("t.exe");
-    std::fs::write(&exe, &image).expect("the image is written");
+    std::fs::write(&exe, image.bytes()).expect("the image is written");
     let run = Command::new(&exe).output().expect("the program runs");
     let code = run.status.code();
-    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    let out = String::from_utf8_lossy(&run.stdout);
     let _ = std::fs::remove_dir_all(&dir);
     // The return value is the exit status, and the output is the library's, so this one test
     // covers the linker, the C runtime it links in and the `printf` front end the runtime carries.

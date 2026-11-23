@@ -760,6 +760,43 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - a link threw its warnings away
+
+The linker commit, reviewed. The binding fix holds - `xcc hello.c` produces a program Windows runs - and the review
+found one defect that mattered and a handful that did not.
+
+**A link discarded the front end's warnings.** `Compile::link` read `let (module, preprocessed, _) =
+self.front_end(...)`, and the third value is the diagnostic list: `xcc t.c` was silent about
+`int a[2] = {1, 2, 3};` where `xcc -c t.c` warned about it. A warning a mode does not print is a warning the user
+does not get, and the *mode* is not a reason to lose it. A link now returns the same `Artifact` a compilation does -
+the bytes and the warnings - so there is one type for what the compiler produced and one place its diagnostics are
+rendered. That also let the `object()` name go: there is one name for the payload, `bytes()`, because a link's payload
+is not an object and two names for one thing is two places to keep in step.
+
+**The level error still carried its CRLF continuation** - twenty-two spaces inside a sentence, from the same edit that
+was cleaned up once before in the CLI and not here. It is a sentence again.
+
+**`ImportTables.address_table: Vec<u64>` was the wrong name and the wrong type**: it holds hint/name RVAs, which are
+32-bit, and the *address table* is a different thing in the same file. It is `lookup_rvas: Vec<u32>`.
+
+**Two comments described a compiler that no longer exists.** `C_RUNTIME`'s module doc said every name in it came from
+a header - two now come from the runtime source's `printf` front ends - and `snprintf`'s reason for being unavailable
+to a JIT said "the universal runtime's header spells it as an inline wrapper this compiler cannot reproduce", which
+stopped being true the hour this compiler started reproducing it. The reason now says what is true: the layer that
+carries it is the one a *link* compiles in, so link the program instead of running it.
+
+**The runtime test compiled the runtime at a level a link cannot use.** `tests/crt.rs` built `main.c` at the default
+level, which worked until the file gained a `va_arg`; the test now compiles at `--opt-level=2`, which is the level the
+only caller of that source uses, and says why.
+
+**And a path nothing tested: two sources in one link.** `xcc a.c b.c -o two.exe` was run by hand and never by the
+suite, though per-unit text and data offsets are exactly the class of bug that links fine with one source and wrong
+with two. It is a CLI test now.
+
+194 unit, 27 parser, 24 CLI, 5 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the import address table has to start full
 
 `xcc hello.c` writes `hello.exe` now, and the operating system runs it. The linker's last blocker was not the

@@ -20,8 +20,8 @@ impl Artifact {
         }
     }
 
-    /// The object file, as bytes.
-    pub fn object(&self) -> &[u8] {
+    /// What the compiler produced: a COFF object for `-c`, a PE32+ image for a link.
+    pub fn bytes(&self) -> &[u8] {
         &self.object
     }
 
@@ -198,11 +198,11 @@ impl Compile {
     /// Linking needs the *image* of each unit - sections, symbols, relocations - and only level 2 has
     /// one, so a link at any other level is refused rather than quietly lowered by a back end that
     /// keeps its sections to itself.
-    pub fn link(&mut self, units: &[(&str, &str)]) -> Result<Vec<u8>, Diagnostics> {
+    pub fn link(&mut self, units: &[(&str, &str)]) -> Result<Artifact, Diagnostics> {
         if self.options.opt_level < 2 {
             return Err(Diagnostics::new(
                 vec![Diagnostic::error(
-                    "linking needs `--opt-level=2`: the Cranelift back end keeps its sections to                      itself, so a unit lowered by it cannot be linked",
+                    "linking needs `--opt-level=2`: the Cranelift back end keeps its sections to itself, so a unit lowered by it cannot be linked",
                 )
                 .with_file("link")
                 .with_span(Span::at(0))],
@@ -211,9 +211,13 @@ impl Compile {
         }
         let mut images = Vec::new();
         let mut sources = Vec::new();
+        // A warning is about one compilation, and a link makes several: they are collected here so
+        // that the caller of a link is told what the caller of `-c` is told.
+        let mut diagnostics = Vec::new();
         let runtime = [("xcc-crt/main.c", crate::back::CRT_SOURCE)];
         for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
-            let (module, preprocessed, _) = self.front_end(name, source)?;
+            let (module, preprocessed, warnings) = self.front_end(name, source)?;
+            diagnostics.extend(warnings);
             match crate::back::image(&module, preprocessed.names(), self.options.opt_level) {
                 Ok(Some(image)) => images.push(image),
                 Ok(None) => unreachable!("the level was checked above"),
@@ -258,7 +262,7 @@ impl Compile {
             )
             .collect();
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
-            Ok(linked) => Ok(linked.bytes),
+            Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics)),
             Err(missing) => Err(Diagnostics::new(
                 vec![
                     Diagnostic::error(format!("undefined symbol `{}`", missing.name))
@@ -398,8 +402,8 @@ mod tests {
 ",
             )
             .expect("no error");
-        assert_eq!(&artifact.object()[0..2], &[0x64, 0x86], "x86-64 COFF");
-        assert!(artifact.object().len() > 20 + 40, "a header and a section");
+        assert_eq!(&artifact.bytes()[0..2], &[0x64, 0x86], "x86-64 COFF");
+        assert!(artifact.bytes().len() > 20 + 40, "a header and a section");
     }
 
     #[test]
@@ -412,8 +416,8 @@ mod tests {
 ",
             )
             .expect("a function lowers");
-        assert!(!artifact.object().is_empty(), "an object came out");
-        assert_eq!(&artifact.object()[0..2], &[0x64, 0x86], "x86-64 COFF");
+        assert!(!artifact.bytes().is_empty(), "an object came out");
+        assert_eq!(&artifact.bytes()[0..2], &[0x64, 0x86], "x86-64 COFF");
     }
 
     #[test]

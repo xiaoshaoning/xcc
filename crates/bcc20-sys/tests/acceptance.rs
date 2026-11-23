@@ -51,7 +51,7 @@ fn the_six_files_compile_with_both_and_report_their_sizes() {
         let artifact = Compile::new(Options::default())
             .compile(name, source)
             .unwrap_or_else(|diagnostics| panic!("{name}: {diagnostics:?}"));
-        let our_code = coff_text(artifact.object())
+        let our_code = coff_text(artifact.bytes())
             .unwrap_or_else(|| panic!("{name}: no .text in the COFF object"));
 
         // Borland's half: 16-bit OMF, one code segment.

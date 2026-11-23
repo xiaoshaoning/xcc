@@ -73,7 +73,7 @@ fn main() {
         let artifact = Compile::new(options).compile(&name, &source);
         let elapsed = started.elapsed().as_micros();
         let (our_code, our_errors) = match &artifact {
-            Ok(artifact) => (coff_text(artifact.object()).unwrap_or(0), 0),
+            Ok(artifact) => (coff_text(artifact.bytes()).unwrap_or(0), 0),
             Err(diagnostics) => (0, diagnostics.items().len()),
         };
 

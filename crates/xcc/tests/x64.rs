@@ -71,7 +71,7 @@ fn build_and_run(source: &str, opt_level: u8, dir: &Path, name: &str) -> Option<
     let artifact = Compile::new(options).compile(name, source).ok()?;
     let object = dir.join(format!("{name}.o{opt_level}.obj"));
     let exe = dir.join(format!("{name}.o{opt_level}.exe"));
-    std::fs::write(&object, artifact.object()).expect("the object is written");
+    std::fs::write(&object, artifact.bytes()).expect("the object is written");
     let link = Command::new(linker()?)
         .arg("-o")
         .arg(&exe)

@@ -10,7 +10,7 @@
 //!
 //! let mut compiler = Compile::new(Options::default());
 //! match compiler.compile("t.c", "int add(int a, int b) { return a + b; }\n") {
-//!     Ok(artifact) => println!("{} bytes of object", artifact.object().len()),
+//!     Ok(artifact) => println!("{} bytes of object", artifact.bytes().len()),
 //!     Err(diagnostics) => eprintln!("{}", diagnostics.render(xcc::Format::Human)),
 //! }
 //! ```

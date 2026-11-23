@@ -288,6 +288,24 @@ fn without_c_it_links_an_exe_that_runs() {
 }
 
 #[test]
+fn two_sources_link_into_one_program() {
+    // Two units, not one twice: the second unit's code and data land after the first's, and every
+    // relocation inside it is patched from *its* place. A linker that puts a unit at offset zero
+    // still links and still runs when there is one source, which is why this one has two.
+    let temp = Temp::new("two");
+    let a = temp.write(
+        "a.c",
+        "int twice(int);\nint main(void) { return twice(21); }\n",
+    );
+    let b = temp.write("b.c", "int twice(int x) { return x * 2; }\n");
+    let exe = temp.path().join("two.exe");
+    let output = run(xcc().arg(&a).arg(&b).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ran = run(&mut Command::new(&exe));
+    assert_eq!(ran.status.code(), Some(42));
+}
+
+#[test]
 fn a_link_at_another_level_says_which_one_it_needs() {
     let temp = Temp::new("linklevel");
     let source = temp.write("t.c", "int main(void) { return 0; }\n");
