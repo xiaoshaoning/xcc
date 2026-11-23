@@ -207,11 +207,6 @@ fn unwind_info(unwind: &encode::Unwind) -> Vec<u8> {
     bytes
 }
 
-/// Encode every function, then write the object that holds them and the data they use.
-pub(crate) fn write(functions: &[MachineFunction], data: Data) -> Vec<u8> {
-    write_object(&assemble(functions, data))
-}
-
 /// Write an image that has already been assembled - which is what a linker holds before it has a
 /// file to put it in.
 pub(crate) fn write_image(image: &Image) -> Vec<u8> {

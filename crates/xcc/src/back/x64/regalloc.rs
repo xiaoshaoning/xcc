@@ -313,13 +313,6 @@ fn self_register(locations: &[Location], value: VReg) -> Option<Reg> {
     }
 }
 
-fn location_register(location: Location) -> Reg {
-    match location {
-        Location::Register(register) | Location::Float(register) => register,
-        Location::Spill(_) => unreachable!("a spilled value has no register to give back"),
-    }
-}
-
 /// How the instruction stream is numbered, and what is live where.
 struct Positions {
     /// Where each block's operations start; a block with no operations still has a position.

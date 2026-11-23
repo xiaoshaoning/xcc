@@ -30,9 +30,8 @@
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 
-// `cir` is built before the parser that fills it: M4.1 is its shape, its verifier and its dump,
-// and nothing constructs a module until M4.2. The allow leaves with that commit.
-#[allow(dead_code)]
+// One module still has items nothing calls; see the allow below it.
+
 mod back;
 mod cir;
 mod compile;

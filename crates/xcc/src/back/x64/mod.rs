@@ -553,8 +553,6 @@ pub(crate) struct MachineFunction {
     pub variadic: bool,
     /// The blocks, in layout order.
     pub blocks: Vec<MachineBlock>,
-    /// Where each block's parameters start, in the same order.
-    pub param_offsets: Vec<i32>,
 }
 
 /// Lower a whole translation unit to a COFF object, or say what is not lowered.

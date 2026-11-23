@@ -52,8 +52,6 @@ pub(crate) struct Encoded {
     pub code: Vec<u8>,
     /// The places that need a symbol to finish them.
     pub relocations: Vec<Relocation>,
-    /// How many bytes the frame is: the prologue subtracts exactly this.
-    pub frame: i32,
     /// What the prologue did, for the unwinder. `None` when it did nothing at all: the unwinder reads
     /// a function with no `.pdata` entry as a leaf, which is what a function with no prologue is.
     pub unwind: Option<Unwind>,
@@ -190,7 +188,6 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         body_base,
         spill_base,
         outgoing_base,
-        outgoing_bytes,
         saved_float_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
@@ -286,7 +283,6 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     Encoded {
         code: encoder.code,
         relocations: encoder.relocations,
-        frame,
         unwind,
     }
 }
@@ -308,8 +304,6 @@ struct Encoder<'a> {
     /// Where the outgoing argument slots start, from `rsp`: above the shadow space, where a callee
     /// reads its fifth argument.
     outgoing_base: i32,
-    /// How many bytes those slots take, which everything after them is displaced by.
-    outgoing_bytes: i32,
 
     /// Where the saved XMM registers start, from `rsp`: after those, sixteen bytes each.
     saved_float_base: i32,

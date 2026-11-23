@@ -760,6 +760,39 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - eight things nothing called, hidden by one `allow` that had outlived its reason
+
+The codebase-read commit, reviewed. Its two fixes hold; what the review found is a *blind spot* of exactly the kind
+the commit was about.
+
+**`lib.rs` carried `#[allow(dead_code)] mod back;`** under a comment that said the module was built before anything
+filled it, and ended "**the allow leaves with that commit**". That commit was M4.2. The allow stayed, and it silenced
+dead-code warnings across roughly 6 700 lines - the whole back end. Removing it, the compiler answered at once with
+**eight** items nothing reads:
+
+| item | what it was |
+|---|---|
+| `coff::write` | the object writer's old entry point, superseded by `write_image` |
+| `pe::base_relocation_size` | the size helper this very commit had made redundant - hidden by the allow *in the same pass* |
+| `MachineFunction::param_offsets` | a table of block-parameter offsets the encoder computes itself |
+| `Encoded::frame` | the frame size, already in `coder` and in `MachineFunction::frame_bytes` |
+| `Encoder::outgoing_bytes` | stored, never read; the one caller computes it before the struct exists |
+| `Loaded::size` | written, never read: `VirtualFree` with `MEM_RELEASE` takes zero |
+| `FunctionLowering::names` | the interner, kept because a field existed for it |
+| `regalloc::location_register` | a helper with no caller |
+
+**And the mechanical part of that needed care**: deleting `param_offsets` from the *output* struct was right, and
+deleting it from the *lowering* struct broke the build - it is read twice there. Same for `Encoder::frame` (used by
+every offset in the file) against `Encoded::frame` (dead). The lesson is the usual one: delete one item, build,
+repeat. Three files were reverted and redone that way.
+
+**A comment that grants a permission outlives the reason for it, and then the permission is the thing that rots.**
+The allow is gone; every module now has to justify the ones it keeps, in place.
+
+194 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - the linker, as far as it goes: an image that loads and does not bind
 
 The linker's own module is written (`back/x64/pe.rs`): sections placed from sizes, `REL32` and `ADDR64`

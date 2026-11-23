@@ -432,20 +432,6 @@ fn import_table_size(libraries: &[Library<'_>]) -> u32 {
     descriptors + lookups + names + libraries_named + 2
 }
 
-/// The base relocations' size: a page header per page of data that holds an address, and two bytes
-/// per entry.
-fn base_relocation_size(addresses: &[u32], data: Where) -> u32 {
-    let pages: Vec<u32> = addresses
-        .iter()
-        .map(|offset| (data.address + offset) & !0xFFF)
-        .collect::<std::collections::BTreeSet<u32>>()
-        .into_iter()
-        .collect();
-    let entries = addresses.len() as u32 * 2;
-    // Each block is a page header (aligned to four), its entries, and padding to four.
-    pages.iter().map(|_| 8).sum::<u32>() + align(entries, 4)
-}
-
 /// One section, as both the header writer and the byte writer see it: its name, its flags, where it
 /// goes, and what is in it.
 struct Section {

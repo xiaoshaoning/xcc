@@ -42,7 +42,6 @@ fn lower_function(
 ) -> Result<MachineFunction, NotYet> {
     let mut lowerer = FunctionLowering {
         types,
-        names,
         regs: vec![None; func.values().count()],
         next_reg: 0,
         blocks: Vec::new(),
@@ -86,7 +85,6 @@ fn lower_function(
         param_count: func.params().len(),
         makes_call,
         blocks: lowerer.blocks,
-        param_offsets: lowerer.param_offsets,
     })
 }
 
@@ -113,7 +111,6 @@ struct FusedCompare {
 /// The values of one function, the frame slots they use, and the blocks being filled.
 struct FunctionLowering<'a> {
     types: &'a Types,
-    names: &'a crate::intern::Interner,
     /// A machine register per `cir` value, mints on first use.
     regs: Vec<Option<VReg>>,
     next_reg: u32,

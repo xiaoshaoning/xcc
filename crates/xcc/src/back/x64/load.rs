@@ -18,8 +18,6 @@ pub(crate) struct Loaded {
     /// The allocation: `.text` at offset zero, then `.data`, then the unwinder's `.xdata` and
     /// `.pdata` - all in one range because `.pdata` names addresses relative to its start.
     memory: *mut u8,
-    /// How many bytes were allocated, for the release.
-    size: usize,
     /// Where this unit's frame table starts, or null when it registered none.
     ///
     /// It is held so that `Drop` can *delete* the table: a registration left behind names memory
@@ -177,7 +175,6 @@ pub(crate) fn load(
     }
     let mut loaded = Loaded {
         memory,
-        size,
         frame_table: std::ptr::null_mut(),
         symbols: Vec::new(),
     };
