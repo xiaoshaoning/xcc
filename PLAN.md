@@ -938,12 +938,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
 - [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
       nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
       Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.
-- [ ] **The linker, past the import table.** `back/x64/pe.rs` writes an image Windows loads and runs; the loader
-      does not bind the import table it writes, so a program faults on its first library call (a deliberately bad
-      DLL name changes nothing, which says the directory is not read at all). Written and measured: section
-      placement from sizes, `REL32`/`ADDR64` patching, `.pdata`/`.xdata` regenerated per program, a thunk per
-      import, base relocations, PE32+ headers. Next: a validator (`dumpbin`, `pefile`) or a diff against what
-      `link.exe` writes for the same program.
+- [x] **The linker.** Closed: `back/x64/pe.rs` writes a PE32+ image that Windows loads, binds and runs, and
+      `xcc hello.c` writes `hello.exe` with no host tool. The blocker was not the loader: **the import address
+      table must start out as a copy of the import lookup table.** With an all-zero IAT the loader binds nothing
+      and reads no imports at all - the first call through a thunk jumps to zero - and no header field in the
+      image changes that (dll characteristics, the exception table, the IAT directory, the import directory's
+      size and the section name were each varied against the running image and none of them mattered). Filling
+      the slots from the lookup table turned a fault at `rip = 0` into a program that exits 7. Two more bugs
+      came out of the same walk: the import table's size was counted without the even-alignment of its hint/name
+      entries, so the table was *resized down* and the library name lost its last letter (`ucrtbase.d`, which
+      the loader reports as a missing DLL); and `ucrtbase.dll` exports `__stdio_common_vfprintf`, not `printf`,
+      because the UCRT keeps every variadic front end in the program - so the C runtime carries them now, eight
+      short wrappers compiled by xcc and tested by every `printf` in a linked program.
 - [x] **Lua's messages, and its suite's stopping point.** `va_start` pointed at the wrong slot in any file with
       more than one variadic function (`skip = 2n - 1`), so every diagnostic Lua printed was built from the wrong
       arguments; it now matches clang's. The suite stops in `main.lua` at `getoutput` - **and a clang build stops at

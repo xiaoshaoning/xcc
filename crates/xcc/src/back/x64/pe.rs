@@ -201,7 +201,8 @@ impl<'a> Program<'a> {
             }
             program.data.extend_from_slice(&unit.data.bytes);
         }
-        // The address table, one eight-byte slot per import, then the null that ends it.
+        // The address table: one eight-byte slot per import, then the null that ends it. The slots
+        // start empty here and are filled from the import table, which is what knows the RVAs.
         while program.data.len() % 8 != 0 {
             program.data.push(0);
         }
@@ -404,6 +405,14 @@ fn place(after: u32, _size: u32) -> Where {
     }
 }
 
+/// One hint/name entry: a two-byte hint, the name, a null, and a pad byte if that would leave the
+/// entry at an odd address - which the loader requires it not to. The size count and the writer both
+/// ask here, because a size that disagrees with what is written truncates the table.
+fn name_entry_size(name: &str) -> u32 {
+    let entry = 2 + name.len() as u32 + 1;
+    entry + entry % 2
+}
+
 /// Round `value` up to `alignment`, which is always a power of two here.
 fn align(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment
@@ -423,13 +432,24 @@ fn import_table_size(libraries: &[Library<'_>]) -> u32 {
     let names: u32 = libraries
         .iter()
         .flat_map(|library| &library.functions)
-        .map(|function| 2 + function.name.len() as u32 + 1)
+        .map(|function| name_entry_size(&function.name))
         .sum();
     let libraries_named: u32 = libraries
         .iter()
         .map(|library| library.name.len() as u32 + 1)
         .sum();
-    descriptors + lookups + names + libraries_named + 2
+    // No slack: the assertion in the writer checks this against what is actually written, and a
+    // size with two bytes of room in it is a size nobody is checking.
+    descriptors + lookups + names + libraries_named
+}
+
+/// `.rdata`'s import table, and the address table's contents that go with it.
+#[derive(Default)]
+struct ImportTables {
+    /// The section's bytes.
+    bytes: Vec<u8>,
+    /// One hint/name RVA per import, in the order `.data` reserved its slots.
+    address_table: Vec<u64>,
 }
 
 /// One section, as both the header writer and the byte writer see it: its name, its flags, where it
@@ -479,7 +499,8 @@ impl<'a> Writer<'a> {
     /// the byte writer alike. A section with no bytes is left out rather than written empty - a
     /// zero-sized `.reloc` is a header the Windows loader refuses to run.
     fn sections(&self) -> Vec<Section> {
-        let rdata = self.import_table();
+        let tables = self.import_table();
+        let rdata = tables.bytes.clone();
         let pdata = self.exception_table();
         let reloc = self.base_relocations();
         let candidates = [
@@ -493,7 +514,7 @@ impl<'a> Writer<'a> {
                 name: ".data",
                 flags: DATA_FLAGS,
                 place: self.sections.data,
-                content: self.program.data.clone(),
+                content: self.data_with(&tables),
             },
             Section {
                 name: ".rdata",
@@ -603,13 +624,15 @@ impl<'a> Writer<'a> {
         if reloc_size > 0 {
             directories[DIRECTORY_BASERELOC] = (sections.reloc.address, reloc_size);
         }
+        // `.data`'s address table is every import's slot and then *one* null, not one per library.
         let slots: u32 = self
             .program
             .imports
             .iter()
-            .map(|library| library.functions.len() as u32 + 1)
-            .sum();
-        if slots > 0 {
+            .map(|library| library.functions.len() as u32)
+            .sum::<u32>()
+            + 1;
+        if slots > 1 {
             let first = self
                 .program
                 .imports
@@ -647,10 +670,15 @@ impl<'a> Writer<'a> {
 
     /// `.rdata`: one descriptor per library, then each library's lookup table, the hint/name entries,
     /// and the library names - in that order, because every address in a descriptor is computed here.
-    fn import_table(&self) -> Vec<u8> {
+    ///
+    /// It also says what the address table must hold *before* the loader runs: the same hint/name
+    /// RVA as the lookup table. An address table of zeros is not a table the loader fills - it reads
+    /// no imports at all and the first call through a thunk jumps to zero. Measured: filling these
+    /// slots from the lookup table turned a fault at `rip = 0` into a program that exits 7.
+    fn import_table(&self) -> ImportTables {
         let libraries = &self.program.imports;
         if libraries.is_empty() {
-            return Vec::new();
+            return ImportTables::default();
         }
         let descriptors = (libraries.len() as u32 + 1) * 20;
         let mut lookup_at = Vec::new();
@@ -669,8 +697,9 @@ impl<'a> Writer<'a> {
                 names.extend_from_slice(&0u16.to_le_bytes()); // hint 0
                 names.extend_from_slice(function.name.as_bytes());
                 names.push(0);
-                if names.len() % 2 == 1 {
-                    names.push(0); // the next entry starts on an even boundary
+                // Pad to an even length, which is the whole of `name_entry_size`'s rounding.
+                while names.len() % 2 == 1 {
+                    names.push(0);
                 }
             }
             name_rvas.push(rvas);
@@ -712,8 +741,33 @@ impl<'a> Writer<'a> {
         }
         table.extend_from_slice(&names);
         table.extend_from_slice(&library_names);
-        table.resize(import_table_size(libraries) as usize, 0);
-        table
+        assert_eq!(
+            table.len() as u32,
+            import_table_size(libraries),
+            "the import table's declared size and what was written disagree"
+        );
+        ImportTables {
+            bytes: table,
+            address_table: name_rvas.into_iter().flatten().map(u64::from).collect(),
+        }
+    }
+
+    /// `.data` with the address table filled in: the import table's hint/name RVAs, in the order the
+    /// slots were reserved in.
+    fn data_with(&self, tables: &ImportTables) -> Vec<u8> {
+        let mut data = self.program.data.clone();
+        let slots: Vec<u32> = self
+            .program
+            .imports
+            .iter()
+            .flat_map(|library| &library.functions)
+            .map(|function| function.slot)
+            .collect();
+        assert_eq!(slots.len(), tables.address_table.len());
+        for (slot, value) in slots.into_iter().zip(&tables.address_table) {
+            data[slot as usize..slot as usize + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        data
     }
 
     /// `.pdata`: one entry per described function, `begin`, `end` and the address of its description.

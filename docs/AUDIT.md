@@ -760,6 +760,44 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - the import address table has to start full
+
+`xcc hello.c` writes `hello.exe` now, and the operating system runs it. The linker's last blocker was not the
+loader; it was one sentence of the format that nothing I had written said.
+
+**The import address table must begin as a copy of the import lookup table.** With an all-zero table the loader
+binds nothing and does not read the import directory at all: a bad DLL name changes nothing, and the first call
+through a thunk jumps to `rip = 0`. Everything else in the image was already right - `pefile`, `objdump` and gdb all
+parsed the descriptors, the hint/name entry, `ucrtbase.dll`, the thunks' `RIP`-relative displacements and the IAT
+directory - so I varied the things that were left: DLL characteristics, the exception table, the IAT directory, the
+import directory's size, the section's name and its flags, the number of sections. **Not one of them mattered.**
+What settled it was a hand-built 4 KB image that imported `ExitProcess` and did nothing else: it failed the same way,
+which said the fault was in the table and not in the rest of the image. Filling the slots from the lookup table turned
+the fault into a program that exits 7.
+
+**Two more bugs fell out of the same walk.** The import table's size was counted without the even-alignment the
+writer gives its hint/name entries, so `resize` cut the table down and the library's name lost its last letter -
+`ucrtbase.d`, which Windows reports as a missing DLL and says nothing about the name it could not read. The size is no
+longer recomputed: the writer **asserts** that what it wrote is what the header declares. And `ucrtbase.dll` exports
+`__stdio_common_vfprintf`, not `printf` - the UCRT keeps every variadic front end in the program, in `ucrt.lib`'s
+layer - so the runtime this compiler links in now carries those eight wrappers itself, compiled by xcc, which makes
+every `printf` in a linked program a test of `va_arg`.
+
+**What the review of my own reasoning found**: I had twice concluded "the loader never reads the directory" from
+`LoadLibrary`, which resolves nothing even for an image that works; and two of my hand-built fixtures were broken
+in ways that mimicked the bug (a section table that disagreed with the file's layout, a table placed one byte past a
+section's virtual size - gdb says so, in a warning I had not been reading). A fixture that is broken in the same way
+as the patient is not a control.
+
+**Measured, then wired up**: `xcc hello.c -o hello.exe` produces a 20 992-byte image that prints and returns its
+`main`'s value; `tests/exe.rs` writes one and asserts both; `crates/xcc-cli/tests/cli.rs` does it through the binary.
+A link goes through this compiler's own back end, so a link at another level is refused with the reason and `-c`
+suggested - the same rule as `va_arg`, stated in the same place.
+
+194 unit, 27 parser, 23 CLI, 5 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the sixty macros the commit said it had added
 
 The `isinf` fix, reviewed. Its own fix holds - a computed infinity is classified correctly now - and the review found

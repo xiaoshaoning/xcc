@@ -271,17 +271,31 @@ fn the_human_format_shows_the_line() {
 }
 
 #[test]
-fn without_c_it_says_linking_is_missing() {
-    let temp = Temp::new("noconly");
-    let source = temp.write("t.c", "int x;\n");
-    let output = run(xcc().arg(&source));
+fn without_c_it_links_an_exe_that_runs() {
+    let temp = Temp::new("link");
+    let source = temp.write(
+        "t.c",
+        "#include <stdio.h>\nint main(void) { printf(\"linked by xcc\\n\"); return 5; }\n",
+    );
+    let exe = temp.path().join("t.exe");
+    let output = run(xcc().arg(&source).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ran = run(&mut Command::new(&exe));
+    assert_eq!(ran.status.code(), Some(5));
+    // The stream is a console in text mode, so the C library writes the platform's line
+    // ending: the test is that the program linked and ran, not what it thinks a newline is.
+    assert_eq!(stdout(&ran).trim_end(), "linked by xcc");
+}
+
+#[test]
+fn a_link_at_another_level_says_which_one_it_needs() {
+    let temp = Temp::new("linklevel");
+    let source = temp.write("t.c", "int main(void) { return 0; }\n");
+    let output = run(xcc().arg(&source).args(["--opt-level=1"]));
     assert_eq!(output.status.code(), Some(2));
-    // Not "not implemented": the linker writes an image Windows loads and runs. What it cannot do is
-    // get the import table bound, so a program faults on its first library call - and the message says
-    // that, which is the difference between "ask again later" and "here is what is wrong".
     let message = stderr(&output);
-    assert!(message.contains("linking is not finished"), "{message}");
-    assert!(message.contains("import table"), "{message}");
+    assert!(message.contains("--opt-level=2"), "{message}");
+    assert!(message.contains("pass -c"), "{message}");
 }
 
 #[test]

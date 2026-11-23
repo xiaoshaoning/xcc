@@ -307,3 +307,39 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
     let _ = std::fs::remove_dir_all(&dir);
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// The whole pipeline in one test: this compiler's front end, its own back end, and its own linker,
+/// with no host tool anywhere - the image is written by `Compile::link` and run by the operating
+/// system, which is the only thing that can say whether the import table is bound.
+#[test]
+#[cfg(target_os = "windows")]
+fn this_compilers_own_linker_writes_a_program_that_runs() {
+    // A raw string, so the C source keeps its own quotes and its own \n.
+    let source = r#"
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    char text[32];
+    strcpy(text, "own linker");
+    printf("%s %d\n", text, (int)strlen(text));
+    return 11;
+}
+"#;
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let image = compiler.link(&[("t.c", source)]).expect("it links");
+    let dir = temp_dir("ownlink");
+    let exe = dir.join("t.exe");
+    std::fs::write(&exe, &image).expect("the image is written");
+    let run = Command::new(&exe).output().expect("the program runs");
+    let code = run.status.code();
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+    // The return value is the exit status, and the output is the library's, so this one test
+    // covers the linker, the C runtime it links in and the `printf` front end the runtime carries.
+    assert_eq!(code, Some(11));
+    assert_eq!(out.trim_end(), "own linker 10");
+}

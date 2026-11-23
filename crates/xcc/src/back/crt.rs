@@ -14,6 +14,10 @@
 /// everything variadic is here, because a *call* to one is lowered as an indirect call and only a
 /// floating-point argument is refused (ADR-006).
 pub(crate) const C_RUNTIME: &[&str] = &[
+    // The UCRT's formatting engine, which is what the CRT source's `printf` front ends call. The
+    // library exports this and not `printf` itself, so these are the names a link imports.
+    "__stdio_common_vfprintf",
+    "__stdio_common_vsprintf",
     // stdio.h
     "__acrt_iob_func",
     "clearerr",
@@ -407,16 +411,19 @@ mod tests {
             missing.is_empty(),
             "these names are in no list: {missing:?} - add each to C_RUNTIME, or to UNAVAILABLE with the reason"
         );
-        // And the other way: a runtime name no header names is a symbol `--run` can call and no
-        // program can declare, which is a promise to nobody.
+        // And the other way: a runtime name nothing declares is a symbol `--run` can call and no
+        // program can reach, which is a promise to nobody. The CRT source is the second declarer:
+        // its `printf` front ends call the UCRT's formatting engine, and that name belongs to the
+        // runtime without belonging to a header.
+        let front_ends = crate::back::CRT_SOURCE;
         let unreachable: Vec<&str> = C_RUNTIME
             .iter()
             .copied()
-            .filter(|name| !declared.contains(*name))
+            .filter(|name| !declared.contains(*name) && !front_ends.contains(name))
             .collect();
         assert!(
             unreachable.is_empty(),
-            "the runtime list has names no header declares: {unreachable:?}"
+            "the runtime list has names nothing declares: {unreachable:?}"
         );
     }
 

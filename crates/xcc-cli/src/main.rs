@@ -56,8 +56,12 @@ struct Args {
     /// How hard to work over the code: `0` compiles fastest, `1` lets Cranelift optimise (measured
     /// on the six-file corpus: 3822 bytes of x64 become 2459, and 55 ms become 180). `2` and `3`
     /// are this compiler's own back end, which is not written: asking for them is refused.
-    #[arg(long = "opt-level", value_name = "N", default_value_t = 0)]
-    opt_level: u8,
+    /// How hard the back end works: `0` (the default) compiles fast, `1` runs the optimising
+    /// pipeline, `2` lowers with this compiler's own back end. Linking goes through that back end,
+    /// so a link is level 2 whether or not it is asked for - and another level with a link is
+    /// refused rather than quietly served by the level the user did not choose.
+    #[arg(long = "opt-level", value_name = "N")]
+    opt_level: Option<u8>,
 
     /// Which C the source is allowed to use. `c11` adds the pieces a host meets in practice -
     /// `_Static_assert`, `_Generic` - and nothing that changes what a C99 program means.
@@ -187,27 +191,30 @@ fn compile_command_line() -> ExitCode {
         eprintln!("xcc: --explain writes no object, so -o has nothing to name");
         return ExitCode::from(2);
     }
-    if !args.compile_only && !args.preprocess_only && !args.run && !args.explain {
-        // The linker writes an image Windows loads and runs, and the loader does not yet bind the
-        // import table it writes: a program faults on the first library call. It stays behind `-c`
-        // until that is solved, rather than being the default that quietly produces a broken `.exe`.
-        eprintln!(
-            "xcc: linking is not finished: the image loads but the import table is not bound, so a program faults on its first library call. Pass -c to compile an object."
-        );
-        return ExitCode::from(2);
+    let linking = !args.compile_only && !args.preprocess_only && !args.run && !args.explain;
+    let opt_level = match (linking, args.opt_level) {
+        (_, Some(2)) => 2,
+        (true, None) => 2,
+        (true, Some(level)) => {
+            eprintln!(
+                "xcc: linking lowers with this compiler's own back end, which is `--opt-level=2`, not {level}; pass -c to compile at another level"
+            );
+            return ExitCode::from(2);
+        }
+        (false, level) => level.unwrap_or(0),
+    };
+    let format = xcc::Format::from(args.format);
+    if linking {
+        return link(&args, format, opt_level);
     }
     if args.run {
-        return run(&args);
-    }
-    if args.run {
-        return run(&args);
+        return run(&args, opt_level);
     }
     if args.output.is_some() && args.inputs.len() > 1 {
         eprintln!("xcc: -o with more than one source is not supported yet");
         return ExitCode::from(2);
     }
 
-    let format = xcc::Format::from(args.format);
     let mut status = ExitCode::SUCCESS;
 
     for input in &args.inputs {
@@ -225,7 +232,7 @@ fn compile_command_line() -> ExitCode {
             standard: args.standard.into(),
             defines: args.defines.clone(),
             undefines: args.undefines.clone(),
-            opt_level: args.opt_level,
+            opt_level,
             ..Options::default()
         };
         let includes = Box::new(Directories {
@@ -277,6 +284,62 @@ fn compile_command_line() -> ExitCode {
     }
 
     status
+}
+
+/// Link every source into one `.exe`, with the C runtime that makes `main` a program.
+///
+/// The runtime is not the caller's business: `crates/xcc-crt/src/main.c` goes through the same
+/// pipeline, so a link tests the compiler as well as the linker.
+fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
+    if args.inputs.is_empty() {
+        eprintln!("xcc: nothing to link");
+        return ExitCode::from(2);
+    }
+    let mut units = Vec::new();
+    for input in &args.inputs {
+        let name = input.display().to_string();
+        match std::fs::read_to_string(input) {
+            Ok(text) => units.push((name, text)),
+            Err(error) => {
+                eprintln!("xcc: cannot read {name}: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let borrowed: Vec<(&str, &str)> = units
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let options = Options {
+        standard: args.standard.into(),
+        defines: args.defines.clone(),
+        undefines: args.undefines.clone(),
+        opt_level,
+        ..Options::default()
+    };
+    let includes = Box::new(Directories {
+        roots: args.include_paths.clone(),
+    });
+    let mut compiler = Compile::with_includes(options, includes);
+    match compiler.link(&borrowed) {
+        Ok(image) => {
+            let path = args
+                .output
+                .clone()
+                .unwrap_or_else(|| args.inputs[0].with_extension("exe"));
+            match std::fs::write(&path, image) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xcc: cannot write {}: {error}", path.display());
+                    ExitCode::from(2)
+                }
+            }
+        }
+        Err(diagnostics) => {
+            eprintln!("{}", diagnostics.render(format));
+            ExitCode::from(1)
+        }
+    }
 }
 
 /// `--target=dos16`: hand the source to the ported Borland C++ 2.0 and write its 16-bit object.
@@ -377,7 +440,7 @@ fn dos16(args: &Args) -> ExitCode {
 /// The exit is `std::process::exit`, not a returned `ExitCode`: `main`'s `int` is the whole
 /// status on Windows, and truncating it to a byte would make a comparison with a real executable
 /// wrong for a program that returns more than 255.
-fn run(args: &Args) -> ExitCode {
+fn run(args: &Args, opt_level: u8) -> ExitCode {
     let [input] = args.inputs.as_slice() else {
         eprintln!("xcc: --run takes one source");
         return ExitCode::from(2);
@@ -396,7 +459,7 @@ fn run(args: &Args) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let mut jit = match xcc::Jit::with_opt_level(args.opt_level) {
+    let mut jit = match xcc::Jit::with_opt_level(opt_level) {
         Ok(jit) => jit,
         Err(message) => {
             eprintln!("xcc: {message}");
