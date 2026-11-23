@@ -472,6 +472,29 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A bare `return;` in a void function ends the block. It used to emit nothing at all, so
+            // control fell through to whatever came next - and a program that folded a constant and
+            // then returned folded it *and* emitted the operation, so `2^10` printed `2^100`.
+            "a bare return in a void function",
+            "static int marker;
+
+             static void nothing(int a) { if (a) return; marker += 100; }
+
+             int main(void) { nothing(1); return marker == 0 ? 42 : marker; }",
+            42,
+        ),
+        (
+            // A declaration whose initialiser is an assignment: C99 6.7.8p1 says an initialiser is an
+            // *assignment*-expression. Parsing a conditional-expression instead left the assignment to
+            // be swallowed by error recovery, so `int a = *p = f();` called nothing and stored `*p`'s
+            // old value into `a`.
+            "a declaration initialised by an assignment",
+            "static int seven(void) { return 7; }
+
+             int main(void) { int x = 1; int a = x = seven(); return a == 7 && x == 7 ? 42 : 1; }",
+            42,
+        ),
+        (
             // A string literal in a boolean context: C99 6.3.2.1p3 decays an array wherever a value is
             // wanted, and `&&`'s operand is one. Lua writes `api_check(L, (idx <= top) && "index")`,
             // whose right operand *is* a string - without the decay this compared two arrays, an

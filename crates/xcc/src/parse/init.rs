@@ -26,10 +26,12 @@ impl Parser<'_> {
             self.literal_initialiser(ty);
             return;
         }
-        // C99 6.7.8p1: an initialiser is a brace list or an assignment-expression. Brace *elision*
+        // C99 6.7.8p1: an initialiser is a brace list or an *assignment*-expression. Brace elision
         // happens inside a list, so what reaches here is one expression - which is how
-        // `struct P q = p;` copies a struct.
-        let value = self.conditional_expression();
+        // `struct P q = p;` copies a struct - and it may be an assignment: `int a = *p = f();` was
+        // parsed as `int a = *p;` with the rest swallowed by the error recovery below it, so the call
+        // and the store disappeared and `a` got the old `*p`. `next_ci(L)` in Lua is written that way.
+        let value = self.assignment_expression();
         self.skip_until(&[",", ";"], false);
         if value.is_none() {
             let span = self.span();

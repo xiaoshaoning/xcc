@@ -760,6 +760,39 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - Lua runs: a `return;` that emitted nothing, and an initialiser that was not one
+
+M7's acceptance item is closed. Lua 5.4.7 compiles, links and **runs**: every one of its 33 objects is correct on
+its own, `lua hello.lua` prints what a clang build prints, and the interpreter walks into its own test suite. Two
+bugs stood between the six failing files and this, and both are C, not Lua.
+
+**A bare `return;` in a `void` function emitted nothing at all.** No instruction, no terminator: the block simply
+fell through to whatever came next. `luaK_posfix` folds a constant and returns, so the missing return made it fold
+*and* emit the operation - a program computing `2^10` printed `2^100`, and one computing `#t` printed the wrong
+length. That single bug was four of the six files (`lcode`, `lparser`, `ltable`, `lvm`), which is why they failed
+in four different functions: each of them returns early somewhere.
+
+**An initialiser may be an assignment, and ours was not.** C99 6.7.8p1 says an initialiser is a brace list or an
+*assignment*-expression; the parser read a conditional-expression and let the rest be swallowed by its error
+recovery. So `CallInfo *ci = L->ci = next_ci(L);` parsed as `ci = L->ci` - no call to `next_ci`, no store - and
+every call frame was built on the *current* one. Lua's `prepCallInfo` is written exactly that way, and `lauxlib`
+lost an initialiser in the same shape.
+
+**Both were found with a better oracle, not with a better guess.** Compiling Lua with `-DLUAI_ASSERT` makes every
+internal invariant an `assert` and every `assert` report its own file and line - and the two earlier fixes in this
+area (the decay in a boolean context, and `__FILE__`/`__LINE__` naming the invocation) are what made that build
+compile at all. The bisect harness also had to be fixed: it counted exit 0 as success, so a build that printed
+nothing "passed"; it now compares *output* against a clang-built reference, which dropped `lcode` from "fine" to
+"computes 2^100" and turned six files into six honest failures.
+
+**Measured: 33 of 33 objects correct alone; the interpreter's output is identical to clang's; the test suite runs
+into `main.lua` before it meets its first difference** - `getoutput`'s `os.execute` round trip, which is the next
+thread to pull.
+
+191 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - the decay belongs where the value is used, and a pair is not a fact
 
 The `LUAI_ASSERT` commit, reviewed. Its two fixes hold on every shape I could think of, and the review found one

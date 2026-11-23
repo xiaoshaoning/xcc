@@ -462,12 +462,22 @@ impl Parser<'_> {
         };
         let void = matches!(self.types.kind(result), Type::Void);
         if self.eat(";") {
-            if !void {
+            // `return;` is still a return: it ends the block, whether or not it carries a value. A
+            // `void` function's bare `return` used to emit *nothing at all* - no instruction, no
+            // terminator - so control fell through to whatever came next. Lua's `luaK_posfix` folds a
+            // constant and returns, and the missing return made it fold *and* emit the operation: a
+            // program computing `2^10` printed `2^100`.
+            if void {
+                self.emit(|builder| builder.ret(None, span));
+            } else {
                 let ty = self.describe(result);
                 self.error(
                     span,
                     format!("this function returns {ty}, so `return` needs a value"),
                 );
+                // Something has to end the block, and the diagnostic has already said the program is
+                // wrong: `unreachable` keeps the rest of the function checking.
+                self.emit(|builder| builder.unreachable(span));
             }
             return;
         }

@@ -935,7 +935,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link; the interpreter faults in `lauxlib`'s wake (see below).
-- [ ] **Lua runs: five files left, and the bug is in the front end.** (`lcode` and `llex` were the first two,
+- [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
+      nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
+      Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.
+- [ ] **Lua's test suite, past the first difference.** It runs into `main.lua` and stops at `getoutput`'s
+      `os.execute` round trip, which is the next thread to pull.
+- [ ] **Lua runs (older note, five files left).** (`lcode` and `llex` were the first two,
       fixed by the switch fall-through link below: an arm that ends in a `?:` was linked from its first block
       instead of from where control is.) Narrowing done, and the first two attempts at it
       were wrong in a way worth recording.
