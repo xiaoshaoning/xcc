@@ -760,6 +760,35 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the header I had just written called an infinity finite
+
+The conformance-header commit, reviewed. Both headers are right in the main; the review found one *wrong answer* in
+the four hours it had existed, and it was mine.
+
+**`isinf` compared against `HUGE_VAL`, which is finite here.** `HUGE_VAL` is the largest finite double (MSVC's
+choice, and documented as such in the header I wrote), so `isinf(1e308 * 10)` answered **0** and `isfinite` of a real
+infinity answered **1** - a program that tests for overflow would never see it. The test is now against the *range of
+the type*: `(x) > DBL_MAX || (x) < -DBL_MAX`, which is true for an infinity and false for every finite value, NaN
+included. `isnormal` and `fpclassify` had the same hard-coded digits and now read `DBL_MIN` from `<float.h>` - the
+header includes it, because a header that spells out the ABI's digits disagrees with the ABI the day someone reads it.
+
+**And the probe that found it was wrong in the same way**: it asserted `isinf(HUGE_VAL)`, which is true on glibc
+(where `HUGE_VAL` *is* an infinity) and false here - so the first version passed for the wrong reason on clang and
+would have passed for the wrong reason here too, had the macro been consistent with itself. A probe whose expected
+value comes from the other compiler's *choice of constant* is not an oracle.
+
+**Two smaller ones.** The classification macros evaluate their argument **more than once** (`isnan(f())` calls `f`
+twice); the standard does not forbid it, and the header now says it in the place someone would look. And `inttypes.h`
+was missing the `LEASTN`/`FASTN` families 7.8.1 lists alongside the fixed widths - sixty macros that follow from the
+ones already there.
+
+**Measured again against clang, with a *computed* infinity on both sides**: byte-identical, and the construct now
+pins `isinf(1e308 * 10)` and `isinf(-1e308 * 10)` and says in a comment why `HUGE_VAL` is not the thing to test.
+
+194 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - `math.h` was a third of C99, and `inttypes.h` was refused for no reason
 
 Two headers, and both were lying by omission in a way a real program notices.

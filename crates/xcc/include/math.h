@@ -10,6 +10,10 @@
 #ifndef XCC_MATH_H
 #define XCC_MATH_H
 
+/* For `DBL_MAX` and `DBL_MIN`: the classification macros below are about *the range of a type*, and a
+ * header that hard-codes those digits disagrees with the ABI the day someone reads it. */
+#include <float.h>
+
 /* 7.12p3: one infinity, and its two wider spellings. `long double` is the target's 8-byte double,
  * so the three are the same number - said here rather than left to a reader to work out. */
 #define HUGE_VAL 1.79769313486231570815e+308
@@ -97,15 +101,18 @@ double fmax(double x, double y);
 double fmin(double x, double y);
 double fma(double x, double y, double z);
 
-/* 7.12.3p6 to p11: each is a macro over the functions above, so that a program that only asks
- * whether a number is a number does not have to link a call to find out. */
+/* 7.12.3p6 to p11: each asks the question without linking a call, and **each may evaluate its
+ * argument more than once** - `isnan(f())` calls `f` twice. That is what a macro in this header does,
+ * the standard does not forbid it, and a program with a side effect in the argument must hoist it.
+ *
+ * `isinf` compares against the *range of the type*, not against `HUGE_VAL`: an infinity is greater
+ * than any finite value, and `HUGE_VAL` is finite here (MSVC's choice, above). Comparing against it
+ * called a real infinity finite - a wrong answer rather than a missing feature. */
 #define isnan(x) ((x) != (x))
-#define isinf(x) ((x) == HUGE_VAL || (x) == -HUGE_VAL)
-#define isfinite(x) (!isnan(x) && !isinf(x))
+#define isinf(x) ((x) > DBL_MAX || (x) < -DBL_MAX)
+#define isfinite(x) (!isinf(x) && !isnan(x))
 #define signbit(x) (copysign(1.0, (double)(x)) < 0)
-#define isnormal(x) (isfinite(x) && !isnan(x) && fabs(x) >= 2.22507385850720138309e-308)
-#define fpclassify(x) \
-    (isnan(x) ? FP_NAN : isinf(x) ? FP_INFINITE : \
-        ((x) == 0 ? FP_ZERO : (fabs(x) < 2.22507385850720138309e-308 ? FP_SUBNORMAL : FP_NORMAL)))
+#define isnormal(x) (isfinite(x) && fabs(x) >= DBL_MIN)
+#define fpclassify(x)     (isnan(x) ? FP_NAN : isinf(x) ? FP_INFINITE :         ((x) == 0 ? FP_ZERO : (fabs(x) < DBL_MIN ? FP_SUBNORMAL : FP_NORMAL)))
 
 #endif
