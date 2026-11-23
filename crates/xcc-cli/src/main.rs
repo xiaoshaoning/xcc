@@ -192,7 +192,7 @@ fn compile_command_line() -> ExitCode {
         // import table it writes: a program faults on the first library call. It stays behind `-c`
         // until that is solved, rather than being the default that quietly produces a broken `.exe`.
         eprintln!(
-            "xcc: linking is not finished: the image loads but the import table is not bound, so a              program faults on its first library call. Pass -c to compile an object."
+            "xcc: linking is not finished: the image loads but the import table is not bound, so a program faults on its first library call. Pass -c to compile an object."
         );
         return ExitCode::from(2);
     }

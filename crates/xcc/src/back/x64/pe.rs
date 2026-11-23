@@ -331,7 +331,10 @@ struct Sizes {
     rdata: u32,
     pdata: u32,
     xdata: u32,
-    reloc: u32,
+    // No `.reloc`: it is the last section, so its size changes nothing before it, and it is computed
+    // exactly - by the one function that writes it - once the addresses are known. A guessed size
+    // here was a *lower* bound (it forgot a page header per page of data), so a large program would
+    // have written past the space reserved for it.
 }
 
 impl Sizes {
@@ -342,10 +345,6 @@ impl Sizes {
             rdata: import_table_size(&program.imports),
             pdata: program.unwind.entries.len() as u32 * 12,
             xdata: program.unwind.xdata.len() as u32,
-            // Nothing yet: a page header per page of data that holds an address, which is
-            // `base_relocation_size`'s answer once the addresses are known. Reserved at the size the
-            // data section could need, so the layout does not move when it is filled in.
-            reloc: 8 + 2 * (program.data.len() as u32 / 8),
         }
     }
 }
@@ -366,8 +365,6 @@ struct Sections {
     pdata: Where,
     xdata: Where,
     reloc: Where,
-    /// The size of the image in memory, which is the last section's end rounded up.
-    image_size: u32,
     /// Where the sections start in the file: the headers, rounded up.
     headers: u32,
 }
@@ -384,7 +381,7 @@ impl Sections {
         let rdata = place(data.address + sizes.data, sizes.rdata);
         let pdata = place(rdata.address + sizes.rdata, sizes.pdata);
         let xdata = place(pdata.address + sizes.pdata, sizes.xdata);
-        let reloc = place(xdata.address + sizes.xdata, sizes.reloc);
+        let reloc = place(xdata.address + sizes.xdata, 0);
         Sections {
             text,
             data,
@@ -392,7 +389,6 @@ impl Sections {
             pdata,
             xdata,
             reloc,
-            image_size: align(reloc.address + sizes.reloc, SECTION_ALIGNMENT),
             headers,
         }
     }
@@ -473,7 +469,13 @@ impl<'a> Writer<'a> {
     /// The completed image.
     fn write(&self) -> Vec<u8> {
         let sections = self.sections();
-        let mut bytes = self.headers(&sections);
+        // The image ends where its last section's bytes do, rounded to a page - known only here,
+        // which is why the header writer asks rather than storing it.
+        let reloc_size = sections
+            .iter()
+            .find(|section| section.name == ".reloc")
+            .map_or(0, |section| section.content.len() as u32);
+        let mut bytes = self.headers(&sections, reloc_size);
         for section in &sections {
             bytes.resize(section.place.file as usize, 0);
             bytes.extend_from_slice(&section.content);
@@ -539,7 +541,7 @@ impl<'a> Writer<'a> {
     }
 
     /// The DOS stub, the PE signature, the COFF header, the optional header and the section table.
-    fn headers(&self, list: &[Section]) -> Vec<u8> {
+    fn headers(&self, list: &[Section], reloc_size: u32) -> Vec<u8> {
         let sections = self.sections;
         let code = align(self.program.text.len() as u32, FILE_ALIGNMENT);
         let initialised = list
@@ -555,10 +557,7 @@ impl<'a> Writer<'a> {
             .iter()
             .find(|section| section.name == ".rdata")
             .map_or(0, |section| section.content.len() as u32);
-        let reloc_size = list
-            .iter()
-            .find(|section| section.name == ".reloc")
-            .map_or(0, |section| section.content.len() as u32);
+        let image_size = align(self.sections.reloc.address + reloc_size, SECTION_ALIGNMENT);
         let _ = (rdata_size, pdata_size, reloc_size);
         let mut bytes = Vec::new();
         // A DOS program that does nothing but point at the PE header, which is all a loader reads.
@@ -593,7 +592,7 @@ impl<'a> Writer<'a> {
         bytes.extend_from_slice(&6u16.to_le_bytes()); // major subsystem version
         bytes.extend_from_slice(&0u16.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes()); // win32 version value
-        bytes.extend_from_slice(&sections.image_size.to_le_bytes());
+        bytes.extend_from_slice(&image_size.to_le_bytes());
         bytes.extend_from_slice(&sections.headers.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes()); // checksum
         bytes.extend_from_slice(&SUBSYSTEM_CONSOLE.to_le_bytes());
