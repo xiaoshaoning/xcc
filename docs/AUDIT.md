@@ -760,6 +760,34 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - every error message Lua printed was built from the wrong slots
+
+Lua now runs and its messages are clang's - but until this commit, *every* message it printed was garbage: an error
+in a program read `:1905176596: (null)` where clang says `err.lua:2: attempt to call a nil value (local 'f')`. The
+cause was `va_start`.
+
+**`function_params` was never cleared between functions.** It records which slot each parameter lives in, so that
+`va_start(ap, last)` can find `last`'s position; `function_body` pushes into it and nothing emptied it. In a file
+with several variadic functions the second one's `last` was found at *twice* its position - measured as a clean
+pattern, `skip = 2n - 1` for `n` named parameters - and `va_start` pointed past the argument it meant. Six lines in,
+`f2(int a, int b, ...)` said `va_start 3 parameters`; it says 2 now. Lua has dozens of variadic functions and builds
+every diagnostic through `luaO_pushfstring`, so the whole error surface was wrong while every ordinary program
+worked - which is exactly why the previous oracles (hello.lua, the corpus, 443 programs) never saw it.
+
+**Found by giving the harness a second question.** The bisect compared one *successful* program per file; a
+compiler can be wrong only on an error path and pass that. Compiling a script that *raises* an error found the
+difference in one run, and the reduction went from "an interpreter prints nonsense" to twelve lines: a variadic
+function forwarding its `va_list` to another function, in a file that also has a second variadic function.
+
+**And the acceptance test's stopping point is not ours.** Lua's own suite (`all.lua`) runs into `main.lua` and
+stops at `getoutput`, which needs the file its shell redirection was supposed to write - and **a clang build of the
+same interpreter stops at exactly the same line with the same error**. `main.lua` says so at the top: "most (all?)
+tests here assume a reasonable Unix-like shell". A control that fails the same way is not a bug report.
+
+191 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - a wrong answer is the one thing that may not be accepted
 
 The commit that made Lua run, reviewed. Its two fixes hold - the whole corpus and 33 of Lua's 33 objects agree - and

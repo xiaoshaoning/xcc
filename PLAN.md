@@ -938,8 +938,10 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
 - [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
       nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
       Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.
-- [ ] **Lua's test suite, past the first difference.** It runs into `main.lua` and stops at `getoutput`'s
-      `os.execute` round trip, which is the next thread to pull.
+- [x] **Lua's messages, and its suite's stopping point.** `va_start` pointed at the wrong slot in any file with
+      more than one variadic function (`skip = 2n - 1`), so every diagnostic Lua printed was built from the wrong
+      arguments; it now matches clang's. The suite stops in `main.lua` at `getoutput` - **and a clang build stops at
+      the same line with the same error**, because those tests need a Unix-like shell. Not ours to fix.
 - [ ] `back-x64` shrinking, round six: **jump tables for `switch`**, which is the one item in this
       list nobody has measured, and the passes below on machine code rather than `cir`. The other two
       things this item used to name are settled and must not be re-proposed: jump shortening was

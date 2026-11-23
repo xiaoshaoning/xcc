@@ -472,6 +472,24 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // `va_start` with more than one variadic function in the file: the record of which slot
+            // each parameter lives in is per function, and it was never cleared, so the second
+            // function's `last` was found at twice its position and `va_start` pointed past the
+            // argument it meant. Lua has dozens of variadic functions, and every error message it
+            // printed was built from the wrong slots.
+            "va_start in two functions of one file",
+            "#include <stdarg.h>
+
+             static int first(int a, ...) { va_list ap; va_start(ap, a); return va_arg(ap, int); }
+
+             static int second(int a, int b, ...) { va_list ap; va_start(ap, b);
+
+                 return va_arg(ap, int) * 10 + va_arg(ap, int); }
+
+             int main(void) { return first(0, 3) + second(0, 0, 4, 2) == 45 ? 42 : 1; }",
+            42,
+        ),
+        (
             // A bare `return;` in a void function ends the block. It used to emit nothing at all, so
             // control fell through to whatever came next - and a program that folded a constant and
             // then returned folded it *and* emitted the operation, so `2^10` printed `2^100`.

@@ -2055,6 +2055,11 @@ impl Parser<'_> {
         self.blocks_reported.clear();
         let span = self.span();
         let params = std::mem::take(&mut self.last_parameters);
+        // Which slot each parameter of *this* function lives in, for `va_start(ap, last)`: it is
+        // per function, and it was never cleared - so in a file with two variadic functions the
+        // second one's `last` was found at twice its position, and `va_start` pointed past the
+        // argument it meant (`outer(out, "ignored", 7)` read a slot of garbage).
+        self.function_params.clear();
         let variadic = std::mem::take(&mut self.last_variadic);
         let Some(name) = name else {
             self.block_body();
