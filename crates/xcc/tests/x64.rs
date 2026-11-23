@@ -472,6 +472,23 @@ int sum(int count, ...) { va_list ap; int total = 0; int i; va_start(ap, count);
             42,
         ),
         (
+            // A parameter that takes no frame slot still takes a *position*: a record passed by
+            // reference is the caller's copy, so it has no slot - and without a placeholder the
+            // parameters after it moved one place earlier, which made `va_start` point at the
+            // argument before the one it meant.
+            "va_start after a record passed by reference",
+            "#include <stdarg.h>
+
+             struct Big { long long a, b, c; };
+
+             static long long f(struct Big s, int last, ...) { va_list ap; va_start(ap, last);
+
+                 return s.a + va_arg(ap, int); }
+
+             int main(void) { struct Big b = {40, 0, 0}; return f(b, 0, 2) == 42 ? 42 : 1; }",
+            42,
+        ),
+        (
             // `va_start` with more than one variadic function in the file: the record of which slot
             // each parameter lives in is per function, and it was never cleared, so the second
             // function's `last` was found at twice its position and `va_start` pointed past the

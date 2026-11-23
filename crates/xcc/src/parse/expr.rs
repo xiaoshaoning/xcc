@@ -2115,6 +2115,13 @@ impl Parser<'_> {
         let errors_before = self.error_count();
         self.symbols.push();
         for (position, (name, ty, span)) in params.into_iter().enumerate() {
+            // One entry per parameter, in *source order*: `va_start(ap, last)` finds `last`'s
+            // position here, and a parameter that takes no frame slot still takes a position - a
+            // record passed by reference is the caller's copy, and a `void` has no slot at all.
+            // Pushed before any branch can skip the parameter, and filled in where a slot is made;
+            // without the placeholder every later parameter moved one place earlier and `va_start`
+            // pointed at the argument *before* the one it meant.
+            self.function_params.push(None);
             // C99 6.7.1p2: a parameter is an object, and `void` is not an object type.
             if matches!(self.types.kind(ty), Type::Void) {
                 self.error(span, "a parameter cannot have type void");
@@ -2142,7 +2149,9 @@ impl Parser<'_> {
             // C's parameter is a variable (C99 6.2.5p20): it gets a slot, and what arrives is
             // stored into it - as an integer, for a record small enough for a register.
             let slot = self.emit(|builder| builder.slot(ty, pointer, span));
-            self.function_params.push(slot);
+            if let Some(entry) = self.function_params.last_mut() {
+                *entry = slot;
+            }
             if let Some(slot) = slot {
                 if let Some(incoming) = incoming {
                     if self.types.record_of(ty).is_some() {

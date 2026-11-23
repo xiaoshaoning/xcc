@@ -760,6 +760,33 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the same index, wrong for a second reason
+
+The `va_start` commit, reviewed. Its fix holds - Lua's every message is now clang's - and the review found the *other*
+way the same index could be wrong, one branch over.
+
+**A parameter that takes no frame slot still takes a position.** `function_params` is what `va_start(ap, last)`
+searches for `last`'s position, and it records a *slot* per parameter - but a record passed by reference is the
+caller's copy and gets no slot, and the loop `continue`s for it. So every parameter after it moved one place
+earlier, and `va_start` pointed at the argument *before* the one it meant:
+
+```c
+static long long f(struct Big s, int last, ...) { ... va_arg(ap, int) ... }
+f(b, 0, 2);        /* 40 before - s.a + 0, the wrong slot - and 42 after */
+```
+
+The list is now pushed **once per parameter, before any branch can skip one**, and filled in where a slot is made: the
+invariant "one entry per parameter, in source order" is structural rather than something three `continue`s have to
+remember.
+
+**Checked on every probe the previous commit used**, since the change sits under all of them: `va_start` in one
+function, in two, after a record by reference, with a forwarded `va_list`, and Lua's own build - whose error messages
+and `hello.lua` output still match clang's byte for byte.
+
+191 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 - 2026-11-22 - every error message Lua printed was built from the wrong slots
 
 Lua now runs and its messages are clang's - but until this commit, *every* message it printed was garbage: an error
