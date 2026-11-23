@@ -760,6 +760,36 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the sixty macros the commit said it had added
+
+The `isinf` fix, reviewed. Its own fix holds - a computed infinity is classified correctly now - and the review found
+that **the same commit claimed something it had not done**.
+
+**`inttypes.h` still had no `LEAST`/`FAST` families**, though the commit message said it did: the script that added
+them asserted on a `math.h` block first, exited there, and never reached the second file. The claim and the code went
+out together, and only a probe - `printf("%" PRIdFAST16, …)` - said so, with an error message about a missing
+parenthesis where the truth was a missing macro. Both families are there now, **generated from one table** so the six
+kinds and three families cannot disagree with each other.
+
+**And the widths behind them were a second opportunity to disagree.** This target's `stdint.h` makes every
+`int_leastN_t` and `int_fastN_t` exactly N bits wide (MSVC's choice, no wider "fast" types), so `PRIdFAST16` is
+`"hd"`, not `"lld"` - the first draft of that table said `"lld"` and would have printed garbage for a `short`. The
+header states the invariant where the macros are, because a disagreement between two headers is a wrong number
+rather than a compile error.
+
+**One divergence from clang is deliberate, and now documented.** mingw's `PRIdLEAST8` is `"d"` - the *promoted*
+width - while ours is `"hhd"`, the type's own, which is what 7.8.1 asks the macro to name. They print the same value
+for anything that fits; they differ when a negative value is printed unsigned, `PRIXLEAST8` of `-1` being `FF` here
+and `FFFFFFFF` there. Left as it is, with the reason in the header, so the next reader does not "fix" it to match a
+compiler whose choice is only defensible as a choice.
+
+`HUGE_VAL` and `HUGE_VALF` are `DBL_MAX`/`FLT_MAX` now that `<float.h>` is included - the same argument the header
+already made about `DBL_MIN`, applied to the two constants above it.
+
+194 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - the header I had just written called an infinity finite
 
 The conformance-header commit, reviewed. Both headers are right in the main; the review found one *wrong answer* in

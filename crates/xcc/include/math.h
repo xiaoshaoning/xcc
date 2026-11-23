@@ -16,8 +16,8 @@
 
 /* 7.12p3: one infinity, and its two wider spellings. `long double` is the target's 8-byte double,
  * so the three are the same number - said here rather than left to a reader to work out. */
-#define HUGE_VAL 1.79769313486231570815e+308
-#define HUGE_VALF 3.40282346638528859812e+38F
+#define HUGE_VAL DBL_MAX
+#define HUGE_VALF FLT_MAX
 #define HUGE_VALL HUGE_VAL
 
 /* 7.12p4: `float_t` and `double_t` are the types the library actually computes in, and this one
