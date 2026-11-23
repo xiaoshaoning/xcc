@@ -18,6 +18,11 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     // library exports this and not `printf` itself, so these are the names a link imports.
     "__stdio_common_vfprintf",
     "__stdio_common_vsprintf",
+    // The argument setup the CRT source's entry point uses, and the two accessors it reads the
+    // result from: `argc`/`argv` are the runtime's, not a startup prologue this file writes.
+    "__p___argc",
+    "__p___argv",
+    "_configure_narrow_argv",
     // stdio.h
     "__acrt_iob_func",
     "clearerr",

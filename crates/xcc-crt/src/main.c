@@ -8,18 +8,28 @@
  * It is written in C and compiled by xcc itself: the first program xcc links is also the first
  * it compiles from its own runtime, so every hello.exe is a regression test of the compiler.
  *
- * `argc`/`argv` are M6 (ADR-005): they need CommandLineToArgvW, WideCharToMultiByte, a heap and
- * Windows' own quoting rule, none of which belongs in the twelve lines that make a program run.
+ * `argc`/`argv` are the universal runtime's: `_configure_narrow_argv` splits the command line
+ * with Windows' own quoting rule, and the two accessors hand back what it stored. Doing it here
+ * would be doing it twice, and the rule about quotes is not one this file should own.
  */
 
 #include <stdarg.h>
 #include <stdio.h>
 
 void exit(int code);
-int main(void);
+int main(int argc, char **argv);
+
+/* The universal runtime's argument setup: the mode is `_crt_argv_unexpanded_arguments`, which is
+ * what a program that is not a setargv program gets from `link.exe` - the command line split into
+ * arguments, no wildcard expansion. */
+int _configure_narrow_argv(int mode);
+int *__p___argc(void);
+char ***__p___argv(void);
+#define ARGV_UNEXPANDED 1
 
 void mainCRTStartup(void) {
-    exit(main());
+    _configure_narrow_argv(ARGV_UNEXPANDED);
+    exit(main(*__p___argc(), *__p___argv()));
 }
 
 /* The `printf` family, which `ucrtbase.dll` does not export.

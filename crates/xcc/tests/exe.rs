@@ -343,3 +343,49 @@ int main(void) {
     assert_eq!(code, Some(11));
     assert_eq!(out.trim_end(), "own linker 10");
 }
+
+/// `argc`/`argv` come from the runtime the link compiles in, so this is the test that a linked
+/// program can be a command-line tool: a quoted argument stays one argument, and `main`'s return
+/// value is the exit status.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_linked_program_reads_its_arguments() {
+    let source = r#"
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) printf("[%d] %s\n", i, argv[i]);
+    return argc;
+}
+"#;
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let image = compiler.link(&[("t.c", source)]).expect("it links");
+    let dir = temp_dir("argv");
+    let exe = dir.join("t.exe");
+    std::fs::write(&exe, image.bytes()).expect("the image is written");
+    let run = Command::new(&exe)
+        .args(["one", "two words", ""])
+        .output()
+        .expect("the program runs");
+    let code = run.status.code();
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        code,
+        Some(4),
+        "the exit status is argc, counting the program's own name"
+    );
+    // `argv[0]` is the path the program was started by, which is this test's business only in
+    // that it exists: the arguments after it are what the command line said.
+    // Split on the byte the C library writes, and take the platform's carriage return off the end
+    // of each line without touching the space the program printed after `[3]`.
+    let lines: Vec<&str> = out
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(lines, ["[1] one", "[2] two words", "[3] "], "{out:?}");
+}

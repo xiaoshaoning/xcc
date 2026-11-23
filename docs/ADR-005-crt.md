@@ -36,7 +36,7 @@ function that takes no arguments and never returns the shape above. Writing it i
 first program `xcc` links is also the first program it compiles from its own runtime - and it is
 a test of the compiler rather than a second implementation to keep in step.
 
-**2. `argc`/`argv` wait for M6, and `main` is `int main(void)` in M5.**
+**2. `argc`/`argv` are the runtime's, and not this file's.**
 
 `GetCommandLineW` returns one wide string; C's `main` wants a `char **`. Between them sit
 `CommandLineToArgvW` (shell32), `WideCharToMultiByte` (kernel32), and a heap for the result -
@@ -44,8 +44,20 @@ three imports and a quoting rule that C's standard describes in a paragraph and 
 implements its own way. Doing it now would put an argument-parsing subsystem in the only place
 in the project that cannot be tested in isolation.
 
-So M5's acceptance is a program with `int main(void)`, and `hello.exe` reads
-`Character: None` - no arguments. The cost is stated rather than hidden.
+The decision was to defer, and then the library turned out to export the whole answer:
+`_configure_narrow_argv` splits the command line with Windows' own quoting rule and the two
+accessors hand back what it stored - the same three imports `clang`'s own startup uses. So the
+entry point is three lines and no parser:
+
+```c
+_configure_narrow_argv(_crt_argv_unexpanded_arguments);
+exit(main(*__p___argc(), *__p___argv()));
+```
+
+A program whose `main` is `int main(void)` is unaffected: Win64 ignores an argument register the
+callee does not name. Measured - `xcc args.c -o args.exe` then `args.exe one "two words" ""`
+prints four arguments, keeps the quoted one whole, and returns `4` from a `main` that returns
+`argc`.
 
 **3. The process ends with UCRT's `exit`, not `ExitProcess`.**
 
@@ -112,7 +124,10 @@ project's users, not about the compiler.
   ceremony - argues against.
 - **`ExitProcess` directly.** Wrong for anything buffered; see (3).
 - **`__getmainargs`/`_configure_narrow_argv`.** UCRT-internal names, undocumented, and versioned
-  by the runtime rather than by C. `CommandLineToArgvW` is documented and belongs to Windows.
+  by the runtime rather than by C - so `CommandLineToArgvW` was preferred in this document, and
+  then measured: `ucrtbase.dll` exports all three, `clang`'s own startup imports all three, and
+  the alternative was a parser of our own to keep in step with the platform's quoting rule. The
+  undocumentation is the cost, and it is one function's worth.
 - **Writing the `.pdata` as part of this work.** ADR-003 measured its absence; a `crt` does not
   need it, and mixing an unwind-data project into the linking one would hide which failed.
 
@@ -120,8 +135,8 @@ project's users, not about the compiler.
 
 - M5's acceptance test is: `int main(void) { return 42; }` linked with `lld-link` against the
   SDK and run, plus a program that `printf`s and exits 0. Both are checkable in `tests/exe.rs`.
-- `argc`/`argv` become an M6 item with the three imports and the quoting rule listed, so the
-  deferred work has a home.
+- `argc`/`argv` arrive later than M5, through the runtime's own three imports rather than through
+  a `CommandLineToArgvW` of our own; `tests/exe.rs` passes a program its arguments.
 - The `crt` is one C file in the repository, compiled by `xcc` during the build, which makes
   every `hello.exe` a regression test of the compiler itself.
 - If the SDK libraries are missing, the failure is the linker's and it names the missing `.lib` -
