@@ -212,6 +212,12 @@ pub(crate) fn write(functions: &[MachineFunction], data: Data) -> Vec<u8> {
     write_object(&assemble(functions, data))
 }
 
+/// Write an image that has already been assembled - which is what a linker holds before it has a
+/// file to put it in.
+pub(crate) fn write_image(image: &Image) -> Vec<u8> {
+    write_object(image)
+}
+
 /// One section of the object: its bytes, the names inside it, and the places that need the linker.
 struct SectionOut {
     name: &'static str,

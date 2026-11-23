@@ -25,6 +25,7 @@ pub(crate) mod coff;
 pub(crate) mod encode;
 pub(crate) mod load;
 pub(crate) mod lower;
+pub(crate) mod pe;
 pub(crate) mod regalloc;
 
 use crate::cir::BinOp;
@@ -561,9 +562,18 @@ pub(crate) fn object(
     module: &crate::cir::Module,
     names: &crate::intern::Interner,
 ) -> Result<Vec<u8>, NotYet> {
+    Ok(coff::write_image(&image(module, names)?))
+}
+
+/// The same lowering, stopping at the image: a *linker* needs the sections, their symbols and their
+/// relocations, and the object writer's job is to put them in a file it will not be linking.
+pub(crate) fn image(
+    module: &crate::cir::Module,
+    names: &crate::intern::Interner,
+) -> Result<coff::Image, NotYet> {
     let functions = lower::lower(module, names)?;
     let data = data_section(module)?;
-    Ok(coff::write(&functions, data))
+    Ok(coff::assemble(&functions, data))
 }
 
 /// The objects in the data section: their bytes, laid out in the order the module holds them, each

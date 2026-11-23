@@ -13,7 +13,7 @@
 /// Every function the C headers declare. `stdarg`'s macros are not functions and are absent;
 /// everything variadic is here, because a *call* to one is lowered as an indirect call and only a
 /// floating-point argument is refused (ADR-006).
-const C_RUNTIME: &[&str] = &[
+pub(crate) const C_RUNTIME: &[&str] = &[
     // stdio.h
     "__acrt_iob_func",
     "clearerr",

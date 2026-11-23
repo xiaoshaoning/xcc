@@ -760,6 +760,29 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - the linker, as far as it goes: an image that loads and does not bind
+
+The linker's own module is written (`back/x64/pe.rs`): sections placed from sizes, `REL32` and `ADDR64`
+relocations filled in, `.pdata`/`.xdata` regenerated for the whole program, an import table with a thunk per
+imported function, base relocations, and a PE32+ header. `Compile::link` compiles the units *and* the C runtime and
+hands the images to it.
+
+**Measured: the image loads and runs.** Windows maps our sections and jumps to `mainCRTStartup`; the disassembly
+shows the calls going to the right thunks and the `lea` reaching the right format string. **And the loader does not
+bind the import table**: a `jmp [rip+slot]` finds a zero, so a program faults on its first library call. Three
+things were fixed on the way - a section's *virtual* size was the file-padded one, a file that stops at the last
+byte of the last section is refused (`ERROR_BAD_EXE_FORMAT`, nothing said), and relocations were written at a
+*unit-relative* offset so a second unit's displacement landed inside the first's instructions - and the import
+directory is demonstrably not read: **a deliberately invalid DLL name in the descriptor changes nothing.**
+
+So it stays behind `-c`, and the message says exactly this. The next step wants an oracle this machine does not
+have: `dumpbin`/`pefile`, or a diff of our `.idata` against what `link.exe` writes for the same program. Guessing
+further would be measuring the compiler's opinion of itself.
+
+193 unit, 27 parser, 22 CLI, 4 exe, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
+clean.
+
 ### M10 reviewed - 2026-11-22 - the same index, wrong for a second reason
 
 The `va_start` commit, reviewed. Its fix holds - Lua's every message is now clang's - and the review found the *other*

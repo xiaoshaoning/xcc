@@ -938,6 +938,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
 - [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
       nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
       Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.
+- [ ] **The linker, past the import table.** `back/x64/pe.rs` writes an image Windows loads and runs; the loader
+      does not bind the import table it writes, so a program faults on its first library call (a deliberately bad
+      DLL name changes nothing, which says the directory is not read at all). Written and measured: section
+      placement from sizes, `REL32`/`ADDR64` patching, `.pdata`/`.xdata` regenerated per program, a thunk per
+      import, base relocations, PE32+ headers. Next: a validator (`dumpbin`, `pefile`) or a diff against what
+      `link.exe` writes for the same program.
 - [x] **Lua's messages, and its suite's stopping point.** `va_start` pointed at the wrong slot in any file with
       more than one variadic function (`skip = 2n - 1`), so every diagnostic Lua printed was built from the wrong
       arguments; it now matches clang's. The suite stops in `main.lua` at `getoutput` - **and a clang build stops at

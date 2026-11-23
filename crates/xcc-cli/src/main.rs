@@ -188,8 +188,16 @@ fn compile_command_line() -> ExitCode {
         return ExitCode::from(2);
     }
     if !args.compile_only && !args.preprocess_only && !args.run && !args.explain {
-        eprintln!("xcc: linking is not implemented yet (PLAN.md, M5); pass -c to compile only");
+        // The linker writes an image Windows loads and runs, and the loader does not yet bind the
+        // import table it writes: a program faults on the first library call. It stays behind `-c`
+        // until that is solved, rather than being the default that quietly produces a broken `.exe`.
+        eprintln!(
+            "xcc: linking is not finished: the image loads but the import table is not bound, so a              program faults on its first library call. Pass -c to compile an object."
+        );
         return ExitCode::from(2);
+    }
+    if args.run {
+        return run(&args);
     }
     if args.run {
         return run(&args);

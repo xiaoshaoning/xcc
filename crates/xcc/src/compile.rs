@@ -129,11 +129,15 @@ impl Compile {
             .unwrap_or_default())
     }
 
-    /// One compilation. `explain` asks the back end to keep what each function became, which
-    /// costs the formatting of every function and nothing else.
-    fn run(&mut self, name: &str, source: &str, explain: bool) -> Result<Outcome, Diagnostics> {
+    /// The pipeline both entry points share: tokens, declarations, `cir`, and the passes - up to the
+    /// point where a back end is chosen. `compile` then writes an object and `link` keeps the image,
+    /// so a linked program and a `-c` object are the same `cir` and the same passes.
+    fn front_end(
+        &mut self,
+        name: &str,
+        source: &str,
+    ) -> Result<(crate::cir::Module, crate::pp::Preprocessed, Vec<Diagnostic>), Diagnostics> {
         let mut diagnostics = Vec::new();
-
         // A level this back end does not have is the caller's mistake, and it is reported as one:
         // the back end's refusal would arrive as an internal error, which blames the compiler for
         // a number it was handed. Asked first, because it is not about the source.
@@ -165,7 +169,6 @@ impl Compile {
         // out, so an object and a JIT run the same code (M10). A pass that breaks a function is a
         // compiler bug, so it says so rather than blaming the source.
         let mut module = parsed.module;
-        let opt_level = self.options.opt_level;
         if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
             diagnostics.push(
                 // Neither layer is named: `optimise` verifies the front end's `cir` before its first
@@ -183,6 +186,98 @@ impl Compile {
             let items = truncate_diagnostics(diagnostics, &self.options);
             return Err(Diagnostics::new(items, sources));
         }
+
+        Ok((module, preprocessed, diagnostics))
+    }
+
+    /// Compile every source and link them into one executable, with the C runtime that makes
+    /// `main` a program.
+    ///
+    /// The runtime is not the caller's business: `crates/xcc-crt/src/main.c` goes through this same
+    /// pipeline on every link, so the first program a link produces is also a test of the compiler.
+    /// Linking needs the *image* of each unit - sections, symbols, relocations - and only level 2 has
+    /// one, so a link at any other level is refused rather than quietly lowered by a back end that
+    /// keeps its sections to itself.
+    pub fn link(&mut self, units: &[(&str, &str)]) -> Result<Vec<u8>, Diagnostics> {
+        if self.options.opt_level < 2 {
+            return Err(Diagnostics::new(
+                vec![Diagnostic::error(
+                    "linking needs `--opt-level=2`: the Cranelift back end keeps its sections to                      itself, so a unit lowered by it cannot be linked",
+                )
+                .with_file("link")
+                .with_span(Span::at(0))],
+                Vec::new(),
+            ));
+        }
+        let mut images = Vec::new();
+        let mut sources = Vec::new();
+        let runtime = [("xcc-crt/main.c", crate::back::CRT_SOURCE)];
+        for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
+            let (module, preprocessed, _) = self.front_end(name, source)?;
+            match crate::back::image(&module, preprocessed.names(), self.options.opt_level) {
+                Ok(Some(image)) => images.push(image),
+                Ok(None) => unreachable!("the level was checked above"),
+                Err(error) => {
+                    let message = match error.not_lowered {
+                        Some(_) => format!("not lowered at `--opt-level=2`: {error}"),
+                        None => format!("internal: {error}"),
+                    };
+                    return Err(Diagnostics::new(
+                        vec![Diagnostic::error(message)
+                            .with_file(name)
+                            .with_span(Span::at(0))],
+                        preprocessed.files.clone(),
+                    ));
+                }
+            }
+            sources.extend(preprocessed.files.clone());
+        }
+        // What nothing defines comes from a library, and *which* library is a fact about the target
+        // rather than about the program - so it lives next to the runtime's own name list.
+        let mut wanted = Vec::new();
+        for name in required_names(&images) {
+            match crate::back::library_of(&name) {
+                Some(library) => wanted.push((library, name)),
+                None => {
+                    return Err(Diagnostics::new(
+                        vec![Diagnostic::error(format!("undefined symbol `{name}`"))
+                            .with_file("link")
+                            .with_span(Span::at(0))],
+                        sources,
+                    ))
+                }
+            }
+        }
+        let imports: Vec<crate::back::x64::pe::Imported<'_>> = wanted
+            .iter()
+            .map(
+                |(library, name): &(&'static str, String)| crate::back::x64::pe::Imported {
+                    library,
+                    name,
+                },
+            )
+            .collect();
+        match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
+            Ok(linked) => Ok(linked.bytes),
+            Err(missing) => Err(Diagnostics::new(
+                vec![
+                    Diagnostic::error(format!("undefined symbol `{}`", missing.name))
+                        .with_file("link")
+                        .with_span(Span::at(0)),
+                ],
+                sources,
+            )),
+        }
+    }
+
+    /// One compilation. `explain` asks the back end to keep what each function became, which
+    /// costs the formatting of every function and nothing else.
+    fn run(&mut self, name: &str, source: &str, explain: bool) -> Result<Outcome, Diagnostics> {
+        let mut diagnostics = Vec::new();
+        let (module, preprocessed, from_front_end) = self.front_end(name, source)?;
+        diagnostics.extend(from_front_end);
+        let sources = preprocessed.files.clone();
+        let opt_level = self.options.opt_level;
 
         // A module with no function is a translation unit of *objects* - a table, a constant, the
         // bytes of a lookup - and they still need an object file: `lopcodes.c` in Lua is one such
@@ -234,6 +329,36 @@ fn truncate_diagnostics(mut diagnostics: Vec<Diagnostic>, options: &Options) -> 
         ));
     }
     diagnostics
+}
+
+/// Every name the units refer to and none of them defines, in a stable order so that the same
+/// program links to the same file twice.
+fn required_names(images: &[crate::back::x64::coff::Image]) -> Vec<String> {
+    let defined: std::collections::BTreeSet<&str> = images
+        .iter()
+        .flat_map(|image| {
+            image
+                .functions
+                .iter()
+                .map(|function| function.name.as_str())
+                .chain(image.data.symbols.iter().map(|object| object.name.as_str()))
+        })
+        .collect();
+    let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for image in images {
+        for function in &image.functions {
+            for relocation in &function.relocations {
+                wanted.insert(relocation.symbol.clone());
+            }
+        }
+        for relocation in &image.data.relocations {
+            wanted.insert(relocation.symbol.clone());
+        }
+    }
+    wanted
+        .into_iter()
+        .filter(|name| !defined.contains(name.as_str()))
+        .collect()
 }
 
 #[cfg(test)]

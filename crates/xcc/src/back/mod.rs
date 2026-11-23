@@ -159,6 +159,40 @@ pub(crate) fn cranelift_opt_level(level: u8) -> Result<&'static str, String> {
 
 /// Lower a translation unit to an object file, keeping what each function became when `explain`
 /// is set.
+/// The C runtime's entry point, compiled with every program a link produces.
+pub(crate) const CRT_SOURCE: &str = include_str!("../../../xcc-crt/src/main.c");
+
+/// Which library has a name a program does not define.
+///
+/// Two answers, because a Windows console program imports from two libraries: the C runtime, whose
+/// names are the headers' own list, and `kernel32`, which has the one function that ends a process.
+/// A name neither has is `None` - the caller reports it as undefined rather than guessing.
+pub(crate) fn library_of(name: &str) -> Option<&'static str> {
+    if name == "ExitProcess" {
+        return Some("kernel32.dll");
+    }
+    crt::C_RUNTIME.contains(&name).then_some("ucrtbase.dll")
+}
+
+/// The image of one translation unit, for a linker: code, data, symbols, relocations and the
+/// unwinder's description of every function.
+///
+/// Only level 2 has one. Levels 0 and 1 are Cranelift, which owns its own object writer and never
+/// shows the sections it made, so a program that is to be *linked* has to be lowered by this
+/// compiler's own back end - the same rule as `va_arg`, for the same reason, and stated once here.
+pub(crate) fn image(
+    module: &CirModule,
+    names: &crate::intern::Interner,
+    opt_level: u8,
+) -> Result<Option<x64::coff::Image>, LoweringError> {
+    if opt_level < 2 {
+        return Ok(None);
+    }
+    let image = x64::image(module, names)
+        .map_err(|gap| LoweringError::not_lowered(format!("{gap}"), gap.span))?;
+    Ok(Some(image))
+}
+
 pub fn object(
     module: &CirModule,
     names: &crate::intern::Interner,

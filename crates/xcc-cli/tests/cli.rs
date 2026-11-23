@@ -276,7 +276,12 @@ fn without_c_it_says_linking_is_missing() {
     let source = temp.write("t.c", "int x;\n");
     let output = run(xcc().arg(&source));
     assert_eq!(output.status.code(), Some(2));
-    assert!(stderr(&output).contains("linking is not implemented yet"));
+    // Not "not implemented": the linker writes an image Windows loads and runs. What it cannot do is
+    // get the import table bound, so a program faults on its first library call - and the message says
+    // that, which is the difference between "ask again later" and "here is what is wrong".
+    let message = stderr(&output);
+    assert!(message.contains("linking is not finished"), "{message}");
+    assert!(message.contains("import table"), "{message}");
 }
 
 #[test]
