@@ -786,6 +786,44 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - the header that needed the whole of math.h first
+
+`tgmath.h` ships, `complex.h` stays refused with a measured reason, and the work in between was `math.h`'s other two
+families - which had never been there.
+
+**`math.h` declared only the `double` family.** C99 7.12 asks for three of every function: `sin`, `sinf` and `sinl`,
+fifty-two functions each. The `f` family is the library's own for all but four (`fabsf`, `frexpf`, `ldexpf`, `hypotf`,
+which the runtime source wraps), and the `l` family is a **macro** mapping to the `double` one: this target's
+`long double` *is* its `double`, so `sinl` and `sin` are one function with two spellings - which is what the target's
+own header says, and what this header already said about `HUGE_VALL`.
+
+**`tgmath.h` needed `_Generic`, and finding that out took two attempts.** The first version dispatched on `sizeof`,
+the classic C99 trick. Measured against `clang`, the *values* were right and the *types* were wrong: a conditional
+over `sqrtf(x)` and `sqrt((double)x)` has type `double`, so `sqrt(4.0f)` returned a double - and `_Generic` in the
+test said so (`2 2 2` where `clang` said `1 2 2`). The second attempt used `_Generic` and could not compile:
+`_Generic((x), float: sqrtf, default: sqrt)(x)` - a *function designator* selected and then called - is not something
+this parser accepts. The third works, and is the one that is exact: the call is written into each arm, the unchosen
+arms are never emitted, and a `float` argument produces a `float` result with the argument evaluated exactly once
+(`calls=1`, identical to `clang`).
+
+**So `tgmath.h` requires `--std=c11`, and says so by using `_Generic`**: at C99 it fails with the compiler's own
+"`_Generic` is C11: compile with `--std=c11`", which is a better answer than a macro that returns the wrong type. The
+header states that, and the two reasons - the wrong type from `sizeof`, the absent `_Complex` half.
+
+**`complex.h` stays refused, and the reason is now measured**: all twenty-one of its functions (`creal`, `cimag`,
+`conj`, `cabs`, `cexp`, `cpow`, ...) are exported by the runtime, so nothing is missing from the library. What is
+missing is `_Complex` - a type, its arithmetic and its calling convention. The refusal says exactly that, so the next
+person knows the work is the type system's and not a header's.
+
+**And the ledger's own extractor needed two fixes** to survive a header of macro bodies: a macro's *parameters* are not
+functions (`_TG1(name, x)` names neither), a *pasted* name is not a call (`name##f(x)` names no `f`), and the keywords
+that look like calls (`_Generic`, `_Alignof`, ...) are keywords. Each was found by the test failing on the new header,
+which is the test doing its job.
+
+195 unit, 28 parser, 29 CLI, 16 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - wchar.h, and the eighteen names it was missing
 
 `wchar.h` ships: the last of the five headers that used to refuse is one of twenty-three. What it needed was measured

@@ -40,7 +40,9 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "complex.h",
-        Disposition::Refused("`_Complex` and `_Imaginary` are not implemented"),
+        Disposition::Refused(
+            "`_Complex` is a type this compiler does not have: the values, their arithmetic and the calling convention are a language feature, not a header. The runtime exports every function this header would declare - `creal`, `cimag`, `conj`, `cabs`, `cexp` and the rest - so the work is the type system's, not the library's",
+        ),
     ),
     (
         "ctype.h",
@@ -116,7 +118,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "tgmath.h",
-        Disposition::Refused("not implemented; its macros need `_Generic`"),
+        Disposition::Shipped(include_str!("../include/tgmath.h")),
     ),
     (
         "time.h",

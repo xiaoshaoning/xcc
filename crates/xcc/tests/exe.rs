@@ -314,8 +314,19 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
 /// leaves its own binary behind is a slow leak and nothing more.
 #[cfg(target_os = "windows")]
 fn run_linked(test: &str, source: &str, args: &[&str]) -> std::process::Output {
+    run_linked_with("", test, source, args)
+}
+
+/// The same, with a leading define that names the dialect: `c11` compiles at `--std=c11`.
+fn run_linked_with(dialect: &str, test: &str, source: &str, args: &[&str]) -> std::process::Output {
+    let standard = if dialect == "c11" {
+        xcc::CStandard::C11
+    } else {
+        xcc::CStandard::default()
+    };
     let mut compiler = Compile::new(Options {
         opt_level: 2,
+        standard,
         ..Options::default()
     });
     let image = compiler.link(&[("t.c", source)]).expect("it links");
@@ -738,4 +749,36 @@ int main(void) {
         out,
         "swprintf=9 text=42-wide-! len=9\nwprintf: 42-wide-! 9\nswscanf=2 77 words\nwmem=xxx cmp=0\nmbsinit=1 null=1 fwide=0\n"
     );
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn tgmath_picks_the_narrowest_function_and_evaluates_once() {
+    // C99 7.22: one name per function, chosen by the widest argument. This needs `_Generic` - a
+    // `sizeof`-based guess gets the value right and the *type* wrong, because a conditional over a
+    // float call and a double call has type double - so `tgmath.h` needs `--std=c11` and says so
+    // by using it. The type is asserted with `_Generic` itself, and the side effect proves the
+    // arms that were not chosen were not evaluated.
+    let source = r#"
+#include <stdio.h>
+#include <tgmath.h>
+
+static int calls = 0;
+static float value(void) { calls++; return 4.0f; }
+
+int main(void) {
+    float narrow = sqrt(value());
+    printf("calls=%d\n", calls);
+    printf("types=%d %d %d\n",
+           _Generic(sqrt(4.0f), float: 1, double: 2, default: 0),
+           _Generic(sqrt(4.0), float: 1, double: 2, default: 0),
+           _Generic(pow(2.0f, 3.0), float: 1, double: 2, default: 0));
+    printf("value=%g narrow=%d\n", (double)narrow, (int)(sizeof(narrow) == sizeof(float)));
+    return 0;
+}
+"#;
+    let run = run_linked_with("c11", "tgmath", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout).replace('\r', "");
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out, "calls=1\ntypes=1 2 2\nvalue=2 narrow=1\n");
 }

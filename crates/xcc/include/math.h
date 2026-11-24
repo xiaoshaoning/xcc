@@ -115,4 +115,118 @@ double fma(double x, double y, double z);
 #define isnormal(x) (isfinite(x) && fabs(x) >= DBL_MIN)
 #define fpclassify(x)     (isnan(x) ? FP_NAN : isinf(x) ? FP_INFINITE :         ((x) == 0 ? FP_ZERO : (fabs(x) < DBL_MIN ? FP_SUBNORMAL : FP_NORMAL)))
 
+/* 7.12 declares three families of every function: `double`, `float` and `long double`.
+ * The `f` family is the library's own where it exports one, and four of them are the
+ * runtime source's (`crates/xcc-crt/src/main.c`), which wraps the double function.
+ * The `l` family is a *macro*: this target's `long double` **is** its `double`, so `sinl`
+ * and `sin` are one function with two spellings - which is what the target's own header
+ * says, and what `HUGE_VALL` above already says about the constant. */
+float acosf(float x);
+float asinf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+float cosf(float x);
+float sinf(float x);
+float tanf(float x);
+float acoshf(float x);
+float asinhf(float x);
+float atanhf(float x);
+float coshf(float x);
+float sinhf(float x);
+float tanhf(float x);
+float expf(float x);
+float exp2f(float x);
+float expm1f(float x);
+float logf(float x);
+float log10f(float x);
+float log1pf(float x);
+float log2f(float x);
+float logbf(float x);
+float modff(float value, double *integral);
+float scalbnf(float x, int n);
+float scalblnf(float x, long n);
+float cbrtf(float x);
+float powf(float base, float exponent);
+float sqrtf(float x);
+float erff(float x);
+float erfcf(float x);
+float lgammaf(float x);
+float tgammaf(float x);
+float ceilf(float x);
+float floorf(float x);
+float nearbyintf(float x);
+float rintf(float x);
+float roundf(float x);
+float truncf(float x);
+float fmodf(float numerator, float denominator);
+float remainderf(float x, float y);
+float remquof(float x, float y, int *quotient);
+float copysignf(float magnitude, float sign);
+float nanf(const char *spelling);
+float nextafterf(float x, float y);
+float nexttowardf(float x, long double y);
+float fdimf(float x, float y);
+float fmaxf(float x, float y);
+float fminf(float x, float y);
+float fmaf(float x, float y, float z);
+
+long lrintf(float x);
+long long llrintf(float x);
+long lroundf(float x);
+long long llroundf(float x);
+int ilogbf(float x);
+/* 7.12's `l` family, which is the `double` family here. */
+#define acosl acos
+#define asinl asin
+#define atanl atan
+#define atan2l atan2
+#define cosl cos
+#define sinl sin
+#define tanl tan
+#define acoshl acosh
+#define asinhl asinh
+#define atanhl atanh
+#define coshl cosh
+#define sinhl sinh
+#define tanhl tanh
+#define expl exp
+#define exp2l exp2
+#define expm1l expm1
+#define frexpl frexp
+#define ldexpl ldexp
+#define logl log
+#define log10l log10
+#define log1pl log1p
+#define log2l log2
+#define logbl logb
+#define modfl modf
+#define scalbnl scalbn
+#define scalblnl scalbln
+#define cbrtl cbrt
+#define fabsl fabs
+#define hypotl hypot
+#define powl pow
+#define sqrtl sqrt
+#define erfl erf
+#define erfcl erfc
+#define lgammal lgamma
+#define tgammal tgamma
+#define ceill ceil
+#define floorl floor
+#define nearbyintl nearbyint
+#define rintl rint
+#define roundl round
+#define truncl trunc
+#define fmodl fmod
+#define remainderl remainder
+#define remquol remquo
+#define copysignl copysign
+#define nanl nan
+#define nextafterl nextafter
+#define nexttowardl nexttoward
+#define fdiml fdim
+#define fmaxl fmax
+#define fminl fmin
+#define fmal fma
+
 #endif

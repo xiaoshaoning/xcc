@@ -14,6 +14,7 @@
  */
 
 #include <fenv.h>
+#include <math.h>
 #include <stdarg.h>
 #include <wchar.h>
 #include <stdio.h>
@@ -343,4 +344,23 @@ int swscanf(const wchar_t *restrict from, const wchar_t *restrict format, ...) {
     int read = __stdio_common_vswscanf(0, from, NO_LIMIT, format, 0, args);
     va_end(args);
     return read;
+}
+
+/* math.h's four `float` variants that the library does not export: each is its double function with
+ * a narrower value, and each is exact - a `float` converts to a `double` with no loss, so the
+ * computation is the same one the `f` function would do. */
+float fabsf(float x) {
+    return (float)fabs((double)x);
+}
+
+float frexpf(float value, int *exponent) {
+    return (float)frexp((double)value, exponent);
+}
+
+float ldexpf(float value, int exponent) {
+    return (float)ldexp((double)value, exponent);
+}
+
+float hypotf(float x, float y) {
+    return (float)hypot((double)x, (double)y);
 }

@@ -281,6 +281,66 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "fdim",
     "fma",
     "fmax",
+    // math.h's `float` family, which 7.12 declares beside the `double` one.
+    "acosf",
+    "acoshf",
+    "asinf",
+    "asinhf",
+    "atan2f",
+    "atanf",
+    "atanhf",
+    "cbrtf",
+    "ceilf",
+    "copysignf",
+    "cosf",
+    "coshf",
+    "erfcf",
+    "erff",
+    "exp2f",
+    "expf",
+    "expm1f",
+    "fdimf",
+    "floorf",
+    "fmaf",
+    "fmaxf",
+    "fminf",
+    "fmodf",
+    "lgammaf",
+    "log10f",
+    "log1pf",
+    "log2f",
+    "logbf",
+    "logf",
+    "modff",
+    "nanf",
+    "nearbyintf",
+    "nextafterf",
+    "nexttowardf",
+    "powf",
+    "remainderf",
+    "remquof",
+    "rintf",
+    "roundf",
+    "scalblnf",
+    "scalbnf",
+    "sinf",
+    "sinhf",
+    "sqrtf",
+    "tanf",
+    "tanhf",
+    "tgammaf",
+    "truncf",
+    "ilogbf",
+    "llrintf",
+    "llroundf",
+    "lrintf",
+    "lroundf",
+    // math.h's four `float` variants the library does not export: the runtime source wraps the
+    // double function for each.
+    "fabsf",
+    "frexpf",
+    "hypotf",
+    "ldexpf",
     "fmin",
     "hypot",
     "ilogb",
@@ -485,10 +545,39 @@ mod tests {
         // or on a macro body (a macro is how `stderr` reaches `__acrt_iob_func`). A function-like
         // macro's own name is skipped, and so are the type words that look like calls.
         const KEYWORDS: &[&str] = &[
-            "int", "void", "char", "unsigned", "long", "short", "float", "double", "struct",
-            "union", "enum", "const", "static", "extern", "typedef", "sizeof", "defined",
+            "int",
+            "void",
+            "char",
+            "unsigned",
+            "long",
+            "short",
+            "float",
+            "double",
+            "struct",
+            "union",
+            "enum",
+            "const",
+            "static",
+            "extern",
+            "typedef",
+            "sizeof",
+            "defined",
+            // The keywords that look like calls: `_Generic`'s arms and `_Alignof`'s operand are
+            // not functions either.
+            "_Generic",
+            "_Alignof",
+            "_Alignas",
+            "_Static_assert",
+            "_Atomic",
+            "_Bool",
+            "_Imaginary",
+            "_Complex",
+            "_Thread_local",
+            "_Noreturn",
         ];
         let mut declared = std::collections::BTreeSet::new();
+        // A macro's parameters are not functions, whichever line its body is written on.
+        let mut parameters: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // The names the headers define as macros: a body that calls one of these calls nothing.
         let mut ours: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (_, disposition) in crate::headers::c99_headers() {
@@ -510,6 +599,20 @@ mod tests {
                             ours.insert(name.to_owned());
                         }
                     }
+                    // Whatever is in the parentheses right after a macro's name is a parameter,
+                    // and a parameter is not a function: `#define _TG1(name, x) name##f(x)` calls
+                    // whichever function it is handed.
+                    let rest = defined.trim_start();
+                    if let Some((_, after)) = rest.split_once('(') {
+                        if let Some((list, _)) = after.split_once(')') {
+                            for parameter in list.split(',') {
+                                let parameter = parameter.trim();
+                                if !parameter.is_empty() {
+                                    parameters.insert(parameter.to_owned());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             for line in text.lines() {
@@ -528,6 +631,9 @@ mod tests {
                 };
                 let Some(body) = body else { continue };
                 for name in names_called(body) {
+                    if parameters.contains(&name) {
+                        continue;
+                    }
                     // A `__builtin_` is this compiler's own, not the C runtime's.
                     if !KEYWORDS.contains(&name.as_str()) && !name.starts_with("__builtin_") {
                         declared.insert(name);
@@ -647,9 +753,16 @@ mod tests {
             // The name's *first* character is the last one read, because the scan ran backwards: a
             // name never starts with a digit, so that is what tells a name from a number.
             let starts_with_digit = reversed.chars().last().is_some_and(|c| c.is_ascii_digit());
-            if !reversed.is_empty() && !starts_with_digit {
-                names.push(reversed.chars().rev().collect());
+            if reversed.is_empty() || starts_with_digit {
+                continue;
             }
+            // A pasted name is not a call: `#define _TG1(name, x) name##f(x)` calls whichever
+            // function it is handed. The `##` is what says so.
+            let rest = &before[..before.len() - reversed.len()];
+            if rest.ends_with("##") {
+                continue;
+            }
+            names.push(reversed.chars().rev().collect());
         }
         names
     }
