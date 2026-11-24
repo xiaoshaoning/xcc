@@ -697,3 +697,45 @@ int main(void) {
         "6 97 98 0\n8 120 121 0 0\n97 98 4\n112 116 114\n"
     );
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn wide_stdio_and_conversion_state() {
+    // C99 7.24: the wide `printf`/`scanf` front ends (the runtime carries them, as it does the
+    // narrow ones), the four `wmem*`, `mbsinit`, and `fwide` - which is the platform's stub, so
+    // asking is 0 and setting is the mode asked for, because this runtime has one orientation.
+    let source = r#"
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+
+int main(void) {
+    wchar_t text[32] = {0};
+    int n = swprintf(text, 32, L"%d-%ls-%c", 42, L"wide", L'!');
+    printf("swprintf=%d text=%ls len=%d\n", n, text, (int)wcslen(text));
+    wprintf(L"wprintf: %ls %d\n", text, n);
+    wchar_t word[8] = {0};
+    int number = 0;
+    int read = swscanf(L"77 words", L"%d %ls", &number, word);
+    printf("swscanf=%d %d %ls\n", read, number, word);
+    wchar_t buffer[8];
+    wmemset(buffer, L'x', 3);
+    buffer[3] = 0;
+    wchar_t copy[8] = {0};
+    wmemcpy(copy, buffer, 4);
+    printf("wmem=%ls cmp=%d\n", copy, wmemcmp(buffer, copy, 4));
+    mbstate_t state;
+    memset(&state, 0, sizeof state);
+    printf("mbsinit=%d null=%d fwide=%d\n", mbsinit(&state) != 0, mbsinit(0) != 0,
+           fwide(stdout, 0));
+    return 0;
+}
+"#;
+    let run = run_linked("wideio", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout).replace('\r', "");
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        out,
+        "swprintf=9 text=42-wide-! len=9\nwprintf: 42-wide-! 9\nswscanf=2 77 words\nwmem=xxx cmp=0\nmbsinit=1 null=1 fwide=0\n"
+    );
+}

@@ -935,13 +935,13 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
-- [ ] **`wchar.h`.** Seventy-five C99 7.24 names; fifty-seven are exported by `ucrtbase` and eighteen are not: the nine
-      wide `stdio` front ends (`fwprintf`, `wprintf`, `swprintf`, their `v`-forms and the three `wscanf`s - the UCRT
-      keeps those in the program, as it does the narrow ones, over `__stdio_common_vfwprintf`/`vswprintf`/
-      `vfwscanf`/`vswscanf`, all four exported), `fwide`, `mbsinit`, and `wmemcpy`/`wmemmove`/`wmemcmp`/`wmemchr`.
-      `fwide` is the one that needs a decision rather than work: the runtime offers no way to ask a `FILE *` whether it
-      is wide-oriented, so either it is reported as unavailable or the runtime keeps the answer itself.
-      `wctype.h` already ships, and wide literals work.
+- [x] **`wchar.h`.** Closed: fifty-seven of its seventy-five C99 names were already exported, and the eighteen that
+      were not are the runtime source's - the twelve wide `stdio` front ends over `__stdio_common_vfwprintf` and its
+      three siblings, four `wmem*`, `wmemset` and `mbsinit`. `fwide` is the platform's stub: this runtime tracks no
+      stream orientation and mingw's own header answers with the mode it is asked for, which the header says where it
+      is declared. `mbstate_t` is the UCRT's layout, because the library writes through the pointer. Wide I/O measured
+      identical to a `clang` build. Four of the five headers that used to refuse now ship; `complex.h` and `tgmath.h`
+      are left, and `complex.h` needs `_Complex` in the type system rather than a header.
 - [x] **The real code is a fixture, not a claim.** cJSON and miniz are vendored unmodified under
       `crates/xcc/tests/fixtures`, with their upstream licence notices and a README that says what each one
       found and how the expected output was recorded. `tests/real.rs` compiles both with this compiler's own

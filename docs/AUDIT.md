@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - wchar.h, and the eighteen names it was missing
+
+`wchar.h` ships: the last of the five headers that used to refuse is one of twenty-three. What it needed was measured
+before it was written - fifty-seven of its seventy-five C99 names were already exported by the runtime, and the
+eighteen that were not are the runtime source's now.
+
+**Twelve wide `stdio` front ends**, the same division as the narrow ones: the UCRT owns
+`__stdio_common_vfwprintf`/`vswprintf`/`vfwscanf`/`vswscanf` - each taking a `va_list` - and the program carries the
+`...` that turns its arguments into one. **Four `wmem*` functions, `mbsinit` and `wmemset`** are four-line loops.
+`mbstate_t` is the UCRT's own layout (`unsigned long`, two `unsigned short`s, eight bytes), because the library writes
+through the pointer a program hands it.
+
+**`fwide` was the design question, and the platform answered it.** This runtime tracks no orientation: mingw's own
+header defines `fwide` as an inline stub that ignores the stream and returns the mode it was given. So ours does the
+same, and the header says so where it is declared - asking is 0, setting is the mode, and both are true statements
+about the one orientation there is. A program that relies on `fwide` to *detect* a stream's orientation was relying on
+something no Windows C runtime offers.
+
+**Measured end to end** against a `clang` build: `swprintf(L"%d-%ls-%c", …)` writes 9 characters, `wprintf` writes them
+to stdout, `swscanf(L"%d %ls", …)` reads two conversions, `wmemset`/`wmemcpy`/`wmemcmp` agree, `mbsinit` answers for
+both a zeroed state and a null pointer, and `fwide(stdout, 0)` is 0.
+
+195 unit, 28 parser, 29 CLI, 15 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the wide literal worked everywhere but where it is written
 
 The wide-literal and header commit, reviewed. The commit's own tests passed and covered five shapes; the review found

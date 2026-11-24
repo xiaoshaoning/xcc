@@ -15,6 +15,7 @@
 
 #include <fenv.h>
 #include <stdarg.h>
+#include <wchar.h>
 #include <stdio.h>
 
 void exit(int code);
@@ -59,6 +60,16 @@ int __stdio_common_vfscanf(unsigned long long options, FILE *stream, const char 
                            void *locale, va_list args);
 int __stdio_common_vsscanf(unsigned long long options, const char *input, size_t count,
                            const char *format, void *locale, va_list args);
+
+/* The wide engines, which take and produce `wchar_t` and are otherwise the same shape. */
+int __stdio_common_vfwprintf(unsigned long long options, FILE *stream, const wchar_t *format,
+                             void *locale, va_list args);
+int __stdio_common_vswprintf(unsigned long long options, wchar_t *buffer, size_t count,
+                             const wchar_t *format, void *locale, va_list args);
+int __stdio_common_vfwscanf(unsigned long long options, FILE *stream, const wchar_t *format,
+                            void *locale, va_list args);
+int __stdio_common_vswscanf(unsigned long long options, const wchar_t *input, size_t count,
+                            const wchar_t *format, void *locale, va_list args);
 int _crt_atexit(void (*function)(void));
 
 int vfprintf(FILE *restrict stream, const char *restrict format, va_list args) {
@@ -187,4 +198,149 @@ int feupdateenv(const fenv_t *environment) {
         return status;
     }
     return feraiseexcept(raised);
+}
+
+/* wchar.h, the functions no Windows runtime exports.
+ *
+ * The twelve wide `stdio` front ends are the same division as the narrow ones: the UCRT owns the
+ * engine - `__stdio_common_vfwprintf` and the three beside it, each taking a `va_list` - and the
+ * program carries the `...` that turns its arguments into one. The four `wmem*` functions and
+ * `mbsinit` are small enough to be written here.
+ *
+ * `fwide` is this platform's stub, and it is the *platform's*: the UCRT has one orientation, the
+ * byte one, and its own header answers with the mode it was asked for. A program that asks gets 0;
+ * one that sets gets what it set; both are true statements about the only orientation there is.
+ */
+
+int fwide(FILE *stream, int mode) {
+    (void)stream;
+    return mode;
+}
+
+int mbsinit(const mbstate_t *state) {
+    /* 7.24.2.6: a state that describes the initial conversion - no character held over, no bytes
+     * consumed in the middle of one. */
+    return state == 0 || (state->_Wchar == 0 && state->_Byte == 0 && state->_State == 0);
+}
+
+wchar_t *wmemset(wchar_t *to, wchar_t character, size_t count) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        to[i] = character;
+    }
+    return to;
+}
+
+wchar_t *wmemcpy(wchar_t *restrict to, const wchar_t *restrict from, size_t count) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        to[i] = from[i];
+    }
+    return to;
+}
+
+wchar_t *wmemmove(wchar_t *to, const wchar_t *from, size_t count) {
+    size_t i;
+    if (to < from) {
+        for (i = 0; i < count; i++) {
+            to[i] = from[i];
+        }
+    } else if (to > from) {
+        for (i = count; i > 0; i--) {
+            to[i - 1] = from[i - 1];
+        }
+    }
+    return to;
+}
+
+int wmemcmp(const wchar_t *left, const wchar_t *right, size_t count) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (left[i] != right[i]) {
+            return left[i] < right[i] ? -1 : 1;
+        }
+    }
+    return 0;
+}
+
+wchar_t *wmemchr(const wchar_t *text, wchar_t character, size_t count) {
+    size_t i;
+    for (i = 0; i < count; i++) {
+        if (text[i] == character) {
+            return (wchar_t *)text + i;
+        }
+    }
+    return 0;
+}
+
+int vfwprintf(FILE *restrict stream, const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vfwprintf(0, stream, format, 0, args);
+}
+
+int fwprintf(FILE *restrict stream, const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int written = __stdio_common_vfwprintf(0, stream, format, 0, args);
+    va_end(args);
+    return written;
+}
+
+int vwprintf(const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vfwprintf(0, stdout, format, 0, args);
+}
+
+int wprintf(const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int written = __stdio_common_vfwprintf(0, stdout, format, 0, args);
+    va_end(args);
+    return written;
+}
+
+int vswprintf(wchar_t *restrict to, size_t count, const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vswprintf(0, to, count, format, 0, args);
+}
+
+int swprintf(wchar_t *restrict to, size_t count, const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int written = __stdio_common_vswprintf(0, to, count, format, 0, args);
+    va_end(args);
+    return written;
+}
+
+int vfwscanf(FILE *restrict stream, const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vfwscanf(0, stream, format, 0, args);
+}
+
+int fwscanf(FILE *restrict stream, const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vfwscanf(0, stream, format, 0, args);
+    va_end(args);
+    return read;
+}
+
+int vwscanf(const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vfwscanf(0, stdin, format, 0, args);
+}
+
+int wscanf(const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vfwscanf(0, stdin, format, 0, args);
+    va_end(args);
+    return read;
+}
+
+int vswscanf(const wchar_t *restrict from, const wchar_t *restrict format, va_list args) {
+    return __stdio_common_vswscanf(0, from, NO_LIMIT, format, 0, args);
+}
+
+int swscanf(const wchar_t *restrict from, const wchar_t *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vswscanf(0, from, NO_LIMIT, format, 0, args);
+    va_end(args);
+    return read;
 }

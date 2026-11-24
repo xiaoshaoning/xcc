@@ -124,7 +124,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "wchar.h",
-        Disposition::Refused("not implemented; wide characters and `L\"...\"` literals are not"),
+        Disposition::Shipped(include_str!("../include/wchar.h")),
     ),
     (
         "wctype.h",
