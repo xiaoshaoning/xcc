@@ -760,6 +760,32 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the strongest claim was the one not written down
+
+The `mem2reg` fix, reviewed. The fix is right and the sweep around it came up empty - which is what made the finding
+worth writing.
+
+**Checked, and complete**: an escape is now any use of a slot's address that is not a load, a store, or the next
+bitcast - instructions *and* terminators. `address_chains` follows only `Slot` and `Bitcast`, so `&s.member` is not in
+a chain at all: a member's loads and stores go through a `Field`, never through the slot, and the slot is left alone.
+Four shapes were measured against `clang` rather than argued about: a conditional over two locals' addresses, over two
+members' addresses (`struct S` with `*p += 10`), over array elements, and a `switch` whose arms take an address. All
+agree.
+
+**And the README still stopped at the previous library.** The real-code evidence in it ended with cJSON, one paragraph
+after a session that made miniz - nine thousand five hundred lines - deflate, inflate, write a zip and read it back.
+The strongest evidence the project has was the claim not written down, so the linking row now names both, with what each
+one measurably does: cJSON byte-identical to a `clang` build, miniz's stream readable by real zlib and its archive
+extracting byte-identical.
+
+**No instrumentation left behind**: the `XCC_TIME` and `XCC_DUMP_CIR` hooks that found the hang and the
+broken pass were temporary, and `grep` says so - a debug switch left in a shipping compiler is a second, undocumented
+interface.
+
+195 unit, 28 parser, 29 CLI, 10 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON identical, miniz zips and round-trips; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - promotion looked at instructions and not at edges
 
 `miniz_zip.c` - the remaining 4 911 lines of miniz - needed one include and found one pass bug.
