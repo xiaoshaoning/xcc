@@ -786,6 +786,17 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-23 - the tag moved one commit, and why
+
+The release tag went up at `3ae2f6d` and CI failed there on the one test new since the last release - the code-size
+gate, which asserted a ratio against whichever `clang` the machine had. The fix is `ad5f4a9`, so the tag was re-pointed
+at it: a release tag should name a commit whose whole gate ran, and this one did not. The message was re-annotated in
+the same move, because it still said the test holds the ratio when it now holds a byte total.
+
+That is the second time a tag has been re-made in this repository, and the reason is the same both times: the tag is
+what a reader quotes, so a number in it has to come from a run at the commit it names. The rule is now applied in the
+right order - measure, fix, re-measure, then tag - which is cheaper than the move.
+
 ### M10 - 2026-11-23 - a gate that measured whatever clang the machine had
 
 The tag was pushed and CI failed on the one test that was new since the last release: `the_corpus_is_within_the_code_size_that_was_measured`. Every byte this compiler wrote was identical to the local run; what moved was the *denominator*. The check asserted a **ratio** against `clang -O2`, and the runner's `clang` is a different build from the one measured here.
