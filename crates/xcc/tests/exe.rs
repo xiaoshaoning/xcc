@@ -377,6 +377,44 @@ int main(void) {
 /// was an access violation before, and the deep recursion takes a page-sized frame five hundred
 /// times over. The largest takes seventy-three pages, which is a statement about the walk and
 /// not about how much stack the image asks for.
+/// The program the anonymous-member test below compiles, as a raw Rust string so the C source
+/// keeps its own quotes and its own backslashes.
+const ANONYMOUS_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <math.h>
+
+struct s { int a; union { int b; double c; }; struct { short d, e; }; int tail; };
+struct node { const char *name; int type; void *context; };
+
+static double negate(double v) { return -v; }
+static double keep(double v) { return v; }
+
+static double pick(int row) {
+    /* A `static` table of function pointers, which is how tinyexpr's `power()` is written. */
+    static double (*const column[2])(double) = { negate, keep };
+    return column[row](5.0);
+}
+
+int main(void) {
+    struct s x = { 0 };
+    char *base = (char *)&x;
+    /* An array whose size comes from its list: the elements are partly initialised. */
+    struct node rows[] = { { "x" }, { "y", 9 } };
+    printf("layout %d %ld %ld %ld %ld %ld %ld\n", (int)sizeof x,
+           (long)((char *)&x.a - base), (long)((char *)&x.b - base), (long)((char *)&x.c - base),
+           (long)((char *)&x.d - base), (long)((char *)&x.e - base), (long)((char *)&x.tail - base));
+    x.b = 7;
+    x.d = 3; x.e = 4;
+    printf("members %d %d %d %d\n", x.a, x.b, x.d + x.e, x.tail);
+    printf("names %s %s type %d %d context %d\n", rows[0].name, rows[1].name, rows[0].type,
+           rows[1].type, rows[0].context == 0);
+    printf("static table %.1f %.1f\n", pick(0), pick(1));
+    printf("nan %d %d %d | inf %d %d\n", isnan(NAN), signbit(NAN) ? 1 : 0, isnan(1.0),
+           isinf(INFINITY), isinf(1.0));
+    return 0;
+}
+"#;
+
 #[test]
 #[cfg(target_os = "windows")]
 fn a_frame_larger_than_a_stack_page_is_taken_one_page_at_a_time() {
@@ -822,4 +860,22 @@ int main(void) {
     let out = String::from_utf8_lossy(&run.stdout).replace('\r', "");
     assert_eq!(run.status.code(), Some(0), "{out}");
     assert_eq!(out, "calls=1\ntypes=1 2 2\nvalue=2 narrow=1\n");
+}
+
+/// Three things the fourth real library reached and nothing else had: an anonymous struct or union
+/// (C11 6.7.2.1p13) whose members are borrowed by the record that holds it; a `static` table of
+/// function pointers whose initialiser must be data and not code; and an array whose size comes
+/// from its list, whose elements' unnamed members are zero. The last line is `NAN`'s sign bit,
+/// which `0.0/0.0` gets wrong. Every number here is what `clang` prints for this program.
+#[test]
+#[cfg(target_os = "windows")]
+fn anonymous_members_static_tables_and_unlisted_members_are_laid_out_and_zeroed() {
+    let run = run_linked("anonymous", ANONYMOUS_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(
+        out,
+        "layout 24 0 8 8 16 18 20@@members 0 7 7 0@@names x y type 0 9 context 1@@static table -5.0 5.0@@nan 1 0 0 | inf 1 0@@"
+            .replace("@@", "\r\n")
+    );
 }

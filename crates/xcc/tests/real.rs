@@ -172,3 +172,37 @@ digest 14ccb783a2757039
 "#
     );
 }
+
+/// `tinyexpr` (758 lines, zlib licence): a recursive-descent expression parser with its own
+/// evaluation tree. It is the fourth real library here and the smallest - it found three bugs that
+/// nothing else had reached: `te_expr` holds an anonymous union (C11 6.7.2.1p13), which this
+/// compiler refused entirely; `power()` keeps a `static` table of function pointers, whose
+/// initialiser was emitted as code and so wrote zeroes; and `te_variable variables[] = { ... }` is
+/// an array whose size comes from its list, whose elements' unnamed members held the frame's
+/// leftovers. `nan` in two of the lines is `NAN`, whose sign bit is the one `0.0/0.0` does not
+/// give.
+#[test]
+#[cfg(target_os = "windows")]
+fn tinyexpr_parses_evaluates_and_compiles_expressions() {
+    let run = run_fixture("tinyexpr", "tinyexpr", &["driver.c", "tinyexpr.c"], &[]);
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(
+        out.replace('\r', ""),
+        r#"1+2*3            -> 7.000000 (err 0)
+sin(pi/2)        -> 1.000000 (err 0)
+sqrt(2)^2        -> 2.000000 (err 0)
+2^10             -> 1024.000000 (err 0)
+(1+2)*(3+4)      -> 21.000000 (err 0)
+5%3              -> 2.000000 (err 0)
+-3+10/4          -> -0.500000 (err 0)
+min(3,7)+max(2,9) -> nan (err 3)
+log(100)/log(10) -> 2.000000 (err 0)
+if(1<2, 42, 0)   -> nan (err 2)
+3==3             -> 1.000000 (err 0)
+3!=3             -> 0.000000 (err 0)
+compiled x*y+1 -> 43.0 (err 0)
+with x=2 -> 15.0
+"#
+    );
+}

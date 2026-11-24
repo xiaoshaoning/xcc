@@ -16,6 +16,16 @@ impl Parser<'_> {
         if self.unevaluated {
             return None;
         }
+        // An initialiser that writes an object's *bytes* is data, not code. A `static` local is
+        // written inside a body, where a builder exists and would otherwise win:
+        // `static double (*hooks[2])(double) = { my_malloc, my_free };` emitted the address as an
+        // instruction, so the bytes had no value to write and the table was all zeros - a wrong
+        // answer that only a call through the pointer could show. Asked here rather than at each
+        // site, because it is one fact: while bytes are being written, no expression can have code,
+        // which is the same reason a file-scope initialiser has none.
+        if self.writing_bytes() {
+            return None;
+        }
         let body = self.body.as_mut()?;
         // Code after a `return` or a `break` is unreachable, which C allows: it emits nothing
         // rather than a second terminator.
@@ -25,9 +35,10 @@ impl Parser<'_> {
         Some(emit(&mut body.builder()))
     }
 
-    /// Whether an initialiser is writing an object's bytes rather than emitting stores: true at file
-    /// scope, where a `cir` value has nowhere to go and the bytes are the whole answer.
-    pub(super) fn at_file_scope(&self) -> bool {
+    /// Whether an initialiser is writing an object's bytes rather than emitting stores: a file-scope
+    /// object, or a `static` local, where the data section is the whole answer and a value has
+    /// nowhere to go but into it.
+    pub(super) fn writing_bytes(&self) -> bool {
         self.init_target.is_none() && self.bytes.is_some()
     }
 

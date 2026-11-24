@@ -20,6 +20,13 @@
 #define HUGE_VALF FLT_MAX
 #define HUGE_VALL HUGE_VAL
 
+/* 7.12p4: the infinity that is *not* a finite number, and the quiet NaN. Both are the compiler's own
+ * constants - `1.0/0.0` is a division the program would do at run time, and `0.0/0.0` is the
+ * target's *indefinite* NaN whose sign bit is set, which is why a header saying that printed
+ * `-nan(ind)` where a `clang` build printed `nan`. */
+#define INFINITY (__builtin_inff())
+#define NAN (__builtin_nanf(""))
+
 /* 7.12p4: `float_t` and `double_t` are the types the library actually computes in, and this one
  * computes in `double` for both. */
 typedef double float_t;

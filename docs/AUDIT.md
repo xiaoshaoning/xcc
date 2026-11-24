@@ -786,6 +786,50 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-23 - anonymous members, and the three bugs behind them
+
+`tinyexpr.c` (758 lines, zlib) compiles, links and runs, and prints byte for byte what a `clang` build of the same
+files prints. It was blocked on an **anonymous union** - `te_expr` holds `union { double value; const double *bound;
+const void *function; };` - and fixing it uncovered two more, in code no earlier library reached.
+
+**The member list, flat.** The layout of an anonymous member was already right: it was laid out like any other member,
+and `sizeof` of the whole record counted it, which is why the measurement that "found" this found a *lookup* failure
+and not a size. What was missing was the view. The fix is one splice in `Types::complete_record`, after layout: a
+member with no name whose type is a record contributes *its* members, offsets shifted by its own. Everything else -
+lookup, the initialiser walk, `describe`, the duplicate-name check - reads that one list and needed no change, because
+there is no second view to disagree with it. That last one is not a detail: `struct s { int a; union { int a; }; }`
+names one member twice, and C11 6.7.2.1p13 puts both in the same scope.
+
+**The duplicate-name check moved to where the truth is.** It used to run as each member was parsed, which cannot see
+across the splice. It runs on the completed list now - one place, and `member_list` lost a `HashSet` and a helper for
+it.
+
+**tinyexpr's second bug: a `static` local table of function pointers was all zeros.** `power()` keeps
+`static double (*const unary[2][3])(double) = {{NULL, ...}, {negate, ...}};` in a body. `emit` refused to make code
+only when there was no body; inside one, the address of `negate` became an instruction, and the initialiser that was
+*writing bytes* had no value to write - so it wrote zeros, and `te_interp("-3")` returned `3`. The predicate already
+existed (`at_file_scope`, "writing bytes rather than emitting stores") and `emit` simply never asked it. It does now,
+under the name of the thing it tests: `writing_bytes`. Then `-3+10/4` is `-0.5` again.
+
+**Its third: an array whose size comes from its list left its elements' unnamed members holding the frame's
+leftovers.** `te_variable variables[] = { { "x", &x }, { "y", &y } };` printed `type` as `-43300501`. C99 6.7.8p21
+zeroes what the list does not name, and the zeroing pass ran only when the object's type was already complete - which
+an array whose count comes from the list is not, until the walk has read it. The array walk zeroes each element as it
+reaches it now: the same bytes, one level down, and in the only place that knows the count.
+
+**And `NAN` was not declared in `math.h` at all**, and the obvious spelling would have been wrong. `0.0/0.0` is this
+target's *indefinite* NaN and its sign bit is set, so `printf("%f", NAN)` printed `-nan(ind)` where `clang` printed
+`nan`. `__builtin_nanf("")`, `__builtin_nan("")`, `__builtin_inff()` and `__builtin_inf()` are constants the front end
+now makes, and `NAN`/`INFINITY` are them - the same spelling every other compiler's header uses. `_Noreturn` is
+consumed and dropped, next to `inline`.
+
+**tinyexpr is the fourth vendored fixture** (`tests/fixtures/tinyexpr`, unmodified, zlib licence, its README saying
+what the expected text is and where it came from) and runs on every test run.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 18 exe, 4 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the count and the list under it, and a frame sized to a constant
 
 The stack-probe commit, reviewed. The probe holds and lz4 still matches `clang` byte for byte; the review found four

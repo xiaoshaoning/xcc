@@ -36,7 +36,7 @@ use crate::literal::{character_constant, string_length};
 use crate::options::Budgets;
 use crate::pp::{PpToken, Preprocessed};
 use crate::symtab::{Entry, Kind, Symbols};
-use crate::types::{Member, RecordKind, Type, TypeId, Types};
+use crate::types::{Member, RecordId, RecordKind, Type, TypeId, Types};
 
 /// Parse a preprocessed translation unit.
 ///
@@ -81,6 +81,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         offset: 0,
         init_target: None,
         bits: None,
+        zero_elements: false,
         unevaluated: false,
         literals: 0,
         targets: Vec::new(),
@@ -336,6 +337,10 @@ struct Parser<'a> {
     /// the storage unit at the leaf's offset, or `None` for a leaf that is a whole object. It is
     /// part of the same flat state `offset` and `init_target` are, and `write_leaf` reads it.
     bits: Option<(u8, u8)>,
+    /// Whether the object being initialised was thin on zeroes: true when its size came from the
+    /// initialiser itself, so nothing could zero the whole of it before the walk. The array walk
+    /// reads it and zeroes each element as it reaches it.
+    zero_elements: bool,
     /// Whether the expression being read is not evaluated: `sizeof`'s operand, which C says is
     /// not (C99 6.5.3.4p2), and a `constant_expression`, which is wanted for its value and not
     /// for its code. Nothing parsed in either may emit: `sizeof(x = 3)` must not assign, and
@@ -1231,7 +1236,11 @@ impl Parser<'_> {
                 // every access is the access the source wrote. `restrict` licenses an optimisation
                 // it does not perform. Both are consumed and dropped, and that is stated rather
                 // than silently true.
-                "volatile" | "restrict" | "inline" => {
+                // `_Noreturn` (C11 6.7.4p4) promises a function does not return. Nothing here
+                // needs the promise: a call is emitted where the program wrote it, and control
+                // falling off the end of such a function is the programmer's bug rather than the
+                // compiler's. Consumed and dropped, like the two above.
+                "volatile" | "restrict" | "inline" | "_Noreturn" => {
                     self.at += 1;
                 }
                 // Microsoft's storage-class spelling, which a Windows header emits behind `_WIN32`:
@@ -1517,6 +1526,7 @@ impl Parser<'_> {
                 }
                 let members = self.member_list();
                 self.types.complete_record(record, members);
+                self.check_member_names(record);
                 return ty;
             }
         }
@@ -1526,7 +1536,33 @@ impl Parser<'_> {
         }
         let members = self.member_list();
         self.types.complete_record(record, members);
+        self.check_member_names(record);
         ty
+    }
+
+    /// C99 6.7.2.1p1: no two members of one struct or union may have the same name - and C11
+    /// 6.7.2.1p13 puts the members of an anonymous record in that same scope, so the check reads
+    /// the *completed* list, where the splice has already happened. Asked here rather than as each
+    /// member is parsed, because until the record is complete the list is not the one a lookup,
+    /// an initialiser or this check will read: `struct s { int a; union { int a; }; };` names `a`
+    /// twice and only the second copy is inside another record.
+    fn check_member_names(&mut self, record: RecordId) {
+        let mut seen: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
+        let mut twice = Vec::new();
+        for member in self.types.members(record) {
+            let Some(name) = member.name else { continue };
+            if !seen.insert(name) {
+                twice.push(name);
+            }
+        }
+        for name in twice {
+            let spelling = self.spell_of(name).to_owned();
+            let span = self.span();
+            self.error(
+                span,
+                format!("`{spelling}` is a member of this struct twice"),
+            );
+        }
     }
 
     /// The members of a struct or union, between its braces.
@@ -1535,8 +1571,6 @@ impl Parser<'_> {
         if !self.eat("{") {
             return members;
         }
-        // C99 6.7.2.1p1: no two members of one struct or union may have the same name.
-        let mut names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         while !self.at_punct("}") && !self.at_eof() {
             let specs = self.declaration_specifiers();
             let Some(base) = specs.ty else {
@@ -1561,7 +1595,6 @@ impl Parser<'_> {
                         break;
                     };
                     let name = tree.name;
-                    self.declare_member_name(&mut names, name);
                     let ty = self.apply_declarator(tree, base);
                     // `bit_width` takes the `:` itself, so it is not eaten here.
                     let bits = if self.at_punct(":") {
@@ -1590,24 +1623,6 @@ impl Parser<'_> {
             self.error_at_current("expected `}` to end the members");
         }
         members
-    }
-
-    /// One member's name, and the diagnostic C99 6.7.2.1p1 asks for when the struct already has it.
-    fn declare_member_name(
-        &mut self,
-        names: &mut std::collections::HashSet<Symbol>,
-        name: Option<Symbol>,
-    ) {
-        let Some(name) = name else { return };
-        if names.insert(name) {
-            return;
-        }
-        let spelling = self.spell_of(name).to_owned();
-        let span = self.span();
-        self.error(
-            span,
-            format!("`{spelling}` is a member of this struct twice"),
-        );
     }
 
     fn bit_width(&mut self) -> u8 {

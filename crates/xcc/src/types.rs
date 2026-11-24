@@ -374,11 +374,49 @@ impl Types {
             laid_out.push(member);
         }
 
+        let flat = self.flatten(laid_out);
         let record = &mut self.records[record.0 as usize];
         record.size = align_up(size, align.max(1));
         record.align = align.max(1);
-        record.members = laid_out;
+        record.members = flat;
         record.complete = true;
+    }
+
+    /// The member list with every anonymous record's members spliced in, C11 6.7.2.1p13.
+    ///
+    /// `struct { int a; union { int b; double c; }; };` names three members: `a` at 0, `b` and `c`
+    /// at 8 - the union's own members, borrowed by the struct that holds it. The layout of the
+    /// anonymous member is already right by this point (it was laid out as a member like any other,
+    /// and its record was completed before it), so the splice is addition and nothing else.
+    ///
+    /// It happens *here*, once, because everything else reads a member list: a lookup, the
+    /// initialiser walk, the duplicate-name check, `describe`. A second "view" of the members would
+    /// be the same fact written down twice, and the two copies would disagree the first time a
+    /// member was added - `struct s { int a; union { int a; }; }` names one member twice, and the
+    /// check that says so only sees it if the list it reads is this one.
+    fn flatten(&self, members: Vec<Member>) -> Vec<Member> {
+        let mut flat = Vec::with_capacity(members.len());
+        for member in members {
+            // A bitfield with no name is padding, not a record, and an unnamed member of any other
+            // type is not something C11 6.7.2.1p13 covers - it says a struct or union.
+            let anonymous = member.name.is_none()
+                && member.bits.is_none()
+                && matches!(self.kind(member.ty), Type::Record(_));
+            let Type::Record(inner) = *self.kind(member.ty) else {
+                flat.push(member);
+                continue;
+            };
+            if !anonymous {
+                flat.push(member);
+                continue;
+            }
+            for nested in &self.records[inner.0 as usize].members {
+                let mut nested = nested.clone();
+                nested.offset += member.offset;
+                flat.push(nested);
+            }
+        }
+        flat
     }
 
     /// The fundamental type with this spelling, if there is one.

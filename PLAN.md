@@ -236,8 +236,10 @@ The first thing worth showing, and the reason the project exists.
 - [x] Floats and doubles (SSE), conversions, comparisons, constants; `long double` = `f64`,
       documented, `sizeof` 8.
 - [x] Aggregates by value in arguments and returns, struct assignment and initialisation,
-      unions with type punning, nested members. (C11 anonymous members are still `planned`: they
-      are a parse-and-layout question, not an M6 one.)
+      unions with type punning, nested members, anonymous members whose fields the enclosing record
+      borrows (C11 6.7.2.1p13, done - tinyexpr found them); `_Noreturn` is consumed like `inline`.
+      Still missing from C11: `_Thread_local` (which is a storage class and a TLS directory, not a
+      spelling), `_Complex` and the five headers C11 adds.
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
       refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
 - [x] `printf`-style calls with integer, character, string and pointer arguments: the call site's

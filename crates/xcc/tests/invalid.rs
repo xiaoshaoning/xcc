@@ -81,6 +81,14 @@ fn a_struct_has_no_two_members_with_one_name() {
     // C99 6.7.2.1p2: an unnamed member is a legal `struct-declaration`, and clang warns rather than
     // refusing, so this compiler builds it too.
     assert!(compiles("struct H { int; }; int main(void) { return 0; }"));
+    // C11 6.7.2.1p13 puts an anonymous record's members in the same scope as the ones around it,
+    // so this is one member named twice - and the check has to read the *completed* member list to
+    // see it, because the second `a` is inside another record.
+    assert!(refused("struct S { int a; union { int a; }; };"));
+    assert!(refused("struct S { struct { int a; }; int a; };"));
+    assert!(compiles(
+        "struct S { int a; union { int b; }; }; int f(void) { struct S s; s.a = 1; s.b = 2; return s.a + s.b; }"
+    ));
 }
 
 #[test]

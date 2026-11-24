@@ -282,6 +282,14 @@ impl Parser<'_> {
                 }
             }
             self.offset = base + written as usize * size;
+            // The array's size is this list's length, so no pass before the walk could zero it.
+            // Element by element is the same bytes: `struct b v[] = { { &x }, { &y } };` left the
+            // members after `&x` holding the frame's leftovers.
+            if self.zero_elements {
+                if let (Some(target), true) = (self.init_target, size != 0) {
+                    self.zero_at(target, self.offset, element);
+                }
+            }
             if self.at_punct("{") {
                 self.brace_initializer(element);
             } else {
@@ -543,7 +551,7 @@ impl Parser<'_> {
         // "b"}` is an array of addresses the linker fills - so it goes to the same place a whole
         // initialiser that is one goes. Inside a body the expression reader already has a value for
         // it, an address the emitter mints.
-        let literal = self.at_file_scope()
+        let literal = self.writing_bytes()
             && self
                 .peek()
                 .is_some_and(|token| token.kind == crate::lex::TokenKind::Str);
@@ -565,27 +573,40 @@ impl Parser<'_> {
             return;
         };
         // A declared size can have elements or members no list reaches, and C says they are
-        // zero. An array whose size came from its initialiser has none, and a string literal
-        // writes every byte including the tail.
-        if self.types.value_is_address(ty) && self.types.is_complete(ty) {
+        // zero. An array whose size came from its initialiser has none *yet* - the count is what
+        // the list says, and it is not known until the walk has read it - so the whole object
+        // cannot be zeroed here. `zero_elements` says so, and the array walk zeroes each element
+        // as it reaches it instead, which is the same bytes one level down.
+        let pre_zeroed = self.types.value_is_address(ty) && self.types.is_complete(ty);
+        if pre_zeroed {
             self.zero_object(target, ty);
         }
         let saved_target = self.init_target;
         let saved_offset = self.offset;
         let saved_bits = self.bits;
+        let saved_zeroing = self.zero_elements;
         self.init_target = Some(target);
         self.offset = 0;
         self.bits = None;
+        self.zero_elements = !pre_zeroed;
         self.initializer(ty);
         self.init_target = saved_target;
         self.offset = saved_offset;
         self.bits = saved_bits;
+        self.zero_elements = saved_zeroing;
     }
 
     /// C99 6.7.8p21: what an initialiser list does not name is zero, and a frame slot holds
     /// whatever the frame held. A byte at a time: a byte store is always aligned, and a
     /// wider one is M10's optimiser's job.
     fn zero_object(&mut self, target: (cir::Value, TypeId), ty: TypeId) {
+        self.zero_at(target, 0, ty);
+    }
+
+    /// The same bytes, `at` from the object's start: an element of an array whose size came from
+    /// its list is zeroed here, one element at a time, because zeroing the whole array first
+    /// needs a count nobody knows yet.
+    fn zero_at(&mut self, target: (cir::Value, TypeId), at: usize, ty: TypeId) {
         let Some(size) = self.types.size_of(ty) else {
             return;
         };
@@ -593,7 +614,7 @@ impl Parser<'_> {
         let span = self.span();
         for offset in 0..size as usize {
             let zero = self.constant_of(char, 0, span);
-            self.store_leaf(target, offset, char, zero, span);
+            self.store_leaf(target, at + offset, char, zero, span);
         }
     }
 

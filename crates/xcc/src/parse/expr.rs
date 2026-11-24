@@ -971,6 +971,12 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.va_arg_expression(span))
             }
+            // The infinities and the quiet NaN, which is how `<math.h>` spells `INFINITY` and
+            // `NAN` on every compiler that has them (C99 7.12p4).
+            "__builtin_inf" | "__builtin_inff" | "__builtin_nan" | "__builtin_nanf" => {
+                self.bump();
+                Some(self.float_builtin(&operator, span))
+            }
             _ => self.postfix_expression(),
         }
     }
@@ -1043,6 +1049,37 @@ impl Parser<'_> {
 
     /// `sizeof` a type name or an expression, as a constant of type `size_t` (here `unsigned
     /// long long`, the widest integer this front end has).
+    /// `__builtin_inff()`, `__builtin_nanf("")` and their `double` forms: a floating constant that
+    /// is not a number a literal can spell.
+    ///
+    /// `NAN` cannot be `0.0/0.0` in a header, because the NaN that division produces is the
+    /// target's *indefinite* one and its sign bit is set: `printf("%f", NAN)` printed
+    /// `-nan(ind)` here where `clang` printed `nan`. The value here is the quiet NaN with a clear
+    /// sign bit, which is what `0x7FC00000` and `0x7FF8000000000000` are.
+    fn float_builtin(&mut self, word: &str, span: Span) -> Value {
+        let single = word.ends_with('f');
+        if self.eat("(") {
+            // The payload argument is a string this does not read: every spelling a program writes
+            // is `""`, and a NaN is a NaN. `skip_until` takes the `)` itself - asked not to, it
+            // steps over a closer it did not open and eats the rest of the line.
+            self.skip_until(&[")"], true);
+        } else {
+            self.error(span, "this builtin needs `(`");
+        }
+        let names = match (single, word.contains("nan")) {
+            (true, true) => ("float", 0x7FC0_0000u64),
+            (false, true) => ("double", 0x7FF8_0000_0000_0000u64),
+            (true, false) => ("float", 0x7F80_0000u64),
+            (false, false) => ("double", 0x7FF0_0000_0000_0000u64),
+        };
+        let Some(ty) = self.types.fundamental(names.0) else {
+            return Value::temporary(self.types.error());
+        };
+        // Through the same door as every other constant: inside a body that is an instruction, and
+        // in an initialiser that writes bytes it is the bits themselves.
+        self.constant_of(ty, names.1 as i64, span)
+    }
+
     /// `__builtin_offsetof(type-name, member.designator)`: the byte offset of a member.
     ///
     /// C99 7.17p3 defines `offsetof` as `(size_t)&(((type *)0)->member)`, which this compiler
