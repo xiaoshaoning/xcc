@@ -760,6 +760,42 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the other three quarters of the same bug
+
+The literal fix only fixed literals. The commit's own README note said a `static` *function* would still collide, and
+the review asked the obvious follow-up question - what about a `static` *object*? Measured, both were live silent wrong
+answers:
+
+```
+two units, each `static int helper(int)`      ours: a: 2   7    clang: a: 2 500
+two units, each `static int counter = ...`    ours: b=11       clang: b=500
+```
+
+The second unit called the first unit's helper and read the first unit's counter. The knowledge was in `cir` for one
+kind and missing for the other: `cir::Global` had an `external` field that the parser always set to `true`, and
+`cir::Func` had no field at all. Both now carry the fact from the declaration's `static` specifier, the object writer
+marks those symbols with static storage class, and the linker keys them per unit - one `UnitLocals` per unit holding
+its functions and its objects, which replaced the `(usize, String)` tuple key and with it an allocation per lookup.
+
+**Three quarters of one bug were three separate quiet failures**, which is the argument for fixing a class and not an
+instance: the string-literal case was found by a real program, and the other two by asking "what else is keyed by a
+name that is only unique in its unit?"
+
+**And the fix broke `.pdata`, which is how the panic surfaced.** A `static` function is not in the program's global
+function map, so `exception_table`'s `expect("a described function is a function of the program")` panicked the moment
+cJSON - full of statics - was linked again. The unwind entry now records the unit it came from, because that is what
+makes its name resolvable; the JIT's single image fills it with zero and says why.
+
+`--run` still has the old behaviour - several sources in one `Jit` share one symbol table, so two of them may not each
+define `static int helper` - and the README says so instead of the line that had claimed the linker could not do it.
+
+The CLI test now links the two `static` cases and asserts clang's numbers; cJSON plus the driver is byte-identical
+again, which is the check that mattered.
+
+195 unit, 27 parser, 26 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 - 2026-11-22 - two units, one literal
 
 The first real program built and run by `xcc` alone: cJSON (3 206 lines, MIT) and a driver over it, compiled and

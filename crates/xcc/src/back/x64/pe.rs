@@ -114,14 +114,15 @@ struct Program<'a> {
     functions: BTreeMap<String, u32>,
     /// Every object by name, and where it starts in `.data`.
     objects: BTreeMap<String, u32>,
-    /// Objects that are *not* visible outside their unit, keyed by the unit they belong to.
+    /// What each unit's own names mean inside it, in the order `units` is.
     ///
-    /// A unit's string literals are named `.str0`, `.str1`, ... and each unit numbers them from zero,
-    /// so the names collide across units while meaning different bytes. The object format says so -
-    /// these are the symbols with static storage class - and a linker that keys them by name alone
-    /// resolves every unit's second literal to the first unit's: measured, by a program whose second
-    /// translation unit printed the first one's format string.
-    locals: BTreeMap<(usize, String), u32>,
+    /// A unit's string literals are named `.str0`, `.str1`, ... and each unit numbers them from zero;
+    /// a `static` function or object may share its name with one in another unit. The object format
+    /// says which is which - static storage class means internal linkage - and a linker that keys
+    /// them by name alone resolves the second unit's to the first's: measured, by a program whose
+    /// second translation unit printed the first one's format string, and by one that called the
+    /// first unit's `static` helper.
+    local: Vec<UnitLocals>,
     /// Where each unit's code landed inside the program's `.text`, in the same order as `units`.
     unit_text: Vec<u32>,
     /// Where each unit's data landed inside the program's `.data`, in the same order as `units`.
@@ -138,6 +139,14 @@ struct Program<'a> {
     addr64: Vec<u32>,
     /// Where the entry point is, from `.text`'s start.
     entry: u32,
+}
+
+/// The names a unit keeps to itself: its `static` functions and objects, and the literals and other
+/// compiler-made objects that are local by construction.
+#[derive(Default)]
+struct UnitLocals {
+    functions: BTreeMap<String, u32>,
+    objects: BTreeMap<String, u32>,
 }
 
 /// One library's imports, in the order the address table holds them.
@@ -166,7 +175,7 @@ impl<'a> Program<'a> {
             units,
             functions: BTreeMap::new(),
             objects: BTreeMap::new(),
-            locals: BTreeMap::new(),
+            local: (0..units.len()).map(|_| UnitLocals::default()).collect(),
             unit_text: Vec::new(),
             unit_data: Vec::new(),
             imports: group(imports),
@@ -176,18 +185,24 @@ impl<'a> Program<'a> {
             addr64: Vec::new(),
             entry: 0,
         };
-        for unit in units {
+        for (index, unit) in units.iter().enumerate() {
             let base = program.text.len() as u32;
             // A unit's functions are placed relative to its own code, and its relocations are
             // written there too - so where its code landed is a fact the patch needs.
             program.unit_text.push(base);
             for function in &unit.functions {
-                // A name two units define is a duplicate symbol; the first wins and a `-c` build's
-                // object writer is where the duplicate is reported.
-                program
-                    .functions
-                    .entry(function.name.clone())
-                    .or_insert(base + function.start);
+                if function.external {
+                    // A name two units define is a duplicate symbol; the first wins and a `-c`
+                    // build's object writer is where the duplicate is reported.
+                    program
+                        .functions
+                        .entry(function.name.clone())
+                        .or_insert(base + function.start);
+                } else {
+                    program.local[index]
+                        .functions
+                        .insert(function.name.clone(), base + function.start);
+                }
             }
             program.text.extend_from_slice(&unit.text);
             // Sixteen bytes apart, so a thunk is a clean place to look at in a debugger.
@@ -211,17 +226,14 @@ impl<'a> Program<'a> {
             program.unit_data.push(base);
             for object in &unit.data.symbols {
                 if object.external {
-                    // A name two units define is a duplicate symbol; the first wins, and a `-c`
-                    // build's object writer is where the duplicate is reported.
                     program
                         .objects
                         .entry(object.name.clone())
                         .or_insert(base + object.offset);
                 } else {
-                    program.locals.insert(
-                        (program.unit_data.len() - 1, object.name.clone()),
-                        base + object.offset,
-                    );
+                    program.local[program.unit_data.len() - 1]
+                        .objects
+                        .insert(object.name.clone(), base + object.offset);
                 }
             }
             program.data.extend_from_slice(&unit.data.bytes);
@@ -240,12 +252,16 @@ impl<'a> Program<'a> {
         program.data.extend_from_slice(&0u64.to_le_bytes());
         let described: Vec<coff::FunctionUnwind> = units
             .iter()
-            .flat_map(|unit| {
-                unit.unwind.iter().map(|function| coff::FunctionUnwind {
-                    name: function.name.clone(),
-                    size: function.size,
-                    info: function.info.clone(),
-                })
+            .enumerate()
+            .flat_map(|(index, unit)| {
+                unit.unwind
+                    .iter()
+                    .map(move |function| coff::FunctionUnwind {
+                        name: function.name.clone(),
+                        unit: index,
+                        size: function.size,
+                        info: function.info.clone(),
+                    })
             })
             .collect();
         program.unwind = coff::unwind_layout(&described);
@@ -261,8 +277,11 @@ impl<'a> Program<'a> {
     /// one; a name that is not local - a function, an external object, an import - is the program's
     /// and is found by `address`.
     fn within(&self, unit: Option<usize>, name: &str, sections: &Sections) -> Option<u32> {
-        if let Some(unit) = unit {
-            if let Some(offset) = self.locals.get(&(unit, name.to_owned())) {
+        if let Some(local) = unit.and_then(|unit| self.local.get(unit)) {
+            if let Some(offset) = local.functions.get(name) {
+                return Some(sections.text.address + offset);
+            }
+            if let Some(offset) = local.objects.get(name) {
                 return Some(sections.data.address + offset);
             }
         }
@@ -812,12 +831,10 @@ impl<'a> Writer<'a> {
     fn exception_table(&self) -> Vec<u8> {
         let mut pdata = Vec::new();
         for entry in &self.program.unwind.entries {
-            let begin = *self
+            let begin = self
                 .program
-                .functions
-                .get(&entry.name)
-                .expect("a described function is a function of the program")
-                + self.sections.text.address;
+                .within(Some(entry.unit), &entry.name, self.sections)
+                .expect("a described function is a function of the program");
             pdata.extend_from_slice(&begin.to_le_bytes());
             pdata.extend_from_slice(&(begin + entry.size).to_le_bytes());
             pdata.extend_from_slice(&(self.sections.xdata.address + entry.info).to_le_bytes());

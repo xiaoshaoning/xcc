@@ -68,6 +68,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         globals_by_name: HashMap::new(),
         body: None,
         last_declared: None,
+        last_declared_static: false,
         function_buffer: None,
         bytes: None,
         init_relocations: Vec::new(),
@@ -277,6 +278,9 @@ struct Parser<'a> {
     body: Option<Body>,
     /// The name the last declarator declared, for a definition that follows it.
     last_declared: Option<Symbol>,
+    /// Whether the declaration just read said `static`. The name beside it is `last_declared`, and
+    /// the linkage of that name is this: a file-scope `static` is internal (C99 6.2.2p3).
+    last_declared_static: bool,
     /// The buffer a record-returning function was handed by its caller, while its body is being
     /// read (Win64: the caller owns the result, and the callee returns its address).
     function_buffer: Option<cir::Value>,
@@ -696,7 +700,7 @@ impl Parser<'_> {
                     if let Some(entry) = name.and_then(|name| self.symbols.here_mut(name)) {
                         entry.defined = true;
                     }
-                    self.function_body(name, result);
+                    self.function_body(name, result, !self.last_declared_static);
                 }
                 _ => {
                     self.error_at_current("expected `;`");
@@ -850,7 +854,7 @@ impl Parser<'_> {
             if object && !self.in_body() && !self.at_punct("=") && !specs.is_extern {
                 if let Some(name) = name {
                     let span = self.span();
-                    self.define_global(name, ty, None, specs.alignas, span);
+                    self.define_global(name, ty, None, specs.alignas, !specs.is_static, span);
                 }
             }
             if static_local {
@@ -884,6 +888,7 @@ impl Parser<'_> {
                                     ty,
                                     Some((bytes, relocations)),
                                     specs.alignas,
+                                    !specs.is_static,
                                     span,
                                 );
                             }
@@ -914,6 +919,7 @@ impl Parser<'_> {
             }
             last = Some(ty);
             self.last_declared = name;
+            self.last_declared_static = specs.is_static;
             if !self.eat(",") {
                 return last;
             }
@@ -995,6 +1001,7 @@ impl Parser<'_> {
         ty: TypeId,
         init: Option<(Vec<u8>, Vec<cir::GlobalRelocation>)>,
         alignas: u64,
+        external: bool,
         span: Span,
     ) {
         // A tentative definition defines nothing yet: `int x;` may be followed by `int x = 1;`.
@@ -1034,7 +1041,7 @@ impl Parser<'_> {
                     init,
                     relocations,
                     alignas,
-                    external: true,
+                    external,
                     span,
                 });
             }

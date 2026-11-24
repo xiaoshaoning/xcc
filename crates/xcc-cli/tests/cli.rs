@@ -339,6 +339,42 @@ void b_literals(void) {
 }
 
 #[test]
+fn two_sources_keep_their_own_statics() {
+    // C99 6.2.2p3: a file-scope `static` has internal linkage, so two units may each define
+    // `helper` and `counter` without naming the same thing. A linker that keys them by name alone
+    // gives the second unit the first's code and bytes - measured: `a: 2 7` where clang printed
+    // `a: 2 500`, and `b=11` where clang printed `b=500`.
+    let temp = Temp::new("statics");
+    let a = temp.write(
+        "a.c",
+        r#"#include <stdio.h>
+static int helper(int x) { return x + 1; }
+static int counter = 10;
+int b_value(void);
+int b_counter(void);
+int main(void) {
+    counter++;
+    printf("a: %d %d %d\n", helper(1), b_value(), b_counter());
+    return 0;
+}
+"#,
+    );
+    let b = temp.write(
+        "b.c",
+        r#"static int helper(int x) { return x * 100; }
+static int counter = 500;
+int b_value(void) { return helper(2) + helper(3); }
+int b_counter(void) { return counter; }
+"#,
+    );
+    let exe = temp.path().join("statics.exe");
+    let output = run(xcc().arg(&a).arg(&b).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ran = run(&mut Command::new(&exe));
+    assert_eq!(stdout(&ran).replace('\r', ""), "a: 2 500 500\n");
+}
+
+#[test]
 fn a_link_at_another_level_says_which_one_it_needs() {
     let temp = Temp::new("linklevel");
     let source = temp.write("t.c", "int main(void) { return 0; }\n");

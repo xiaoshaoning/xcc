@@ -77,6 +77,7 @@ fn lower_function(
     let outgoing_slots = widest_call.saturating_sub(ARGUMENT_COUNT);
     Ok(MachineFunction {
         name: names.resolve(func.name).to_string(),
+        external: func.external,
         frame_bytes: lowerer.frame_bytes,
         variadic: func.variadic,
         classes: lowerer.classes,

@@ -2043,7 +2043,7 @@ impl Parser<'_> {
 
     /// A function definition's body: the parameters live in its outermost block (C99 6.2.1p4),
     /// so the block is parsed without pushing a scope of its own.
-    pub(super) fn function_body(&mut self, name: Option<Symbol>, result: TypeId) {
+    pub(super) fn function_body(&mut self, name: Option<Symbol>, result: TypeId, external: bool) {
         self.function_result = Some(result);
         self.current_function = name;
         self.loops = 0;
@@ -2099,6 +2099,7 @@ impl Parser<'_> {
         let shaped_result = self.abi_value(result);
         let mut func = cir::Func::new(name, shaped_result, span);
         func.variadic = variadic;
+        func.external = external;
         let mut body = Body {
             current: func.entry,
             func,

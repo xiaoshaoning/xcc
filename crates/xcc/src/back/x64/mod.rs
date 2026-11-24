@@ -525,6 +525,8 @@ pub(crate) struct MachineBlock {
 pub(crate) struct MachineFunction {
     /// Its link name.
     pub name: String,
+    /// Whether the name is visible outside this translation unit: what a `static` function is not.
+    pub external: bool,
     /// Bytes of frame the lowering needed, block parameters included; spills are added after.
     pub frame_bytes: i32,
     /// How many argument *slots* the widest call in this function pushes on the stack: everything

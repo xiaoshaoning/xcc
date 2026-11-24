@@ -65,11 +65,11 @@ Stated here rather than discovered later.
 - **No unwind data.** A Cranelift win64 object carries `.text` and no `.pdata`/`.xdata` (measured,
   and asserted, in `back::tests`; [ADR-003](docs/ADR-003-win64-unwind.md)). Calling compiled C
   works; *unwinding* through it - SEH, a debugger walking frames - does not.
-- **A `static` *function* is still not distinguished from an external one.** Data is: the object
-  writer marks a unit's own objects with static storage class, and the linker keys them by unit, so
-  each unit's string literals mean its own bytes (that was a bug, found by cJSON). Functions carry no
-  such flag, so two units with a `static` helper of the same name would still resolve to the first -
-  the same bug one layer up, stated here rather than left to be found.
+- **A `static` name inside one *JIT* is one name.** The linker scopes internal linkage correctly -
+  each unit's string literals, `static` objects and `static` functions mean its own bytes and its own
+  code (all three were bugs, and the literal one was found by cJSON) - but `--run` compiles several
+  sources into one image with one symbol table, so two sources added to the same `Jit` that each
+  define `static int helper(void)` name the first one.
 - **Refused with one diagnostic each**: `_Complex`, `#pragma pack`, `#include_next`, a file-scope
   pointer initialised from a literal, and a struct value inside a brace list.
   [docs/C99-SUPPORT.md](docs/C99-SUPPORT.md) is the line-by-line answer, including the refusals

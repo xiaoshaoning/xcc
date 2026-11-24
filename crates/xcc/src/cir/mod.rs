@@ -503,6 +503,10 @@ pub struct Func {
     /// Whether the parameter list ended in `...`. A variadic function's prologue writes its register
     /// arguments into the caller's home area, which is what a `va_list` walks (ADR-006).
     pub variadic: bool,
+    /// Whether the name is visible outside this translation unit. A `static` function is not, and
+    /// two units may each have one of the same name - so a linker that keys functions by name alone
+    /// gives the second unit the first unit's code.
+    pub external: bool,
     /// The entry block, which receives the parameters.
     pub entry: Block,
     /// Every block, in the order the builder made them.
@@ -518,6 +522,7 @@ impl Func {
             name,
             result,
             variadic: false,
+            external: true,
             entry: Block(0),
             blocks: Vec::new(),
             values: Vec::new(),

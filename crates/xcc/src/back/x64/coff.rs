@@ -76,6 +76,8 @@ pub(crate) struct DataSymbol {
 pub(crate) struct Placed {
     /// Its link name.
     pub name: String,
+    /// Whether the name is visible outside this translation unit: what a `static` function is not.
+    pub external: bool,
     /// Where it starts within `.text`.
     pub start: u32,
     /// The places in its code that name a symbol.
@@ -87,6 +89,10 @@ pub(crate) struct Placed {
 pub(crate) struct FunctionUnwind {
     /// Its link name, whose address `.pdata`'s begin and end are.
     pub name: String,
+    /// Which unit it belongs to, because a `static` function's name is only unique in its own unit:
+    /// a program linking two units that each define `static int helper(void)` has two of them.
+    /// A single image's own copy of this is unit zero, which is the only unit it has.
+    pub unit: usize,
     /// How long its code is.
     pub size: u32,
     /// The `UNWIND_INFO` that describes it.
@@ -122,6 +128,8 @@ pub(crate) struct UnwindLayout {
 pub(crate) struct UnwindEntry {
     /// The function whose address `begin` and `end` are relative to.
     pub name: String,
+    /// The unit that function belongs to, which is what makes its name resolvable.
+    pub unit: usize,
     /// Its length: `end` is its address plus this.
     pub size: u32,
     /// Where its `UNWIND_INFO` starts in `.xdata`.
@@ -138,6 +146,7 @@ pub(crate) fn unwind_layout(unwind: &[FunctionUnwind]) -> UnwindLayout {
         }
         entries.push(UnwindEntry {
             name: function.name.clone(),
+            unit: function.unit,
             size: function.size,
             info: xdata.len() as u32,
         });
@@ -156,12 +165,14 @@ pub(crate) fn assemble(functions: &[MachineFunction], data: Data) -> Image {
         let encoded = encode::function(function, &allocation);
         placed.push(Placed {
             name: function.name.clone(),
+            external: function.external,
             start: text.len() as u32,
             relocations: encoded.relocations,
         });
         if let Some(described) = &encoded.unwind {
             unwind.push(FunctionUnwind {
                 name: function.name.clone(),
+                unit: 0,
                 size: encoded.code.len() as u32,
                 info: unwind_info(described),
             });
@@ -240,7 +251,10 @@ fn write_object(image: &Image) -> Vec<u8> {
         symbols: image
             .functions
             .iter()
-            .map(|function| (function.name.clone(), function.start, EXTERNAL))
+            .map(|function| {
+                let class = if function.external { EXTERNAL } else { STATIC };
+                (function.name.clone(), function.start, class)
+            })
             .collect(),
         relocations: image
             .functions
@@ -520,11 +534,13 @@ mod tests {
         let layout = unwind_layout(&[
             FunctionUnwind {
                 name: "a".into(),
+                unit: 0,
                 size: 3,
                 info: vec![1, 2, 3],
             },
             FunctionUnwind {
                 name: "b".into(),
+                unit: 1,
                 size: 5,
                 info: vec![4, 5, 6],
             },
