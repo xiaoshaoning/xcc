@@ -2232,10 +2232,10 @@ impl Parser<'_> {
 
     /// How many errors have been reported: enough to tell whether a function body was read
     /// without one.
+    ///
+    /// A counter, not a count of the stored list: the list is capped by the diagnostic budget, and a
+    /// question about the source must not be answered by a number the report's limit decides.
     pub(super) fn error_count(&self) -> usize {
-        self.diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.is_error())
-            .count()
+        self.errors
     }
 }

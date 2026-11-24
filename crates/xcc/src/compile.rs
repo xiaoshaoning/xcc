@@ -183,7 +183,9 @@ impl Compile {
         let failed = parsed.diagnostics.iter().any(Diagnostic::is_error);
         diagnostics.extend(parsed.diagnostics);
         if failed {
-            let items = truncate_diagnostics(diagnostics, &self.options);
+            // The parser refuses past the budget, so the number it refused comes in beside the
+            // list: a list capped where it grows has the length of the cap, not one more.
+            let items = report(diagnostics, parsed.dropped, &self.options);
             return Err(Diagnostics::new(items, sources));
         }
 
@@ -350,17 +352,36 @@ impl Compile {
 }
 
 /// Cut a diagnostic list down to the budget, saying how many were dropped.
-fn truncate_diagnostics(mut diagnostics: Vec<Diagnostic>, options: &Options) -> Vec<Diagnostic> {
+fn truncate_diagnostics(diagnostics: Vec<Diagnostic>, options: &Options) -> Vec<Diagnostic> {
+    report(diagnostics, 0, options)
+}
+
+/// What a compilation reports: at most the budget, and a note saying how many were not shown.
+///
+/// `refused` is what the parser turned away *past* the budget - a list capped where it grows cannot
+/// say it was capped, because its length is the budget and not one more. The count comes in beside
+/// the list, and the arithmetic happens once, here.
+fn report(mut diagnostics: Vec<Diagnostic>, refused: usize, options: &Options) -> Vec<Diagnostic> {
     let budget = options.budgets.max_diagnostics;
-    if diagnostics.len() > budget {
-        let dropped = diagnostics.len() - budget;
+    let over = diagnostics.len().saturating_sub(budget);
+    let dropped = refused + over;
+    if over > 0 {
         diagnostics.truncate(budget);
-        diagnostics.push(Diagnostic::new(
-            Severity::Note,
-            format!("{dropped} further diagnostics not shown"),
-        ));
+    }
+    if dropped > 0 {
+        diagnostics.push(not_shown(dropped));
     }
     diagnostics
+}
+
+/// The note that says the list was capped. One wording, because two would be two things to read:
+/// the parser refuses a diagnostic past the budget and counts it, and a list that already grew past
+/// the budget is cut here.
+fn not_shown(dropped: usize) -> Diagnostic {
+    Diagnostic::new(
+        Severity::Note,
+        format!("{dropped} further diagnostics not shown"),
+    )
 }
 
 /// Every name the units refer to and none of them defines, in a stable order so that the same
@@ -395,7 +416,33 @@ fn required_names(images: &[crate::back::x64::coff::Image]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    /// The default budget refuses a source past it, with a diagnostic naming the limit.
+    /// The command line's budget is the one a *program* needs, not a snippet: a nine-megabyte
+    /// translation unit compiles. sqlite's amalgamation is 9 018 109 bytes, which the default
+    /// refused - and a compiler that cannot read the file a user has is measuring itself.
+    #[test]
+    fn a_program_sized_source_compiles_with_the_compilers_budget() {
+        let mut source = String::with_capacity((9 << 20) + 2);
+        source.push_str(
+            "int f(void) { return 0; }
+",
+        );
+        while source.len() <= 9 << 20 {
+            source.push_str(
+                "/* pad */
+",
+            );
+        }
+        let mut compiler = Compile::new(Options {
+            budgets: Budgets::for_a_compiler(),
+            ..Options::default()
+        });
+        let artifact = compiler
+            .compile("big.c", &source)
+            .expect("a nine-megabyte source compiles");
+        assert!(!artifact.bytes().is_empty());
+    }
+
+    /// The default budget refuses a source past it, with a diagnostic naming the limit.    /// The default budget refuses a source past it, with a diagnostic naming the limit.
     ///
     /// The *command line* raises this budget (`Budgets::for_a_compiler`) because a compiler is not
     /// an embedder; the default is what a host that hands over a snippet gets, and it still says no.

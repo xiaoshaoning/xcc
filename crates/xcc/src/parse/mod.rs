@@ -50,6 +50,8 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         types: Types::new(),
         symbols: Symbols::new(),
         diagnostics: Vec::new(),
+        dropped: 0,
+        errors: 0,
         budgets,
         nesting: 0,
         function_result: None,
@@ -85,6 +87,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
     };
     parser.translation_unit();
     Parsed {
+        dropped: parser.dropped,
         module: cir::Module {
             types: parser.types,
             funcs: parser.funcs,
@@ -101,6 +104,9 @@ pub(crate) struct Parsed {
     pub module: cir::Module,
     /// Errors and warnings, in source order.
     pub diagnostics: Vec<Diagnostic>,
+    /// How many were refused by the budget. A list capped at the budget cannot show that it was
+    /// capped - its length is the budget, not one more - so the count travels to whoever reports it.
+    pub dropped: usize,
 }
 
 /// A function whose body is being read: the `cir` function, and the block still being filled.
@@ -236,6 +242,17 @@ struct Parser<'a> {
     types: Types,
     symbols: Symbols,
     diagnostics: Vec<Diagnostic>,
+    /// How many diagnostics the budget refused. A list capped at the budget cannot show that it was
+    /// capped - its length is the budget, not one more - so whoever reports it needs this number.
+    dropped: usize,
+    /// How many *errors* have been reported, whether the budget kept them or not.
+    ///
+    /// Separate from the list because a rule asks "was this body read without an error?", and an
+    /// answer that changed with the diagnostic budget would make the parse itself depend on a limit
+    /// meant for the report. It did: a capped list stopped growing, the count taken from it stopped
+    /// growing with it, and a capped parse produced a hundred and fifteen diagnostics that a
+    /// generous one never made.
+    errors: usize,
     budgets: &'a Budgets,
     /// How deep the current recursion is, for the budget.
     nesting: usize,
@@ -431,7 +448,12 @@ impl Parser<'_> {
         // advancing can produce a diagnostic per iteration, and a vector that grows to hold them all
         // allocated eleven gigabytes on a one-line struct member before the truncation that was
         // supposed to bound it ever ran. A bound applied where the list grows bounds the list.
+        if diagnostic.is_error() {
+            // Before the budget check: the count is about the source, not about the report.
+            self.errors += 1;
+        }
         if self.diagnostics.len() >= self.budgets.max_diagnostics {
+            self.dropped += 1;
             return;
         }
         let file = self.peek().map_or(0, |token| token.file);
@@ -2109,6 +2131,46 @@ block0 (entry)(v0: int, v1: int):
         assert!(text.contains("br "), "{text}");
         assert!(text.contains("jump block1"), "{text}");
         assert!(text.contains("cmp gt int"), "{text}");
+    }
+
+    /// A capped list says how many it refused, and the count is the difference: whatever the
+    /// budget, *shown + refused* is the same number - the diagnostics the source earned.
+    #[test]
+    fn a_capped_diagnostic_list_counts_what_it_refused() {
+        let source: String = (0..120)
+            .map(|i| {
+                format!(
+                    "int q{i} = ;
+"
+                )
+            })
+            .collect();
+        let file = SourceFile::new("many.c", &source);
+        let options = crate::options::Options::default();
+        let preprocessed = preprocess(&file, &options, &());
+        let generous = parse(
+            &preprocessed,
+            &crate::options::Budgets {
+                max_diagnostics: 10_000,
+                ..crate::options::Budgets::default()
+            },
+        );
+        let total = generous.diagnostics.len();
+        assert!(total > 100, "the source earns more than a hundred: {total}");
+
+        let capped = parse(
+            &preprocessed,
+            &crate::options::Budgets {
+                max_diagnostics: 10,
+                ..crate::options::Budgets::default()
+            },
+        );
+        assert_eq!(capped.diagnostics.len(), 10, "the cap is the cap");
+        assert_eq!(
+            capped.diagnostics.len() + capped.dropped,
+            total,
+            "shown plus refused is what the source earned, whatever the budget"
+        );
     }
 
     #[test]

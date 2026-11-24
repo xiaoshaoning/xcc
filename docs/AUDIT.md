@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the cap changed the parse
+
+The predefined-macros and budgets commit, reviewed. Both findings are against the *caps* it added, and the second is
+the worst kind of bug this project has a name for.
+
+**The truncation note could no longer fire.** `truncate_diagnostics` added "N further diagnostics not shown" when the
+list was *longer* than the budget - and the parser now caps the list where it grows, so its length is exactly the budget
+and the condition is never met. A check whose result the code cannot reach. The count the parser refused comes in beside
+the list now (`Parsed::dropped`), and the arithmetic happens in one place - `report(diagnostics, refused, options)` -
+instead of two that could disagree, which they immediately did: the first version printed "1 further" for a list that
+had refused fifty.
+
+**And the cap changed the parse.** With the list capped, `error_count` - which counted the *stored* errors, to answer
+"was this body read without one?" - stopped growing, so rules that ask that question took a different path: a source
+capped at ten diagnostics produced **355** diagnostics' worth of work where a generous budget produced 240. A limit meant
+for the *report* was deciding what the *parser* did, which is worse than a wrong count: it makes the compile depend on
+how much of its own output it was allowed to keep. The answer is a counter incremented before the cap check, so the fact
+is about the source and the list is about the report, and a test asserts the invariant across two budgets:
+*shown + refused is what the source earned, whatever the budget.*
+
+**Two things added because the review could not check them**: the README said "the standard macros" without naming the
+target's, which is what a program tests to learn where it is; and nothing pinned the point of `Budgets::for_a_compiler`,
+so a test now compiles a nine-megabyte source - sqlite's amalgamation is 9 018 109 bytes - with it.
+
+200 unit, 28 parser, 29 CLI, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the target's own names, and the eleven gigabytes they uncovered
 
 Three things, found by pointing the compiler at a program the size of sqlite's amalgamation.
