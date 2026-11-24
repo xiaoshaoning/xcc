@@ -786,6 +786,27 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the test that would have passed for the wrong reason
+
+The lexer and initialiser commit, reviewed. Both fixes hold and the sweep around them came up empty; the finding is
+against the test that was supposed to keep the first one fixed.
+
+**The lexer's regression test asserted `contains("int")`.** A `//` comment losing its newline is a bug about *which
+tokens start a logical line*, and "int is somewhere in that set" passes for a lexer that marks **every** token as
+starting one - the failure the flag exists to prevent, in the other direction. The set is the assertion now:
+`["#", "int"]`, exactly the `#` of the directive and the `int` of the line after it. Writing it that way immediately
+failed, correctly, on the end-of-file token: the file's end starts a line too, and a test that means "the tokens"
+has to say so.
+
+**Checked, because the fix is one line in a hot path**: a `//` comment before a directive, at end of file with no
+newline, a `/* */` spanning lines (where the newline must *not* count - C99 replaces a comment with one space, so a
+directive runs through it), a block comment inside a `#define`'s body, nested trailing commas in a two-dimensional
+array, and a trailing comma after designators (6.7.8p7). All correct.
+
+201 unit, 30 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - `#define A 1 // c` took the rest of the file as its body
 
 stb_image.h - 7 812 lines, one of the most used single-file libraries in C - was the next real code, and it found

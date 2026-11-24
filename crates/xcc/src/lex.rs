@@ -501,14 +501,17 @@ int x;
         let after: Vec<&str> = lexed
             .tokens
             .iter()
-            .filter(|token| token.starts_line)
+            // The end of the file starts a line too, and is not a token anyone means.
+            .filter(|token| token.starts_line && token.kind != TokenKind::Eof)
             .map(|token| interner.resolve(token.text))
             .collect();
-        // The `#`, the `int`, and the `;` of a directive-free world are not all here: what matters
-        // is that the token after the comment starts a line.
-        assert!(
-            after.contains(&"int"),
-            "the line after a `//` comment starts one: {after:?}"
+        // Exactly these two begin a logical line - the `#` and the `int`. A `contains` here would
+        // pass for a lexer that marked *every* token, which is the failure the flag exists to
+        // prevent, so the set is the assertion.
+        assert_eq!(
+            after,
+            ["#", "int"],
+            "the line after a `//` comment starts one, and the comment's own line does not"
         );
     }
 
