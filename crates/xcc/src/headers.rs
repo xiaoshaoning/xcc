@@ -52,7 +52,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "fenv.h",
-        Disposition::Refused("there is no access to the floating-point environment"),
+        Disposition::Shipped(include_str!("../include/fenv.h")),
     ),
     (
         "float.h",
@@ -128,7 +128,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "wctype.h",
-        Disposition::Refused("not implemented; wide characters are not"),
+        Disposition::Shipped(include_str!("../include/wctype.h")),
     ),
 ];
 

@@ -13,6 +13,7 @@
  * would be doing it twice, and the rule about quotes is not one this file should own.
  */
 
+#include <fenv.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -30,6 +31,9 @@ char ***__p___argv(void);
 
 void mainCRTStartup(void) {
     _configure_narrow_argv(ARGV_UNEXPANDED);
+    // The default floating-point environment, captured while it still is one: `fesetenv(FE_DFL_ENV)`
+    // restores whatever this holds, and the process starts in the default.
+    fegetenv(&_Fenv_default);
     exit(main(*__p___argc(), *__p___argv()));
 }
 
@@ -149,4 +153,38 @@ int sscanf(const char *restrict from, const char *restrict format, ...) {
  * registration call is `_crt_atexit`. */
 int atexit(void (*function)(void)) {
     return _crt_atexit(function);
+}
+
+/* fenv.h, the two functions no Windows runtime exports.
+ *
+ * `feraiseexcept` raises each exception by performing the operation that causes it: they are masked
+ * by default, so the operation sets the status flag rather than trapping, which is what the standard
+ * asks for. The values are `volatile` so the compiler computes them rather than folding the flags
+ * away. `feupdateenv` is the standard's own recipe - save what is raised, restore the environment,
+ * raise it again in the new one. */
+fenv_t _Fenv_default;
+
+int feraiseexcept(int excepts) {
+    volatile double zero = 0.0;
+    volatile double one = 1.0;
+    volatile double big = 1e308;
+    volatile double tiny = 1e-308;
+    volatile double sink = 0.0;
+
+    if (excepts & FE_INVALID) sink = zero / zero;
+    if (excepts & FE_DIVBYZERO) sink = one / zero;
+    if (excepts & FE_OVERFLOW) sink = big * big;
+    if (excepts & FE_UNDERFLOW) sink = tiny * tiny;
+    if (excepts & FE_INEXACT) sink = one / 3.0;
+    (void)sink;
+    return 0;
+}
+
+int feupdateenv(const fenv_t *environment) {
+    int raised = fetestexcept(FE_ALL_EXCEPT);
+    int status = fesetenv(environment);
+    if (status != 0) {
+        return status;
+    }
+    return feraiseexcept(raised);
 }

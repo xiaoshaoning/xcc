@@ -936,14 +936,29 @@ impl Parser<'_> {
     /// literal, and the two would disagree about escapes and adjacent runs.
     fn string_literal(&mut self) -> (TypeId, String, Vec<u8>) {
         let span = self.span();
+        // C99 6.4.5p5: adjacent literals concatenate, and they must be of the same kind.
+        let wide = self
+            .peek()
+            .is_some_and(|token| crate::literal::is_wide(self.spell(token)));
         let mut init: Vec<u8> = Vec::new();
         while let Some(token) = self.peek().copied() {
             if token.kind != crate::lex::TokenKind::Str {
                 break;
             }
             let written = self.spell(&token).to_owned();
+            if crate::literal::is_wide(&written) != wide {
+                self.error(
+                    span,
+                    "a wide string literal and a narrow one cannot be joined into one",
+                );
+            }
             self.bump();
-            match crate::literal::string_bytes(&written) {
+            let decoded = if wide {
+                crate::literal::wide_bytes(&written)
+            } else {
+                crate::literal::string_bytes(&written)
+            };
+            match decoded {
                 Some(mut bytes) => init.append(&mut bytes),
                 None => {
                     // An escape this compiler does not read is reported and filled with
@@ -953,17 +968,30 @@ impl Parser<'_> {
                         span,
                         "this string literal has an escape this compiler does not read",
                     );
-                    let count = string_length(&written) as usize;
-                    init.resize(init.len() + count, 0);
+                    let units = string_length(&written) as usize;
+                    let width = if wide { 2 } else { 1 };
+                    init.resize(init.len() + units * width, 0);
                 }
             }
         }
-        init.push(0);
-        let char = self
-            .types
-            .fundamental("char")
-            .unwrap_or_else(|| self.types.error());
-        let ty = self.types.array(char, Some(init.len() as u64));
+        // The terminator is one code unit: a byte for a narrow literal, two for a wide one.
+        if wide {
+            init.extend_from_slice(&[0, 0]);
+        } else {
+            init.push(0);
+        }
+        let element = if wide {
+            self.types
+                .fundamental("unsigned short")
+                .unwrap_or_else(|| self.types.error())
+        } else {
+            self.types
+                .fundamental("char")
+                .unwrap_or_else(|| self.types.error())
+        };
+        // The array's length is in *elements*: a wide literal's bytes are twice its characters.
+        let width = if wide { 2 } else { 1 };
+        let ty = self.types.array(element, Some(init.len() as u64 / width));
         // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
         // named with a `.` prefix so it can never collide with a C identifier.
         let name = format!(".str{}", self.literals);

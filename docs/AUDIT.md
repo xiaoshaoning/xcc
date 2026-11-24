@@ -786,6 +786,44 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - wide literals were a wrong answer, and the linker had no alignment
+
+Three of the five refused headers, and two bugs that had to come first.
+
+**Wide literals were silently wrong.** `L"ab"` compiled and was emitted as its *narrow* bytes: `sizeof L"ab"` was 3
+where the target's `wchar_t` makes it 6, `L'a'` was an `int` and not a `wchar_t`, and `wchar_t *s = L"ab"` read 25185
+and then two bytes past the object. No test caught it because no header shipped it and no corpus program writes one.
+Now `L'a'` has type `wchar_t`, and a wide literal is stored as UTF-16 code units - escapes give *code unit* values
+(`L"F"` is one character), source text is decoded from UTF-8 (so a literal `é` is one unit, not the two bytes it
+is written in), and a character above the basic plane is a surrogate pair. Measured against `clang` on five shapes:
+`sizeof` of a string, of a character, of a wide character, an escape, and UTF-8 source - all identical.
+
+**And the linker never aligned a unit's data.** Adding eight bytes to the C runtime broke `setjmp`: the program's
+`jmp_buf`, `_Alignas(16)`, started at `.data + 8` and `__intrinsic_setjmp`'s `movdqa` faulted. The linker concatenated
+units' data with no padding, and it worked until the bytes before it happened to leave the alignment right. A unit now
+carries the strictest alignment any object in it asks for, and is placed there - and *the padding comes before the
+base is computed*, which my first attempt got wrong: the symbols were placed eight bytes above their bytes.
+
+**`fenv.h` ships**, and it needed one measured fact and one design decision. The fact: the eleven functions and their
+values against the UCRT (`FE_UPWARD` is 0x200, `fenv_t` is eight bytes). The decision: `FE_DFL_ENV` is a *pointer to
+an object*, not a `-1` sentinel, because this runtime's `fesetenv` dereferences what it is handed - so the runtime
+captures the default with `fegetenv` before `main` runs, and `fesetenv(FE_DFL_ENV)` restores what the program started
+in. A `clang` build of the same program restores `FE_TOWARDZERO`, because mingw's default object is not what C99 7.6p6
+says it is; ours is, and the test says why the two differ. `feraiseexcept` and `feupdateenv` are the runtime's own -
+no Windows runtime exports them - and are listed as unavailable to a *JIT*, with the reason.
+
+**`wctype.h` ships**, all eighteen of its functions exported by the library under their own names, with `wint_t`,
+`WEOF`, `wctype_t` and `wctrans_t` measured at the target's widths. `wctype("alpha")` and `wctrans("toupper")` work,
+which is what those two opaque types are for.
+
+**`wchar.h` does not, yet, and the measurement says why**: of its seventy-five C99 names, fifty-seven resolve and
+eighteen do not - the nine wide `stdio` front ends (the UCRT keeps those in the program, as it does the narrow ones),
+`fwide`, `mbsinit`, and the four `wmem*` functions. The next step is the runtime's, and PLAN.md carries the list.
+
+195 unit, 28 parser, 29 CLI, 13 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the strongest claim was the one not written down
 
 The `mem2reg` fix, reviewed. The fix is right and the sweep around it came up empty - which is what made the finding

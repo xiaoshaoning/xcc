@@ -566,3 +566,102 @@ int main(void) {
     assert_eq!(run.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "7 4 4");
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn wide_literals_are_wchar_ts_and_utf16() {
+    // C99 6.4.4.4p10 and 6.4.5p5: `L'a'` has type `wchar_t` and `L"ab"` is an array of them, NUL
+    // included. Before this, a wide literal was emitted as its *narrow* bytes and `L'a'` was an
+    // `int` - a program that read `wchar_t *s = L"ab"` got 25185 and then two bytes past the end.
+    let source = r#"
+#include <stddef.h>
+#include <stdio.h>
+
+int main(void) {
+    const wchar_t *s = L"ab";
+    const wchar_t *e = L"caf\xe9";
+    const wchar_t *u = L"é";
+    printf("%d %d %d %d\n", (int)sizeof(L"ab"), (int)sizeof(L"a"), (int)sizeof(wchar_t),
+           (int)sizeof(L'a'));
+    printf("%d %d %d\n", (int)s[0], (int)s[1], (int)s[2]);
+    printf("%d %d %d %d\n", (int)e[0], (int)e[1], (int)e[2], (int)e[3]);
+    printf("%d %d\n", (int)u[0], (int)sizeof(L"é"));
+    return 0;
+}
+"#;
+    let run = run_linked("wide", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace('\r', ""),
+        "6 4 2 2\n97 98 0\n99 97 102 233\n233 4\n"
+    );
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn the_floating_point_environment_round_trips() {
+    // C99 7.6: the rounding direction is set and read back, the status flags are cleared, raised
+    // and held, and `FE_DFL_ENV` restores the environment the program started in. The last line is
+    // where a mingw build differs: its `FE_DFL_ENV` is an object its own library fills, and
+    // restoring it left the mode at `FE_TOWARDZERO`. Ours is captured by `fegetenv` before `main`,
+    // so "the default" means what 7.6p6 says it means.
+    let source = r#"
+#include <fenv.h>
+#include <stdio.h>
+
+int main(void) {
+    int start = fegetround();
+    fesetround(FE_UPWARD);
+    int upward = fegetround();
+    fesetround(FE_TOWARDZERO);
+    int toward = fegetround();
+    int restored = fesetenv(FE_DFL_ENV);
+    int after = fegetround();
+    feclearexcept(FE_ALL_EXCEPT);
+    int cleared = fetestexcept(FE_ALL_EXCEPT);
+    feraiseexcept(FE_DIVBYZERO);
+    int raised = fetestexcept(FE_ALL_EXCEPT);
+    fenv_t saved;
+    feholdexcept(&saved);
+    int held = fetestexcept(FE_ALL_EXCEPT);
+    feupdateenv(&saved);
+    int updated = fetestexcept(FE_ALL_EXCEPT);
+    printf("%d %#x %#x %d %d\n", start, upward, toward, restored, after);
+    printf("%#x %#x %#x %#x\n", cleared, raised, held, updated);
+    return 0;
+}
+"#;
+    let run = run_linked("fenv", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace('\r', ""),
+        "0 0x200 0x300 0 0\n0 0x8 0 0x8\n"
+    );
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn wide_character_classes_and_case_mapping() {
+    // C99 7.25: eighteen functions the runtime exports under their own names, over the target's
+    // two-byte `wint_t`. The class and mapping *names* are the interesting half: `wctype("alpha")`
+    // and `wctrans("toupper")` are the runtime's tables, so this fails if `wctype_t` or `wctrans_t`
+    // is the wrong width.
+    let source = r#"
+#include <stdio.h>
+#include <wctype.h>
+
+int main(void) {
+    printf("%d %d %d %d\n", iswalpha(L'A') != 0, iswdigit(L'7') != 0, (int)towlower(L'A'),
+           iswspace(L' ') != 0);
+    printf("%d %d %d %d\n", iswctype(L'a', wctype("alpha")) != 0,
+           (int)towctrans(L'a', wctrans("toupper")), (int)sizeof(wint_t), WEOF);
+    return 0;
+}
+"#;
+    let run = run_linked("wctype", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace('\r', ""),
+        "1 1 97 1\n1 65 2 65535\n"
+    );
+}

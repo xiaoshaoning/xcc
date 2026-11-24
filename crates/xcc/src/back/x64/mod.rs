@@ -591,7 +591,13 @@ fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
             data.undefined.push(global.name.clone());
             continue;
         }
-        let align = module.types.align_of(global.ty).unwrap_or(1).max(1) as usize;
+        let align = module
+            .types
+            .align_of(global.ty)
+            .unwrap_or(1)
+            .max(1)
+            .max(global.alignas) as usize;
+        data.align = data.align.max(align as u32);
         while data.bytes.len() % align != 0 {
             data.bytes.push(0);
         }

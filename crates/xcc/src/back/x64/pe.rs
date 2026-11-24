@@ -222,6 +222,14 @@ impl<'a> Program<'a> {
             }
         }
         for unit in units {
+            // Each unit's data starts where its strictest object can: an object's alignment is a
+            // property of the object, and a unit is a run of them. The padding comes first, because
+            // `base` is what every symbol of this unit is placed from - computing it before the
+            // padding put the symbols eight bytes above their bytes, and `__intrinsic_setjmp`'s
+            // `movdqa` faulted on a `jmp_buf` that was really at 16.
+            while program.data.len() % unit.data.align.max(1) as usize != 0 {
+                program.data.push(0);
+            }
             let base = program.data.len() as u32;
             program.unit_data.push(base);
             for object in &unit.data.symbols {

@@ -44,6 +44,11 @@ const FUNCTION: u16 = 0x20;
 pub(crate) struct Data {
     /// The section's bytes, each object laid out at its own alignment.
     pub bytes: Vec<u8>,
+    /// The strictest alignment any object in those bytes asks for. A linker concatenating units
+    /// has to start this one there: `jmp_buf` is `_Alignas(16)`, and a unit placed at an 8-byte
+    /// boundary made `__intrinsic_setjmp`'s `movdqa` fault on a program that had worked - adding
+    /// eight bytes to the C runtime moved the program's data.
+    pub align: u32,
     /// The objects in it.
     pub symbols: Vec<DataSymbol>,
     /// Names the file needs from somewhere else.

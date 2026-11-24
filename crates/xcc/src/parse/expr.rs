@@ -1535,7 +1535,15 @@ impl Parser<'_> {
             }
             crate::lex::TokenKind::Chr => {
                 self.bump();
-                let int = self.types.fundamental("int").unwrap();
+                // C99 6.4.4.4p10: a wide character constant has type `wchar_t`, which this target
+                // makes two bytes; an ordinary one is an `int`.
+                let int = if crate::literal::is_wide(self.spell(&token)) {
+                    self.types
+                        .fundamental("unsigned short")
+                        .unwrap_or_else(|| self.types.error())
+                } else {
+                    self.types.fundamental("int").unwrap()
+                };
                 // A constant this does not read is refused, not turned into zero.
                 match character_constant(self.spell(&token)) {
                     Some(value) => Some(self.constant_of(int, value, span)),

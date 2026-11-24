@@ -24,6 +24,36 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "_crt_atexit",
     // The argument setup the CRT source's entry point uses, and the two accessors it reads the
     // result from: `argc`/`argv` are the runtime's, not a startup prologue this file writes.
+    // wctype.h: wide character classes and case mapping, all exported by the library.
+    "iswalnum",
+    "iswalpha",
+    "iswblank",
+    "iswcntrl",
+    "iswdigit",
+    "iswgraph",
+    "iswlower",
+    "iswprint",
+    "iswpunct",
+    "iswspace",
+    "iswupper",
+    "iswxdigit",
+    "iswctype",
+    "towctrans",
+    "towlower",
+    "towupper",
+    "wctrans",
+    "wctype",
+    // fenv.h: the nine the library exports. `feraiseexcept` and `feupdateenv` are the runtime's
+    // own - no Windows runtime has them - and are listed as unavailable to a JIT below.
+    "feclearexcept",
+    "fegetenv",
+    "fegetexceptflag",
+    "fegetround",
+    "feholdexcept",
+    "fesetenv",
+    "fesetexceptflag",
+    "fesetround",
+    "fetestexcept",
     "__p___argc",
     "__p___argv",
     "_configure_narrow_argv",
@@ -232,6 +262,14 @@ pub const UNAVAILABLE: &[(&str, &str)] = &[
     (
         "__acrt_iob_func",
         "the universal C runtime's stream accessor; the classic runtime that `--run` loads exports `_iob` instead, so `--run` reaches no `FILE *` stream (printf needs none, and works)",
+    ),
+    (
+        "feraiseexcept",
+        "no Windows runtime exports it: the C runtime a *link* compiles in carries it, over the nine functions the library does export, and a JIT has no linker to bring that layer - link the program instead of running it",
+    ),
+    (
+        "feupdateenv",
+        "no Windows runtime exports it: the C runtime a *link* compiles in carries it, over the nine functions the library does export, and a JIT has no linker to bring that layer - link the program instead of running it",
     ),
     (
         "snprintf",

@@ -115,6 +115,79 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Whether a literal carries the `L` prefix. Its characters are `wchar_t`s - two bytes here -
+/// and a string of them is an array of those, which is the whole of what "wide" means in C99.
+pub fn is_wide(spelling: &str) -> bool {
+    spelling.starts_with('L')
+}
+
+/// What a wide string literal holds, as UTF-16 code units in little-endian bytes, without the
+/// NUL: the target's `wchar_t` is 16 bits, so a character above the basic plane is two units.
+///
+/// The escapes are read here rather than by [`string_bytes`] because a wide literal's escapes are
+/// *code unit* values: `L"\x1FF"` is one character of 0x1FF, where a narrow literal's `\x1FF` does
+/// not fit a byte at all.
+///
+/// `None` when an escape is one this compiler does not read, or a numeric escape does not fit the
+/// target's `wchar_t`. A guessed character is a program that prints the wrong text.
+pub fn wide_bytes(spelling: &str) -> Option<Vec<u8>> {
+    let body = spelling
+        .strip_prefix('L')?
+        .strip_prefix('"')?
+        .strip_suffix('"')?;
+    let bytes = body.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'\\' {
+            // Everything that is not an escape is a character of the source, which is UTF-8: its
+            // *code point* is what a wide literal stores, so a literal `e` with an acute accent is
+            // one unit, not the two bytes it is written in.
+            let rest = std::str::from_utf8(&bytes[at..]).ok()?;
+            let character = rest.chars().next()?;
+            push_code_point(&mut out, u32::from(character))?;
+            at += character.len_utf8();
+            continue;
+        }
+        at += 1;
+        let escape = *bytes.get(at)?;
+        at += 1;
+        let value = match escape {
+            b'x' => numeric_escape_wide(bytes, &mut at, 16)?,
+            b'0'..=b'7' => {
+                at -= 1;
+                numeric_escape_wide(bytes, &mut at, 8)?
+            }
+            other => u32::from(named_escape(other)?),
+        };
+        push_code_point(&mut out, value)?;
+    }
+    Some(out)
+}
+
+/// One character as UTF-16 units in little-endian bytes, or `None` if it is not a character.
+fn push_code_point(out: &mut Vec<u8>, at: u32) -> Option<()> {
+    let character = char::from_u32(at)?;
+    let mut units = [0u16; 2];
+    for unit in character.encode_utf16(&mut units) {
+        out.extend_from_slice(&unit.to_le_bytes());
+    }
+    Some(())
+}
+
+/// A numeric escape's value for a wide literal: `\x` takes any number of hex digits, octal at most
+/// three, and the value must fit the target's 16-bit `wchar_t`.
+fn numeric_escape_wide(bytes: &[u8], at: &mut usize, radix: u32) -> Option<u32> {
+    let start = *at;
+    let limit = if radix == 8 { 3 } else { usize::MAX };
+    while *at < bytes.len() && (*at - start) < limit && (bytes[*at] as char).is_digit(radix) {
+        *at += 1;
+    }
+    let digits = std::str::from_utf8(&bytes[start..*at]).ok()?;
+    let value = u32::from_str_radix(digits, radix).ok()?;
+    u16::try_from(value).ok().map(u32::from)
+}
+
 /// How many bytes a string literal spells, not counting its quotes or the NUL.
 ///
 /// An escape is one byte however it is written, so `"\x41"`, `"\101"` and `"A"` are one
