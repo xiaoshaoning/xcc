@@ -364,3 +364,54 @@ float ldexpf(float value, int exponent) {
 float hypotf(float x, float y) {
     return (float)hypot((double)x, (double)y);
 }
+
+/* complex.h's six functions that are exact: three are the parts themselves, three are one math.h
+ * call. The transcendental nineteen are not here and not declared - the universal C runtime exports
+ * none of C99 7.3's sixty-six spellings, measured one name at a time. */
+double _Complex conj(double _Complex z) {
+    double re = __real__(z), im = __imag__(z);
+    return (double _Complex){ re, -im };
+}
+
+float _Complex conjf(float _Complex z) {
+    float re = __real__(z), im = __imag__(z);
+    return (float _Complex){ re, -im };
+}
+
+long double _Complex conjl(long double _Complex z) {
+    return (long double _Complex){ __real__(z), -__imag__(z) };
+}
+
+double cabs(double _Complex z) {
+    return hypot(__real__(z), __imag__(z));
+}
+
+float cabsf(float _Complex z) {
+    return hypotf(__real__(z), __imag__(z));
+}
+
+double carg(double _Complex z) {
+    return atan2(__imag__(z), __real__(z));
+}
+
+float cargf(float _Complex z) {
+    return atan2f(__imag__(z), __real__(z));
+}
+
+double _Complex cproj(double _Complex z) {
+    /* C99 7.3.9.4: an infinite part makes the whole value the positive infinity on the real axis,
+     * with the sign of the imaginary part kept on the zero. */
+    double re = __real__(z), im = __imag__(z);
+    if (isinf(re) || isinf(im)) {
+        return (double _Complex){ INFINITY, copysign(0.0, im) };
+    }
+    return z;
+}
+
+float _Complex cprojf(float _Complex z) {
+    float re = __real__(z), im = __imag__(z);
+    if (isinf(re) || isinf(im)) {
+        return (float _Complex){ INFINITY, copysignf(0.0F, im) };
+    }
+    return z;
+}

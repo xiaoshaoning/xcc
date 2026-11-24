@@ -22,6 +22,7 @@
 //!   (CONSTRAINTS 5).
 
 mod bytes;
+mod complex;
 mod emit;
 mod expr;
 mod init;
@@ -1295,7 +1296,7 @@ impl Parser<'_> {
                     }
                 }
                 "void" | "_Bool" | "char" | "short" | "int" | "long" | "float" | "double"
-                | "signed" | "unsigned" => {
+                | "signed" | "unsigned" | "_Complex" => {
                     spelled.push(word);
                     specs.has_type_specifier = true;
                     self.at += 1;
@@ -1381,6 +1382,21 @@ impl Parser<'_> {
         }
         if count("_Bool") > 0 {
             specs.ty = Some(self.types.fundamental("_Bool").unwrap());
+            return specs;
+        }
+        // C99 6.2.5p11: `_Complex` on its own is `double _Complex`, and the three complex types
+        // are the three floating ones. Asked before `float` and `double` below, because
+        // `float _Complex` spells both and the complex answer is the one that matters.
+        if count("_Complex") > 0 {
+            let element = if count("float") > 0 {
+                self.types.fundamental("float").unwrap()
+            } else {
+                self.types.fundamental("double").unwrap()
+            };
+            specs.ty = Some(self.types.complex(element));
+            if specs.is_const {
+                specs.ty = specs.ty.map(|ty| self.types.constant(ty));
+            }
             return specs;
         }
         if count("float") > 0 {

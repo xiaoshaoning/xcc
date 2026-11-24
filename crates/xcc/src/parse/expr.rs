@@ -456,6 +456,12 @@ impl Parser<'_> {
         if self.types.is_error(left.ty) || self.types.is_error(right.ty) {
             return Value::temporary(self.types.error());
         }
+        // C99 6.5.5: a complex operand makes the operation a complex one, and none of the rules
+        // below applies to a value that is two numbers in a record. One place, before the
+        // arithmetic, so `+`, `==` and `<` all get the same answer about what they were given.
+        if let Some(complex) = self.complex_binary(operator, left, right, span) {
+            return complex;
+        }
         let arithmetic = self.types.is_arithmetic(left.ty) && self.types.is_arithmetic(right.ty);
         let integer = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
         let integral = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
@@ -776,6 +782,7 @@ impl Parser<'_> {
         // string literal as a condition, and this check refused it before the decay could happen.
         if !self.types.is_scalar(value.ty)
             && !matches!(self.types.kind(value.ty), Type::Array { .. })
+            && self.types.complex_element(value.ty).is_none()
         {
             let ty = self.describe(value.ty);
             let span = self.span();
@@ -796,6 +803,12 @@ impl Parser<'_> {
             "-" | "+" | "~" | "!" => {
                 self.bump();
                 let value = self.unary_expression()?;
+                // A complex value accepts the two signs and `!`; `~` needs an integer (C99 6.5.3.3).
+                if matches!(operator.as_str(), "-" | "+") {
+                    if let Some(complex) = self.complex_unary(&operator, value, span) {
+                        return Some(complex);
+                    }
+                }
                 let ty = value.ty;
                 match operator.as_str() {
                     "-" => {
@@ -953,6 +966,13 @@ impl Parser<'_> {
             "sizeof" => {
                 self.bump();
                 Some(self.sizeof_expression())
+            }
+            // The two halves of a complex value, which `<complex.h>` is written in terms of:
+            // `creal` and `cimag` are these, and a header cannot define them any other way.
+            "__real__" | "__imag__" => {
+                self.bump();
+                let value = self.unary_expression()?;
+                Some(self.complex_real_or_imaginary(value, operator == "__imag__", span))
             }
             "_Generic" => self.generic_selection(),
             "_Alignof" => {
@@ -1453,7 +1473,7 @@ impl Parser<'_> {
                 // own position, which is what lets a callee read the whole list with one 8-byte
                 // walk (ADR-006). That duplicate is the back end's business, so nothing is refused
                 // here - level 0 and 1 cannot do it and say so themselves.
-                let promoted = self.types.promote(argument.ty);
+                let promoted = self.types.default_argument(argument.ty);
                 *slot = self.convert(argument, promoted, span);
             }
         }

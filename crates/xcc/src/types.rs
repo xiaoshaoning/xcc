@@ -118,6 +118,11 @@ pub(crate) struct Types {
     fundamentals: HashMap<&'static str, TypeId>,
     /// The one error type, shared by every malformed declaration.
     error: TypeId,
+    /// `_Complex T` for each `T` that has one, so the type of `double _Complex` is one object.
+    complex: HashMap<TypeId, TypeId>,
+    /// Which records are `_Complex`: their members are the real and imaginary parts, and the
+    /// arithmetic C gives the type is the parser's, because a struct has none.
+    complex_records: std::collections::HashSet<RecordId>,
     /// The structs and unions, complete or not.
     records: Vec<Record>,
 }
@@ -134,6 +139,8 @@ impl Types {
             nodes: Vec::new(),
             fundamentals: HashMap::new(),
             error: TypeId(0),
+            complex: HashMap::new(),
+            complex_records: std::collections::HashSet::new(),
             records: Vec::new(),
         };
         types.error = types.push(Type::Error);
@@ -256,6 +263,53 @@ impl Types {
             complete: false,
         });
         (self.push(Type::Record(id)), id)
+    }
+
+    /// The `_Complex` type over `element` (C99 6.2.5p11): `float _Complex` for a `float` and
+    /// `double _Complex` for a `double`, which is also what `long double _Complex` is on a target
+    /// whose `long double` is its `double`.
+    ///
+    /// It is built as a record of two elements, and that is the measurement rather than a
+    /// shortcut: `sizeof` is 8 or 16, the alignment is the element's, `{re, im}` is how a program
+    /// initialises one, and the Win64 ABI carries an eight-byte one in an integer register and a
+    /// sixteen-byte one behind a pointer - which is what `clang` does with `_Complex` and what it
+    /// does with a record of the same size, so the ABI needs no rule of its own. What a record
+    /// does *not* have is the arithmetic, and that is why the record is remembered here: the
+    /// parser asks [`Self::complex_element`] before it applies an operator.
+    ///
+    /// The members have no names, so no C program can reach them: `z.re` is not a member, which
+    /// is what C says about a complex number.
+    pub fn complex(&mut self, element: TypeId) -> TypeId {
+        if let Some(id) = self.complex.get(&element) {
+            return *id;
+        }
+        let (ty, record) = self.record(RecordKind::Struct, None);
+        let part = Member {
+            name: None,
+            ty: element,
+            offset: 0,
+            bits: None,
+            alignas: 0,
+        };
+        self.complete_record(record, vec![part.clone(), part]);
+        self.complex.insert(element, ty);
+        self.complex_records.insert(record);
+        ty
+    }
+
+    /// Whether this is a `_Complex` type.
+    pub fn is_complex(&self, id: TypeId) -> bool {
+        self.complex_element(id).is_some()
+    }
+
+    /// The element type of a `_Complex` type, or `None` for anything else.
+    pub fn complex_element(&self, id: TypeId) -> Option<TypeId> {
+        match self.kind(id) {
+            Type::Record(record) if self.complex_records.contains(record) => {
+                Some(self.records[record.0 as usize].members[0].ty)
+            }
+            _ => None,
+        }
     }
 
     /// The record a type is, if it is one.
@@ -613,6 +667,18 @@ impl Types {
         }
     }
 
+    /// The *default argument* type (C99 6.5.2.2p6): integer promotion, and one thing more - a
+    /// `float` becomes a `double`. It is not `promote`, and asking `promote` was the bug: it
+    /// leaves a `float` alone, so `printf("%.1f", 4.5f)` put thirty-two bits in a register the
+    /// callee read sixty-four from, and printed `0.0`. A `double` and an integer are already
+    /// their own answer.
+    pub fn default_argument(&self, id: TypeId) -> TypeId {
+        match self.kind(id) {
+            Type::Float { bits: 32 } => self.fundamental("double").unwrap(),
+            _ => self.promote(id),
+        }
+    }
+
     /// Whether a value of this type *is* the address of the thing rather than bytes read from
     /// it: an array (C99 6.3.2.1p3), a function designator (6.3.2.1p4), and a struct or union,
     /// which `cir` has no register for - an aggregate expression is the address of the object
@@ -656,6 +722,8 @@ impl Types {
             Type::Float { bits } => u64::from(*bits) / 8,
             Type::Pointer(_) => 8,
             Type::Record(record) => {
+                // A `_Complex` is a record in the layout and a *type* in every diagnostic: a
+                // program that writes `struct (untagged)` would be reading the implementation.
                 let record = &self.records[record.0 as usize];
                 if !record.complete {
                     return None;
@@ -752,6 +820,13 @@ impl Types {
                 text
             }
             Type::Record(record) => {
+                // A `_Complex` is a record in its layout and a *type* in every diagnostic: a
+                // program that read `struct (untagged)` would be reading the implementation.
+                if self.complex_records.contains(record) {
+                    let element =
+                        self.describe_in(self.records[record.0 as usize].members[0].ty, names);
+                    return format!("{element} _Complex");
+                }
                 let record = &self.records[record.0 as usize];
                 let word = match record.kind {
                     RecordKind::Struct => "struct",
@@ -824,6 +899,19 @@ impl Types {
             // the other way by this arm - a `_Bool` is an integer, so the arithmetic arms above
             // already take it, and a `_Bool` *value* is not a null pointer constant.
             (Type::Bool, _) => self.is_scalar(from),
+            // The complex conversions of 6.3.1.5 and 6.3.1.7 - a real value to a complex one, and
+            // a complex one out to its real part - come *before* the arithmetic arm, because that
+            // arm asks `is_arithmetic` of both sides and a complex type is not one of the scalars
+            // the arithmetic rules work on: it is two numbers in a record.
+            (Type::Record(record), _) if self.complex_records.contains(record) => {
+                (self.is_arithmetic(from) || self.is_complex(from)) && self.is_complex(to)
+            }
+            (_, Type::Record(record)) if self.complex_records.contains(record) => {
+                self.is_complex(from) && self.is_arithmetic(to)
+            }
+            // Arithmetic to arithmetic, and a complex type is arithmetic (C99 6.2.5p18): the
+            // conversions of 6.3.1.5 and 6.3.1.7 carry real values into a complex one and take the
+            // real part back out. `convert` is where the two are actually computed.
             (Type::Int { .. } | Type::Float { .. }, _) => {
                 self.is_arithmetic(from) && self.is_arithmetic(to)
             }

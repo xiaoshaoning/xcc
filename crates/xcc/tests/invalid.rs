@@ -92,6 +92,42 @@ fn a_struct_has_no_two_members_with_one_name() {
 }
 
 #[test]
+fn a_complex_value_has_no_order_and_is_not_an_integer() {
+    // C99 6.5.8p2: the relational operators take *real* operands; 6.5.5p2 and 6.5.10p2: `%`, the
+    // shifts and the bitwise operators take integers. Both refusals name the type, which is why
+    // `describe` had to learn to say `_Complex` rather than `struct (untagged)`.
+    assert!(refused(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }; return z < z; }"
+    ));
+    assert!(refused(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }; return (int)(z % z); }"
+    ));
+    assert!(refused(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }; return (int)(z & z); }"
+    ));
+    // And what it does allow (C99 6.5.5 to 6.5.7, 6.5.9), so a compiler that refused the type
+    // outright would fail here rather than pass.
+    assert!(compiles(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }, w = { 3.0, 4.0 }; return (int)(z + w); }"
+    ));
+    assert!(compiles(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }, w = { 3.0, 4.0 }; z = w * z; z = z / w; return 0; }"
+    ));
+    assert!(compiles(
+        "int f(void) { double _Complex z = { 1.0, 2.0 }; return z == z; }"
+    ));
+    assert!(compiles(
+        "int f(void) { double _Complex z = 2.0; return (int)z; }"
+    ));
+    assert!(compiles(
+        "int f(void) { double _Complex z = { 0.0, 1.0 }; return z ? 1 : 0; }"
+    ));
+    assert!(compiles(
+        "int f(void) { float _Complex f = { 1.0F, 2.0F }; double _Complex z = f; return (int)z; }"
+    ));
+}
+
+#[test]
 fn the_mistakes_that_were_already_caught_stay_caught() {
     assert!(refused("int f(int x) { case 1: return 0; return x; }"));
     assert!(refused(

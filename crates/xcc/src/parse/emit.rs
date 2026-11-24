@@ -167,6 +167,23 @@ impl Parser<'_> {
         if self.types.is_error(value.ty) {
             return None;
         }
+        // C99 6.3.1.2: a complex value is true when *either* part compares unequal to zero, which
+        // is not a comparison of the record and not the same question as `creal(z) != 0`. Every
+        // condition C has - `if`, `while`, `for`, `?:`, `&&`, `||`, `!` - comes through here.
+        if self.types.complex_element(value.ty).is_some() {
+            let truth = self.complex_truth(value, span)?;
+            let int = self.types.fundamental("int").unwrap();
+            // `!z` is `truth == 0`, not `~truth`: `UnOp::Not` is the *bitwise* operator, and a
+            // comparison's result is 0 or 1 (C99 6.5.9p3).
+            return Some(match op {
+                cir::CmpOp::Ne => truth.cir?,
+                _ => {
+                    let zero = self.constant_of(int, 0, span);
+                    self.emit_compare(cir::CmpOp::Eq, int, [truth, zero], int, None, span)
+                        .cir?
+                }
+            });
+        }
         let ty = value.ty;
         let zero = self.constant_of(ty, 0, span);
         let int = self.types.fundamental("int").unwrap();
@@ -197,6 +214,10 @@ impl Parser<'_> {
         // narrowing conversion: `(_Bool)2` is 1, `(_Bool)0.5` is 1, and so is any NaN.
         if matches!(self.types.kind(wanted), Type::Bool) && self.types.is_scalar(value.ty) {
             return self.truth_value(value, span);
+        }
+        // C99 6.3.1.5 and 6.3.1.7: a value becoming or leaving a `_Complex`.
+        if let Some(converted) = self.complex_convert(value, wanted, span) {
+            return converted;
         }
         let Some(source) = value.cir else {
             // Nothing is being emitted, so nothing will compute this - but a *constant expression* is

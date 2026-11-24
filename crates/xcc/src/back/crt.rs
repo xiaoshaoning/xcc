@@ -387,6 +387,54 @@ pub(crate) const C_RUNTIME: &[&str] = &[
 /// quotes the reason so the reader learns why instead of guessing.
 pub const UNAVAILABLE: &[(&str, &str)] = &[
     (
+        "cabs",
+        "the universal C runtime exports none of C99 7.3's functions - measured, all sixty-six spellings - so `cabs`, `conj`, `carg` and `cproj` are the C runtime source's own, and a JIT has no linker to bring that layer: link the program instead of running it",
+    ),
+    (
+        "cabsf",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cabsl",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "carg",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cargf",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cargl",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "conj",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "conjf",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "conjl",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cproj",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cprojf",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
+        "cprojl",
+        "the universal C runtime exports no complex function at all; the C runtime a *link* compiles in carries this one - link the program instead of running it",
+    ),
+    (
         "__acrt_iob_func",
         "the universal C runtime's stream accessor; the classic runtime that `--run` loads exports `_iob` instead, so `--run` reaches no `FILE *` stream (printf needs none, and works)",
     ),
@@ -574,6 +622,9 @@ mod tests {
             "_Complex",
             "_Thread_local",
             "_Noreturn",
+            // The two halves of a complex value: `<complex.h>` writes `creal` as one of these.
+            "__real__",
+            "__imag__",
         ];
         let mut declared = std::collections::BTreeSet::new();
         // A macro's parameters are not functions, whichever line its body is written on.

@@ -1093,16 +1093,21 @@ impl Encoder<'_> {
     /// A floating-point constant, whose bits travel through a general register.
     fn float_const(&mut self, dst: VReg, bits: u64, size: u8) {
         let target = self.float_destination(dst);
-        self.mov_imm(Reg::RAX, bits);
+        // `self.scratch()`, not `rax`: the bits travel through a general register, and a
+        // register the allocator does not know about is one it may be holding a live value in.
+        // It held the return buffer of a function returning a struct, which the constant then
+        // overwrote - the caller's copy was written through a *double*'s bits.
+        let staging = self.scratch();
+        self.mov_imm(staging, bits);
         self.byte(0x66); // the mandatory prefix, before the REX byte
         if size == 8 {
-            self.prefix_w(target, Reg::RAX);
-            self.bytes(&[0x0F, 0x6E]); // movq xmm, rax
+            self.prefix_w(target, staging);
+            self.bytes(&[0x0F, 0x6E]); // movq xmm, r64
         } else {
-            self.prefix(target, Reg::RAX);
-            self.bytes(&[0x0F, 0x6E]); // movd xmm, eax
+            self.prefix(target, staging);
+            self.bytes(&[0x0F, 0x6E]); // movd xmm, r32
         }
-        self.modrm(3, target.0, Reg::RAX);
+        self.modrm(3, target.0, staging);
         self.write_float(dst, target);
         self.release();
     }

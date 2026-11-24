@@ -17,7 +17,11 @@ use crate::pp::Includes;
 /// says why.  A third - `cannot find` - is the message a *typo* gets, and it tells a reader nothing
 /// about whether the facility exists at all, so nothing may fall through to it.
 pub(crate) enum Disposition {
+    // No header is refused today - `complex.h` was the last one, and it ships now - but the table's
+    // shape is what says a header *can* be refused with a reason rather than with silence, and the
+    // test that walks C99's list checks every entry is one or the other.
     Shipped(&'static str),
+    #[allow(dead_code)]
     Refused(&'static str),
 }
 
@@ -40,9 +44,7 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
     ),
     (
         "complex.h",
-        Disposition::Refused(
-            "`_Complex` is a type this compiler does not have: the values, their arithmetic and the calling convention are a language feature, not a header. The runtime exports every function this header would declare - `creal`, `cimag`, `conj`, `cabs`, `cexp` and the rest - so the work is the type system's, not the library's",
-        ),
+        Disposition::Shipped(include_str!("../include/complex.h")),
     ),
     (
         "ctype.h",
@@ -259,7 +261,7 @@ mod tests {
     /// them.
     #[test]
     fn the_readme_counts_the_headers_that_ship() {
-        const NUMERALS: [&str; 24] = [
+        const NUMERALS: [&str; 25] = [
             "",
             "one",
             "two",
@@ -284,6 +286,7 @@ mod tests {
             "twenty-one",
             "twenty-two",
             "twenty-three",
+            "twenty-four",
         ];
         let readme = include_str!("../../../README.md");
         let line = readme

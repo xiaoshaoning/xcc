@@ -377,6 +377,50 @@ int main(void) {
 /// was an access violation before, and the deep recursion takes a page-sized frame five hundred
 /// times over. The largest takes seventy-three pages, which is a statement about the walk and
 /// not about how much stack the image asks for.
+/// The program the complex test below compiles, as a raw Rust string so the C source keeps its
+/// own quotes and its own backslashes.
+const COMPLEX_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <math.h>
+#include <complex.h>
+
+static double _Complex scaled(double _Complex z) {
+    /* A complex value across a call boundary in both directions: sixteen bytes, so the caller
+     * passes a pointer and the return comes back through one. */
+    return z * (2.0 + 0.5 * I);
+}
+
+static float _Complex scaledf(float _Complex z) {
+    /* And eight bytes, which travels in a register. */
+    return z + z;
+}
+
+int main(void) {
+    double _Complex a = { 2.0, 3.0 }, b = { 4.0, -1.0 };
+    double _Complex s = a + b, d = a - b, p = a * b, q = a / b;
+    float _Complex f = { 1.5F, -2.5F };
+
+    printf("sizeof %d %d align %d\n", (int)sizeof a, (int)sizeof f,
+           (int)_Alignof(double _Complex));
+    printf("add %.6f %.6f\n", creal(s), cimag(s));
+    printf("sub %.6f %.6f\n", creal(d), cimag(d));
+    printf("mul %.6f %.6f\n", creal(p), cimag(p));
+    printf("div %.6f %.6f\n", creal(q), cimag(q));
+    printf("neg %.6f %.6f\n", creal(-a), cimag(-a));
+    printf("cmp %d %d %d\n", a == a, a == b, a != b);
+    printf("convert %.1f %.1f %d\n", (double)a, (double)a + 1.0, (int)(double)b);
+    printf("truth %d %d %d\n", a ? 1 : 0, (double _Complex){ 0.0, 0.0 } ? 1 : 0, !f ? 1 : 0);
+    printf("i %.1f %.1f\n", creal(I), cimag(I));
+    printf("calls %.2f %.2f | %.2f %.2f\n", creal(scaled(a)), cimag(scaled(a)),
+           (double)crealf(scaledf(f)), (double)cimagf(scaledf(f)));
+    printf("cabs %.4f %.4f\n", cabs(a), (double)cabsf(f));
+    printf("carg %.4f\n", carg(a));
+    printf("conj %.1f %.1f\n", creal(conj(a)), cimag(conj(a)));
+    printf("cproj %.1f %.1f\n", creal(cproj(a)), cimag(cproj(a)));
+    return 0;
+}
+"#;
+
 /// The program the anonymous-member test below compiles, as a raw Rust string so the C source
 /// keeps its own quotes and its own backslashes.
 const ANONYMOUS_PROGRAM: &str = r#"
@@ -878,4 +922,24 @@ fn anonymous_members_static_tables_and_unlisted_members_are_laid_out_and_zeroed(
         "layout 24 0 8 8 16 18 20@@members 0 7 7 0@@names x y type 0 9 context 1@@static table -5.0 5.0@@nan 1 0 0 | inf 1 0@@"
             .replace("@@", "\r\n")
     );
+}
+
+/// `_Complex`, end to end: the type's layout, its four operators and its comparisons (which the
+/// compiler computes), the two conversions, the `I` macro, a value crossing a call boundary in each
+/// of the two shapes the ABI has for it, and the four functions the C runtime source carries. Every
+/// number here is what `clang` prints for this program.
+#[test]
+#[cfg(target_os = "windows")]
+fn complex_numbers_are_laid_out_computed_and_passed_the_way_clang_does() {
+    // `--std=c11` for `_Alignof`, which is the only C11 spelling in the program.
+    let run = run_linked_with("c11", "complex", COMPLEX_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    // What `clang` printed for this program, recorded when the test was written. Lines are
+    // separated by `@@` and turned back into CRLF below, because a redirected stream on
+    // this target ends its lines that way.
+    // What `clang` printed for this program, recorded when the test was written. Lines are
+    // separated by `@@` and turned back into a redirected stream's CRLF below.
+    let expected = "sizeof 16 8 align 8@@add 6.000000 2.000000@@sub -2.000000 4.000000@@mul 11.000000 10.000000@@div 0.294118 0.823529@@neg -2.000000 -3.000000@@cmp 1 0 1@@convert 2.0 3.0 4@@truth 1 0 0@@i 0.0 1.0@@calls 2.50 7.00 | 3.00 -5.00@@cabs 3.6056 2.9155@@carg 0.9828@@conj 2.0 -3.0@@cproj 2.0 3.0@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
 }

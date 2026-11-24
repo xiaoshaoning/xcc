@@ -786,6 +786,54 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-23 - `_Complex`: two numbers in a record, and the three bugs underneath it
+
+`complex.h` ships. It was the last header of C99 7.1.2 that refused, and the reason it refused was a *type*:
+`_Complex` over `float` or `double`, the arithmetic C gives it, and the calling convention - none of which a header
+can supply.
+
+**The type is a record of two, and that is the measurement rather than a shortcut.** `sizeof (double _Complex)` is 16
+and its alignment is 8, `{re, im}` is how a program initialises one, and the Win64 ABI carries an eight-byte one in an
+integer register and a sixteen-byte one behind a pointer - which is exactly what `record_in_register` already did for a
+record of the same size. Measured off `clang`: `mul(double _Complex, double _Complex)` receives a hidden return pointer
+in `rcx` and pointers to both arguments in `rdx`/`r8`, while `fadd(float _Complex, float _Complex)` packs each argument
+into one integer register. So `Types::complex` builds the record once per element type, records which records are
+complex, and layout and the ABI need no rule of their own.
+
+**`parse/complex.rs` owns everything a struct may not do**: the four operators of 6.5.5-6.5.7 (the formulas as the
+standard writes them, which is also how `clang` computes them), both comparisons of 6.5.9, unary minus, truth, the two
+conversions of 6.3.1.5/6.3.1.7, and the two halves by name. A complex value in an expression is a temporary holding the
+parts, so the back end never learns the type means anything. `<`/`>` on one and `%`/`&`/shifts say what they need, with
+the type named - which is why `describe` had to learn to say `double _Complex` rather than `struct (untagged)`.
+
+**Three bugs came out of the way, and two were older than this work.** The first is in the default argument promotions:
+`Types::promote` is *integer* promotion, and the variadic call site asked it for a `float` - so `printf("%.1f", 4.5f)`
+put thirty-two bits in a register the callee read sixty-four from and printed `0.0`. That is why a struct of two floats
+also came back as zeros, and it had been there since variadic calls were. The second is in the back end: `float_const`
+staged a constant's bits through `Reg::RAX` without asking the allocator, and in a function returning a struct it
+overwrote the hidden return pointer - `return (struct two){1.5, 2.5};` crashed the moment a constant was materialised
+inside a live range. Both are fixed, and the second is why a `static` table of function pointers in a returned struct
+worked before and a compound literal did not.
+
+The third was mine, twice: `!=` and `!` on a complex value were computed with `cir::UnOp::Not`, which is *bitwise* `~`
+and not logical negation - `(1,0) != (1,0)` answered `-1` where 6.5.9p3 says a comparison's result is 0 or 1. A
+comparison with zero is what it is, in both places.
+
+**What the header can and cannot promise was measured, not assumed.** The universal C runtime exports **none** of C99
+7.3's sixty-six spellings - `cacos` to `cprojl`, one link at a time, every one "undefined symbol"; an earlier note
+claiming otherwise was wrong. So `creal`/`cimag` are macros over the two halves, `I` is a macro over the type, and the
+four exact functions (`conj`, `cabs`, `carg`, `cproj` in three widths) are the C runtime source's own. The nineteen
+transcendentals are **not declared at all**: a program that calls `csin` is told it is not declared here, which is a
+better error than a link failure for a name the platform does not have.
+
+`tests/exe.rs` compiles, links and runs a program that prints its `sizeof`, its four operators, both comparisons, both
+conversions, truth, `I`, a value across a call boundary in each of the two ABI shapes, and the four runtime functions -
+and compares every line with what `clang` printed for the same program.
+
+201 unit, 32 parser, 29 CLI, 4 invalid, 19 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+`.text` 3.490x `clang -O2`; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-23 - the ratio in the README, and the zeroes a scalar does not need
 
 The anonymous-member commit, reviewed. The splice holds, tinyexpr still matches `clang`, and the review found one
