@@ -935,6 +935,13 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **`const` was consumed and dropped.** `Type::Const(inner)` with a peeling `kind()`, so the qualifier reaches a
+      typedef, a member, a pointer's target and an array element without a parallel fact anywhere; two write sites
+      (`assign`, which every compound assignment routes through, and `step`) and one rule: a modifiable lvalue is not
+      `const`-qualified (C99 6.3.2.1p1). A parameter keeps its qualifier as an object and loses it in the function type
+      (6.7.5.3p15) - two facts, and the sweep caught the first version losing the first while doing the second.
+      Duplicate member names too (6.7.2.1p1), and `tests/invalid.rs` holds seventeen forbidden programs measured
+      against `clang`, so the next one is found by the suite.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

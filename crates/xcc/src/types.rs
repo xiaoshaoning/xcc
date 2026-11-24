@@ -57,6 +57,13 @@ pub(crate) enum Type {
     },
     /// A struct or a union, by index into [`Types`]'s records.
     Record(RecordId),
+    /// A `const`-qualified type: the same value with the right to be written taken away.
+    ///
+    /// It is a wrapper rather than a flag on every variant because [`Types::kind`] *peels* it: every
+    /// rule that asks what a type is sees the type it already knew, and only the three that ask
+    /// "may this be written?" look at the wrapper. A `const int *p` is then `Pointer(const int)` -
+    /// the qualifier lives where C puts it, and nothing has to remember a parallel fact.
+    Const(TypeId),
     /// A type that could not be determined. Everything it touches is this, so one mistake in a
     /// declaration is one diagnostic rather than a cascade of follow-on errors.
     Error,
@@ -381,7 +388,36 @@ impl Types {
 
     /// What a type is.
     pub fn kind(&self, id: TypeId) -> &Type {
-        &self.nodes[id.0 as usize]
+        // A qualification is not what a type *is*: `sizeof`, arithmetic, layout and every conversion
+        // want the same answer for `int` and `const int`, and only the write rules want the
+        // difference. Peeling here is what keeps that difference in one place.
+        let mut ty = &self.nodes[id.0 as usize];
+        while let Type::Const(inner) = ty {
+            ty = &self.nodes[inner.0 as usize];
+        }
+        ty
+    }
+
+    /// The same type with `const` on it. Applying it twice is applying it once.
+    pub fn constant(&mut self, id: TypeId) -> TypeId {
+        if self.is_const(id) || self.is_error(id) {
+            return id;
+        }
+        self.push(Type::Const(id))
+    }
+
+    /// The same type without a top-level `const`: C99 6.7.5.3p15 drops one from a parameter, and a
+    /// function type that kept it would not be compatible with the same function written without.
+    pub fn unqualified(&self, id: TypeId) -> TypeId {
+        match &self.nodes[id.0 as usize] {
+            Type::Const(inner) => *inner,
+            _ => id,
+        }
+    }
+
+    /// Whether the type is `const`-qualified.
+    pub fn is_const(&self, id: TypeId) -> bool {
+        matches!(&self.nodes[id.0 as usize], Type::Const(_))
     }
 
     /// Give an incomplete array its count, once an initialiser says how many elements it has.
@@ -554,6 +590,9 @@ impl Types {
     /// How many bytes a value of this type takes, if it has a size yet.
     pub fn size_of(&self, id: TypeId) -> Option<u64> {
         Some(match self.kind(id) {
+            // `kind` peels a qualification, so this arm is the compiler asking a question the
+            // peeling has already answered.
+            Type::Const(_) => unreachable!("`kind` returns the unqualified type"),
             Type::Void => return None,
             Type::Bool => 1,
             Type::Int { bits, .. } => u64::from(*bits) / 8,
@@ -609,6 +648,7 @@ impl Types {
 
     fn describe_in(&self, id: TypeId, names: Option<&crate::intern::Interner>) -> String {
         match self.kind(id) {
+            Type::Const(_) => unreachable!("`kind` returns the unqualified type"),
             Type::Void => "void".to_owned(),
             Type::Bool => "_Bool".to_owned(),
             Type::Int { signed, bits } => {

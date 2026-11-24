@@ -1222,8 +1222,17 @@ impl Parser<'_> {
                     }
                     self.at += 1; // a storage class is not part of the type
                 }
-                "const" | "volatile" | "restrict" | "inline" => {
-                    self.at += 1; // qualifiers carry no meaning in M3.1
+                "const" => {
+                    specs.is_const = true;
+                    self.at += 1;
+                }
+                // `volatile` says the value may change behind the program's back, which this
+                // compiler has no need to model: it does not reorder or elide a memory access, so
+                // every access is the access the source wrote. `restrict` licenses an optimisation
+                // it does not perform. Both are consumed and dropped, and that is stated rather
+                // than silently true.
+                "volatile" | "restrict" | "inline" => {
+                    self.at += 1;
                 }
                 // Microsoft's storage-class spelling, which a Windows header emits behind `_WIN32`:
                 // `__declspec(dllexport) int f(void);`. Its argument list is skipped and the
@@ -1408,6 +1417,13 @@ impl Parser<'_> {
             _ => "unsigned int",
         };
         specs.ty = self.types.fundamental(name);
+        // The qualifier belongs to the declared type, once, here: an object, a member, a typedef and
+        // a parameter all read `specs.ty` and all get the `const` C gave them.
+        if specs.is_const {
+            if let Some(ty) = specs.ty {
+                specs.ty = Some(self.types.constant(ty));
+            }
+        }
         specs
     }
 
@@ -1519,6 +1535,8 @@ impl Parser<'_> {
         if !self.eat("{") {
             return members;
         }
+        // C99 6.7.2.1p1: no two members of one struct or union may have the same name.
+        let mut names: std::collections::HashSet<Symbol> = std::collections::HashSet::new();
         while !self.at_punct("}") && !self.at_eof() {
             let specs = self.declaration_specifiers();
             let Some(base) = specs.ty else {
@@ -1543,6 +1561,7 @@ impl Parser<'_> {
                         break;
                     };
                     let name = tree.name;
+                    self.declare_member_name(&mut names, name);
                     let ty = self.apply_declarator(tree, base);
                     // `bit_width` takes the `:` itself, so it is not eaten here.
                     let bits = if self.at_punct(":") {
@@ -1571,6 +1590,24 @@ impl Parser<'_> {
             self.error_at_current("expected `}` to end the members");
         }
         members
+    }
+
+    /// One member's name, and the diagnostic C99 6.7.2.1p1 asks for when the struct already has it.
+    fn declare_member_name(
+        &mut self,
+        names: &mut std::collections::HashSet<Symbol>,
+        name: Option<Symbol>,
+    ) {
+        let Some(name) = name else { return };
+        if names.insert(name) {
+            return;
+        }
+        let spelling = self.spell_of(name).to_owned();
+        let span = self.span();
+        self.error(
+            span,
+            format!("`{spelling}` is a member of this struct twice"),
+        );
     }
 
     fn bit_width(&mut self) -> u8 {
@@ -1737,10 +1774,14 @@ impl Parser<'_> {
                     let name = tree.name;
                     let declared = self.apply_declarator(tree, base);
                     let parameter = self.types.decay(declared);
+                    // The parameter *object* keeps its `const`: `int f(const int x) { x = 1; }` is a
+                    // write to a const object inside the body. The *function type* drops it
+                    // (C99 6.7.5.3p15), so `int f(const int)` and `int f(int)` are one function -
+                    // which is what a call through a pointer relies on. Two facts, two places.
                     if let Some(name) = name {
                         self.declare_parameter(name, parameter);
                     }
-                    parameter
+                    self.types.unqualified(parameter)
                 }
                 None => base,
             };
@@ -1900,6 +1941,8 @@ impl Parser<'_> {
 #[derive(Debug, Default)]
 struct Specifiers {
     ty: Option<TypeId>,
+    /// Whether `const` was one of them: the declared type is qualified, and the write rules ask.
+    is_const: bool,
     /// The alignment `_Alignas` asked for, when it did: zero means the type's own.
     alignas: u64,
     is_typedef: bool,

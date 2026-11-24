@@ -110,6 +110,12 @@ impl Parser<'_> {
             self.error(span, "cannot assign to an array");
             return Some(Value::temporary(left.ty));
         }
+        // C99 6.3.2.1p1: a *modifiable* lvalue is one that is not `const`-qualified. Every compound
+        // assignment is this function too, because `a += b` is written as an assignment of `a + b`.
+        if self.types.is_const(left.ty) {
+            self.error(span, "cannot assign to a `const` object");
+            return Some(Value::temporary(left.ty));
+        }
         let null_pointer = self.null_pointer_constant(&right);
         if !null_pointer && !self.types.is_assignable(left.ty, right.ty) {
             if self.types.is_pointer(left.ty) && self.returned_by_an_implicit_call(&right) {
@@ -964,6 +970,10 @@ impl Parser<'_> {
         if !value.lvalue || !scalar {
             self.error(span, "`++` and `--` need a variable holding a number");
             return Value::temporary(self.types.error());
+        }
+        if self.types.is_const(value.ty) {
+            self.error(span, "cannot modify a `const` object");
+            return Value::temporary(value.ty);
         }
         if let Some(bits) = value.bits {
             // `s.a++` steps in the field's own type and then merges through the write path, so a

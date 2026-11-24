@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - const was consumed and dropped
+
+Seven programs C forbids compiled, and the reason was one line: `"const" | "volatile" | "restrict" |
+"inline" => { self.at += 1; }`. The qualifiers were read and thrown away, so `const int c; c = 2;` compiled - and
+several of its spellings did: through a typedef, through a struct member, through a pointer, on an array element, and
+with `++` and `+=`.
+
+**`const` is a type now, and `kind()` peels it.** `Type::Const(inner)` is a wrapper, and `Types::kind` returns the
+*unqualified* view: every rule that asks what a type is - `sizeof`, arithmetic, layout, every conversion - sees the
+type it already knew, and only the three that ask "may this be written?" look at the wrapper. The alternative, a
+qualifier flag on every variant, would have touched every `match` in the compiler; this touched two, and both needed an
+`unreachable!` arm to tell the type checker what the peeling already guarantees. `const int *p` is then
+`Pointer(const int)`: the qualifier lives where C puts it, so a member, a typedef and an array element carry it without
+anyone remembering a parallel fact.
+
+**Two check sites, because there are two writes**: `assign` - which every compound assignment routes through, since
+`a += b` is written as an assignment of `a + b` - and `step`, for `++` and `--`. Each is one clause.
+
+**And one subtlety that the measurement caught**: dropping a parameter's qualifier, as C99 6.7.5.3p15 requires for the
+*function type*, also removed it from the parameter *object* inside the body - so `int f(const int x) { x = 1; }`
+still compiled. Two facts, two places: the symbol keeps the qualified type, the function signature takes
+`unqualified`. Before that fix the sweep said one program still passed; after it, none.
+
+**Duplicate member names** were the last of the eight: C99 6.7.2.1p1, one hash set per member list and a diagnostic.
+
+**The sweep is a test now** (`tests/invalid.rs`): seventeen programs C forbids, each measured against `clang` when it
+was written, plus the three that clang accepts as well - a forward-declared incomplete struct, a non-void function with
+no `return`, and an unnamed member - which this compiler accepts for the same reason. It says what each case is for,
+so the next "we accept what C forbids" is found by the suite rather than by a person reading the parser.
+
+200 unit, 28 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys,
+differential (415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree,
+20 refused, 0 wrong, refusal oracle 19/0; cJSON, miniz and the pg gate unchanged; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the cap changed the parse
 
 The predefined-macros and budgets commit, reviewed. Both findings are against the *caps* it added, and the second is
