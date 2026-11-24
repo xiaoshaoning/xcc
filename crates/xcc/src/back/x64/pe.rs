@@ -29,10 +29,12 @@ const IMAGE_BASE: u64 = 0x1_4000_0000;
 /// Four kilobytes in memory and 512 bytes in the file: what the loader accepts and `link.exe` writes.
 const SECTION_ALIGNMENT: u32 = 0x1000;
 const FILE_ALIGNMENT: u32 = 0x200;
-/// A megabyte of stack and heap to begin with, which is what a console program asks for.
-const STACK_RESERVE: u64 = 0x10_0000;
-const STACK_COMMIT: u64 = 0x1000;
+/// Two megabytes of stack and a megabyte of heap, which is what a console program asks for:
+/// mingw's two megabytes are the default `clang` writes here, measured off a program it linked,
+/// and the back end probes the stack so a frame anywhere inside it can be taken.
+const STACK_RESERVE: u64 = 0x20_0000;
 const HEAP_RESERVE: u64 = 0x10_0000;
+const STACK_COMMIT: u64 = 0x1000;
 const HEAP_COMMIT: u64 = 0x1000;
 /// `IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_LARGE_ADDRESS_AWARE`.
 const CHARACTERISTICS: u16 = 0x0022;

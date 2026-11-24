@@ -369,6 +369,46 @@ int main(void) {
 /// `argc`/`argv` come from the runtime the link compiles in, so this is the test that a linked
 /// program can be a command-line tool: a quoted argument stays one argument, and `main`'s return
 /// value is the exit status.
+/// Windows commits a thread's stack one page at a time, at the single guard page below what is
+/// committed. A frame taken with one `sub rsp` steps over that page, and the first write past it is
+/// an access violation: `char a[65536]` in one function crashed this compiler, and so did lz4's
+/// streaming decoder, which keeps sixty-four kilobytes of dictionary on the stack. The back end now
+/// walks down a page at a time, touching each one, which this test holds: every one of these frames
+/// was an access violation before, and the deep recursion takes a page-sized frame five hundred
+/// times over.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_frame_larger_than_a_stack_page_is_taken_one_page_at_a_time() {
+    // A raw string, so the C source keeps its own quotes and its own backslashes.
+    let source = r#"
+#include <stdio.h>
+
+static int walk(int depth) {
+    char pad[5000];
+    pad[0] = (char)depth;
+    pad[4999] = 1;
+    if (depth == 0) return pad[0] + pad[4999];
+    return walk(depth - 1) + pad[4999] - pad[4999];
+}
+
+int main(void) {
+    char small[8192], large[65536], huge[1000000];
+    small[0] = 1; small[8191] = 2;
+    large[0] = 3; large[65535] = 4;
+    huge[0] = 5; huge[999999] = 6;
+    printf("%d %d %d %d %d %d\n", small[0], small[8191], large[0], large[65535],
+           huge[0], huge[999999]);
+    printf("deep %d\n", walk(100));
+    return 0;
+}
+"#;
+    let run = run_linked("bigframe", source, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    // A redirected stream is a text stream on this target, so its lines end in CR LF.
+    assert_eq!(out, "1 2 3 4 5 6\r\ndeep 1\r\n");
+}
+
 #[test]
 #[cfg(target_os = "windows")]
 fn a_linked_program_reads_its_arguments() {

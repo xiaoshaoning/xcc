@@ -786,6 +786,45 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - a stack page Windows grows through, and the frame that stepped over it
+
+lz4's own `lib/` - the block compressor, the high-compression one, the frame format, the stdio wrapper and xxhash,
+10 540 lines - now compiles, links and runs against this compiler, and its compressed output is **byte-identical to a
+`clang` build's** through every API: the block API at four accelerations, `LZ4_compress_destSize`, a caller-supplied
+state, partial decompression, both compressors' `extState` forms, the streaming API with `LZ4_saveDict`, compression
+against a loaded dictionary, the high-compression stream, frames written and read back in odd-sized chunks, a frame
+built from a prepared `CDict`, and the stdio wrapper over a `FILE *`. The driver prints a digest of every compressed
+byte, so "identical" is a claim about bytes. It is vendored under `crates/xcc/tests/fixtures/lz4` and runs on every
+test run.
+
+**The bug it found is the worst kind: a wrong answer that only appears when the program is big.** A function whose
+frame is larger than one stack page was a crash - `char a[65536]` was an access violation, `char a[32768]` too, and
+`char a[24576]` was not, which is the shape of a guard page rather than of an arithmetic mistake. Windows commits a
+thread's stack one page at a time, as accesses reach the single guard page below what is committed: one `sub rsp` of a
+whole large frame steps *over* that page and the next write is an access violation the kernel cannot grow through. The
+prologue now walks down a page at a time, touching each one, and describes the whole walk with the one `ALLOC_LARGE`
+it adds up to. The image also asked for a one-megabyte stack where `clang` asks for two, measured off a binary it
+linked; it asks for two now.
+
+**The first attempt at the probe was wrong in a way that is worth keeping.** It used a label for the loop, taken from
+the encoder's own label vector - and the *lowering* numbers the labels it will use, so the index it took was handed to
+a block later: `jbe` jumped into the middle of the function and `jmp` went nowhere. Eight lines of decoding the emitted
+object found it. The loop is written with its two displacements as constants now, with a `debug_assert` on the length
+that makes the constants and the bytes disagree loudly if either moves - and the same `objdump` reading that caught it.
+
+**Both gates were checked by breaking the fix**: with the probe disabled, `char a[1 000 000]` dies with `0xC0000005`
+and both the new `tests/exe.rs` frame test and the lz4 fixture fail. A gate that would pass either way is not a gate.
+
+Not attempted, and measured rather than assumed: lz4's `programs/` (`lz4cli.c`, `lz4io.c`, `bench.c`) needs
+`windows.h`, `io.h`, `sys/stat.h` and `winioctl.h` - the Win32 SDK, the same boundary sqlite3.c stops at - and
+`tests/fuzz/fuzzer.c` needs only `clock()` itself but reaches those headers through `programs/util.h`. A depth-100
+recursion of 5 000-byte frames runs, and a 3 MB frame reports a stack overflow, which is the reserve answering
+correctly rather than a crash.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 17 exe, 3 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; lz4's digest and the two older fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the deeper rule that was shallower
 
 The lz4 commit, reviewed. Both fixes hold and lz4 still compresses byte-identically to `clang`; the review found that

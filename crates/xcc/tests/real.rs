@@ -126,3 +126,49 @@ zip entry named
 "
     );
 }
+
+/// `lz4`: the block, streaming, high-compression, frame and stdio APIs, with a digest of every
+/// compressed byte at the end. Four bugs came out of this fixture - two in the parser, and one in
+/// the prologue, which crashed any frame larger than a stack page.
+#[test]
+#[cfg(target_os = "windows")]
+fn lz4_compresses_streams_and_round_trips_every_api() {
+    let run = run_fixture(
+        "lz4",
+        "lz4",
+        &[
+            "driver.c",
+            "lz4.c",
+            "lz4hc.c",
+            "lz4frame.c",
+            "lz4file.c",
+            "xxhash.c",
+        ],
+        &[],
+    );
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // A raw string: the expected text is lines of names and numbers, with nothing to escape.
+    assert_eq!(
+        out.replace('\r', ""),
+        r#"compress_fast/decompress_safe              301178
+compress_fast/decompress_safe              301178
+compress_fast/decompress_safe              301178
+compress_fast/decompress_safe              301178
+compress_destSize                          4017
+compress_fast_extState                     301178
+decompress_safe_partial(1000)              1000
+compress_HC(12)                            298265
+compress_HC_extStateHC(9)                  298271
+fast_continue + safe_continue + saveDict   321106
+loadDict + fast_continue                   100394
+compress_HC_continue                       298288
+frame compress in odd chunks               298303
+frame decompress in odd chunks             300000
+compressFrame_usingCDict                   100023
+decompress after usingCDict                100000
+stdio wrapper round trip                   7000
+digest 14ccb783a2757039
+"#
+    );
+}

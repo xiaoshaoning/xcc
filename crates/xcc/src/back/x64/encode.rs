@@ -59,6 +59,9 @@ pub(crate) struct Encoded {
 
 /// `UWOP_PUSH_NONVOL`: `push r64`.
 pub(crate) const UWOP_PUSH_NONVOL: u8 = 0;
+/// A page: the unit Windows commits a thread's stack in, and how far a probe walks at a time.
+const PAGE: i32 = 0x1000;
+
 /// `UWOP_ALLOC_LARGE`: `sub rsp, imm`.
 pub(crate) const UWOP_ALLOC_LARGE: u8 = 1;
 /// `UWOP_ALLOC_SMALL`: `sub rsp, imm` of at most 128 bytes.
@@ -342,8 +345,17 @@ impl Encoder<'_> {
         }
         // What is left to subtract after the pushes have moved `rsp` by their own bytes.
         let remaining = self.frame - self.pushed();
-        if remaining != 0 {
+        if remaining > PAGE {
+            // Windows commits a thread's stack one page at a time, as each access reaches the single
+            // guard page below it. One `sub rsp` of a whole large frame steps *over* that page, and
+            // the first write past it is an access violation instead of a fault the kernel can grow
+            // through: `char a[65536]` in one function crashed, and so did lz4's streaming decoder.
+            // So the frame is taken a page at a time, in order, touching each one.
+            self.probe_and_allocate(remaining);
+        } else if remaining != 0 {
             self.sub_rsp(remaining);
+        }
+        if remaining != 0 {
             // `ALLOC_SMALL` names up to 128 bytes in the `op_info` field, in eight-byte units and off
             // by one; `ALLOC_LARGE` takes a slot instead, and a second slot when the size is not a
             // multiple of eight or does not fit sixteen bits of units.
@@ -1694,6 +1706,40 @@ impl Encoder<'_> {
     /// bytes a function is six bytes over five hundred functions.
     fn sub_rsp(&mut self, bytes: i32) {
         self.adjust_rsp(5, bytes);
+    }
+
+    /// The frame, a page at a time: `rsp -= bytes`, touching every page on the way down so the
+    /// kernel can commit it (see the call site). The loop is written out with its displacements as
+    /// constants rather than through labels, because a label here needs an index, and the lowering
+    /// numbers the labels it will use - one taken from the same counter would be its, not ours.
+    ///
+    /// It is 46 bytes, and the two displacements below are a fact about that number:
+    /// `jbe` is at 19 and jumps 24 bytes to the tail at 43, and `jmp` is at 43 and goes back 37 to
+    /// the top at 6. `r11` is volatile and the prologue has not begun, so nothing of the caller's
+    /// is at risk. One `ALLOC_LARGE` describes the whole sequence, because that is what it adds up
+    /// to; the positions in between are not described and cannot be - the loop is a loop. Only a
+    /// stack overflow can fault in there, and that ends the process whatever the unwinder is told.
+    fn probe_and_allocate(&mut self, bytes: i32) {
+        let start = self.code.len();
+        self.bytes(&[0x41, 0xBB]); // mov r11d, bytes
+        self.bytes(&bytes.to_le_bytes());
+        self.bytes(&[0x41, 0x81, 0xFB]); // cmp r11d, PAGE
+        self.bytes(&PAGE.to_le_bytes());
+        self.bytes(&[0x0F, 0x86]); // jbe tail
+        self.bytes(&24i32.to_le_bytes());
+        self.bytes(&[0x48, 0x81, 0xEC]); // sub rsp, PAGE
+        self.bytes(&PAGE.to_le_bytes());
+        self.bytes(&[0x48, 0x83, 0x0C, 0x24, 0x00]); // or qword ptr [rsp], 0 - the touch
+        self.bytes(&[0x41, 0x81, 0xEB]); // sub r11d, PAGE
+        self.bytes(&PAGE.to_le_bytes());
+        self.bytes(&[0xE9]); // jmp loop
+        self.bytes(&(-37i32).to_le_bytes());
+        self.bytes(&[0x4C, 0x29, 0xDC]); // sub rsp, r11
+        debug_assert_eq!(
+            self.code.len() - start,
+            46,
+            "the displacements above are now wrong"
+        );
     }
 
     /// What the pushes move `rsp` by, which is the part of `frame` the subtraction does not have to.
