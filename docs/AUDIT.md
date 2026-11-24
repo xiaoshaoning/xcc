@@ -760,6 +760,37 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - two units, one literal
+
+The first real program built and run by `xcc` alone: cJSON (3 206 lines, MIT) and a driver over it, compiled and
+linked with no host tool. It parses, walks and round-trips a JSON file - and printed **`"version":,`**, a number
+missing from the output, where `clang` printed `0.1`.
+
+The bug was not in cJSON and not in the number formatting. `cJSON_PrintUnformatted` produced `[y]` for a number whose
+`valuedouble` was correct, and the instrumented build showed the *format string itself* was wrong - it printed the
+driver's format, not its own. **A program's string literals are named `.str0`, `.str1`, ... and every unit numbers them
+from zero**, so their names collide across units while meaning different bytes; the linker keyed every object by name
+alone and `or_insert` kept the first, so the second unit's literals all resolved into the first unit's data.
+
+Twenty lines reproduced it, and now pin it: `a.c` printing `"alpha"` and calling a function in `b.c` that prints
+`"bravo"` printed `a=alpha` twice.
+
+**The fix is the flag that was already there.** The object writer has always marked a unit's own objects with static
+storage class - `DataSymbol::external` - and *nothing read it*: the README even said "every object claims external
+linkage, which is wrong for a `static` and harmless only because nothing reads the flag". The linker reads it now: a
+non-external object is keyed by `(unit, name)`, and a relocation is resolved from inside the unit that has it, its own
+objects first. Two units can each have a `.str0` that means their own bytes. (Functions are still keyed by name alone:
+`Placed` carries no such flag, so two units with a `static` helper of the same name would still collide - the same
+class of bug, one layer up, and stated rather than left to be discovered.)
+
+**Measured after the fix**: cJSON plus the driver, byte-identical to `clang` on both a small JSON file (13 lines) and a
+nested one (1 328 bytes of output), and the same `not JSON` answer on a malformed input. A no-argument run says so and
+exits 2.
+
+195 unit, 27 parser, 25 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the comment I "corrected" was the load-bearing one
 
 The ten-names commit, reviewed - and the review's first act was to break `setjmp`.

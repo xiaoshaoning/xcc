@@ -935,6 +935,10 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **A real program, built and run by xcc alone.** cJSON - 3 206 lines of MIT C - and a driver over it,
+      compiled and linked with no host tool: `xcc jd.c cJSON.c -o jd.exe` parses a JSON file, walks it, round-trips
+      it, and prints byte-identical output to the same sources built by `clang` (13 lines on one input, 1 328 bytes on
+      another, and the same `not JSON` answer on a broken one). The driver is what found the next bug.
 - [x] **Every declared name links.** Measured against `ucrtbase.dll`'s export table: ten of the 178 names
       the headers declare had no home - `scanf`/`fscanf`/`sscanf` (the scanning front ends are the program's
       half of the UCRT, like `printf`'s, so the runtime carries them over `__stdio_common_vfscanf`),

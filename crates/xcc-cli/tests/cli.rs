@@ -306,6 +306,39 @@ fn two_sources_link_into_one_program() {
 }
 
 #[test]
+fn two_sources_keep_their_own_string_literals() {
+    // A unit's literals are named `.str0`, `.str1`, ... and every unit numbers them from zero, so
+    // the names collide across units while meaning different bytes. A linker that keys them by
+    // name alone resolves the second unit's literals to the first unit's - which is how this was
+    // found: a JSON library linked with a driver printed the driver's own format strings.
+    let temp = Temp::new("literals");
+    let a = temp.write(
+        "a.c",
+        r#"#include <stdio.h>
+void b_literals(void);
+int main(void) {
+    printf("a=%s\n", "alpha");
+    b_literals();
+    return 0;
+}
+"#,
+    );
+    let b = temp.write(
+        "b.c",
+        r#"#include <stdio.h>
+void b_literals(void) {
+    printf("b=%s\n", "bravo");
+}
+"#,
+    );
+    let exe = temp.path().join("two.exe");
+    let output = run(xcc().arg(&a).arg(&b).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let ran = run(&mut Command::new(&exe));
+    assert_eq!(stdout(&ran).replace('\r', ""), "a=alpha\nb=bravo\n");
+}
+
+#[test]
 fn a_link_at_another_level_says_which_one_it_needs() {
     let temp = Temp::new("linklevel");
     let source = temp.write("t.c", "int main(void) { return 0; }\n");

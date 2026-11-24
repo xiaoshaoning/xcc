@@ -114,6 +114,14 @@ struct Program<'a> {
     functions: BTreeMap<String, u32>,
     /// Every object by name, and where it starts in `.data`.
     objects: BTreeMap<String, u32>,
+    /// Objects that are *not* visible outside their unit, keyed by the unit they belong to.
+    ///
+    /// A unit's string literals are named `.str0`, `.str1`, ... and each unit numbers them from zero,
+    /// so the names collide across units while meaning different bytes. The object format says so -
+    /// these are the symbols with static storage class - and a linker that keys them by name alone
+    /// resolves every unit's second literal to the first unit's: measured, by a program whose second
+    /// translation unit printed the first one's format string.
+    locals: BTreeMap<(usize, String), u32>,
     /// Where each unit's code landed inside the program's `.text`, in the same order as `units`.
     unit_text: Vec<u32>,
     /// Where each unit's data landed inside the program's `.data`, in the same order as `units`.
@@ -158,6 +166,7 @@ impl<'a> Program<'a> {
             units,
             functions: BTreeMap::new(),
             objects: BTreeMap::new(),
+            locals: BTreeMap::new(),
             unit_text: Vec::new(),
             unit_data: Vec::new(),
             imports: group(imports),
@@ -201,10 +210,19 @@ impl<'a> Program<'a> {
             let base = program.data.len() as u32;
             program.unit_data.push(base);
             for object in &unit.data.symbols {
-                program
-                    .objects
-                    .entry(object.name.clone())
-                    .or_insert(base + object.offset);
+                if object.external {
+                    // A name two units define is a duplicate symbol; the first wins, and a `-c`
+                    // build's object writer is where the duplicate is reported.
+                    program
+                        .objects
+                        .entry(object.name.clone())
+                        .or_insert(base + object.offset);
+                } else {
+                    program.locals.insert(
+                        (program.unit_data.len() - 1, object.name.clone()),
+                        base + object.offset,
+                    );
+                }
             }
             program.data.extend_from_slice(&unit.data.bytes);
         }
@@ -236,7 +254,18 @@ impl<'a> Program<'a> {
 
     /// The offset of a name from the start of the image: `.text` for a function, `.data` for an
     /// object, a thunk for anything imported.
-    fn address(&self, name: &str, sections: &Sections) -> Option<u32> {
+    /// The address `name` refers to from inside unit `unit`: its own objects first, then the
+    /// program's.
+    ///
+    /// The order is the whole point. `.str0` means this unit's first literal, and every unit has
+    /// one; a name that is not local - a function, an external object, an import - is the program's
+    /// and is found by `address`.
+    fn within(&self, unit: Option<usize>, name: &str, sections: &Sections) -> Option<u32> {
+        if let Some(unit) = unit {
+            if let Some(offset) = self.locals.get(&(unit, name.to_owned())) {
+                return Some(sections.data.address + offset);
+            }
+        }
         if let Some(offset) = self.functions.get(name) {
             return Some(sections.text.address + offset);
         }
@@ -263,11 +292,11 @@ impl<'a> Program<'a> {
         for (index, unit) in self.units.iter().enumerate() {
             for function in &unit.functions {
                 for relocation in &function.relocations {
-                    let target =
-                        self.address(&relocation.symbol, sections)
-                            .ok_or_else(|| Unlinked {
-                                name: relocation.symbol.clone(),
-                            })?;
+                    let target = self
+                        .within(Some(index), &relocation.symbol, sections)
+                        .ok_or_else(|| Unlinked {
+                            name: relocation.symbol.clone(),
+                        })?;
                     // `rel32` is measured from the byte after the four-byte displacement, and it is
                     // *written* at the unit's own place in `.text` - a second unit's code starts
                     // where the first one ended, and patching at its unit-relative offset would put
@@ -284,11 +313,11 @@ impl<'a> Program<'a> {
             // An address in an object is absolute, and `.reloc` tells the loader to fix it if the
             // image is moved.
             for relocation in &unit.data.relocations {
-                let target =
-                    self.address(&relocation.symbol, sections)
-                        .ok_or_else(|| Unlinked {
-                            name: relocation.symbol.clone(),
-                        })?;
+                let target = self
+                    .within(Some(index), &relocation.symbol, sections)
+                    .ok_or_else(|| Unlinked {
+                        name: relocation.symbol.clone(),
+                    })?;
                 let at = (self.unit_data[index] + relocation.offset) as usize;
                 let absolute = IMAGE_BASE + u64::from(target);
                 self.data[at..at + 8].copy_from_slice(&absolute.to_le_bytes());
