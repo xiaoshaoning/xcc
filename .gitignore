@@ -3,6 +3,7 @@
 
 # Scratch: edit scripts are written to a file, run, and thrown away
 .*.py
+.msg_*   # commit messages, written to a file and passed to git -F
 
 # Editor and tool scratch
 *.rs.bk

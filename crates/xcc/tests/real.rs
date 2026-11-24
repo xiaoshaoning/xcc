@@ -128,8 +128,8 @@ zip entry named
 }
 
 /// `lz4`: the block, streaming, high-compression, frame and stdio APIs, with a digest of every
-/// compressed byte at the end. Four bugs came out of this fixture - two in the parser, and one in
-/// the prologue, which crashed any frame larger than a stack page.
+/// compressed byte at the end. Three bugs came out of this fixture - two in the parser, and one
+/// in the prologue, which crashed any frame larger than a stack page.
 #[test]
 #[cfg(target_os = "windows")]
 fn lz4_compresses_streams_and_round_trips_every_api() {

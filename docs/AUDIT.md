@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the count and the list under it, and a frame sized to a constant
+
+The stack-probe commit, reviewed. The probe holds and lz4 still matches `clang` byte for byte; the review found four
+things I had written wrong around it, one of them in a comment that describes a byte layout.
+
+**"Four bugs came out of this fixture", followed by three.** The count was in two places - the test's doc comment and
+the fixture's README - and both said four while both listed three: two parser bugs and the prologue. The same class as
+the README that said "twenty-four headers" while twenty-three shipped, and it will keep happening until counts are
+mechanical. This one is a word next to a hand-written list, and the list is the truth; both now say three.
+
+**"`jbe` is at 19 and jumps 24 bytes to the tail at 43"** - the arithmetic is right and the nouns are wrong. `rel32`
+is counted from the *end* of the branch, so 19 is where `jbe` ends, not where it is (it begins at 13, which is what
+`objdump` prints). A comment about byte layout that names the wrong offsets is worse than none, because it is the kind
+you check once and then trust. It says "ends at" now.
+
+**The largest frame in the new test was one megabyte, which is half the stack reserve.** It was the number I had
+measured, but the test is about the *walk*, and a size that close to a header constant makes the test fail for a reason
+that has nothing to do with probing the day someone changes `STACK_RESERVE`. It takes three hundred thousand bytes now
+- seventy-three pages, which proves the loop and leaves the constant out of it.
+
+**And `<clock.h>` for `clock()`**, in the fixture's README: the header is `<time.h>`, which is what `fuzzer.c` includes.
+
+**Measured, because the fix left two combinations untested by the fixture:** a variadic function with a 65 536-byte
+frame and ten arguments, and one with a 50 000-byte frame around a `double` argument, so the probe and the XMM saves
+share a prologue - both print what `clang` prints. And `--run` with a 100 000-byte local works: Cranelift probes the
+stack itself, so the JIT never had this bug and the fix does not apply to it.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 17 exe, 3 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - a stack page Windows grows through, and the frame that stepped over it
 
 lz4's own `lib/` - the block compressor, the high-compression one, the frame format, the stdio wrapper and xxhash,

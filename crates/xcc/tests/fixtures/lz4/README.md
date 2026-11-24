@@ -30,12 +30,12 @@ compares this compiler's run with them, not with another run of `clang`.
 
 `programs/` (`lz4cli.c`, `lz4io.c`, `bench.c`) needs `windows.h`, `io.h`, `sys/stat.h` and
 `winioctl.h` - the Win32 SDK, which is the boundary this compiler stops at and not something worth
-vendoring. `tests/fuzz/fuzzer.c` needs only `<clock.h>`'s `clock()`, but reaches `programs/util.h`
+vendoring. `tests/fuzz/fuzzer.c` needs only `<time.h>`'s `clock()`, but reaches `programs/util.h`
 and `platform.h` through its include list, and those want the same SDK headers.
 
 ## What it found
 
-Four bugs, none of which the small-program corpus could see:
+Three bugs, none of which the small-program corpus could see:
 
 - an array initialiser whose size comes from its list could not end with a comma, which is how
   lz4frame.c writes its error-string table (C99 6.7.8p1);

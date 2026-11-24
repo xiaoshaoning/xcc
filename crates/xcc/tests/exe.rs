@@ -375,7 +375,8 @@ int main(void) {
 /// streaming decoder, which keeps sixty-four kilobytes of dictionary on the stack. The back end now
 /// walks down a page at a time, touching each one, which this test holds: every one of these frames
 /// was an access violation before, and the deep recursion takes a page-sized frame five hundred
-/// times over.
+/// times over. The largest takes seventy-three pages, which is a statement about the walk and
+/// not about how much stack the image asks for.
 #[test]
 #[cfg(target_os = "windows")]
 fn a_frame_larger_than_a_stack_page_is_taken_one_page_at_a_time() {
@@ -392,12 +393,12 @@ static int walk(int depth) {
 }
 
 int main(void) {
-    char small[8192], large[65536], huge[1000000];
+    char small[8192], large[65536], huge[300000];
     small[0] = 1; small[8191] = 2;
     large[0] = 3; large[65535] = 4;
-    huge[0] = 5; huge[999999] = 6;
+    huge[0] = 5; huge[299999] = 6;
     printf("%d %d %d %d %d %d\n", small[0], small[8191], large[0], large[65535],
-           huge[0], huge[999999]);
+           huge[0], huge[299999]);
     printf("deep %d\n", walk(100));
     return 0;
 }

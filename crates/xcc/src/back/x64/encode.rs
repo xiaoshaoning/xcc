@@ -345,17 +345,17 @@ impl Encoder<'_> {
         }
         // What is left to subtract after the pushes have moved `rsp` by their own bytes.
         let remaining = self.frame - self.pushed();
-        if remaining > PAGE {
-            // Windows commits a thread's stack one page at a time, as each access reaches the single
-            // guard page below it. One `sub rsp` of a whole large frame steps *over* that page, and
-            // the first write past it is an access violation instead of a fault the kernel can grow
-            // through: `char a[65536]` in one function crashed, and so did lz4's streaming decoder.
-            // So the frame is taken a page at a time, in order, touching each one.
-            self.probe_and_allocate(remaining);
-        } else if remaining != 0 {
-            self.sub_rsp(remaining);
-        }
         if remaining != 0 {
+            if remaining > PAGE {
+                // Windows commits a thread's stack one page at a time, as each access reaches the
+                // single guard page below it. One `sub rsp` of a whole large frame steps *over* that
+                // page, and the first write past it is an access violation instead of a fault the
+                // kernel can grow through: `char a[65536]` in one function crashed, and so did lz4's
+                // streaming decoder. So the frame is taken a page at a time, in order, touching each.
+                self.probe_and_allocate(remaining);
+            } else {
+                self.sub_rsp(remaining);
+            }
             // `ALLOC_SMALL` names up to 128 bytes in the `op_info` field, in eight-byte units and off
             // by one; `ALLOC_LARGE` takes a slot instead, and a second slot when the size is not a
             // multiple of eight or does not fit sixteen bits of units.
@@ -1713,9 +1713,9 @@ impl Encoder<'_> {
     /// constants rather than through labels, because a label here needs an index, and the lowering
     /// numbers the labels it will use - one taken from the same counter would be its, not ours.
     ///
-    /// It is 46 bytes, and the two displacements below are a fact about that number:
-    /// `jbe` is at 19 and jumps 24 bytes to the tail at 43, and `jmp` is at 43 and goes back 37 to
-    /// the top at 6. `r11` is volatile and the prologue has not begun, so nothing of the caller's
+    /// It is 46 bytes, and the two displacements below are a fact about that number, counted the
+    /// way `rel32` is - from the end of the branch that reads it: `jbe` ends at 19 and jumps 24 bytes
+    /// to the tail at 43; `jmp` ends at 43 and goes back 37 to the top at 6. `r11` is volatile and the prologue has not begun, so nothing of the caller's
     /// is at risk. One `ALLOC_LARGE` describes the whole sequence, because that is what it adds up
     /// to; the positions in between are not described and cannot be - the loop is a loop. Only a
     /// stack overflow can fault in there, and that ends the process whatever the unwinder is told.
