@@ -129,6 +129,10 @@ int scanf(const char *restrict format, ...) {
     return read;
 }
 
+int vscanf(const char *restrict format, va_list args) {
+    return __stdio_common_vfscanf(0, stdin, format, 0, args);
+}
+
 int vsscanf(const char *restrict from, const char *restrict format, va_list args) {
     return __stdio_common_vsscanf(0, from, NO_LIMIT, format, 0, args);
 }

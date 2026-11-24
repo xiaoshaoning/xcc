@@ -446,3 +446,50 @@ int main(void) {
         "{out:?}"
     );
 }
+
+/// C99 7.19.6.8's own example: a program writes its own variadic function over `vfprintf` and
+/// `vsnprintf`. Two layers of `...` in one program - the program's `va_list` forwarded into the
+/// runtime's front end - so this fails if either the header or the runtime is missing the `v*`
+/// forms, or if forwarding a `va_list` by argument does not survive the ABI.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_linked_program_can_write_its_own_variadic_function() {
+    let source = r#"
+#include <stdarg.h>
+#include <stdio.h>
+
+static void error(const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    fprintf(stderr, "error: ");
+    vfprintf(stderr, format, args);
+    va_end(args);
+}
+
+static int shout(char *to, unsigned long long count, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int written = vsnprintf(to, count, format, args);
+    va_end(args);
+    return written;
+}
+
+int main(void) {
+    char text[64];
+    int written = shout(text, sizeof text, "%s=%d", "answer", 42);
+    printf("%s written=%d\n", text, written);
+    error("%s\n", "to stderr");
+    return 0;
+}
+"#;
+    let run = run_linked("variadic", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).trim_end(),
+        "answer=42 written=9"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&run.stderr).trim_end(),
+        "error: to stderr"
+    );
+}

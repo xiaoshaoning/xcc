@@ -195,6 +195,8 @@ const RENAMED_IN_THE_LIBRARY: &[(&str, &str)] = &[
     ("mktime", "_mktime64"),
     // `setjmp` has to be the library's own function, because it saves the *caller's* frame; the
     // name in the library is the intrinsic one, which is also what a `clang`-built program imports.
+    // It takes the environment *and* the frame to unwind to - `setjmp.h` passes both, and the
+    // measurement behind that is in its comment.
     ("_setjmp", "__intrinsic_setjmp"),
 ];
 

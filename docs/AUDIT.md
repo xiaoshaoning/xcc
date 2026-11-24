@@ -760,6 +760,36 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the comment I "corrected" was the load-bearing one
+
+The ten-names commit, reviewed - and the review's first act was to break `setjmp`.
+
+**`setjmp`'s second argument is not decoration.** The header's comment said the C library's entry point takes
+"the frame it should stop at" as its second argument, and the header passed `0` there. I read that as a leftover of a
+different library and simplified the declaration to C's own one-parameter shape - `_setjmp(environment)`. It compiles,
+it links, and it faults inside `RtlUnwindEx` with `0xC00000FF`, because the unwinder is handed whatever the second
+register happened to hold. Restoring the argument made the program print `back with 7` again. So the original comment
+was right, the "correction" was an assumption dressed as a review, and the comment now carries the measurement that
+settles it - a reader who wonders, as I did, will find the answer and the experiment rather than a fixed conclusion.
+
+**The header was missing all seven `v*` functions.** `vprintf`, `vfprintf`, `vsprintf`, `vsnprintf`, `vscanf`,
+`vfscanf` and `vsscanf` are C99 7.19.6.8, 7.19.6.9 and 7.19.6.12-14, and the runtime source already defined six of
+them - but `stdio.h` declared none, so a program could not call the function whose example the standard gives. They are
+declared now, `vscanf` is written, and the new test is that example: a program's own `error(...)` forwarding its
+`va_list` into `vfprintf`, and its own `shout(...)` over `vsnprintf`. Two layers of `...` in one program, checked
+against `clang`'s output - identical on stdout and stderr.
+
+**One dead branch in the new gate.** `let Some(...) = import_for(name) else { continue }`, with the comment "the
+program defines it" - but the loop walks the runtime's own list, whose every name `import_for` answers for. A branch
+that cannot be taken is a branch that cannot be tested; it is an `expect` now, which says the invariant out loud.
+
+**And a stale row in `C99-SUPPORT.md`**: stdio was still `partial (M8)` and still said `snprintf` was resolved by no
+runtime, two milestones after the runtime started carrying it. It says `yes` and names the layer that makes it so.
+
+195 unit, 27 parser, 24 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 - 2026-11-22 - every declared name links, and the gate that first said yes to everything
 
 Ten of the 178 names the headers declare had no home in a link. Measured against `ucrtbase.dll`'s export table and

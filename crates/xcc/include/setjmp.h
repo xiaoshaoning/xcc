@@ -41,8 +41,11 @@ typedef struct _xcc_jump_buffer {
  * program that reads a local written between them is on its own (7.13.2p3).
  *
  * 7.13p1 calls `setjmp` a *macro*, and it has to be one here: this ABI's unwinder is passed the frame
- * it should stop at, and the C library's entry point takes that as its second argument. `longjmp` is
- * a function - its name is the one the C library exports. */
+ * it should stop at, and the C library's entry point takes that as its *second* argument - a null
+ * there means "this frame", which is what a `setjmp` call at the top of a function wants. Measured:
+ * dropping the argument to make the call look like C's one-parameter `setjmp` compiles, links, and
+ * then faults inside `RtlUnwindEx`, because the unwinder is handed whatever the second register
+ * happened to hold. `longjmp` is a function - its name is the one the C library exports. */
 int _setjmp(jmp_buf environment, void *frame);
 void longjmp(jmp_buf environment, int value);
 #define setjmp(environment) _setjmp((environment), 0)

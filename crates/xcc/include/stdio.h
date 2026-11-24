@@ -6,6 +6,7 @@
 #ifndef XCC_STDIO_H
 #define XCC_STDIO_H
 
+#include <stdarg.h>
 #include <stddef.h>
 
 typedef struct _iobuf FILE;
@@ -49,6 +50,17 @@ int scanf(const char *restrict format, ...);
 int snprintf(char *restrict to, size_t count, const char *restrict format, ...);
 int sprintf(char *restrict to, const char *restrict format, ...);
 int sscanf(const char *restrict from, const char *restrict format, ...);
+
+/* 7.19.6.8, 7.19.6.9, 7.19.6.12-14: the `va_list` forms, which are how a program writes a
+ * variadic function of its own - the standard's own example of `error` is one of these calls. They
+ * are functions, not macros, so their arguments are checked like any other. */
+int vfprintf(FILE *restrict stream, const char *restrict format, va_list args);
+int vfscanf(FILE *restrict stream, const char *restrict format, va_list args);
+int vprintf(const char *restrict format, va_list args);
+int vscanf(const char *restrict format, va_list args);
+int vsnprintf(char *restrict to, size_t count, const char *restrict format, va_list args);
+int vsprintf(char *restrict to, const char *restrict format, va_list args);
+int vsscanf(const char *restrict from, const char *restrict format, va_list args);
 
 int fgetc(FILE *stream);
 char *fgets(char *restrict to, int count, FILE *restrict stream);

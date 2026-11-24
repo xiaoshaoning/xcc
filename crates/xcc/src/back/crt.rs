@@ -65,6 +65,13 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "sscanf",
     "tmpfile",
     "ungetc",
+    "vfprintf",
+    "vfscanf",
+    "vprintf",
+    "vscanf",
+    "vsnprintf",
+    "vsprintf",
+    "vsscanf",
     // stdlib.h
     "abort",
     "abs",
@@ -468,9 +475,8 @@ mod tests {
         let runtime_source = crate::back::CRT_SOURCE;
         let mut missing = Vec::new();
         for name in C_RUNTIME {
-            let Some((library, exported)) = crate::back::import_for(name) else {
-                continue; // the program defines it
-            };
+            let (library, exported) =
+                crate::back::import_for(name).expect("a runtime name has a library");
             // The `printf` front ends are the *program's* half of the UCRT: the library has the
             // engine and the runtime source has the spelling, so a name the source defines is not
             // the library's to export.
