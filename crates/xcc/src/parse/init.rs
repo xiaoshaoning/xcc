@@ -60,29 +60,47 @@ impl Parser<'_> {
         let span = self.span();
         let (literal, name, literal_bytes) = self.string_literal();
         if let Type::Array { element, count } = *self.types.kind(ty) {
-            // C99 6.7.8p14: an array of character type, which `int` is not even though a
-            // `char` converts to one.
-            if !matches!(self.types.kind(element), Type::Int { bits: 8, .. }) {
+            // C99 6.7.8p14: an array of character type, and of the *literal's* own: a wide literal
+            // fills an array of `wchar_t` and a narrow one an array of `char`. `int` is neither,
+            // even though a character converts to one.
+            let width =
+                |types: &crate::types::Types, ty: crate::types::TypeId| match *types.kind(ty) {
+                    Type::Int { bits: 8, .. } => Some(1u64),
+                    Type::Int { bits: 16, .. } => Some(2u64),
+                    _ => None,
+                };
+            let literal_element = match *self.types.kind(literal) {
+                Type::Array { element, .. } => width(&self.types, element),
+                _ => None,
+            };
+            if literal_element.is_none() || literal_element != width(&self.types, element) {
                 let element = self.describe(element);
                 self.error(
                     span,
-                    format!("a string literal initialises an array of `char`, not {element}"),
+                    format!("a string literal initialises an array of its own character type, not {element}"),
                 );
                 return;
             }
+            let width = literal_element.unwrap_or(1);
             match count {
-                None => self.types.complete_array(ty, literal_bytes.len() as u64),
+                None => self
+                    .types
+                    .complete_array(ty, literal_bytes.len() as u64 / width),
                 // C99 6.7.8p14: the terminating NUL is dropped when there is no room for it, so
                 // `char s[2] = "ab"` is *valid* and `char s[2] = "abc"` is the constraint violation
                 // - "initializer-string for char array is too long", which every compiler reports as
                 // a warning and then initialises what fits. Both halves of that are needed: the
                 // first because refusing it refused a legal program, the second because the
                 // alternative is a silent truncation.
-                Some(count) if count + 1 < literal_bytes.len() as u64 => {
-                    let string = literal_bytes.len() as u64 - 1;
+                Some(count) if count + 1 < literal_bytes.len() as u64 / width => {
+                    let string = literal_bytes.len() as u64 / width - 1;
                     self.warning(
                         span,
-                        format!("a {count}-byte array cannot hold this {string}-byte string"),
+                        // Elements and characters, not bytes: a wide literal's array holds two
+                        // bytes per character, and "1-byte array, 2-byte string" was wrong twice.
+                        format!(
+                            "a {count}-element array cannot hold this {string}-character string"
+                        ),
                     );
                 }
                 Some(_) => {}

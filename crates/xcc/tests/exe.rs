@@ -665,3 +665,35 @@ int main(void) {
         "1 1 97 1\n1 65 2 65535\n"
     );
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn wide_arrays_at_file_scope_are_filled_with_utf16() {
+    // C99 6.7.8p14 fills an array of the *literal's* own character type - `wchar_t` for a wide
+    // literal - and takes the array's length from the literal when it has none. This was refused
+    // outright ("initialises an array of `char`, not unsigned short"), which made a wide string
+    // constant impossible to write at file scope.
+    let source = r#"
+#include <stddef.h>
+#include <stdio.h>
+
+const wchar_t g[] = L"ab";
+const wchar_t h[4] = L"xy";
+wchar_t exact[2] = L"ab";
+static const wchar_t *p = L"ptr";
+
+int main(void) {
+    printf("%d %d %d %d\n", (int)sizeof(g), (int)g[0], (int)g[1], (int)g[2]);
+    printf("%d %d %d %d %d\n", (int)sizeof(h), (int)h[0], (int)h[1], (int)h[2], (int)h[3]);
+    printf("%d %d %d\n", (int)exact[0], (int)exact[1], (int)sizeof(exact));
+    printf("%d %d %d\n", (int)p[0], (int)p[1], (int)p[2]);
+    return 0;
+}
+"#;
+    let run = run_linked("wideglobals", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace('\r', ""),
+        "6 97 98 0\n8 120 121 0 0\n97 98 4\n112 116 114\n"
+    );
+}

@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the wide literal worked everywhere but where it is written
+
+The wide-literal and header commit, reviewed. The commit's own tests passed and covered five shapes; the review found
+the sixth, which is the one a program is most likely to write.
+
+**`wchar_t s[] = L"ab";` - a wide array at file scope - was refused**: "a string literal initialises an array of
+`char`, not unsigned short". The *literal* was widened correctly by the last commit; the *initialiser* path still
+checked for an 8-bit element and counted bytes where it meant elements, so the one form a real program uses to write a
+wide string constant did not compile. The check is now "the array's element has the literal's own character width" -
+`char` fills `char`, `wchar_t` fills `wchar_t`, `int` fills neither - and the byte writer takes the element's width
+into account, so `wchar_t h[4] = L"xy"` is eight bytes with the tail zeroed. Four shapes measured against `clang`:
+unbounded, oversized, exact (`wchar_t e[2] = L"ab"`, the NUL dropped as 6.7.8p14 says), and a pointer.
+
+**And a message that said the wrong unit twice**: "a 1-byte array cannot hold this 2-byte string" for
+`wchar_t tight[1] = L"ab"` - both numbers are *elements*, and the string is *characters*. It reads "a 1-element array
+cannot hold this 2-character string" now, and the narrow case (`char s[2] = "abc"`) reads the same way rather than
+differently for no reason.
+
+**Two tests held the old wording**: one expected "3-byte string" and one expected the old refusal text. Both were
+*updated*, not deleted - they are the tests that would have caught this had they been written from the standard's
+words rather than from the compiler's.
+
+195 unit, 28 parser, 29 CLI, 14 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - wide literals were a wrong answer, and the linker had no alignment
 
 Three of the five refused headers, and two bugs that had to come first.

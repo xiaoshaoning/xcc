@@ -79,16 +79,22 @@ pub(super) fn string_literal_bytes(types: &Types, ty: TypeId, literal: &[u8]) ->
     let Type::Array { element, count } = *types.kind(ty) else {
         return None;
     };
-    if !matches!(types.kind(element), Type::Int { bits: 8, .. }) {
-        return None;
-    }
+    // A character array holds the literal's own characters: one byte each for `char`, two for the
+    // target's `wchar_t`. The literal's bytes are already in that encoding - `L"ab"` arrives as
+    // four UTF-16 bytes - so the room is the element width times the count.
+    let width = match *types.kind(element) {
+        Type::Int { bits: 8, .. } => 1,
+        Type::Int { bits: 16, .. } => 2,
+        _ => return None,
+    };
     let count = count? as usize;
+    let room = count * width;
     // C99 6.7.8p14: the characters fill what room there is and the terminating NUL is dropped when
-    // there is none - so a literal one byte longer than the array is exact, not too long. Two longer
-    // is the constraint violation the caller has already warned about, and what fits is what is
-    // written: a truncation the source asked for, not one the compiler chose.
-    let mut bytes = literal[..literal.len().min(count)].to_vec();
-    bytes.resize(count, 0);
+    // there is none - so a literal one character longer than the array is exact, not too long. Two
+    // longer is the constraint violation the caller has already warned about, and what fits is what
+    // is written: a truncation the source asked for, not one the compiler chose.
+    let mut bytes = literal[..literal.len().min(room)].to_vec();
+    bytes.resize(room, 0);
     Some(bytes)
 }
 

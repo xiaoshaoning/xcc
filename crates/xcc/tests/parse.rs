@@ -695,11 +695,20 @@ fn switch_and_goto_mistakes_are_caught() {
     assert!(
         warnings("char s[2] = \"abc\";")
             .iter()
-            .any(|message| message.contains("cannot hold this 3-byte string")),
+            .any(|message| message.contains("cannot hold this 3-character string")),
         "a too-long string is warned about"
     );
     parses("char s[2] = \"ab\";");
-    refuses("int a[] = \"abc\";", "initialises an array of `char`");
+    // The literal's own character type is what an array must have: `int` is not one, and a wide
+    // literal does not fill an array of `char`.
+    refuses(
+        "int a[] = \"abc\";",
+        "initialises an array of its own character type",
+    );
+    refuses(
+        "char a[] = L\"abc\";",
+        "initialises an array of its own character type",
+    );
     refuses(
         "int a = \"x\";",
         "cannot initialise int with pointer to char",
