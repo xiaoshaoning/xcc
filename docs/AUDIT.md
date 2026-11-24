@@ -760,6 +760,37 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - promotion looked at instructions and not at edges
+
+`miniz_zip.c` - the remaining 4 911 lines of miniz - needed one include and found one pass bug.
+
+**The include**: `<sys/stat.h>`, which is POSIX and which this compiler does not have. `MINIZ_NO_STDIO` is the
+library's own switch for a build with no file APIs, and with it the zip code works entirely in memory - which is the
+honest configuration for a compiler whose headers are C99's.
+
+**The pass bug** was `mem2reg`: `int *p = c ? &a : &b;` threads those addresses through the join as **block
+arguments**, and the escape analysis that decides which slots may be promoted walked the *instructions* of each block
+and never its **terminator**. So a slot whose address flowed into a join was promoted anyway, its `Slot` instruction was
+deleted, and the block argument went on naming a value nothing defined:
+
+```
+internal: `mz_zip_writer_add_mem_ex_v2` is not valid: v21 is used but no instruction defines it
+```
+
+Finding it was a measurement, not a reading: the verifier's five hooks were labelled to say which pass broke the
+function (`mem2reg`), and the cir dumps before and after showed `Value(21)` as a `Slot` that two jumps passed as an
+argument before the pass and that nothing defined after it. Six lines reproduce it - `int *p = c ? &x : 0;` - and that
+is the test now. `miniz_zip.c` compiles, and a driver writes a zip archive in memory and extracts the file back
+byte-identical: 176 bytes of archive, 39 bytes of file, `1 file(s) ... identical`.
+
+**What the fix says**: an escape is a use, and a terminator is a use. The check reads `term_operands` - the same
+function the verifier and both back ends read - so the answer cannot disagree with what the rest of the compiler thinks
+an operand is.
+
+195 unit, 28 parser, 29 CLI, 10 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON identical, miniz round-trips and zips; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the hang was a list pretending to be a set
 
 The level-2 hang on miniz's inflater, found and fixed. It was not the back end's size limit and not the frame-slot fix:

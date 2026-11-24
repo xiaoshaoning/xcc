@@ -533,3 +533,36 @@ int main(void) {
     assert_eq!(run.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "11 10 100");
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn a_conditional_whose_arm_is_a_locals_address_survives_promotion() {
+    // `int *p = c ? &x : &y;` threads those addresses through the join as block arguments. The
+    // promotion pass deletes the `Slot` instructions of locals it can prove never escape, and its
+    // escape test walked instructions only - so the block argument kept naming a value nothing
+    // defined, and the verifier called the function invalid. miniz's zip writer is written that way.
+    let source = r#"
+#include <stdio.h>
+
+static int f(int c) {
+    int x = 7;
+    int *p = c ? &x : 0;
+    return p ? *p : 0;
+}
+
+static int g(int c) {
+    int a = 1, b = 2;
+    int *p = c ? &a : &b;
+    *p += 1;
+    return a + b;
+}
+
+int main(void) {
+    printf("%d %d %d\n", f(1), g(0), g(1));
+    return 0;
+}
+"#;
+    let run = run_linked("addressjoin", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "7 4 4");
+}

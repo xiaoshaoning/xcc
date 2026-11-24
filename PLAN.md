@@ -935,6 +935,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **miniz, all of it.** `miniz_zip.c` compiles with `-DMINIZ_NO_STDIO` (its `<sys/stat.h>` is POSIX and this
+      compiler has no POSIX headers; the library's own switch turns the file APIs off) and a driver writes a zip
+      archive in memory and extracts the file back byte-identical. Building it found the last `mem2reg` hole:
+      `int *p = c ? &a : &b;` threads those addresses through the join as block arguments, and the escape analysis
+      read instructions and never terminators - so a slot was promoted, its `Slot` deleted, and the argument named a
+      value nothing defined. The check now asks `term_operands`, the same list the verifier and both back ends use.
 - [x] **A frame slot is not an instruction.** Closed, and the blocker was not the slot. A slot's `Slot` instruction
       was emitted where the declaration stood, so a `switch` whose `case` labels sit inside nested `do { } while (0)`
       blocks (miniz's inflater) read a slot from a block that did not dominate it, and the verifier refused the

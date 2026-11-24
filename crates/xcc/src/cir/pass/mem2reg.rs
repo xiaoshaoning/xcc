@@ -415,6 +415,16 @@ fn escaping_slots(func: &Func, chains: &HashMap<Value, Value>) -> HashSet<Value>
                 }
             }
         }
+        // A block's *terminator* is a use too, and it is the one this check used to miss: a
+        // conditional expression whose arm is a local's address - `int *p = c ? &x : 0;` - threads
+        // that address through the join as a block argument. Promoting the slot deleted its `Slot`
+        // instruction and left the argument naming a value nothing defined: miniz's zip writer is
+        // written that way, and the verifier called the function invalid.
+        for value in block.term.iter().flat_map(crate::cir::term_operands) {
+            if let Some(slot) = chains.get(&value).copied() {
+                escaped.insert(slot);
+            }
+        }
     }
     escaped
 }
