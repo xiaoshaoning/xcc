@@ -782,7 +782,6 @@ impl Parser<'_> {
         // string literal as a condition, and this check refused it before the decay could happen.
         if !self.types.is_scalar(value.ty)
             && !matches!(self.types.kind(value.ty), Type::Array { .. })
-            && self.types.complex_element(value.ty).is_none()
         {
             let ty = self.describe(value.ty);
             let span = self.span();

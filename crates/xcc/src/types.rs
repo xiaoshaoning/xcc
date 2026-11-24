@@ -650,10 +650,20 @@ impl Types {
         }
     }
 
-    /// Whether a value of this type is a scalar: a number or a pointer (C99 6.2.5p21). What a
-    /// condition, a logical operator and a conversion to `_Bool` all accept.
+    /// Whether a value of this type is a scalar (C99 6.2.5p21): an arithmetic type or a pointer,
+    /// where arithmetic covers the complex ones too - 6.2.5p11 puts complex among the floating
+    /// types and 6.2.5p18 among the arithmetic. What a condition, a logical operator and a
+    /// conversion to `_Bool` all accept; `(_Bool)z` on a complex number is 6.3.1.2's question, and
+    /// the answer is *either part*.
     pub fn is_scalar(&self, id: TypeId) -> bool {
-        self.is_arithmetic(id) || self.is_pointer(id)
+        self.is_arithmetic(id) || self.is_pointer(id) || self.is_complex(id)
+    }
+
+    /// Whether a value of this type is an aggregate (C99 6.2.5p21): an array or a structure, which
+    /// is what "comes in parts a list may not fill" means - a `_Complex` is one here even though it
+    /// is a scalar there, because its two halves are two members to an initialiser.
+    pub fn is_aggregate(&self, id: TypeId) -> bool {
+        self.record_of(id).is_some() || matches!(self.kind(id), Type::Array { .. })
     }
 
     /// Integer promotion (C99 6.3.1.1): anything narrower than `int` becomes `int`. Every

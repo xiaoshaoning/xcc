@@ -33,18 +33,23 @@
 /* The four that are exact arithmetic on those parts, or one math.h call. */
 double _Complex conj(double _Complex z);
 float _Complex conjf(float _Complex z);
-long double _Complex conjl(long double _Complex z);
 
 double cabs(double _Complex z);
 float cabsf(float _Complex z);
-long double cabsl(long double _Complex z);
 
 double carg(double _Complex z);
 float cargf(float _Complex z);
-long double cargl(long double _Complex z);
 
 double _Complex cproj(double _Complex z);
 float _Complex cprojf(float _Complex z);
-long double _Complex cprojl(long double _Complex z);
+
+/* 7.3 asks for an `l` form of each, and this target's `long double _Complex` **is** its
+ * `double _Complex` - so a definition would be a redefinition of the row above, and the
+ * spelling is a macro, exactly as `math.h` writes its own `l` family. Declaring them as
+ * functions instead was a promise the linker could not keep: `cabsl` was an undefined symbol. */
+#define conjl conj
+#define cabsl cabs
+#define cargl carg
+#define cprojl cproj
 
 #endif

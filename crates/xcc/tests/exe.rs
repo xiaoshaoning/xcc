@@ -417,6 +417,9 @@ int main(void) {
     printf("carg %.4f\n", carg(a));
     printf("conj %.1f %.1f\n", creal(conj(a)), cimag(conj(a)));
     printf("cproj %.1f %.1f\n", creal(cproj(a)), cimag(cproj(a)));
+    /* 6.3.1.2 for a complex value, and the `l` spelling, which is a macro. */
+    printf("bool %d %d\n", (int)(_Bool)a, (int)(_Bool)(double _Complex){ 0.0, 0.0 });
+    printf("long %.4f\n", (double)cabsl(a));
     return 0;
 }
 "#;
@@ -940,6 +943,6 @@ fn complex_numbers_are_laid_out_computed_and_passed_the_way_clang_does() {
     // this target ends its lines that way.
     // What `clang` printed for this program, recorded when the test was written. Lines are
     // separated by `@@` and turned back into a redirected stream's CRLF below.
-    let expected = "sizeof 16 8 align 8@@add 6.000000 2.000000@@sub -2.000000 4.000000@@mul 11.000000 10.000000@@div 0.294118 0.823529@@neg -2.000000 -3.000000@@cmp 1 0 1@@convert 2.0 3.0 4@@truth 1 0 0@@i 0.0 1.0@@calls 2.50 7.00 | 3.00 -5.00@@cabs 3.6056 2.9155@@carg 0.9828@@conj 2.0 -3.0@@cproj 2.0 3.0@@";
+    let expected = "sizeof 16 8 align 8@@add 6.000000 2.000000@@sub -2.000000 4.000000@@mul 11.000000 10.000000@@div 0.294118 0.823529@@neg -2.000000 -3.000000@@cmp 1 0 1@@convert 2.0 3.0 4@@truth 1 0 0@@i 0.0 1.0@@calls 2.50 7.00 | 3.00 -5.00@@cabs 3.6056 2.9155@@carg 0.9828@@conj 2.0 -3.0@@cproj 2.0 3.0@@bool 1 0@@long 3.6056@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }

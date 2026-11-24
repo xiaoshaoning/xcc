@@ -263,12 +263,6 @@ impl Parser<'_> {
                 };
                 Some(self.complex_from_parts(element, part.0, part.1, span))
             }
-            "+=" | "-=" | "*=" | "/=" => {
-                let op = &operator[..1];
-                let computed = self.complex_binary(op, left, right, span)?;
-                let (re, im) = self.complex_parts(computed, element, span)?;
-                Some(self.complex_from_parts(element, re, im, span))
-            }
             "<" | ">" | "<=" | ">=" => {
                 // C99 6.5.8p2: the relational operators need *real* operands.
                 let ty = self.describe(if left_element.is_some() {
@@ -342,7 +336,10 @@ impl Parser<'_> {
         }
         source?;
         if matches!(self.types.kind(wanted), Type::Bool) {
-            return self.complex_truth(value, span);
+            // The truth is an `int` (0 or 1); the *conversion* was asked for a `_Bool`, and a
+            // value whose type is not the one it was converted to is a wrong answer to `_Generic`.
+            let truth = self.complex_truth(value, span)?;
+            return Some(self.convert(truth, wanted, span));
         }
         let real = self.complex_real_or_imaginary(value, false, span);
         Some(self.convert(real, wanted, span))

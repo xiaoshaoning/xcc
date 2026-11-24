@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-23 - four promises the header could not keep, and the scalar the standard says it is
+
+The `_Complex` commit, reviewed. The type, the arithmetic and the ABI hold - the exe test still prints what `clang`
+prints - and the review found four things wrong at the edges, three of them promises rather than code.
+
+**`cabsl`, `cargl`, `conjl` and `cprojl` were declared and defined nowhere.** `long double _Complex` *is*
+`double _Complex` on this target, so writing the definitions would have been redefining `cabs` three times; leaving them
+declared was worse - `cabsl(z)` was "undefined symbol", a link failure for a name the header promised. They are macros
+now, the way `math.h` already writes its own `l` family, and the reason is in the header where the four lines are.
+Spotted by writing the program the review wanted to test and watching the *linker* complain, which is the only way a
+missing definition shows.
+
+**`(_Bool)z` was refused**, and `is_scalar` was the cause: it said "a number or a pointer", and C99 6.2.5p11 puts the
+complex types among the floating ones and 6.2.5p18 among the arithmetic - so a complex value **is** a scalar (6.2.5p21).
+Making it one meant four callers to look at. `convert` had to ask the complex rules *before* the `_Bool` rule, because
+`_Bool` is a scalar question and `truth_value` compares one number; the conversion now answers in the type it was asked
+for, so `_Generic((_Bool)z, _Bool: 1)` is 1 rather than `int`. And the initialiser walk was using "not a scalar" to mean
+"has parts a list may not fill" - which a complex value has, scalar or not - so it asks a new
+`Types::is_aggregate` instead. That is the one place the old predicate was standing in for a different question.
+
+**The compound-assignment arm in `complex_binary` was unreachable.** `binary_result` is asked about operators, and
+`z += w` is an assignment: the arm could not run, and a branch that cannot run is a reader's question with no answer.
+
+**And the ledger's reasons had drifted.** Twelve near-identical strings for the eight names that remain, and the two
+`fenv` entries dropped by the edit that added them. One wording now, eight entries, and `feraiseexcept`/`feupdateenv`
+back where they were - a script that rewrote a block between two markers and took the neighbours with it.
+
+201 unit, 32 parser, 29 CLI, 4 invalid, 19 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+`.text` 3.490x `clang -O2`; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-23 - `_Complex`: two numbers in a record, and the three bugs underneath it
 
 `complex.h` ships. It was the last header of C99 7.1.2 that refused, and the reason it refused was a *type*:

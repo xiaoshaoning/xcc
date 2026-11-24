@@ -210,14 +210,17 @@ impl Parser<'_> {
         if self.types.is_pointer(wanted) && self.null_pointer_constant(&value) {
             return self.constant_of(wanted, 0, span);
         }
+        // C99 6.3.1.5 and 6.3.1.7: a value becoming or leaving a `_Complex`. Asked before the
+        // `_Bool` rule below, because a complex value *is* a scalar (6.2.5p21) and the question
+        // "is it true" is 6.3.1.2's, answered by the two parts rather than by `truth_value`, which
+        // compares the value as one number.
+        if let Some(converted) = self.complex_convert(value, wanted, span) {
+            return converted;
+        }
         // C99 6.3.1.2: any scalar converted to `_Bool` is 0 or 1, which is a *comparison*, not a
         // narrowing conversion: `(_Bool)2` is 1, `(_Bool)0.5` is 1, and so is any NaN.
         if matches!(self.types.kind(wanted), Type::Bool) && self.types.is_scalar(value.ty) {
             return self.truth_value(value, span);
-        }
-        // C99 6.3.1.5 and 6.3.1.7: a value becoming or leaving a `_Complex`.
-        if let Some(converted) = self.complex_convert(value, wanted, span) {
-            return converted;
         }
         let Some(source) = value.cir else {
             // Nothing is being emitted, so nothing will compute this - but a *constant expression* is
