@@ -395,6 +395,40 @@ fn required_names(images: &[crate::back::x64::coff::Image]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The default budget refuses a source past it, with a diagnostic naming the limit.
+    ///
+    /// The *command line* raises this budget (`Budgets::for_a_compiler`) because a compiler is not
+    /// an embedder; the default is what a host that hands over a snippet gets, and it still says no.
+    #[test]
+    fn a_source_past_the_default_budget_is_refused() {
+        let mut source = String::with_capacity((8 << 20) + 2);
+        source.push_str(
+            "int f(void) { return 0; }
+",
+        );
+        while source.len() <= 8 << 20 {
+            source.push_str(
+                "/* pad */
+",
+            );
+        }
+        let compiler = Compile::new(Options::default());
+        let Err(diagnostics) = compiler.preprocess("big.c", &source) else {
+            panic!("a source past the default budget is refused");
+        };
+        let messages: Vec<&str> = diagnostics
+            .items()
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("more than the")),
+            "{messages:?}"
+        );
+    }
+
     use super::*;
     use crate::options::Budgets;
 

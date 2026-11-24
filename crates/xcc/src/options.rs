@@ -92,6 +92,35 @@ impl Default for Budgets {
     }
 }
 
+impl Budgets {
+    /// The budgets a *compiler* runs with, as opposed to the conservative defaults an embedder gets.
+    ///
+    /// The difference is size, not safety: a translation unit of nine megabytes is a normal thing to
+    /// compile - sqlite's amalgamation is one - and an unusual thing to hand a JIT. Three limits
+    /// stay exactly where the defaults put them, because they are about the *machine* and not the
+    /// source: macro expansion depth, `#include` depth and nesting all bound a recursive descent
+    /// over hostile input, and a bigger number would only buy a stack overflow.
+    pub fn for_a_compiler() -> Self {
+        Self {
+            // A single source file, in bytes: the largest amalgamations are under twenty.
+            max_source_bytes: 64 << 20,
+            // Tokens preprocessing may produce, macro expansion included. **This is a memory bound
+            // wearing a count**: a token is tens of bytes, so thirty-two million of them is a
+            // five-gigabyte allocation that aborts the process instead of producing a diagnostic -
+            // measured, by a macro fan-out in `tests/hostile.rs`. Four million is enough for sqlite's
+            // amalgamation (which needs more than one) and small enough to be refused in time.
+            max_tokens: 4 << 20,
+            // The most blocks one function may have. The dominator analysis is quadratic in them, so
+            // this is the one that decides how long a big function takes rather than how much memory
+            // it takes; sqlite's largest are a few thousand.
+            max_blocks: 1 << 16,
+            // Objects: the image is written from these, and a big translation unit has a lot of them.
+            max_object_bytes: 256 << 20,
+            ..Self::default()
+        }
+    }
+}
+
 /// Everything one [`crate::Compile`] needs to know.
 ///
 /// What is not here is deliberate: the target is Windows x86-64 (ADR-001, decision 5) and

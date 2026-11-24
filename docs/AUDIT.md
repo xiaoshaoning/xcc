@@ -786,6 +786,49 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - the target's own names, and the eleven gigabytes they uncovered
+
+Three things, found by pointing the compiler at a program the size of sqlite's amalgamation.
+
+**The predefined macros were half-defined.** `__STDC__`, `__STDC_VERSION__` and `__STDC_HOSTED__` were substituted
+during expansion and never installed as macros, so `#if __STDC__` was true while `#ifdef __STDC__` and
+`defined(__STDC__)` were false - three answers to one question in one file. C99 6.10.8p2 makes them macros, and
+asking with `#ifdef` is the common case. They are installed as macros now, in one table, beside the target's own names
+which were missing entirely: `_WIN32`, `_WIN64`, `__x86_64__`, `_M_X64`, `__XCC__`. `__STDC_VERSION__` comes from the
+dialect, so it is installed from the dialect.
+
+**What that cost, measured.** sqlite3.c (255 680 lines, nine megabytes) was refused by this compiler's own eight-
+megabyte source budget, and the command line had no way to raise it - so `Budgets::for_a_compiler` is what the CLI
+uses now, with the three limits that bound *the machine* (macro depth, include depth, nesting) left exactly where they
+were. With the budget lifted, sqlite asked for `<pthread.h>` and `<sys/types.h>`: `os_setup.h` had decided the target
+was Unix, because `_WIN32` did not exist. With `_WIN32` defined it asks for `<windows.h>` instead, which is the Win32
+SDK - a boundary this compiler states rather than crosses.
+
+**And then the eleven gigabytes.** With `_WIN32` defined, cJSON takes the branch every Windows header takes -
+`__declspec(dllexport) type __stdcall name(...)` - and the fixture test died with `memory allocation of 11811160064
+bytes failed`. Bisected to one line: `typedef struct H { int ( x * p ) ( void ) ; } H;`. Two bugs, both real:
+
+- `skip_until` *stopped* at a `)` at depth zero that no `(` in its own scan had opened, leaving the caller's member
+  loop with no progress: an infinite loop that, before the second fix, grew a `Vec<Diagnostic>` until the allocator
+  gave up. It now steps over a stray closer and keeps looking for the delimiter it was sent for - the delimiter is
+  outside it by construction.
+- the diagnostic list was truncated *after* the parse, so nothing bounded it *during*: `Parser::push` now spends the
+  budget where the list grows. A bound applied where the list grows bounds the list; one applied to the list
+  afterwards bounds the answer, not the work.
+
+Both reproducers are now a diagnostic in about 150 milliseconds, and the commit is also the parser learning the two
+spellings a Windows header emits: `__declspec(...)` is skipped wherever a specifier may stand, and
+`__cdecl`/`__stdcall`/`__fastcall`/`__thiscall`/`__vectorcall` are skipped on either side of the `*`s, because on
+x86-64 there is one convention and Microsoft's own documentation says so.
+
+**Found and not fixed**: a nameless struct member - `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };` -
+is accepted silently, where C99 6.7.2.1p1 wants a declarator with an identifier. It is a diagnostic gap, not a
+correctness one for well-formed code, and it is the next thing to look at rather than something to hide.
+
+198 unit, 28 parser, 29 CLI, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; cJSON, miniz and the pg gate as before; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the noun was checked and the number was not
 
 The math-families and `tgmath.h` commit, reviewed. One finding, and it is the third time this project has made it: a

@@ -123,6 +123,30 @@ impl Preprocessed {
 }
 
 /// Preprocess `source`, reading includes from `includes` and interning what it keeps.
+/// The macros this implementation defines for every translation unit: C99 6.10.8p2's three, and
+/// the target's own names.
+///
+/// They are *installed as macros* rather than special-cased during expansion, because 6.10.8 makes
+/// them macros: `#ifdef __STDC__` and `defined(__STDC__)` must agree with `__STDC__` itself, and a
+/// version that only substituted the name left the first two answering no. A program that asks its
+/// dialect with `#ifdef` is the common case, not the exotic one.
+///
+/// `_WIN32`, `_WIN64`, `__x86_64__` and `_M_X64` are the target's: the first two are what Windows
+/// headers and libraries test, and the last two are what code written for this instruction set
+/// tests. Without `_WIN32`, a program that selects its platform - sqlite's own `os_setup.h` is one -
+/// decides it is on Unix and includes `<pthread.h>`.
+const PREDEFINED: &[(&str, &str)] = &[
+    ("__STDC__", "1"),
+    ("__STDC_HOSTED__", "1"),
+    // `__STDC_VERSION__` is the dialect's, so it is installed from the dialect and not from here.
+    ("_WIN32", "1"),
+    ("_WIN64", "1"),
+    ("__x86_64__", "1"),
+    ("_M_X64", "100"),
+    ("__XCC__", "1"),
+];
+
+/// Preprocess `source` with `options`, reading `#include` through `includes`.
 pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Includes) -> Preprocessed {
     let mut interner = Interner::new();
     let mut preprocessor = Preprocessor {
@@ -130,7 +154,6 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         includes,
         budgets: &options.budgets,
         stamp: &options.stamp,
-        standard: options.standard,
         interner: &mut interner,
         pending: VecDeque::new(),
         out: Vec::new(),
@@ -144,6 +167,14 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         in_command_line: false,
     };
     preprocessor.read_root();
+    let version = match options.standard {
+        crate::options::CStandard::C99 => "199901L",
+        crate::options::CStandard::C11 => "201112L",
+    };
+    preprocessor.install_define(&format!("__STDC_VERSION__={version}"));
+    for (name, value) in PREDEFINED {
+        preprocessor.install_define(&format!("{name}={value}"));
+    }
     for definition in &options.defines {
         preprocessor.install_define(definition);
     }
@@ -280,7 +311,6 @@ struct Preprocessor<'a> {
     includes: &'a dyn Includes,
     budgets: &'a Budgets,
     stamp: &'a Stamp,
-    standard: crate::options::CStandard,
     interner: &'a mut Interner,
     /// The tokens still to look at, sources and expansions alike.
     pending: VecDeque<Raw>,
@@ -1014,21 +1044,6 @@ impl Preprocessor<'_> {
             ),
             "__DATE__" => (TokenKind::Str, quoted(&self.stamp.date)),
             "__TIME__" => (TokenKind::Str, quoted(&self.stamp.time)),
-            "__STDC__" => (TokenKind::Number, "1".to_owned()),
-            // C99 6.10.8p2 and C11 6.10.8p2: the version is the dialect's own, which is the one
-            // place a program can ask what it is being compiled as.
-            "__STDC_VERSION__" => (
-                TokenKind::Number,
-                match self.standard {
-                    crate::options::CStandard::C99 => "199901L",
-                    crate::options::CStandard::C11 => "201112L",
-                }
-                .to_owned(),
-            ),
-            // C99 6.10.8p1: 1 for a hosted implementation, and this one is - it ships the standard
-            // headers and a linked program calls the host's C runtime. It said 0 from M2 until M8
-            // made it false, which a reader of the support matrix noticed before a test did.
-            "__STDC_HOSTED__" => (TokenKind::Number, "1".to_owned()),
             _ => return None,
         };
         let text = self.interner.intern(&text);
@@ -2261,6 +2276,59 @@ int f(void) { return ADD(20, 22); }";
             &(),
         );
         assert_eq!(spells, ["1", "199901L", "1"]);
+        // And the dialect decides the version, once, in the macro it installs.
+        let (spells, _) = run_options(
+            "__STDC_VERSION__",
+            &Options {
+                standard: crate::options::CStandard::C11,
+                ..Options::default()
+            },
+            &(),
+        );
+        assert_eq!(spells, ["201112L"]);
+    }
+
+    /// The three ways a program can ask are the same question, and must agree.
+    ///
+    /// `__STDC__` was substituted during expansion and never installed as a macro, so
+    /// `#if __STDC__` was true while `#ifdef __STDC__` - and `defined(__STDC__)` - were false. C99
+    /// 6.10.8p2 makes them macros; a program that asks with `#ifdef` is the common case, not the
+    /// exotic one.
+    #[test]
+    fn the_predefined_macros_answer_the_same_way_everywhere() {
+        let names = [
+            "__STDC__",
+            "__STDC_VERSION__",
+            "__STDC_HOSTED__",
+            "_WIN32",
+            "_WIN64",
+            "__x86_64__",
+            "_M_X64",
+        ];
+        for name in names {
+            let source = format!(
+                "#if defined({name})
+counted
+#endif
+#ifdef {name}
+ifdefed
+#endif
+#if {name}
+valued
+#endif
+"
+            );
+            let (spells, diagnostics) = run_options(&source, &Options::default(), &());
+            assert!(
+                diagnostics.is_empty(),
+                "{name} has no diagnostics: {diagnostics:?}"
+            );
+            assert_eq!(
+                spells,
+                ["counted", "ifdefed", "valued"],
+                "{name} must answer the same way to `defined`, `#ifdef` and `#if`"
+            );
+        }
     }
 
     // ---- #line ------------------------------------------------------------------

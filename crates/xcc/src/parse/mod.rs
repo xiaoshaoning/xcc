@@ -427,6 +427,13 @@ impl Parser<'_> {
     }
 
     fn push(&mut self, diagnostic: Diagnostic, span: Span) {
+        // The budget is spent *here*, not by whoever renders the list: a rule that recovers without
+        // advancing can produce a diagnostic per iteration, and a vector that grows to hold them all
+        // allocated eleven gigabytes on a one-line struct member before the truncation that was
+        // supposed to bound it ever ran. A bound applied where the list grows bounds the list.
+        if self.diagnostics.len() >= self.budgets.max_diagnostics {
+            return;
+        }
         let file = self.peek().map_or(0, |token| token.file);
         let name = self
             .preprocessed
@@ -1196,6 +1203,25 @@ impl Parser<'_> {
                 "const" | "volatile" | "restrict" | "inline" => {
                     self.at += 1; // qualifiers carry no meaning in M3.1
                 }
+                // Microsoft's storage-class spelling, which a Windows header emits behind `_WIN32`:
+                // `__declspec(dllexport) int f(void);`. Its argument list is skipped and the
+                // attribute carries no meaning here - a `dllexport` in a program this compiler
+                // links statically exports nothing.
+                "__declspec" => {
+                    self.at += 1;
+                    // `(` is consumed first: `skip_until` stops at a closer at depth zero, and with
+                    // the `(` still standing the `)` is at depth one - it stepped *past* the
+                    // attribute and ate the rest of the declaration.
+                    if self.eat("(") {
+                        self.skip_until(&[")"], true);
+                    }
+                }
+                // The calling conventions. On x86-64 there is one, so these are spelling and nothing
+                // else - which is what Microsoft's own documentation of `__stdcall` for this target
+                // says.
+                "__cdecl" | "__stdcall" | "__fastcall" | "__thiscall" | "__vectorcall" => {
+                    self.at += 1;
+                }
                 // C11 6.7.5: `_Alignas(type-name)` or `_Alignas(constant-expression)`. It raises the
                 // object's alignment and may not lower it, so a value below the type's own is a
                 // diagnostic rather than a smaller object.
@@ -1545,6 +1571,10 @@ impl Parser<'_> {
             return None;
         }
         let mut wrappers = Vec::new();
+        // A convention may stand on either side of the `*`s - `char * __stdcall f` and
+        // `__cdecl * p` are both written in the wild - so it is skipped before the run and after
+        // each `*`.
+        self.skip_calling_convention();
         while self.eat("*") {
             wrappers.push(Wrapper::Pointer);
             while self
@@ -1553,11 +1583,29 @@ impl Parser<'_> {
             {
                 self.bump();
             }
+            self.skip_calling_convention();
         }
         let inner = if self.eat("(") {
-            let inner = self.declarator(false)?;
+            let before = self.at;
+            let Some(inner) = self.declarator(false) else {
+                // The recursion gave up without reading anything, which is the same no-progress
+                // hole as the missing `)` below: the caller's loop would re-read this `(` for ever.
+                if self.at == before {
+                    self.skip_until(&[")"], true);
+                }
+                return None;
+            };
             if !self.eat(")") {
                 self.error_at_current("expected `)`");
+                // A parenthesised declarator with no `*` and no name - `int ( x * p ) ( void ) ;`,
+                // which is malformed C and which Windows headers produce by the hundred once
+                // `__declspec` is in play - leaves the cursor where it was. The caller's loop then
+                // re-reads the same `(` for ever: measured, a one-line struct member allocated
+                // eleven gigabytes before the allocator gave up. Skipping to the group's `)` is
+                // what makes the recovery *progress*, whatever the caller does next.
+                if self.at == before {
+                    self.skip_until(&[")"], true);
+                }
             }
             inner
         } else {
@@ -1704,6 +1752,19 @@ impl Parser<'_> {
 
     // ---- recovery -------------------------------------------------------------
 
+    /// The calling-convention words, which on x86-64 are spelling and nothing else: there is one
+    /// convention, and Microsoft's own documentation of `__stdcall` for this target says so.
+    fn skip_calling_convention(&mut self) {
+        while self.peek().is_some_and(|token| {
+            matches!(
+                self.spell(token),
+                "__cdecl" | "__stdcall" | "__fastcall" | "__thiscall" | "__vectorcall"
+            )
+        }) {
+            self.at += 1;
+        }
+    }
+
     fn error_at_current(&mut self, message: impl Into<String>) {
         let span = self.span();
         self.error(span, message);
@@ -1728,8 +1789,15 @@ impl Parser<'_> {
                         }
                         if consume && delimiters.contains(&spelling.as_str()) {
                             self.bump();
+                            return;
                         }
-                        return;
+                        // A closer with nothing open closes something the *caller* had already
+                        // consumed, and the delimiter being looked for is outside it: step over it
+                        // and keep looking. Stopping here gave the caller's loop no progress -
+                        // measured, as a hang on `struct H { int ( x * p ) ; };`, a member whose
+                        // parenthesised declarator has no `*` before its name.
+                        self.bump();
+                        continue;
                     }
                     depth -= 1;
                 }

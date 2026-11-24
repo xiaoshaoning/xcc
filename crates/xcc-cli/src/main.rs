@@ -344,6 +344,9 @@ fn options(args: &Args, opt_level: u8) -> Options {
         defines: args.defines.clone(),
         undefines: args.undefines.clone(),
         opt_level,
+        // The command line is a compiler, not an embedder: the library's defaults are sized for a
+        // host that hands over a snippet, and a program is not a snippet.
+        budgets: xcc::Budgets::for_a_compiler(),
         ..Options::default()
     }
 }

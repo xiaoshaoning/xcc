@@ -161,14 +161,10 @@ fn an_object_and_a_source_past_their_budgets_are_refused() {
         "int a[100000000];\n",
         "larger than this compilation's limit",
     );
-    // One byte over the default eight megabytes; the rest is a valid program, so only the budget
-    // can be what refuses it.
-    let mut big = String::with_capacity(9 << 20);
-    big.push_str("int f(void) { return 0; }\n");
-    while big.len() < (8 << 20) + 1 {
-        big.push_str("/* pad */\n");
-    }
-    refuses(&temp, "big.c", &big, "more than the");
+    // A source past the *command line's* budget is a sixty-four megabyte file, which is not worth
+    // writing in a test; the default's eight megabytes are checked where the default still applies,
+    // by `a_source_past_the_default_budget_is_refused` in the preprocessor's own tests. What matters
+    // here is that a program is not a snippet: the command line compiles what a compiler is given.
 }
 
 #[test]
@@ -194,5 +190,22 @@ fn an_include_chain_past_the_depth_budget_is_refused() {
         String::from_utf8_lossy(&output.stderr).contains("nested more than"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn a_member_declarator_that_cannot_be_read_is_refused_rather_than_looping() {
+    // `int ( x * p ) ( void ) ;` as a struct member: a parenthesised declarator with no `*` before
+    // its name. The recovery skipped to the member's `;`, met a `)` at depth zero that no `(` in the
+    // skip had opened, and *stopped there* - so the member loop re-read the same token for ever. One
+    // line allocated eleven gigabytes before the allocator gave up; with the diagnostic list bounded
+    // it hung instead. Both are now a diagnostic in well under a second.
+    let temp = Temp::new("member");
+    refuses(
+        &temp,
+        "member.c",
+        "typedef struct H { int ( x * p ) ( void ) ; } H;
+",
+        "expected `)`",
     );
 }

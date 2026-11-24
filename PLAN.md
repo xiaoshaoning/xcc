@@ -935,6 +935,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
+      compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
+      eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.
+- [ ] **`windows.h`.** sqlite3.c now takes its Windows path and asks for the Win32 SDK. That is a boundary, not a
+      bug: this compiler ships C99's headers, and the SDK is a different library of declarations. Crossing it
+      would mean vendoring the SDK, which is a product decision and not a next step.
 - [x] **`wchar.h`.** Closed: fifty-seven of its seventy-five C99 names were already exported, and the eighteen that
       were not are the runtime source's - the twelve wide `stdio` front ends over `__stdio_common_vfwprintf` and its
       three siblings, four `wmem*`, `wmemset` and `mbsinit`. `fwide` is the platform's stub: this runtime tracks no
