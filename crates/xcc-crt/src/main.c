@@ -445,6 +445,11 @@ double _Complex clog(double _Complex z) {
 double _Complex csqrt(double _Complex z) {
     double re = __real__(z), im = __imag__(z);
     double magnitude = hypot(re, im);
+    if (magnitude == 0.0) {
+        // The formulas below divide by `2t`, and `t` is zero exactly here: `csqrt(0 + 0i)` was
+        // `0 - nan` where the root of zero is zero.
+        return (double _Complex){ 0.0, 0.0 };
+    }
     /* The principal root is the one with a non-negative real part, and `(r + x) / 2` loses
      * nothing on that side; on the other side `(r - x) / 2` is the one that survives, and the
      * imaginary part takes its sign from `y`. */
@@ -464,8 +469,15 @@ double _Complex cpow(double _Complex base, double _Complex exponent) {
      * it cannot express - a zero base - is the one special case worth writing. */
     if (__real__(base) == 0.0 && __imag__(base) == 0.0) {
         double power = __real__(exponent);
-        if (__imag__(exponent) == 0.0 && power > 0.0) {
-            return (double _Complex){ 0.0, 0.0 };
+        if (__imag__(exponent) == 0.0) {
+            if (power > 0.0) {
+                return (double _Complex){ 0.0, 0.0 };
+            }
+            if (power < 0.0) {
+                /* Annex G.6.4: an infinite result, and this compiler writes one rather than the
+                 * NaN that dividing zero by zero would give. */
+                return (double _Complex){ INFINITY, 0.0 };
+            }
         }
         return (double _Complex){ 0.0 / 0.0, 0.0 / 0.0 };
     }
@@ -483,7 +495,12 @@ double _Complex ccos(double _Complex z) {
 }
 
 double _Complex ctan(double _Complex z) {
-    return csin(z) / ccos(z);
+    /* The quotient `csin/ccos` is a NaN where both are infinite, and `tan` of a large imaginary
+     * part is one of the places that happens. This is the same value written over the double
+     * angles, which no pair of infinities can spoil: (sin 2x + i sinh 2y) / (cos 2x + cosh 2y). */
+    double x = __real__(z), y = __imag__(z);
+    double denominator = cos(2.0 * x) + cosh(2.0 * y);
+    return (double _Complex){ sin(2.0 * x) / denominator, sinh(2.0 * y) / denominator };
 }
 
 double _Complex csinh(double _Complex z) {
@@ -497,7 +514,16 @@ double _Complex ccosh(double _Complex z) {
 }
 
 double _Complex ctanh(double _Complex z) {
-    return csinh(z) / ccosh(z);
+    /* `tanh x` reaches 1 exactly - in double, from about |x| = 20 on - and past that the quotient
+     * above is `inf/inf`. So the saturation is the answer, and it is asked for rather than
+     * approximated by a bound: `ctanh(1e308)` is 1, not a NaN. */
+    double x = __real__(z), y = __imag__(z);
+    double steepness = tanh(x);
+    if (fabs(steepness) == 1.0) {
+        return (double _Complex){ steepness, copysign(0.0, y) };
+    }
+    double denominator = cosh(2.0 * x) + cos(2.0 * y);
+    return (double _Complex){ sinh(2.0 * x) / denominator, sin(2.0 * y) / denominator };
 }
 
 double _Complex casin(double _Complex z) {
@@ -520,34 +546,50 @@ double _Complex cacos(double _Complex z) {
 }
 
 double _Complex catan(double _Complex z) {
-    /* (i/2) log((1 - iz) / (1 + iz)). The ratio's *direction* is not a matter of taste: on the
-     * real line it decides between pi/4 and -pi/4, and written the other way round this answered
-     * catan(1.5 - 0.75i) with the sign of its own result flipped. Then (i/2)(a + bi) is
-     * -b/2 + (a/2)i. */
-    double _Complex iz = (double _Complex){ -__imag__(z), __real__(z) };
-    double _Complex quotient = ((double _Complex){ 1.0, 0.0 } - iz) / ((double _Complex){ 1.0, 0.0 } + iz);
-    double _Complex w = clog(quotient);
-    // (i/2)(a + bi) = (-b/2) + (a/2)i
-    return (double _Complex){ -__imag__(w) / 2.0, __real__(w) / 2.0 };
+    /* (i/2) log((1 - iz)/(1 + iz)) is the textbook form and it divides by zero at `z = +i`, where
+     * the answer is an infinity rather than a NaN - and its ratio's *direction* decides between
+     * pi/4 and -pi/4 on the real line, which this got wrong once. This is the same value over the
+     * real functions: half the angle of `2x` against `1 - x^2 - y^2`, and a quarter of the log of
+     * the squared distances to `+i` and `-i`. Every singular point falls out of it - `z = i` takes
+     * the logarithm of a division by zero and gets its infinity. */
+    double x = __real__(z), y = __imag__(z);
+    double real = atan2(2.0 * x, 1.0 - x * x - y * y) / 2.0;
+    double imaginary = log((x * x + (y + 1.0) * (y + 1.0)) / (x * x + (y - 1.0) * (y - 1.0))) / 4.0;
+    return (double _Complex){ real, imaginary };
 }
 
 double _Complex casinh(double _Complex z) {
-    return clog(z + csqrt(z * z + (double _Complex){ 1.0, 0.0 }));
+    /* `-i asin(iz)`: the standard's own rotation, and it inherits `casin`'s real-arithmetic form
+     * instead of logging a sum that can be zero. `casinh(i)` - where `z + sqrt(z^2 + 1)` *is* zero -
+     * was a NaN and is now `0 + pi/2 i`. */
+    double _Complex w = casin((double _Complex){ -__imag__(z), __real__(z) });
+    return (double _Complex){ __imag__(w), -__real__(w) };
 }
 
 double _Complex cacosh(double _Complex z) {
-    /* The form that keeps the branch right on both sides of the cut: 2 log(sqrt((z+1)/2) +
-     * sqrt((z-1)/2)), which is `clog(z + sqrt(z^2 - 1))` written so the subtraction cannot lose
-     * the small term. */
-    double _Complex half = (double _Complex){ 0.5, 0.0 };
-    double _Complex one = (double _Complex){ 1.0, 0.0 };
-    return 2.0 * clog(csqrt((z + one) * half) + csqrt((z - one) * half));
+    /* `i acos(z)` above the real axis and its conjugate below it, which is Annex G's own branch:
+     * the real part is never negative and the sign of the imaginary one follows the argument's.
+     * `i(a + bi)` is `-b + ai`, and writing that the other way round negated the imaginary part of
+     * `cacosh(-1)` - a conjugate where the branch says otherwise. */
+    double _Complex w = cacos(z);
+    double real = -__imag__(w), imaginary = __real__(w);
+    if (__imag__(z) < 0.0) {
+        real = -real;
+        imaginary = -imaginary;
+    }
+    return (double _Complex){ real, imaginary };
 }
 
 double _Complex catanh(double _Complex z) {
-    double _Complex one = (double _Complex){ 1.0, 0.0 };
-    double _Complex w = clog((one + z) / (one - z));
-    return (double _Complex){ __real__(w) / 2.0, __imag__(w) / 2.0 };
+    /* The real form, as `catan` has: a quarter of the log of the ratio of squared distances to
+     * `+1` and `-1`, and half the angle of `2y` against `1 - x^2 - y^2`. The rotation
+     * `-i catan(iz)` is the same value inside the domain but not on the cut: there `atan2` takes
+     * the side of the signed zero, and `catanh(2)` came back with `-pi/2` where Annex G says
+     * `+pi/2`. */
+    double x = __real__(z), y = __imag__(z);
+    double real = log(((1.0 + x) * (1.0 + x) + y * y) / ((1.0 - x) * (1.0 - x) + y * y)) / 4.0;
+    double imaginary = atan2(2.0 * y, 1.0 - x * x - y * y) / 2.0;
+    return (double _Complex){ real, imaginary };
 }
 
 /* The `float` forms: compute in `double`, narrow once. */

@@ -786,6 +786,46 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-23 - the cuts and the singular points, where the formulas were wrong
+
+The transcendental commit, reviewed. The hundred lines of interior values held; the review went looking for the
+*other* points - the ones where a formula divides by zero or sits on a branch cut - and almost every one of them was
+wrong. Twelve of seventeen edge cases were a NaN, a conjugate or a flipped sign, and none of them is exotic: `cacosh(-1)`,
+`catanh(2)`, `ctan(i)`, `ctanh` of anything large, `csqrt(0)`.
+
+**The rule the review settled on: a formula with a branch to choose has been chosen wrongly once already.** Three of
+them had chosen:
+
+- `csqrt(0 + 0i)` was `0 - nan`, because the formula divides by `2t` and `t` is zero exactly there;
+- `cacosh` computed `i w` as `Re w + i Im w` where `i(a + bi)` is `-b + ai` - so `cacosh(-1)` came back as the
+  *conjugate* of π i. The prose next to it said "the sign of the imaginary part follows the argument's", which is true
+  and was not what the code did;
+- `cacosh`'s rotation and `catanh`'s rotation both pick a side of the cut with the *signed zero* of an intermediate,
+  and `catanh(2)` came back as `-π/2 i` where Annex G says `+π/2`.
+
+So the four inverse functions are the real-arithmetic forms now - `asin(p)` of a `p` that cannot leave `[-1, 1]`,
+`atan2` over `1 - x² - y²`, a quarter of a log of squared distances - which have no branch to choose, and the two
+rotations (`casinh = -i asin(iz)`, `cacosh = ±i acos(z)`) inherit from those. `ctan` and `ctanh` are the double-angle
+quotients, and `ctanh` asks whether `tanh x` has *reached* 1 rather than guessing a bound: `ctanh(1e308)` is 1 and
+`inf/inf` cannot happen.
+
+**Two disagreements are `clang`'s, and are recorded rather than matched.** `ctanh(1e308)` is the limit, 1; `clang` returns
+a NaN there while returning 1 for `ctanh(inf)` - its own formula overflowing. And `cpow(0, -2)` is infinite by Annex
+G.6.4: this compiler writes `inf 0`, `clang` writes `inf nan`. Neither is in the compared program, and both are stated
+where the code is.
+
+**`ctanh`'s saturation and `csqrt`'s zero are in the test now**, along with seven points on the cuts and singularities -
+165 lines against `clang`, up from 101. The comparison also adds `+ 0.0` to every number it prints: the sign of a zero
+is not a value, and two implementations that agree on every number disagreed about `-0.000000000`.
+
+**And the `l` spellings.** Sixteen of the twenty bases had no `long double _Complex` form at all: `cexpl`, `clog`,
+`csqrtl` and the rest were undeclared names in a header that promises 7.3 in three widths. They are macros to the
+`double` ones, like the four that already were, because this target's `long double _Complex` *is* its `double _Complex`.
+
+201 unit, 32 parser, 29 CLI, 4 invalid, 20 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+`.text` 3.490x `clang -O2`; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-23 - the nineteen complex transcendentals, and the two signs that were wrong
 
 `complex.h` now ships all of C99 7.3: the sixteen transcendental functions of 7.3.5 to 7.3.8 in `double` and in

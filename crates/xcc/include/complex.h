@@ -103,5 +103,21 @@ float _Complex catanhf(float _Complex z);
 #define cabsl cabs
 #define cargl carg
 #define cprojl cproj
+#define cexpl cexp
+#define clogl clog
+#define csqrtl csqrt
+#define cpowl cpow
+#define csinl csin
+#define ccosl ccos
+#define ctanl ctan
+#define csinhl csinh
+#define ccoshl ccosh
+#define ctanhl ctanh
+#define casinl casin
+#define cacosl cacos
+#define catanl catan
+#define casinhl casinh
+#define cacoshl cacosh
+#define catanhl catanh
 
 #endif
