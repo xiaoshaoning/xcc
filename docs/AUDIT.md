@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-23 - the nineteen complex transcendentals, and the two signs that were wrong
+
+`complex.h` now ships all of C99 7.3: the sixteen transcendental functions of 7.3.5 to 7.3.8 in `double` and in
+`float`, over `math.h` and over the compiler's own complex arithmetic. The `float` forms compute in `double` and narrow
+once, which is what the four `math.h` wrappers already did and costs nothing on this target; their last bit can differ
+from the runtime's own float routines, so the test prints them to four decimals and says why.
+
+**Every one of them agrees with `clang` at six points in every quadrant** - 96 lines of nine decimals, plus the four
+identities that say the branches are Annex G's (`sin^2 + cos^2 = 1`, `exp(log z) = z`, `sqrt(z)^2 = z`, `sin(asin z) =
+z`). That is a strong claim for two independent implementations, and it came from the test failing first: five of the
+101 lines differed, and three of the five were one bug.
+
+**`csqrt`'s real part was `y/(2t)` where it is `|y|/(2t)`.** The principal root's real part is never negative, so the
+signed value negated it for every negative imaginary part - `csqrt(-0.5 - 1.5i)` came back as `-0.735 - 1.020i` where
+`clang` has `+0.735`. Everything built on `csqrt` inherited it, which is why `cacosh` differed too: it was the *same*
+wrong number, seen through a logarithm.
+
+**And `casin` used `-i log(iz + sqrt(1 - z^2))`, which has a sign to choose.** For `|x| > 1` the principal root is the
+wrong one: `asin(3 + i)` came back as `3.07 - 0.72i`, a real part outside `[-pi/2, pi/2]`. It is the real arithmetic of
+Abramowitz and Stegun 4.4.39 now - `asin(p)` for a `p` that cannot leave `[-1, 1]`, and `acosh(q)` with the sign of
+`y` - which has no choice in it. `cacos` inherited the fix through `pi/2 - asin(z)`.
+
+**`catan` had its ratio upside down.** `(i/2) log((1 - iz)/(1 + iz))`, not the other way round: on the real line the
+direction decides between `pi/4` and `-pi/4`, and the test caught it on the first run as a negated result. The comment
+now says what the direction decides, next to the line that decides it.
+
+201 unit, 32 parser, 29 CLI, 4 invalid, 20 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+`.text` 3.490x `clang -O2`; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-23 - four promises the header could not keep, and the scalar the standard says it is
 
 The `_Complex` commit, reviewed. The type, the arithmetic and the ABI hold - the exe test still prints what `clang`

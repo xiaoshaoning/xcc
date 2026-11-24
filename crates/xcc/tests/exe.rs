@@ -377,6 +377,62 @@ int main(void) {
 /// was an access violation before, and the deep recursion takes a page-sized frame five hundred
 /// times over. The largest takes seventy-three pages, which is a statement about the walk and
 /// not about how much stack the image asks for.
+/// The program the transcendental test below compiles, as a raw Rust string.
+const TRANSCENDENTAL_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <complex.h>
+
+static void report(const char *name, double _Complex z, double _Complex w) {
+    printf("%-5s %+.6f %+.6f -> %+.9f %+.9f\n", name, creal(z), cimag(z), creal(w), cimag(w));
+}
+
+int main(void) {
+    static const double _Complex points[] = {
+        { 1.5, -0.75 }, { -2.0, 0.5 }, { 0.25, 2.0 }, { 3.0, 1.0 }, { -0.5, -1.5 }, { 0.5, 0.5 },
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof points / sizeof points[0]); i++) {
+        double _Complex z = points[i];
+        report("exp", z, cexp(z));
+        report("log", z, clog(z));
+        report("sqrt", z, csqrt(z));
+        report("sin", z, csin(z));
+        report("cos", z, ccos(z));
+        report("tan", z, ctan(z));
+        report("sinh", z, csinh(z));
+        report("cosh", z, ccosh(z));
+        report("tanh", z, ctanh(z));
+        report("asin", z, casin(z));
+        report("acos", z, cacos(z));
+        report("atan", z, catan(z));
+        report("asinh", z, casinh(z));
+        report("acosh", z, cacosh(z));
+        report("atanh", z, catanh(z));
+        report("pow", z, cpow(z, (double _Complex){ 1.5, 0.5 }));
+    }
+    /* The four identities that say the branches are the ones C99 Annex G describes. */
+    {
+        double _Complex z = { 1.5, -0.75 };
+        report("sin^2", z, csin(z) * csin(z) + ccos(z) * ccos(z));
+        report("expog", z, cexp(clog(z)) - z);
+        report("sqrtsq", z, csqrt(z) * csqrt(z) - z);
+        report("asinsin", z, csin(casin(z)) - z);
+    }
+    /* The `float` forms compute in `double` and narrow once - like the four `math.h` wrappers -
+     * so their last bit can differ from the runtime's own float routines; four decimals is
+     * coarser than that difference and finer than any mistake. */
+    {
+        float _Complex f = { 0.75F, -1.25F };
+        printf("float %.4f %.4f | %.4f %.4f | %.4f %.4f | %.4f %.4f\n",
+               (double)crealf(cexpf(f)), (double)cimagf(cexpf(f)),
+               (double)crealf(csqrtf(f)), (double)cimagf(csqrtf(f)),
+               (double)crealf(csinf(f)), (double)cimagf(csinf(f)),
+               (double)crealf(catanhf(f)), (double)cimagf(catanhf(f)));
+    }
+    return 0;
+}
+"#;
+
 /// The program the complex test below compiles, as a raw Rust string so the C source keeps its
 /// own quotes and its own backslashes.
 const COMPLEX_PROGRAM: &str = r#"
@@ -944,5 +1000,19 @@ fn complex_numbers_are_laid_out_computed_and_passed_the_way_clang_does() {
     // What `clang` printed for this program, recorded when the test was written. Lines are
     // separated by `@@` and turned back into a redirected stream's CRLF below.
     let expected = "sizeof 16 8 align 8@@add 6.000000 2.000000@@sub -2.000000 4.000000@@mul 11.000000 10.000000@@div 0.294118 0.823529@@neg -2.000000 -3.000000@@cmp 1 0 1@@convert 2.0 3.0 4@@truth 1 0 0@@i 0.0 1.0@@calls 2.50 7.00 | 3.00 -5.00@@cabs 3.6056 2.9155@@carg 0.9828@@conj 2.0 -3.0@@cproj 2.0 3.0@@bool 1 0@@long 3.6056@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
+/// The sixteen complex transcendentals of C99 7.3.5 to 7.3.8, at six points in every quadrant, with
+/// the four identities that say the branches are Annex G's. Every line is what `clang` printed for
+/// this program; the `float` line is four decimals because those forms compute in `double` and
+/// narrow once, so their last bit is not the runtime's.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_complex_transcendentals_agree_with_clang() {
+    let run = run_linked_with("c11", "complex-tr", TRANSCENDENTAL_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "exp   +1.500000 -0.750000 -> +3.279202007 -3.054892981@@log   +1.500000 -0.750000 -> +0.517036884 -0.463647609@@sqrt  +1.500000 -0.750000 -> +1.260367205 -0.297532337@@sin   +1.500000 -0.750000 -> +1.291440086 -0.058168385@@cos   +1.500000 -0.750000 -> +0.091582273 +0.820256818@@tan   +1.500000 -0.750000 -> +0.103580619 -1.562868982@@sinh  +1.500000 -0.750000 -> +1.557970076 -1.603493573@@cosh  +1.500000 -0.750000 -> +1.721231931 -1.451399408@@tanh  +1.500000 -0.750000 -> +0.988112101 -0.098387819@@asin  +1.500000 -0.750000 -> +1.024288057 -1.162792098@@acos  +1.500000 -0.750000 -> +0.546508270 +1.162792098@@atan  +1.500000 -0.750000 -> +1.057136961 -0.207933336@@asinh +1.500000 -0.750000 -> +1.265075043 -0.402910830@@acosh +1.500000 -0.750000 -> +1.162792098 -0.546508270@@atanh +1.500000 -0.750000 -> +0.531599631 -1.225127862@@pow   +1.500000 -0.750000 -> +2.481127683 -1.158844163@@exp   -2.000000 +0.500000 -> +0.118767885 +0.064883191@@log   -2.000000 +0.500000 -> +0.723459491 +2.896613990@@sqrt  -2.000000 +0.500000 -> +0.175432056 +1.425053124@@sin   -2.000000 +0.500000 -> -1.025347389 -0.216852163@@cos   -2.000000 +0.500000 -> -0.469257978 +0.473830620@@tan   -2.000000 +0.500000 -> +0.850878121 +1.321286584@@sinh  -2.000000 +0.500000 -> -3.182869448 +1.803692696@@cosh  -2.000000 +0.500000 -> +3.301637333 -1.738809504@@tanh  -2.000000 +0.500000 -> -0.979940850 +0.030215987@@asin  -2.000000 +0.500000 -> -1.293042070 +1.361800901@@acos  -2.000000 +0.500000 -> +2.863838397 -1.361800901@@atan  -2.000000 +0.500000 -> -1.126556441 +0.096415620@@asinh -2.000000 +0.500000 -> -1.465715352 +0.221018636@@acosh -2.000000 +0.500000 -> +1.361800901 +2.863838397@@atanh -2.000000 +0.500000 -> -0.500370000 +1.421546861@@pow   -2.000000 +0.500000 -> -0.003990956 -0.695493077@@exp   +0.250000 +2.000000 -> -0.534343115 +1.167561007@@log   +0.250000 +2.000000 -> +0.700899274 +1.446441332@@sqrt  +0.250000 +2.000000 -> +1.064322422 +0.939564909@@sin   +0.250000 +2.000000 -> +0.930782109 +3.514110101@@cos   +0.250000 +2.000000 -> +3.645238138 -0.897299625@@tan   +0.250000 +2.000000 -> +0.017009461 +0.968214572@@sinh  +0.250000 +2.000000 -> -0.105123817 +0.937861278@@cosh  +0.250000 +2.000000 -> -0.429219299 +0.229699730@@tanh  +0.250000 +2.000000 -> +1.099398135 -1.596689211@@asin  +0.250000 +2.000000 -> +0.111477925 +1.449208152@@acos  +0.250000 +2.000000 -> +1.459318401 -1.449208152@@atan  +0.250000 +2.000000 -> +1.489877611 +0.535880100@@asinh +0.250000 +2.000000 -> +1.328763370 +1.427924145@@acosh +0.250000 +2.000000 -> +1.449208152 +1.459318401@@atanh +0.250000 +2.000000 -> +0.049544232 +1.112111334@@pow   +0.250000 +2.000000 -> -1.128766039 +0.808362658@@exp   +3.000000 +1.000000 -> +10.852261914 +16.901396535@@log   +3.000000 +1.000000 -> +1.151292546 +0.321750554@@sqrt  +3.000000 +1.000000 -> +1.755317302 +0.284848785@@sin   +3.000000 +1.000000 -> +0.217759552 -1.163440364@@cos   +3.000000 +1.000000 -> -1.527638250 -0.165844402@@tan   +3.000000 +1.000000 -> -0.059168540 +0.768017647@@sinh  +3.000000 +1.000000 -> +5.412680923 +8.471645454@@cosh  +3.000000 +1.000000 -> +5.439580991 +8.429751081@@tanh  +3.000000 +1.000000 -> +1.002054988 +0.004517137@@asin  +3.000000 +1.000000 -> +1.233095218 +1.824198702@@acos  +3.000000 +1.000000 -> +0.337701109 -1.824198702@@atan  +3.000000 +1.000000 -> +1.276795025 +0.091931195@@asinh +3.000000 +1.000000 -> +1.864161544 +0.307603650@@acosh +3.000000 +1.000000 -> +1.824198702 +0.337701109@@atanh +3.000000 +1.000000 -> +0.305943858 +1.461461854@@pow   +3.000000 +1.000000 -> +2.347817547 +4.172581814@@exp   -0.500000 -1.500000 -> +0.042904282 -0.605011292@@log   -0.500000 -1.500000 -> +0.458145366 -1.892546881@@sqrt  -0.500000 -1.500000 -> +0.735234259 -1.020083043@@sin   -0.500000 -1.500000 -> -1.127805247 -1.868618519@@cos   -0.500000 -1.500000 -> +2.064433657 -1.020830950@@tan   -0.500000 -1.500000 -> -0.079324455 -0.944372986@@sinh  -0.500000 -1.500000 -> -0.036860824 -1.124801247@@cosh  -0.500000 -1.500000 -> +0.079765105 +0.519789955@@tanh  -0.500000 -1.500000 -> -2.124799128 -0.255149222@@asin  -0.500000 -1.500000 -> -0.273487290 -1.226456871@@acos  -0.500000 -1.500000 -> +1.844283617 +1.226456871@@atan  -0.500000 -1.500000 -> -1.276795025 -0.641237339@@asinh -0.500000 -1.500000 -> -1.069311043 -1.171157259@@acosh -0.500000 -1.500000 -> +1.226456871 -1.844283617@@atanh -0.500000 -1.500000 -> -0.146946666 -1.017221968@@pow   -0.500000 -1.500000 -> -4.414276760 -2.597352074@@exp   +0.500000 +0.500000 -> +1.446889037 +0.790439083@@log   +0.500000 +0.500000 -> -0.346573590 +0.785398163@@sqrt  +0.500000 +0.500000 -> +0.776886987 +0.321797126@@sin   +0.500000 +0.500000 -> +0.540612686 +0.457304153@@cos   +0.500000 +0.500000 -> +0.989584883 -0.249826398@@tan   +0.500000 +0.500000 -> +0.403896455 +0.564083141@@sinh  +0.500000 +0.500000 -> +0.457304153 +0.540612686@@cosh  +0.500000 +0.500000 -> +0.989584883 +0.249826398@@tanh  +0.500000 +0.500000 -> +0.564083141 +0.403896455@@asin  +0.500000 +0.500000 -> +0.452278447 +0.530637531@@acos  +0.500000 +0.500000 -> +1.118517880 -0.530637531@@atan  +0.500000 +0.500000 -> +0.553574359 +0.402359478@@asinh +0.500000 +0.500000 -> +0.530637531 +0.452278447@@acosh +0.500000 +0.500000 -> +0.530637531 +1.118517880@@atanh +0.500000 +0.500000 -> +0.402359478 +0.553574359@@pow   +0.500000 +0.500000 -> +0.215301135 +0.338886253@@sin^2 +1.500000 -0.750000 -> +1.000000000 +0.000000000@@expog +1.500000 -0.750000 -> +0.000000000 +0.000000000@@sqrtsq +1.500000 -0.750000 -> +0.000000000 +0.000000000@@asinsin +1.500000 -0.750000 -> +0.000000000 +0.000000000@@float 0.6675 -2.0090 | 1.0507 -0.5949 | 1.2872 -1.1721 | 0.2615 -0.9968@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }

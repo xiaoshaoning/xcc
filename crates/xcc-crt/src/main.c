@@ -415,3 +415,155 @@ float _Complex cprojf(float _Complex z) {
     }
     return z;
 }
+
+/* ---------------------------------------------------------------- C99 7.3, the transcendentals
+ *
+ * The universal C runtime exports none of them, measured one link at a time, so they are here -
+ * over `math.h` and over the compiler's own complex arithmetic. Each `double` version is the
+ * textbook formula C99 6.3.1.5 and Annex G describe; each `float` version computes in `double` and
+ * narrows once, which is what the four `math.h` wrappers above do and costs nothing on this target.
+ *
+ * Two formulas are written out rather than composed: `cexp` (which is where a complex exponential
+ * starts) and `csqrt`, whose branch is chosen by the sign of the real part so that the principal
+ * root lands on the right side of the cut. Everything else is those two plus `+ - * /`, so there is
+ * one place for each branch and not one per function.
+ */
+
+#define XCC_COMPLEX_PI 3.14159265358979323846
+#define XCC_PAIR(z) (double _Complex){ __real__(z), __imag__(z) }
+#define XCC_NARROW(w) (float _Complex){ (float)__real__(w), (float)__imag__(w) }
+
+double _Complex cexp(double _Complex z) {
+    double scale = exp(__real__(z));
+    return (double _Complex){ scale * cos(__imag__(z)), scale * sin(__imag__(z)) };
+}
+
+double _Complex clog(double _Complex z) {
+    return (double _Complex){ log(cabs(z)), carg(z) };
+}
+
+double _Complex csqrt(double _Complex z) {
+    double re = __real__(z), im = __imag__(z);
+    double magnitude = hypot(re, im);
+    /* The principal root is the one with a non-negative real part, and `(r + x) / 2` loses
+     * nothing on that side; on the other side `(r - x) / 2` is the one that survives, and the
+     * imaginary part takes its sign from `y`. */
+    if (re >= 0.0) {
+        double t = sqrt((magnitude + re) / 2.0);
+        return (double _Complex){ t, im / (2.0 * t) };
+    }
+    // The real part of the principal root is never negative, so it is `|y|/(2t)` and not `y/(2t)`:
+    // with the signed value, `csqrt(-0.5 - 1.5i)` came back with its real part negated - and so did
+    // every function built on this one, which is how it was found.
+    double t = sqrt((magnitude - re) / 2.0);
+    return (double _Complex){ fabs(im) / (2.0 * t), copysign(t, im) };
+}
+
+double _Complex cpow(double _Complex base, double _Complex exponent) {
+    /* 7.3.8.1 defines it as `cexp(y * clog(x))`, and that is what real code relies on; the case
+     * it cannot express - a zero base - is the one special case worth writing. */
+    if (__real__(base) == 0.0 && __imag__(base) == 0.0) {
+        double power = __real__(exponent);
+        if (__imag__(exponent) == 0.0 && power > 0.0) {
+            return (double _Complex){ 0.0, 0.0 };
+        }
+        return (double _Complex){ 0.0 / 0.0, 0.0 / 0.0 };
+    }
+    return cexp(exponent * clog(base));
+}
+
+double _Complex csin(double _Complex z) {
+    return (double _Complex){ sin(__real__(z)) * cosh(__imag__(z)),
+                              cos(__real__(z)) * sinh(__imag__(z)) };
+}
+
+double _Complex ccos(double _Complex z) {
+    return (double _Complex){ cos(__real__(z)) * cosh(__imag__(z)),
+                              -sin(__real__(z)) * sinh(__imag__(z)) };
+}
+
+double _Complex ctan(double _Complex z) {
+    return csin(z) / ccos(z);
+}
+
+double _Complex csinh(double _Complex z) {
+    return (double _Complex){ sinh(__real__(z)) * cos(__imag__(z)),
+                              cosh(__real__(z)) * sin(__imag__(z)) };
+}
+
+double _Complex ccosh(double _Complex z) {
+    return (double _Complex){ cosh(__real__(z)) * cos(__imag__(z)),
+                              sinh(__real__(z)) * sin(__imag__(z)) };
+}
+
+double _Complex ctanh(double _Complex z) {
+    return csinh(z) / ccosh(z);
+}
+
+double _Complex casin(double _Complex z) {
+    /* `-i log(iz + sqrt(1 - z^2))` is the textbook form and it has a sign to choose: `sqrt` here
+     * does not want the principal root for |x| > 1, and with it `asin(3 + i)` came back as
+     * 3.07 - 0.72i, a real part outside [-pi/2, pi/2]. So the real arithmetic of 4.4.39 in
+     * Abramowitz and Stegun, which has no choice in it: the real part is `asin(p)` for a `p` that
+     * is always in [-1, 1], and the imaginary part is `acosh(q)` with the sign of `y`. */
+    double x = __real__(z), y = __imag__(z);
+    double near = hypot(x + 1.0, y), far = hypot(x - 1.0, y);
+    double p = (near - far) / 2.0;
+    double q = (near + far) / 2.0;
+    double imaginary = log(q + sqrt(q * q - 1.0));
+    return (double _Complex){ asin(p), y < 0.0 ? -imaginary : imaginary };
+}
+
+double _Complex cacos(double _Complex z) {
+    double _Complex w = casin(z);
+    return (double _Complex){ XCC_COMPLEX_PI / 2.0 - __real__(w), -__imag__(w) };
+}
+
+double _Complex catan(double _Complex z) {
+    /* (i/2) log((1 - iz) / (1 + iz)). The ratio's *direction* is not a matter of taste: on the
+     * real line it decides between pi/4 and -pi/4, and written the other way round this answered
+     * catan(1.5 - 0.75i) with the sign of its own result flipped. Then (i/2)(a + bi) is
+     * -b/2 + (a/2)i. */
+    double _Complex iz = (double _Complex){ -__imag__(z), __real__(z) };
+    double _Complex quotient = ((double _Complex){ 1.0, 0.0 } - iz) / ((double _Complex){ 1.0, 0.0 } + iz);
+    double _Complex w = clog(quotient);
+    // (i/2)(a + bi) = (-b/2) + (a/2)i
+    return (double _Complex){ -__imag__(w) / 2.0, __real__(w) / 2.0 };
+}
+
+double _Complex casinh(double _Complex z) {
+    return clog(z + csqrt(z * z + (double _Complex){ 1.0, 0.0 }));
+}
+
+double _Complex cacosh(double _Complex z) {
+    /* The form that keeps the branch right on both sides of the cut: 2 log(sqrt((z+1)/2) +
+     * sqrt((z-1)/2)), which is `clog(z + sqrt(z^2 - 1))` written so the subtraction cannot lose
+     * the small term. */
+    double _Complex half = (double _Complex){ 0.5, 0.0 };
+    double _Complex one = (double _Complex){ 1.0, 0.0 };
+    return 2.0 * clog(csqrt((z + one) * half) + csqrt((z - one) * half));
+}
+
+double _Complex catanh(double _Complex z) {
+    double _Complex one = (double _Complex){ 1.0, 0.0 };
+    double _Complex w = clog((one + z) / (one - z));
+    return (double _Complex){ __real__(w) / 2.0, __imag__(w) / 2.0 };
+}
+
+/* The `float` forms: compute in `double`, narrow once. */
+float _Complex cexpf(float _Complex z) { return XCC_NARROW(cexp(XCC_PAIR(z))); }
+float _Complex clogf(float _Complex z) { return XCC_NARROW(clog(XCC_PAIR(z))); }
+float _Complex csqrtf(float _Complex z) { return XCC_NARROW(csqrt(XCC_PAIR(z))); }
+float _Complex cpowf(float _Complex b, float _Complex e) { return XCC_NARROW(cpow(XCC_PAIR(b), XCC_PAIR(e))); }
+float _Complex csinf(float _Complex z) { return XCC_NARROW(csin(XCC_PAIR(z))); }
+float _Complex ccosf(float _Complex z) { return XCC_NARROW(ccos(XCC_PAIR(z))); }
+float _Complex ctanf(float _Complex z) { return XCC_NARROW(ctan(XCC_PAIR(z))); }
+float _Complex csinhf(float _Complex z) { return XCC_NARROW(csinh(XCC_PAIR(z))); }
+float _Complex ccoshf(float _Complex z) { return XCC_NARROW(ccosh(XCC_PAIR(z))); }
+float _Complex ctanhf(float _Complex z) { return XCC_NARROW(ctanh(XCC_PAIR(z))); }
+float _Complex casinf(float _Complex z) { return XCC_NARROW(casin(XCC_PAIR(z))); }
+float _Complex cacosf(float _Complex z) { return XCC_NARROW(cacos(XCC_PAIR(z))); }
+float _Complex catanf(float _Complex z) { return XCC_NARROW(catan(XCC_PAIR(z))); }
+float _Complex casinhf(float _Complex z) { return XCC_NARROW(casinh(XCC_PAIR(z))); }
+float _Complex cacoshf(float _Complex z) { return XCC_NARROW(cacosh(XCC_PAIR(z))); }
+float _Complex catanhf(float _Complex z) { return XCC_NARROW(catanh(XCC_PAIR(z))); }

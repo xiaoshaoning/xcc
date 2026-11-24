@@ -6,12 +6,13 @@
  * does not - `+ - * /`, `== !=`, `!`, and the conversions in and out - is the compiler's own
  * arithmetic, with no call anywhere.
  *
- * What is *here* is the part that lives in a library, and it is short because the universal C
- * runtime exports none of C99 7.3's functions: measured, all sixty-six spellings, `cacos` to
- * `cprojl`, come back "undefined symbol". The nineteen transcendental ones are therefore not
- * declared - a program that calls `csin` is told it is not declared here rather than given a link
- * error - and the six that are exact are below, four of them in the runtime this compiler links
- * on every link (`crates/xcc-crt/src/main.c`) and two as macros over the parts.
+ * What is *here* is the part that lives in a library, and it is all of it, because the universal
+ * C runtime exports none of C99 7.3's functions: measured, all sixty-six spellings, `cacos` to
+ * `cprojl`, come back "undefined symbol". So the twenty bases are the C runtime source's own
+ * (`crates/xcc-crt/src/main.c`): `conj`, `cabs`, `carg` and `cproj`, which are exact, and the
+ * sixteen transcendentals of 7.3.5 to 7.3.8, which are the standard's own formulas over `math.h`.
+ * `creal` and `cimag` need nothing at all - they are the two halves of the representation, so they
+ * are macros here, which is what 7.3.9.5 allows them to be.
  */
 #ifndef __XCC_COMPLEX_H
 #define __XCC_COMPLEX_H
@@ -42,6 +43,57 @@ float cargf(float _Complex z);
 
 double _Complex cproj(double _Complex z);
 float _Complex cprojf(float _Complex z);
+
+/* 7.3.5 to 7.3.8: the transcendentals, which the runtime this compiler links carries because no
+ * Windows runtime exports any of them. Each `float` form computes in `double` and narrows once,
+ * like the four `math.h` wrappers. */
+double _Complex cexp(double _Complex z);
+float _Complex cexpf(float _Complex z);
+
+double _Complex clog(double _Complex z);
+float _Complex clogf(float _Complex z);
+
+double _Complex csqrt(double _Complex z);
+float _Complex csqrtf(float _Complex z);
+
+double _Complex cpow(double _Complex base, double _Complex exponent);
+float _Complex cpowf(float _Complex base, float _Complex exponent);
+
+double _Complex csin(double _Complex z);
+float _Complex csinf(float _Complex z);
+
+double _Complex ccos(double _Complex z);
+float _Complex ccosf(float _Complex z);
+
+double _Complex ctan(double _Complex z);
+float _Complex ctanf(float _Complex z);
+
+double _Complex csinh(double _Complex z);
+float _Complex csinhf(float _Complex z);
+
+double _Complex ccosh(double _Complex z);
+float _Complex ccoshf(float _Complex z);
+
+double _Complex ctanh(double _Complex z);
+float _Complex ctanhf(float _Complex z);
+
+double _Complex casin(double _Complex z);
+float _Complex casinf(float _Complex z);
+
+double _Complex cacos(double _Complex z);
+float _Complex cacosf(float _Complex z);
+
+double _Complex catan(double _Complex z);
+float _Complex catanf(float _Complex z);
+
+double _Complex casinh(double _Complex z);
+float _Complex casinhf(float _Complex z);
+
+double _Complex cacosh(double _Complex z);
+float _Complex cacoshf(float _Complex z);
+
+double _Complex catanh(double _Complex z);
+float _Complex catanhf(float _Complex z);
 
 /* 7.3 asks for an `l` form of each, and this target's `long double _Complex` **is** its
  * `double _Complex` - so a definition would be a redefinition of the row above, and the
