@@ -760,6 +760,29 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - a result without its method
+
+The miniz commit, reviewed. The subscript fix holds and the `-E -o` fix holds; the review found one thing that made a
+published result irreproducible, and one leftover.
+
+**The miniz result did not say how to reproduce it.** "`miniz.c` and `miniz_tdef.c` compile and compress a 209 793-byte
+file to 127 795 bytes that zlib reads back exactly" is true - with three defines that turn off every part of the library
+that calls `tinfl_decompress`, the function the verifier refuses. Without them the link fails at
+`undefined symbol tinfl_decompress`, and a reader following the sentence would conclude the claim was wrong. A result
+recorded without its method is a result that expires the moment somebody tries it.
+
+**`print_spellings` was a name around a `print!`.** The `-E -o` work split the text-building out of the printing so both
+paths share one writer - and left the one-line wrapper that calls the new function. One caller, one statement: the call
+site says `print!("{}", spellings(...))` now, and the wrapper is gone.
+
+**Checked, and already right**: `xcc -E a.c b.c -o x.i` refuses rather than writing the last source over the first -
+the "one `-o`, one source" rule is earlier than the `-E` branch; `-E` with no `-o` still prints; a preprocess that
+fails writes no partial file.
+
+195 unit, 28 parser, 29 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON identical, miniz deflate verified by zlib again; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - miniz: one bug fixed, one diagnosed, one found
 
 The next real program: miniz's deflate and inflate (9 500 lines across six files, MIT). It found three front-end bugs in
@@ -785,7 +808,9 @@ reproducer, the measurement and the two candidate fixes.
 and no output. `-o` names the file every other mode's `-o` names; it does now, and `-E` with no `-o` still prints.
 
 **What does work**: `miniz.c` and `miniz_tdef.c` compile at `--opt-level=2`, link with our own linker, and **compress a
-209 793-byte file to 127 795 bytes that real zlib reads back exactly** - `uncompress` returns `Z_OK`, the length
+209 793-byte file to 127 795 bytes that real zlib reads back exactly** - with three defines that turn off the parts of
+the library that call the inflater (`-DMINIZ_NO_INFLATE_APIS -DMINIZ_NO_ZLIB_APIS -DMINIZ_NO_ARCHIVE_APIS`), because
+`tinfl_decompress` is the function the verifier refuses - `uncompress` returns `Z_OK`, the length
 matches, and the bytes match. That is a third-party compressor built end to end by this compiler and checked by a
 compressor written by somebody else.
 

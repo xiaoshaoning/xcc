@@ -264,7 +264,7 @@ fn compile_command_line() -> ExitCode {
                             return ExitCode::from(2);
                         }
                     }
-                    None => print_spellings(&preprocessed),
+                    None => print!("{}", spellings(&preprocessed)),
                 },
                 Err(diagnostics) => {
                     eprintln!("{}", diagnostics.render(format));
@@ -590,11 +590,6 @@ fn spellings(preprocessed: &xcc::Preprocessed) -> String {
         out.push('\n');
     }
     out
-}
-
-/// The same text on stdout: `-E` with no `-o`.
-fn print_spellings(preprocessed: &xcc::Preprocessed) {
-    print!("{}", spellings(preprocessed));
 }
 
 /// The files `#include` may read: the path as written, then under each `-I` directory.
