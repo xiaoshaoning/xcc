@@ -760,6 +760,36 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - the hang was a list pretending to be a set
+
+The level-2 hang on miniz's inflater, found and fixed. It was not the back end's size limit and not the frame-slot fix:
+it was **liveness**.
+
+**Where it was**, measured rather than guessed: `lower` finishes in 9 ms for the file's 26 functions; inside
+`coff::assemble` every function allocates in microseconds except `tinfl_decompress`, which names 2 992 values; inside
+`allocate`, `Positions::new` takes 1.8 ms and then `Positions::intervals` never returns.
+
+**What it was**: `liveness` - the textbook backwards fixpoint - held its live sets in `Vec<VReg>` and compared them with
+`contains`. Union of successors, difference of definitions, and the change test were all linear scans, twice per value
+per block per iteration: quadratic in the number of values, on a function with three thousand of them and a hundred
+and forty blocks. The sets are `BTreeSet<VReg>` now, which is what the algorithm says they are. `miniz_tinfl.c`
+compiles in **1990 ms**, 82 ms of it the back end, against **over 30 minutes** before - and no output at all.
+
+**The fix that was waiting behind it**: with liveness fast, the frame slot can finally be emitted where it belongs -
+the entry block, because a slot's address is a property of the frame and not of the block the declaration stood in.
+`tinfl_decompress`'s `case` labels sit inside nested `do { } while (0)` blocks, so a slot created in one case's block
+was read in another, and the verifier refused the function as not dominating. That refusal was the honest error
+standing in for a hang; both are gone, and the dump's slot order is declaration-reversed as a consequence, which the
+`cir` test now says out loud.
+
+**Measured end to end**: `miniz.c`, `miniz_tdef.c` and `miniz_tinfl.c` compile and link with our linker, and
+`roundtrip.exe` compresses a 209 793-byte file to 127 795 bytes and inflates it back **byte-identical**, in one
+process; the same compressed stream is read correctly by real zlib. A test pins the state-machine shape that broke it.
+
+195 unit, 28 parser, 29 CLI, 9 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON identical, miniz round-trips; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - a result without its method
 
 The miniz commit, reviewed. The subscript fix holds and the `-E -o` fix holds; the review found one thing that made a

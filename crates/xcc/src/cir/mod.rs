@@ -842,21 +842,31 @@ impl<'a> Builder<'a> {
 
     /// The same, with the alignment `_Alignas` asked for; zero means the type's own.
     ///
-    /// A frame slot is a function-level fact, but this instruction is emitted where the declaration
-    /// is - which is wrong for a `switch` whose `case` labels sit *inside* nested `do { } while (0)`
-    /// blocks, as miniz's inflater's do: a slot created in one case's block is then loaded from
-    /// another, and the verifier refuses the function. Moving the instruction to the entry block
-    /// fixes the dominance and makes our level-2 back end hang on that function instead (measured:
-    /// 30 minutes, against 2 seconds at levels 0 and 1), so the slot's *position* needs a better
-    /// model than "an instruction somewhere" - PLAN.md carries the measurement and the reproducer.
+    /// The `Slot` goes to the **entry block**, not to the block the declaration is in: a frame slot
+    /// belongs to the frame, and its address is the same on every path through the function.
+    /// Emitting it where the declaration stood made it a value defined in one block and used in
+    /// another that need not dominate it - which is what a `switch` whose `case` labels sit *inside*
+    /// nested `do { } while (0)` blocks does, and miniz's inflater is exactly that: a slot created
+    /// in one case's block was loaded from another and the verifier refused the function.
+    ///
+    /// This waited for the register allocator's liveness to stop being quadratic. With every slot in
+    /// the entry block `tinfl_decompress` names nearly three thousand values, and the old liveness -
+    /// `contains` on a `Vec` twice per value per iteration - did not finish in half an hour against
+    /// 82 milliseconds now.
     pub fn aligned_slot(&mut self, ty: TypeId, pointer: TypeId, alignas: u64, span: Span) -> Value {
-        let result = self.func.mint(pointer, self.current);
-        self.push(Inst::Slot {
-            result,
-            ty,
-            alignas,
-            span,
-        });
+        let entry = self.func.entry;
+        let result = self.func.mint(pointer, entry);
+        // At the front: the entry block is already terminated by the time a nested declaration is
+        // read, and appending would put an instruction after its terminator.
+        self.func.blocks[entry.0 as usize].insts.insert(
+            0,
+            Inst::Slot {
+                result,
+                ty,
+                alignas,
+                span,
+            },
+        );
         result
     }
 

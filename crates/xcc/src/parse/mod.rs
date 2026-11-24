@@ -1890,13 +1890,18 @@ mod tests {
 
     #[test]
     fn a_function_body_becomes_cir() {
+        // The slots come out in the reverse of declaration order. A `Slot` names the address of a
+        // local's frame space, which is a fact about the *function* - so every slot is put at the
+        // front of the entry block, where it dominates every use. Emitting them where the
+        // declarations stood gave a `switch` case block a value created in another case's block
+        // (miniz's inflater), which is invalid SSA.
         assert_eq!(
             ir("int add(int a, int b) { return a + b; }"),
             "func add(v0: int, v1: int) -> int
 block0 (entry)(v0: int, v1: int):
+  v3 = slot int
   v2 = slot int
   store v0, v2
-  v3 = slot int
   store v1, v3
   v4 = load int, v2
   v5 = load int, v3

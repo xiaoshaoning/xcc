@@ -493,3 +493,43 @@ int main(void) {
         "error: to stderr"
     );
 }
+
+#[test]
+#[cfg(target_os = "windows")]
+fn a_state_machine_whose_cases_live_inside_do_while_blocks_runs() {
+    // miniz's inflater is written this way: one `switch` over the machine's state, with each `case`
+    // inside a `do { } while (0)` macro so a `goto` can re-enter it. A local's `Slot` used to be
+    // emitted where the declaration stood, which put it in one case's block and read it in another -
+    // invalid SSA, and the verifier refused the function. The frame slot now belongs to the frame.
+    let source = r#"
+#include <stdio.h>
+
+static int run(int state, int steps) {
+    int total = 0;
+    switch (state) {
+    case 0:
+        do {
+            total += 1;
+            if (total > steps) { goto done; }
+            do { case 1: ; } while (0);
+            total += 10;
+        } while (0);
+        break;
+    case 2:
+        do { case 3: ; } while (0);
+        total += 100;
+        break;
+    }
+done:
+    return total;
+}
+
+int main(void) {
+    printf("%d %d %d\n", run(0, 5), run(1, 0), run(3, 0));
+    return 0;
+}
+"#;
+    let run = run_linked("statemachine", source, &[]);
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "11 10 100");
+}

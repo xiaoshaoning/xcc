@@ -21,7 +21,7 @@
 //! whole of the coalescing here - no interference graph, no iteration - and most of the bytes it
 //! removed were copies.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use super::{BlockTerm, MachineFunction, VReg};
 
@@ -320,8 +320,13 @@ struct Positions {
     /// One past each block's last instruction, terminator included.
     block_end: Vec<usize>,
     /// For each block: the values it reads before defining, and the values it defines.
-    uses: Vec<Vec<VReg>>,
-    defined: Vec<Vec<VReg>>,
+    ///
+    /// Sets, because the liveness fixpoint is union and difference. Built as `Vec`s and deduplicated
+    /// on the way in, they made the fixpoint quadratic in the number of values - `contains` on a list
+    /// of three thousand - and a function the size of miniz's inflater never finished: the whole
+    /// function's allocate call is still running after thirty minutes.
+    uses: Vec<BTreeSet<VReg>>,
+    defined: Vec<BTreeSet<VReg>>,
     /// How many virtual registers the function names.
     value_count: usize,
     /// What each block can go to, as block indices.
@@ -371,16 +376,15 @@ impl Positions {
             .map(|block| {
                 let defined: HashSet<VReg> =
                     block.ops.iter().filter_map(|op| op.defined()).collect();
-                let mut seen: HashSet<VReg> = HashSet::new();
-                let mut uses = Vec::new();
+                let mut uses: BTreeSet<VReg> = BTreeSet::new();
                 for operand in block
                     .ops
                     .iter()
                     .flat_map(|op| op.operands())
                     .chain(block.term.operands())
                 {
-                    if !defined.contains(&operand) && seen.insert(operand) {
-                        uses.push(operand);
+                    if !defined.contains(&operand) {
+                        uses.insert(operand);
                     }
                 }
                 uses
@@ -526,25 +530,21 @@ impl Positions {
     }
 
     /// Live-in and live-out sets per block, by the textbook backwards fixpoint.
-    fn liveness(&self) -> (Vec<Vec<VReg>>, Vec<Vec<VReg>>) {
+    fn liveness(&self) -> (Vec<BTreeSet<VReg>>, Vec<BTreeSet<VReg>>) {
         let blocks = self.uses.len();
-        let mut live_in = vec![Vec::new(); blocks];
-        let mut live_out = vec![Vec::new(); blocks];
+        let mut live_in = vec![BTreeSet::new(); blocks];
+        let mut live_out = vec![BTreeSet::new(); blocks];
         loop {
             let mut changed = false;
             for block in (0..blocks).rev() {
-                let mut out: Vec<VReg> = Vec::new();
+                let mut out: BTreeSet<VReg> = BTreeSet::new();
                 for successor in &self.successors[block] {
-                    for value in &live_in[*successor] {
-                        if !out.contains(value) {
-                            out.push(*value);
-                        }
-                    }
+                    out.extend(live_in[*successor].iter().copied());
                 }
-                let mut into: Vec<VReg> = self.uses[block].clone();
+                let mut into: BTreeSet<VReg> = self.uses[block].clone();
                 for value in &out {
-                    if !self.defined[block].contains(value) && !into.contains(value) {
-                        into.push(*value);
+                    if !self.defined[block].contains(value) {
+                        into.insert(*value);
                     }
                 }
                 if out != live_out[block] || into != live_in[block] {
