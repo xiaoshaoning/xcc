@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - `#define A 1 // c` took the rest of the file as its body
+
+stb_image.h - 7 812 lines, one of the most used single-file libraries in C - was the next real code, and it found
+three bugs in an hour. The first is the worst this compiler has had.
+
+**A `//` comment ate the newline that ends its line and did not say so.** The lexer's line-comment branch walked to
+the newline, consumed it, and broke - while the branch that handles a newline on its own sets `starts_line`, the flag
+that tells the next token it begins a logical line. A directive reads until a token that starts one, so
+`#define A 1 // c` read to the **end of the file** as its body: every line after it vanished, silently, and the
+compiled program was not the program written. Any C file with a trailing comment on a `#define` - which is most of
+them - was miscompiled. Measured: with the flag set, `stb_image.h` preprocesses as itself and clang's `-E` and ours
+agree on the file's own text.
+
+**And a struct initialiser could not end with a comma.** The capacity check in the brace walker ran *before* the loop
+ate the separator, so `{ r, e, }` - a struct filled exactly, with the comma everyone writes (C99 6.7.8p1) - looked
+like a third value: "too many initialisers for this struct or union". stb's callbacks table is written that way.
+The check now asks whether the comma stands before the closing brace, which is what a trailing comma is.
+
+**And the array-of-function-pointers path under it** was only reached once those two were fixed: with them,
+`stb_image.h` compiles with `-DSTBI_NO_SIMD` (its own switch; x86-64 has SSE2 and stb uses `<emmintrin.h>`, which is
+a compiler feature and not a header this compiler ships) and **decodes a 2×2 PNG byte-identically to a `clang`
+build** - 231 KB of object from 7 812 lines.
+
+Three tests: the lexer's flag after a comment, five preprocessor shapes around it, and the trailing comma with its
+counter-case (a struct given *more* values is still refused).
+
+201 unit, 30 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; cJSON and miniz unchanged, stb_image decodes identically; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - const stopped at the object and not at its members
 
 The `const` commit, reviewed. The qualifier reaches a typedef, a member, a pointer's target and an array

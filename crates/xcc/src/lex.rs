@@ -259,6 +259,12 @@ impl Lexer<'_> {
                     while let Some(&byte) = self.bytes.get(self.at) {
                         self.at += 1;
                         if byte == b'\n' {
+                            // The comment swallowed the newline, and a newline is what says
+                            // the next token begins a logical line. Without this the line
+                            // after a `//` comment was invisible to directives - and a
+                            // `#define` reads until the next line that starts one, so
+                            // `#define A 1 // c` took the rest of the file as its body.
+                            self.starts_line = true;
                             break;
                         }
                     }
@@ -478,6 +484,32 @@ mod tests {
             .collect();
         spells.pop();
         spells
+    }
+
+    /// A `//` comment eats its own newline, so it has to say so: a newline is what tells the next
+    /// token it begins a logical line, and a directive reads until one does.
+    ///
+    /// Without this, `#define A 1 // c` read to the *end of the file* as its body - the line after
+    /// the comment was invisible to every directive, and stb_image.h is written that way.
+    #[test]
+    fn a_line_comment_still_ends_the_line() {
+        let (lexed, interner) = lexed(
+            "#define A 1 // c
+int x;
+",
+        );
+        let after: Vec<&str> = lexed
+            .tokens
+            .iter()
+            .filter(|token| token.starts_line)
+            .map(|token| interner.resolve(token.text))
+            .collect();
+        // The `#`, the `int`, and the `;` of a directive-free world are not all here: what matters
+        // is that the token after the comment starts a line.
+        assert!(
+            after.contains(&"int"),
+            "the line after a `//` comment starts one: {after:?}"
+        );
     }
 
     #[test]

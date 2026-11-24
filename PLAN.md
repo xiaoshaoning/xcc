@@ -935,6 +935,11 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **A `//` comment lost the newline that ends its line.** The lexer consumed the newline and never set
+      `starts_line`, so the line after any `//` comment was invisible to directives - and a directive reads until a
+      token that starts a logical line, so `#define A 1 // c` took the rest of the file as the macro body. Found by
+      `stb_image.h`, which was then made to compile (and decode a PNG byte-identically to `clang` with its own
+      `STBI_NO_SIMD`). The same file found a second bug beside it: a struct initialiser could not end with a comma.
 - [x] **`const` was consumed and dropped.** `Type::Const(inner)` with a peeling `kind()`, so the qualifier reaches a
       typedef, a member, a pointer's target and an array element without a parallel fact anywhere; two write sites
       (`assign`, which every compound assignment routes through, and `step`) and one rule: a modifiable lvalue is not

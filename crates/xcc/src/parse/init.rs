@@ -371,7 +371,13 @@ impl Parser<'_> {
             // Padding takes no value, so step over it before asking whether there is room.
             at = past_padding(at);
             if !self.designator_follows() && at >= members.len() {
-                if braced {
+                // A comma right before the closing brace names no further value (C99 6.7.8p1), and
+                // this is where it is still standing: the check above runs before the loop eats it,
+                // so a struct whose members are exactly filled ended in "too many initialisers" when
+                // the source wrote the comma every C programmer writes.
+                let trailing = self.at_punct(",")
+                    && self.peek_at(1).is_some_and(|next| self.is_punct(next, "}"));
+                if braced && !trailing {
                     self.error(span, "too many initialisers for this struct or union");
                     self.skip_until(&["}"], false);
                 }

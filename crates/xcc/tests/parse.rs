@@ -71,6 +71,65 @@ fn refuses(source: &str, expected: &str) {
 }
 
 #[test]
+fn a_comment_on_a_directive_line_does_not_eat_the_next_line() {
+    // A `//` comment swallows its own newline, and a newline is what says the next token begins a
+    // logical line - which is what a directive reads until. Without the fix, `#define A 1 // c`
+    // took the rest of the file as its body, and the line after any `//` comment was invisible to
+    // `#ifdef`. Every shape here was measured: stb_image.h is written the first way.
+    assert!(parses(
+        "#define A 1 // trailing
+#ifdef A
+int x;
+#endif
+int y;
+"
+    ));
+    assert!(parses(
+        "#define A 1 // c
+int x;
+"
+    ));
+    assert!(parses(
+        "#define A 1
+#undef A  // c
+int x;
+"
+    ));
+    assert!(parses(
+        "#if 1
+int x;
+#endif  // closes
+int y;
+"
+    ));
+    assert!(parses(
+        "#if 0
+#include <math.h>  // c
+#endif
+int x;
+"
+    ));
+}
+
+#[test]
+fn a_struct_initialiser_may_end_with_a_comma() {
+    // C99 6.7.8p1: a trailing comma in a brace list is allowed. A struct filled exactly had its
+    // comma read as a fourth value - "too many initialisers" - because the capacity check ran
+    // before the loop ate the separator. Found by stb_image.h, whose callbacks table is written
+    // with the comma every C programmer writes.
+    assert!(parses(
+        "typedef struct c { int (*read)(void *); int (*eof)(void *); } c;         static int r(void *u) { return 0; } static int e(void *u) { return 1; }         static c mine = { r, e, };
+int main(void) { return mine.read(0); }"
+    ));
+    // And a struct given *more* values than it has members is still refused.
+    refuses(
+        "struct s { int a; int b; }; static struct s x = { 1, 2, 3 };
+int main(void) { return x.a; }",
+        "too many initialisers",
+    );
+}
+
+#[test]
 fn a_string_literal_subscript_is_an_expression_and_not_an_initialiser() {
     // C99 6.7.8p14 makes `char s[] = "abc"` an initialiser of a character array. A literal that is
     // *subscripted* is not one: `unsigned a = "\x02\x03"[i];` has the value of a character, and the

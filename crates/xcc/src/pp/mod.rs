@@ -516,6 +516,10 @@ impl Preprocessor<'_> {
         let span = name.token.span;
         let rest = &words[1..];
 
+        if std::env::var("XCC_DIRS").is_ok() {
+            let line = self.files[self.current as usize].logical_line(span.start);
+            eprintln!("DIR {} {} active={}", name_text, line, self.active());
+        }
         // Conditionals are read whatever the state: the `#else` that ends a skip is one.
         match name_text.as_str() {
             "if" => return self.open_conditional(rest, span, Branch::If),
