@@ -251,6 +251,63 @@ mod tests {
         }
     }
 
+    /// The README's *count* is checked too, not only the names it lists.
+    ///
+    /// It said "twelve" while fifteen shipped, "twenty" while nineteen did, and "twenty-four" while
+    /// twenty-three did: a number in prose is a fact written down twice, and the copy no test reads
+    /// is the copy that drifts. The names are compared by the test above; this is the word before
+    /// them.
+    #[test]
+    fn the_readme_counts_the_headers_that_ship() {
+        const NUMERALS: [&str; 24] = [
+            "",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+            "twenty",
+            "twenty-one",
+            "twenty-two",
+            "twenty-three",
+        ];
+        let readme = include_str!("../../../README.md");
+        let line = readme
+            .lines()
+            .find(|line| line.starts_with("| headers |"))
+            .expect("the README has a headers row");
+        let word = line["| headers |".len()..]
+            .split_whitespace()
+            .next()
+            .expect("a number word");
+        let shipped = C99_HEADERS
+            .iter()
+            .filter(|(_, disposition)| matches!(disposition, Disposition::Shipped(_)))
+            .count();
+        let counted = NUMERALS
+            .iter()
+            .position(|numeral| *numeral == word)
+            .unwrap_or_else(|| panic!("`{word}` is not a number this test reads"));
+        assert_eq!(
+            counted, shipped,
+            "the README says `{word}` headers ship; {shipped} do"
+        );
+    }
+
     #[test]
     fn the_ledger_is_c99s_table() {
         // `assert.h` and `errno.h` were in neither of the two lists this replaces, so a program that

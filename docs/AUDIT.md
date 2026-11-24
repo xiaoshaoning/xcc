@@ -786,6 +786,28 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the noun was checked and the number was not
+
+The math-families and `tgmath.h` commit, reviewed. One finding, and it is the third time this project has made it: a
+count in prose that no test reads.
+
+**The README said "twenty-four" headers ship; twenty-three do.** It listed twenty-three names, and the test that
+compares the list to the ledger passed - because it compares *names*, and the number was prose beside them. The same
+line said "twenty" while nineteen shipped, and "twelve" while fifteen did, before it. A fact written down twice
+disagrees with itself, and the copy nothing reads is the copy that drifts.
+
+The count is now a test: `the_readme_counts_the_headers_that_ship` reads the word after `| headers |`, maps it through
+a table of numerals, and compares it to the number of `Shipped` entries. Proved both ways - "twenty-two" fails with "the
+README says `twenty-two` headers ship; 23 do", and a word past the table fails as a word the test does not read.
+
+**And a sentence in the same row still described the attempt that was measured wrong**: `tgmath.h` "picks between them
+by the argument's type with `sizeof`". That was the first design, which returned the right value with the wrong type;
+the header uses `_Generic` now and needs `--std=c11`, and the README says so.
+
+196 unit, 28 parser, 29 CLI, 16 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the header that needed the whole of math.h first
 
 `tgmath.h` ships, `complex.h` stays refused with a measured reason, and the work in between was `math.h`'s other two
