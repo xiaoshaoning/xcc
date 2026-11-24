@@ -786,6 +786,30 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - the deeper rule that was shallower
+
+The lz4 commit, reviewed. Both fixes hold and lz4 still compresses byte-identically to `clang`; the review found that
+the first fix left a shape behind, and that my first attempt at it made things worse.
+
+**`&(g)` is refused while `&g` is accepted.** C99 6.5.3.2p3 makes the address of a function designator *be* the
+designator, and the shortcut reads the token in front of the operand - where a `(` hides it. Found by sweeping the
+neighbourhood of the fix rather than the fix itself, which is the lesson: a test that checks what was broken does not
+check what was not.
+
+**And the "better" rule broke `&g`.** I replaced the lookahead with a check of the parsed operand's type - "a function
+designator's type is a function, so return it unchanged" - which reads like the standard and is wrong here: by the time
+a function's name is a value it has *decayed* to a pointer to function, the same type a call returning one has. So
+every `&g` was refused. Reverted, and the reason is now in the comment where the rule lives, because the next person to
+think of it will think of it too.
+
+**`&(f)` is a gap and is recorded as one** rather than guessed at: a fix has to count parentheses, and `&f` is the
+idiom - lz4, Lua, miniz, cJSON and stb_image all write that, and none of them writes `&(f)`. PLAN.md says what it would
+take and why it waits.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; lz4's frame stream still byte-identical; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - lz4, and two parses that looked right until a real file said otherwise
 
 The local lz4 checkout (3 035 lines in `lib/lz4.c`, plus the HC compressor, the frame format and xxhash) compiles and

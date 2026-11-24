@@ -947,6 +947,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       (6.7.5.3p15) - two facts, and the sweep caught the first version losing the first while doing the second.
       Duplicate member names too (6.7.2.1p1), and `tests/invalid.rs` holds seventeen forbidden programs measured
       against `clang`, so the next one is found by the suite.
+- [ ] **`&(f)` of a parenthesised function designator is refused.** `&g` is the designator (C99 6.5.3.2p3) and
+      `&(g)` is the same designator, but the shortcut reads the token *in front of* the operand, and a `(`
+      there hides it. The operand cannot answer instead: by the time a function name is a value it has decayed
+      to a pointer to function, which is the type a call returning one also has. A fix has to look through the
+      parentheses by counting them, and that rule is only worth writing when something needs it - `&f` is the
+      idiom, and lz4, Lua, miniz, cJSON and stb_image all write that.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

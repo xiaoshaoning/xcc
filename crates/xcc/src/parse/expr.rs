@@ -861,15 +861,19 @@ impl Parser<'_> {
                 // function name already *is* an address and is never an lvalue - so the rule below
                 // refuses it. `lua_atpanic(L, &panic)` is how Lua hands a function over, and the
                 // value the name produces is exactly the pointer this operator would return.
+                //
+                // The test is the token in front of the operand, because the operand itself cannot
+                // say: by the time a function's name is a value it has decayed to a pointer to
+                // function, which is the same type a call returning one has. What the lookahead
+                // must exclude is everything that makes the designator *part* of a larger
+                // expression - `&f(x)->m` is the address of a member of the call's result, and
+                // taking the shortcut there made it `(&f)(x)->m`, which lz4frame.c found.
+                // `&(f)` is the one shape this cannot see; PLAN.md carries it.
                 if let Some(token) = self.peek().copied() {
                     let names_a_function = self
                         .symbols
                         .lookup(token.text)
                         .is_some_and(|entry| matches!(entry.kind, Kind::Function));
-                    // Only when the designator is the *whole* operand: `&f` is `f`, but `&f(x)->m`
-                    // is the address of a member of the call's result, and taking the shortcut there
-                    // made it `(&f)(x)->m` - a call of a pointer to a function. lz4frame.c writes
-                    // `&LZ4F_mt_job(mt, n)->done`.
                     let followed = self.peek_at(1).is_some_and(|next| {
                         ["(", "[", ".", "->"]
                             .iter()
