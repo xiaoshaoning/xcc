@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-22 - lz4, and two parses that looked right until a real file said otherwise
+
+The local lz4 checkout (3 035 lines in `lib/lz4.c`, plus the HC compressor, the frame format and xxhash) compiles and
+works: a hundred thousand bytes compress to 583 and back, and **the compressed stream is byte-identical to a `clang`
+build's** - which LZ4 being deterministic makes a strong oracle. The same holds for the high-compression compressor and
+for a framed stream with a content checksum. Getting there took two fixes, both in the parser.
+
+**An array initialiser could not end with a comma, if its size came from the list.** `lz4frame.c` declares its error
+strings as `{ LZ4F_LIST_ERRORS(LZ4F_GENERATE_STRING) }`, and that macro puts a comma after *every* element, the last
+one included: C99 6.7.8p1 allows it and every real table is written that way. A *sized* array was fine - the capacity
+check stopped the loop at the comma and the surplus arm knew a trailing comma from a surplus value - but an unsized one
+has no capacity, so after the comma the parser demanded a value: "expected an expression". The check for a comma before
+the closing brace is now where the separator is eaten, which is the only place both cases pass through.
+
+**And `&f(x)->m` was parsed as `(&f)(x)->m`.** C99 6.5.3.2p3 makes the address of a function designator *be* the
+designator, and the shortcut for it fired on the identifier alone - so a call, a subscript, or a member access after it
+was applied to the *address* instead of to the call's result. `lz4frame.c` writes
+`LZ4F_pool_waitDone(mt->pool, &LZ4F_mt_job(mt, n)->done)`, and the compiler said "cannot call pointer to function".
+The shortcut now needs the designator to be the whole operand: no `(`, `[`, `.` or `->` behind it.
+
+**Both are the same shape of mistake**, and worth naming: a rule that is right about the expression it was written for
+and wrong about the one that follows it. The tests hold the four shapes of the first and the four of the second,
+including the two that must still be refused - a surplus array value, and the address of a call's result.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; lz4 and lz4hc and lz4frame byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the test that would have passed for the wrong reason
 
 The lexer and initialiser commit, reviewed. Both fixes hold and the sweep around them came up empty; the finding is

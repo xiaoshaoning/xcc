@@ -257,6 +257,13 @@ impl Parser<'_> {
                 break;
             }
             first = false;
+            // A comma right before the closing brace is the trailing one C allows (C99 6.7.8p1)
+            // and it introduces nothing: `{"a", "b",}` has two elements. Anchored here because an
+            // array whose size comes from its list has no capacity to check, so nothing else could
+            // notice - lz4frame.c's error-string table is written that way.
+            if self.at_punct("}") {
+                break;
+            }
             if self.at_punct("[") {
                 written = self.designated_index(span, declared, written);
                 if self.at_punct("...") {
@@ -288,10 +295,10 @@ impl Parser<'_> {
             // C99 6.7.8p2 makes that a constraint violation, so it is diagnosed - and then the surplus
             // is skipped, which is what every compiler that meets it in the wild does: `int a[3] =
             // {1,2,3,4}` is a mistake to report and not a reason to refuse the translation.
+            // A full array stops at the comma that follows its last element, so the separator is
+            // still standing here and has to be told from a surplus value: `int a[2] = {1, 2,}`
+            // has two elements and `int a[2] = {1, 2, 3}` has three.
             Some(declared) if braced && written >= declared && self.at_punct(",") => {
-                // A comma before the brace is the trailing one every real initialiser list is
-                // written with, and it introduces nothing: `int a[3] = {1, 2, 3,}` has three
-                // elements. Only a comma with an element behind it is the surplus 6.7.8p2 forbids.
                 let trailing = {
                     let saved = self.at;
                     self.bump();

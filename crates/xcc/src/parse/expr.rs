@@ -866,7 +866,17 @@ impl Parser<'_> {
                         .symbols
                         .lookup(token.text)
                         .is_some_and(|entry| matches!(entry.kind, Kind::Function));
-                    let function = token.kind == crate::lex::TokenKind::Ident && names_a_function;
+                    // Only when the designator is the *whole* operand: `&f` is `f`, but `&f(x)->m`
+                    // is the address of a member of the call's result, and taking the shortcut there
+                    // made it `(&f)(x)->m` - a call of a pointer to a function. lz4frame.c writes
+                    // `&LZ4F_mt_job(mt, n)->done`.
+                    let followed = self.peek_at(1).is_some_and(|next| {
+                        ["(", "[", ".", "->"]
+                            .iter()
+                            .any(|operator| self.is_punct(next, operator))
+                    });
+                    let function =
+                        token.kind == crate::lex::TokenKind::Ident && names_a_function && !followed;
                     if function {
                         return self.primary_expression();
                     }

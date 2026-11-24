@@ -71,6 +71,68 @@ fn refuses(source: &str, expected: &str) {
 }
 
 #[test]
+fn an_array_initialiser_may_end_with_a_comma() {
+    // C99 6.7.8p1: a trailing comma in a brace list is allowed, and every real table is written
+    // with one. An array whose size comes from its list has no capacity to check, so nothing else
+    // noticed: lz4frame.c's error-string table - `{ LZ4F_LIST_ERRORS(LZ4F_GENERATE_STRING) }`, whose
+    // every element is followed by a comma - was rejected with "expected an expression".
+    assert!(parses(
+        "const char *names[] = { \"a\", \"b\", };
+int main(void) { return 0; }"
+    ));
+    assert!(parses(
+        "static int numbers[] = { 1, 2, 3, };
+int main(void) { return numbers[2]; }"
+    ));
+    assert!(parses(
+        "int sized[2] = { 1, 2, };
+int main(void) { return sized[1]; }"
+    ));
+    assert!(parses(
+        "int partial[2] = { 1, };
+int main(void) { return partial[0]; }"
+    ));
+    // And more values than it has room for is still the surplus 6.7.8p2 forbids.
+    let surplus = warnings("int a[2] = { 1, 2, 3 };");
+    assert!(
+        surplus
+            .iter()
+            .any(|message| message.contains("more were given")),
+        "{surplus:?}"
+    );
+}
+
+#[test]
+fn the_address_of_a_function_designator_is_the_designator() {
+    // C99 6.5.3.2p3 - but only when the designator is the *whole* operand. `&f(x)->m` is the
+    // address of a member of the call's result; taking the shortcut there made it `(&f)(x)->m`.
+    // lz4frame.c writes exactly that, and found this.
+    assert!(parses(
+        "struct j { int done; };
+static struct j *make(int n) { (void)n; return 0; }
+         static void wait(const int *flag) { (void)flag; }
+         int f(void) { wait(&make(1)->done); return 0; }"
+    ));
+    assert!(parses(
+        "static void panic(void) { }
+static void handover(void (*f)(void)) { f(); }
+         int f(void) { handover(&panic); return 0; }"
+    ));
+    // `&f` where `f` is the whole operand is the designator, and `&f()` is the address of an
+    // rvalue, which C does not have.
+    assert!(parses(
+        "static void g(void) { }
+int f(void) { void (*p)(void) = &g; p(); return 0; }"
+    ));
+    refuses(
+        "struct j { int d; };
+static struct j *m(int n) { (void)n; return 0; }
+         int f(void) { int *p = &m(1); (void)p; return 0; }",
+        "needs something it can take the address of",
+    );
+}
+
+#[test]
 fn a_comment_on_a_directive_line_does_not_eat_the_next_line() {
     // A `//` comment swallows its own newline, and a newline is what says the next token begins a
     // logical line - which is what a directive reads until. Without the fix, `#define A 1 // c`
