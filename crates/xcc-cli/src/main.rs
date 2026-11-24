@@ -25,10 +25,11 @@ struct Args {
 
     /// Run the source now: compile it in process, call `main`, and exit with what it returns.
     ///
-    /// The embedding API, used the way a host would. `#include` is not resolved here (there are
-    /// no headers until M8), and `main` is called as `int main(int, char **)` whether it was
-    /// written that way or `int main(void)`. There is one argument, the source's name: a program
-    /// that needs its own arguments is a program to link and run.
+    /// The embedding API, used the way a host would: the same options a compile takes, minus `-I`,
+    /// because `#include` is answered from the headers inside this binary and not from a filesystem.
+    /// `main` is called as `int main(int, char **)` whether it was written that way or
+    /// `int main(void)`, with one argument - the source's name. A program that needs its own
+    /// arguments is a program to link and run.
     #[arg(long = "run")]
     run: bool,
 
@@ -195,7 +196,13 @@ fn compile_command_line() -> ExitCode {
         return ExitCode::from(2);
     }
     if args.depfile.is_some() && (args.run || args.preprocess_only || args.explain) {
-        eprintln!("xcc: --depfile goes with -c: it names the object a source became");
+        eprintln!("xcc: --depfile names what a mode wrote, and this one writes no file");
+        return ExitCode::from(2);
+    }
+    if args.depfile.is_some() && args.compile_only && args.inputs.len() > 1 {
+        eprintln!(
+            "xcc: --depfile names one object: compile one source at a time, or pass one depfile per source"
+        );
         return ExitCode::from(2);
     }
     if args.explain && args.output.is_some() {
@@ -374,7 +381,16 @@ fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
                 .clone()
                 .unwrap_or_else(|| args.inputs[0].with_extension("exe"));
             match std::fs::write(&path, artifact.bytes()) {
-                Ok(()) => ExitCode::SUCCESS,
+                Ok(()) => {
+                    if let Some(depfile) = &args.depfile {
+                        let rule = dependencies(&path, artifact.dependencies());
+                        if let Err(error) = std::fs::write(depfile, rule) {
+                            eprintln!("xcc: cannot write {}: {error}", depfile.display());
+                            return ExitCode::from(2);
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
                 Err(error) => {
                     eprintln!("xcc: cannot write {}: {error}", path.display());
                     ExitCode::from(2)

@@ -509,7 +509,51 @@ fn a_depfile_names_the_files_a_build_system_can_rebuild() {
         .arg(&source));
     assert_eq!(output.status.code(), Some(2));
     assert!(
-        stderr(&output).contains("--depfile goes with -c"),
+        stderr(&output).contains("--depfile names what a mode wrote"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_link_writes_the_rule_that_names_its_image() {
+    // The depfile is not a `-c`-only idea: an image is a file a build system makes, and the units it
+    // was made from are what would rebuild it.
+    let temp = Temp::new("linkdep");
+    let a = temp.write(
+        "a.c",
+        "int twice(int);\nint main(void) { return twice(21); }\n",
+    );
+    let b = temp.write("b.c", "int twice(int x) { return x * 2; }\n");
+    let exe = temp.path().join("t.exe");
+    let depfile = temp.path().join("t.d");
+    let output = run(xcc()
+        .arg(&a)
+        .arg(&b)
+        .arg("-o")
+        .arg(&exe)
+        .arg("--depfile")
+        .arg(&depfile));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let rule = std::fs::read_to_string(&depfile).expect("the depfile is written");
+    assert!(rule.starts_with(&format!("{}:", exe.display())), "{rule}");
+    assert!(rule.contains("a.c") && rule.contains("b.c"), "{rule}");
+    assert!(
+        !rule.contains("xcc-crt"),
+        "the runtime is inside the binary: {rule}"
+    );
+
+    // One depfile cannot name two objects, so `-c` with two sources says so rather than writing the
+    // last rule over the first.
+    let output = run(xcc()
+        .arg("-c")
+        .arg(&a)
+        .arg(&b)
+        .arg("--depfile")
+        .arg(&depfile));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("--depfile names one object"),
         "{}",
         stderr(&output)
     );

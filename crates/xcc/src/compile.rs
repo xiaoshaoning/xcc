@@ -15,12 +15,12 @@ pub struct Artifact {
     dependencies: Vec<String>,
 }
 
-/// What a build system would have to rebuild for this compilation: every file read that is not a
-/// header this compiler carries inside itself.
-fn dependencies(files: &[SourceFile]) -> Vec<String> {
+/// What a build system would have to rebuild for this compilation: the files read, minus anything
+/// this compiler answers for itself, sorted and deduplicated so the answer does not depend on the
+/// order the preprocessor happened to read them in.
+fn dependencies(files: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut dependencies: Vec<String> = files
-        .iter()
-        .map(|file| file.name().to_owned())
+        .into_iter()
         .filter(|name| !crate::headers::is_shipped(name))
         .collect();
     dependencies.sort();
@@ -236,8 +236,8 @@ impl Compile {
         // A warning is about one compilation, and a link makes several: they are collected here so
         // that the caller of a link is told what the caller of `-c` is told.
         let mut diagnostics = Vec::new();
-        let mut dependencies: Vec<String> =
-            units.iter().map(|(name, _)| (*name).to_owned()).collect();
+        // A link's dependencies are the units it was given: the runtime it compiles in is nobody's file.
+        let dependencies = dependencies(units.iter().map(|(name, _)| (*name).to_owned()));
         let runtime = [("xcc-crt/main.c", crate::back::CRT_SOURCE)];
         for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
             let (module, preprocessed, warnings) = self.front_end(name, source)?;
@@ -289,16 +289,7 @@ impl Compile {
             .collect();
 
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
-            Ok(linked) => {
-                dependencies.extend(
-                    sources
-                        .iter()
-                        .map(|file| file.name().to_owned())
-                        .filter(|name| !crate::headers::is_shipped(name)),
-                );
-                dependencies.dedup();
-                Ok(Artifact::new(linked.bytes, diagnostics, dependencies))
-            }
+            Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics, dependencies)),
             Err(missing) => Err(Diagnostics::new(
                 vec![
                     Diagnostic::error(format!("undefined symbol `{}`", missing.name))
@@ -350,7 +341,7 @@ impl Compile {
             }
         };
         let items = truncate_diagnostics(diagnostics, &self.options);
-        let dependencies = dependencies(&sources);
+        let dependencies = dependencies(sources.iter().map(|file| file.name().to_owned()));
         Ok(Outcome {
             artifact: Artifact::new(object, items, dependencies),
             explanation: explained,

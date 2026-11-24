@@ -760,6 +760,33 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - a depfile that named two files with one space
+
+The defines and the depfile, reviewed. Both work; four things about the second were wrong.
+
+**`dedup` without a `sort` is not a set.** The link path built its dependency list, appended the files read, and called
+`dedup` - which removes *adjacent* duplicates only, so the same header read by two units stayed in the list twice.
+The `-c` path sorted first and did not have the bug. Two callers, two answers, one of them wrong: the helper now takes
+an iterator and does the sort, the dedup and the shipped-header filter for whoever asks.
+
+**A link silently ignored `--depfile`.** The flag was checked against `--run`, `-E` and `--explain`, and the link path
+runs *before* the per-file loop that writes the rule - so `xcc a.c b.c --depfile t.d` wrote `t.exe` and no rule, and
+said nothing. An option that is accepted and ignored is worse than one that is refused. A link names a file a build
+system makes as much as `-c` does, so it writes the rule: `t.exe: a.c b.c`, with the C runtime excluded because it
+lives inside the compiler.
+
+**`-c` with two sources and one `--depfile` wrote the last rule over the first.** gcc writes one `.d` per object for a
+reason. Refused with the reason, rather than quietly keeping whichever source came last.
+
+**Two comments describing a compiler that no longer exists**: `--run`'s help still said "`#include` is not resolved
+here (there are no headers until M8)", two milestones after the headers started shipping inside the binary; and
+`is_shipped` said "a header this compiler ships", while the table it reads also holds the five it refuses - neither is
+a file a build system can rebuild, which is the property the depfile cares about.
+
+195 unit, 27 parser, 28 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON plus its driver still byte-identical; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - the JIT was already right, and the README was not
 
 Two things the command line promised and did not keep, and one it denied that it could do at all.

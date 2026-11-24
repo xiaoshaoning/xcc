@@ -24,7 +24,8 @@ pub(crate) enum Disposition {
 /// Every header in C99's 7.1.2 table, and what happens to it. **The one place** that decides; the
 /// test below walks it against the standard's own list so that a header cannot be added to one and
 /// forgotten in the other, which is how `assert.h` and `errno.h` came to be in neither.
-/// Whether `name` is a header this compiler ships inside itself.
+/// Whether `name` is a header this compiler answers for itself - shipped inside the binary, or
+/// refused by name. Neither is a file a build system could rebuild.
 ///
 /// The distinction a build system needs: a file inside the binary cannot be rebuilt, so it is not a
 /// dependency - and a depfile that names `stdio.h` sends `make` looking for one.
