@@ -935,6 +935,11 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **The real code is a fixture, not a claim.** cJSON and miniz are vendored unmodified under
+      `crates/xcc/tests/fixtures`, with their upstream licence notices and a README that says what each one
+      found and how the expected output was recorded. `tests/real.rs` compiles both with this compiler's own
+      back end, links with its own linker, runs them, and compares stdout with a `clang` build's - 2.9 seconds
+      for the pair, which is cheap for the only test that catches what small programs cannot.
 - [x] **miniz, all of it.** `miniz_zip.c` compiles with `-DMINIZ_NO_STDIO` (its `<sys/stat.h>` is POSIX and this
       compiler has no POSIX headers; the library's own switch turns the file APIs off) and a driver writes a zip
       archive in memory and extracts the file back byte-identical. Building it found the last `mem2reg` hole:

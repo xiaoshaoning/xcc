@@ -760,6 +760,32 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - the real code is a gate now
+
+cJSON and miniz are vendored, unmodified, and both run on every test run: `tests/real.rs` compiles each with this
+compiler's front end and own back end at `--opt-level=2`, links with this compiler's own linker, runs the result, and
+compares its output with what a `clang` build of the same sources printed. **2.9 seconds for the pair** - cheap for the
+only test that catches what 464 small programs cannot.
+
+**Unmodified is the point, and the fixtures README says so**: a file that had to be patched for this compiler would be
+a compiler bug, not a fixture. The one exception is stated where it lives - `miniz_export.h`, which upstream generates
+from a CMake template and which is six lines of macros here, because a fixture that needs CMake is a fixture that needs
+CMake. The licence notice at the top of every file is the upstream one, and the README records the upstream URL and the
+date taken.
+
+**The expected output is recorded, not compared against a live `clang`.** A test that shells out to another compiler
+is a test that fails on a machine without one, and this suite skips the host linker by name already; the fixture README
+says how the eight lines were captured, so a future reader can re-record rather than guess.
+
+**Two things the test also covers by accident, and should**: `#include "cJSON.h"` needed the fixture directory through
+`Compile::with_includes` - the documented embedder API, which the tests had never exercised - and the miniz driver
+needs `-DMINIZ_NO_STDIO`, which goes through `Options::defines`, so the vendored code tests the API a host uses rather
+than only the command line.
+
+195 unit, 28 parser, 29 CLI, 10 exe, 2 real, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran,
+5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
+oracle 19/0; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the strongest claim was the one not written down
 
 The `mem2reg` fix, reviewed. The fix is right and the sweep around it came up empty - which is what made the finding
