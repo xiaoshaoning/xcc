@@ -420,6 +420,25 @@ impl Types {
         matches!(&self.nodes[id.0 as usize], Type::Const(_))
     }
 
+    /// Whether a value of this type may be written: `false` for a `const`-qualified type, and for a
+    /// struct or union **any** of whose members is, however deeply (C99 6.3.2.1p1).
+    ///
+    /// The recursive half is the part that is easy to leave out and hard to notice: `struct S {
+    /// const int a; }` makes every `struct S` unassignable, and a member of a member does it too.
+    /// Measured against `clang`, which refuses both.
+    pub fn is_modifiable(&self, id: TypeId) -> bool {
+        if self.is_const(id) {
+            return false;
+        }
+        let Type::Record(record) = self.kind(id) else {
+            return true;
+        };
+        self.records[record.0 as usize]
+            .members
+            .iter()
+            .all(|member| self.is_modifiable(member.ty))
+    }
+
     /// Give an incomplete array its count, once an initialiser says how many elements it has.
     pub fn complete_array(&mut self, id: TypeId, count: u64) {
         if let Type::Array { count: slot, .. } = &mut self.nodes[id.0 as usize] {

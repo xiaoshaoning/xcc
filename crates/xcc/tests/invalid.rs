@@ -46,6 +46,20 @@ fn a_const_object_cannot_be_written() {
     // drops it (6.7.5.3p15) - two facts, and getting the second right must not lose the first.
     assert!(refused("int f(const int x) { x = 1; return x; }"));
 
+    // C99 6.3.2.1p1 again, from the other side: a struct *any* of whose members is const is not a
+    // modifiable lvalue either, however deeply the member is buried. Measured against clang, which
+    // refuses both.
+    assert!(refused(
+        "struct S { const int a; }; int f(struct S x) { struct S y = x; y = x; return y.a; }"
+    ));
+    assert!(refused(
+        "struct I { const int a; }; struct O { struct I in; int b; };          int f(struct O x) { struct O y = x; y = x; return 0; }"
+    ));
+    // A struct with no const member is assignable, and its own type being const is a different fact.
+    assert!(compiles(
+        "struct S { int a; }; int f(struct S x) { struct S y = x; y = x; return y.a; }"
+    ));
+
     // And what is still allowed: reading one, and writing a non-const through a pointer to const is
     // the program's own promise, so writing *through* the pointer is refused (above) while copying
     // the pointer is not.

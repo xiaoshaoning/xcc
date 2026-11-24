@@ -786,6 +786,26 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-22 - const stopped at the object and not at its members
+
+The `const` commit, reviewed. The qualifier reaches a typedef, a member, a pointer's target and an array
+element - and the check that used it asked one question where C asks two.
+
+**A struct with a `const` member is not a modifiable lvalue either**, and C99 6.3.2.1p1 says so *recursively*: "does
+not have any member (including, recursively, any member or element of all contained aggregates or unions) with a
+const-qualified type". `assign` tested `is_const(left.ty)`, which is true only when the *whole type* carries the
+qualifier - so `struct S { const int a; }; y = x;` compiled, and a member buried one struct deeper did too. Measured
+against `clang`, which refuses both.
+
+The question is one function now - `Types::is_modifiable` - which walks the members the same way C says to, and both
+write sites ask it. That is the shape the review was looking for: the rule lives where the type is known, not in the
+two places that happen to need it. The test gained the two shapes and the one that must still compile, because a rule
+that refuses everything is not a rule.
+
+200 unit, 28 parser, 29 CLI, 3 invalid, 16 exe, 2 real, 1 crt, 5 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+refusal oracle 19/0; fmt and clippy clean.
+
 ### M10 - 2026-11-22 - const was consumed and dropped
 
 Seven programs C forbids compiled, and the reason was one line: `"const" | "volatile" | "restrict" |
