@@ -18,6 +18,10 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     // library exports this and not `printf` itself, so these are the names a link imports.
     "__stdio_common_vfprintf",
     "__stdio_common_vsprintf",
+    "__stdio_common_vfscanf",
+    "__stdio_common_vsscanf",
+    // The at-exit registration the CRT source's `atexit` wrapper calls.
+    "_crt_atexit",
     // The argument setup the CRT source's entry point uses, and the two accessors it reads the
     // result from: `argc`/`argv` are the runtime's, not a startup prologue this file writes.
     "__p___argc",
@@ -265,6 +269,26 @@ mod platform {
         fn GetProcAddress(module: *mut u8, name: *const u8) -> *const u8;
     }
 
+    /// Whether `library` exports `symbol`.
+    ///
+    /// The same question a JIT asks, about one name - and the same loader, so that a test asking it
+    /// is testing what a program will find rather than a list somebody typed. Test-facing: nothing
+    /// in a build asks about one name.
+    #[cfg(test)]
+    pub(super) fn exports(library: &str, symbol: &str) -> bool {
+        #[allow(unsafe_code)]
+        // SAFETY: the process's own libraries, and names they may export; nothing is freed.
+        unsafe {
+            let library = CString::new(library).expect("a library name without a NUL");
+            let module = LoadLibraryA(library.as_ptr().cast());
+            if module.is_null() {
+                return false;
+            }
+            let symbol = CString::new(symbol).expect("a symbol name without a NUL");
+            !GetProcAddress(module, symbol.as_ptr().cast()).is_null()
+        }
+    }
+
     /// Look every name up in **one** C runtime: the first that loads, and only it.
     ///
     /// One library, not whichever answers first: two CRTs in one process keep two heaps and two
@@ -424,12 +448,54 @@ mod tests {
         let unreachable: Vec<&str> = C_RUNTIME
             .iter()
             .copied()
-            .filter(|name| !declared.contains(*name) && !front_ends.contains(name))
+            .filter(|name| !declared.contains(*name) && !defines(front_ends, name))
             .collect();
         assert!(
             unreachable.is_empty(),
             "the runtime list has names nothing declares: {unreachable:?}"
         );
+    }
+
+    /// Every name the headers declare can be linked: the library exports it under the name the
+    /// linker will ask for, or the C runtime source defines it.
+    ///
+    /// This is the measurement that found ten names with no home, written as a gate. A name that
+    /// drifts out of `ucrtbase.dll` fails here rather than in a user's program at load time, with
+    /// `ERROR_PROC_NOT_FOUND` and no clue which name.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn every_declared_name_resolves_in_the_library_or_the_runtime() {
+        let runtime_source = crate::back::CRT_SOURCE;
+        let mut missing = Vec::new();
+        for name in C_RUNTIME {
+            let Some((library, exported)) = crate::back::import_for(name) else {
+                continue; // the program defines it
+            };
+            // The `printf` front ends are the *program's* half of the UCRT: the library has the
+            // engine and the runtime source has the spelling, so a name the source defines is not
+            // the library's to export.
+            if !platform::exports(library, &exported) && !defines(runtime_source, &exported) {
+                missing.push((name.to_string(), exported));
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "declared, and neither exported by the library nor defined by the runtime: {missing:?}"
+        );
+    }
+
+    /// Whether `source` defines or declares `name`: the name as a whole word, with a `(` after it.
+    ///
+    /// A substring match is not a test - `contains("time")` is true of the word `runtime`, and a
+    /// gate satisfied by a comment is a gate that never fails. The `(` is what makes it a call, a
+    /// definition or a declaration rather than a word in prose.
+    fn defines(source: &str, name: &str) -> bool {
+        source.match_indices(name).any(|(at, _)| {
+            let before = source[..at].chars().next_back();
+            let after = source[at + name.len()..].trim_start().chars().next();
+            let standalone = !before.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            standalone && after == Some('(')
+        })
     }
 
     /// `text` with its `/* ... */` comments removed, newlines kept so lines still line up.

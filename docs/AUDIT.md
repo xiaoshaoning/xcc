@@ -760,6 +760,45 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - every declared name links, and the gate that first said yes to everything
+
+Ten of the 178 names the headers declare had no home in a link. Measured against `ucrtbase.dll`'s export table and
+closed, in four shapes:
+
+- **`scanf`, `fscanf`, `sscanf`** - the scanning front ends are the *program's* half of the UCRT, exactly as `printf`'s
+  were, so the runtime carries them over `__stdio_common_vfscanf` and `__stdio_common_vsscanf`.
+- **`atexit`** - the library exports `_crt_atexit`, which takes the same function pointer.
+- **`_setjmp`** - the library's own name is `__intrinsic_setjmp`, and it has to be the library's function: `setjmp`
+  saves the *caller's* frame, so a wrapper written here would save the wrapper's.
+- **`time`, `difftime`, `gmtime`, `localtime`, `mktime`** - the target's `time_t` is 64-bit and the library says so:
+  `_time64`, `_difftime64`, `_gmtime64`, `_localtime64`, `_mktime64`. None of the five has a `time`-less spelling in
+  the library at all, which is also why a `clang`-built program imports `_time64` from the time api-set.
+
+That last group made the linker's mapping deeper than it was: `library_of(name) -> &str` became
+`import_for(name) -> (library, name-the-library-exports)`, because a program refers to `time` while the import table
+must look up `_time64`. `Imported` carries both, so the *program's* name is what a relocation matches and the
+*library's* name is what the hint/name entry says. One table, `RENAMED_IN_THE_LIBRARY`, holds the eight spellings.
+
+**And this is where the review of my own work earned its keep twice.**
+
+First, the mapping's first draft reached a `'static` lifetime by leaking a `String` per lookup - dismissed, because a
+caller that wants a name does not want a leak, and `&str` in, `&str` out is the same function without it.
+
+Second, the gate that was supposed to keep all this honest **passed after I deleted a rename from the table**. It asked
+`CRT_SOURCE.contains("time")`, and the runtime source contains the word `runtime`. A gate satisfied by prose is not a
+gate: the check is now the name as a *whole word followed by a `(`*, and deleting `("time", "_time64")` makes it fail
+with `[("time", "time")]`. The older ledger test had the same `contains` weakness and now shares the helper.
+
+**Measured, not assumed**: `sscanf("42 words", "%d %15s", ...)` reads both fields, `time(0)` returns a real time,
+`setjmp`/`longjmp` round-trips with the right value, and the `atexit` handler prints *after* everything else - so it
+ran at exit, through `_crt_atexit`. `tests/exe.rs` links that program and asserts the four lines and the exit status;
+`back::crt`'s test asks `ucrtbase.dll` itself for every declared name, so a name that drifts out of the library fails
+in the suite instead of as `ERROR_PROC_NOT_FOUND` in a user's program.
+
+195 unit, 27 parser, 24 CLI, 7 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the assertion the refactor ate
 
 The `argc`/`argv` commit, reviewed. The feature works - a linked program reads real arguments, a quoted one stays

@@ -51,6 +51,11 @@ int __stdio_common_vfprintf(unsigned long long options, FILE *stream, const char
                             void *locale, va_list args);
 int __stdio_common_vsprintf(unsigned long long options, char *buffer, size_t count,
                             const char *format, void *locale, va_list args);
+int __stdio_common_vfscanf(unsigned long long options, FILE *stream, const char *format,
+                           void *locale, va_list args);
+int __stdio_common_vsscanf(unsigned long long options, const char *input, size_t count,
+                           const char *format, void *locale, va_list args);
+int _crt_atexit(void (*function)(void));
 
 int vfprintf(FILE *restrict stream, const char *restrict format, va_list args) {
     return __stdio_common_vfprintf(0, stream, format, 0, args);
@@ -99,4 +104,45 @@ int snprintf(char *restrict to, size_t count, const char *restrict format, ...) 
     int written = __stdio_common_vsprintf(0, to, count, format, 0, args);
     va_end(args);
     return written;
+}
+
+/* The scanning half, the same shape: the library owns the engine, the program owns the `...`. An
+ * unlimited count is `(size_t)-1`, which is `sscanf`'s "the string ends where the null does". */
+
+int vfscanf(FILE *restrict stream, const char *restrict format, va_list args) {
+    return __stdio_common_vfscanf(0, stream, format, 0, args);
+}
+
+int fscanf(FILE *restrict stream, const char *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vfscanf(0, stream, format, 0, args);
+    va_end(args);
+    return read;
+}
+
+int scanf(const char *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vfscanf(0, stdin, format, 0, args);
+    va_end(args);
+    return read;
+}
+
+int vsscanf(const char *restrict from, const char *restrict format, va_list args) {
+    return __stdio_common_vsscanf(0, from, NO_LIMIT, format, 0, args);
+}
+
+int sscanf(const char *restrict from, const char *restrict format, ...) {
+    va_list args;
+    va_start(args, format);
+    int read = __stdio_common_vsscanf(0, from, NO_LIMIT, format, 0, args);
+    va_end(args);
+    return read;
+}
+
+/* `atexit` is the program's own name for the runtime's: the list is the library's, and the
+ * registration call is `_crt_atexit`. */
+int atexit(void (*function)(void)) {
+    return _crt_atexit(function);
 }

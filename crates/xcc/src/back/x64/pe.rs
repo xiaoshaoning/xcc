@@ -68,8 +68,12 @@ const READ_ONLY_FLAGS: u32 = 0x4000_0040;
 pub(crate) struct Imported<'a> {
     /// The library's file name, as the import table must spell it: `ucrtbase.dll`, `kernel32.dll`.
     pub library: &'a str,
-    /// The function's name, as the library exports it.
+    /// The name the program calls it by - what its relocations ask for.
     pub name: &'a str,
+    /// The name the library exports it under, which is what the import table must look up. The two
+    /// differ where the target's ABI differs from C's spelling: a program writes `time`, and the
+    /// library exports `_time64`.
+    pub exported: &'a str,
 }
 
 /// A program that has been linked.
@@ -137,7 +141,10 @@ struct Library<'a> {
 
 /// One imported function's two homes.
 struct Slot {
+    /// The name the program calls it by, which is how a relocation finds its slot.
     name: String,
+    /// The name the library exports it under, which is what the hint/name entry says.
+    exported: String,
     /// The eight-byte address-table slot, from `.data`'s start.
     slot: u32,
     /// The six-byte `jmp [rip+slot]`, from `.text`'s start.
@@ -318,6 +325,7 @@ fn group<'a>(imports: &[Imported<'a>]) -> Vec<Library<'a>> {
         };
         libraries[index].functions.push(Slot {
             name: import.name.to_owned(),
+            exported: import.exported.to_owned(),
             slot: 0,
             thunk: 0,
         });
@@ -432,7 +440,7 @@ fn import_table_size(libraries: &[Library<'_>]) -> u32 {
     let names: u32 = libraries
         .iter()
         .flat_map(|library| &library.functions)
-        .map(|function| name_entry_size(&function.name))
+        .map(|function| name_entry_size(&function.exported))
         .sum();
     let libraries_named: u32 = libraries
         .iter()
@@ -696,7 +704,7 @@ impl<'a> Writer<'a> {
             for function in &library.functions {
                 rvas.push(self.sections.rdata.address + names_at + names.len() as u32);
                 names.extend_from_slice(&0u16.to_le_bytes()); // hint 0
-                names.extend_from_slice(function.name.as_bytes());
+                names.extend_from_slice(function.exported.as_bytes());
                 names.push(0);
                 // Pad to an even length, which is the whole of `name_entry_size`'s rounding.
                 while names.len() % 2 == 1 {
@@ -844,14 +852,17 @@ mod tests {
             Imported {
                 library: "ucrtbase.dll",
                 name: "printf",
+                exported: "printf",
             },
             Imported {
                 library: "kernel32.dll",
                 name: "ExitProcess",
+                exported: "ExitProcess",
             },
             Imported {
                 library: "ucrtbase.dll",
-                name: "exit",
+                name: "time",
+                exported: "_time64",
             },
         ];
         let grouped = group(&imports);

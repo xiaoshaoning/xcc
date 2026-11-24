@@ -162,16 +162,51 @@ pub(crate) fn cranelift_opt_level(level: u8) -> Result<&'static str, String> {
 /// The C runtime's entry point, compiled with every program a link produces.
 pub(crate) const CRT_SOURCE: &str = include_str!("../../../xcc-crt/src/main.c");
 
-/// Which library has a name a program does not define.
+/// Where a name a program does not define comes from: the library, and the name it has there.
 ///
 /// Two answers, because a Windows console program imports from two libraries: the C runtime, whose
 /// names are the headers' own list, and `kernel32`, which has the one function that ends a process.
 /// A name neither has is `None` - the caller reports it as undefined rather than guessing.
-pub(crate) fn library_of(name: &str) -> Option<&'static str> {
+///
+/// **A name and the name the library exports are not always the same string.** `time_t` is 64-bit on
+/// this target, and the C runtime exports `_time64`, `_gmtime64` and the rest under those names -
+/// which is also why a `clang`-built program imports `_time64` from the time api-set rather than
+/// `time` from `ucrtbase`. This function is the only place that knows the difference, so no caller
+/// and no part of the runtime has to spell a library's own name.
+pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
     if name == "ExitProcess" {
-        return Some("kernel32.dll");
+        return Some(("kernel32.dll", "ExitProcess".to_owned()));
     }
-    crt::C_RUNTIME.contains(&name).then_some("ucrtbase.dll")
+    if !crt::C_RUNTIME.contains(&name) {
+        return None;
+    }
+    Some(("ucrtbase.dll", exported_as(name).to_owned()))
+}
+
+/// The names the C runtime exports under a spelling of its own: the 64-bit `time_t` ABI.
+///
+/// Each was measured against `ucrtbase.dll`'s export table before it was written here - `difftime`,
+/// `gmtime`, `localtime` and `mktime` have no `time`-less spelling in the library at all.
+const RENAMED_IN_THE_LIBRARY: &[(&str, &str)] = &[
+    ("time", "_time64"),
+    ("difftime", "_difftime64"),
+    ("gmtime", "_gmtime64"),
+    ("localtime", "_localtime64"),
+    ("mktime", "_mktime64"),
+    // `setjmp` has to be the library's own function, because it saves the *caller's* frame; the
+    // name in the library is the intrinsic one, which is also what a `clang`-built program imports.
+    ("_setjmp", "__intrinsic_setjmp"),
+];
+
+/// What `name` is called in the library it comes from.
+fn exported_as(name: &str) -> &str {
+    match RENAMED_IN_THE_LIBRARY
+        .iter()
+        .find(|(ours, _)| *ours == name)
+    {
+        Some((_, theirs)) => theirs,
+        None => name,
+    }
 }
 
 /// The image of one translation unit, for a linker: code, data, symbols, relocations and the

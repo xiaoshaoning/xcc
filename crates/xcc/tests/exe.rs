@@ -388,3 +388,61 @@ int main(int argc, char **argv) {
         .collect();
     assert_eq!(lines, ["[1] one", "[2] two words", "[3] "], "{out:?}");
 }
+
+/// The four classes of name that had no home in a link until the runtime and the rename table gave
+/// them one: `sscanf` (the scanning front end), `time` (exported as `_time64`), `setjmp`/`longjmp`
+/// (the library's intrinsic), and `atexit` (registered with `_crt_atexit`, and shown running by
+/// printing after everything else).
+#[test]
+#[cfg(target_os = "windows")]
+fn the_names_the_headers_declare_can_be_called_from_a_linked_program() {
+    let source = r#"
+#include <setjmp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static jmp_buf escape;
+
+static void at_exit(void) { printf("at exit\n"); }
+
+static void jump(int value) { longjmp(escape, value); }
+
+int main(void) {
+    int number = 0;
+    char word[16] = {0};
+    atexit(at_exit);
+    int read = sscanf("42 words", "%d %15s", &number, word);
+    printf("read=%d %d %s\n", read, number, word);
+    time_t now = time(0);
+    printf("time is a real time: %d\n", (int)(now > 1600000000));
+    int back = setjmp(escape);
+    if (back == 0) jump(9);
+    printf("jumped with %d\n", back);
+    return 3;
+}
+"#;
+    let run = run_linked("lastnames", source, &[]);
+    let code = run.status.code();
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    let lines: Vec<&str> = out
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(
+        code,
+        Some(3),
+        "main's return value, after the at-exit handler ran"
+    );
+    assert_eq!(
+        lines,
+        [
+            "read=2 42 words",
+            "time is a real time: 1",
+            "jumped with 9",
+            "at exit",
+        ],
+        "{out:?}"
+    );
+}

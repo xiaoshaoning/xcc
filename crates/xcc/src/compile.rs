@@ -236,12 +236,15 @@ impl Compile {
             }
             sources.extend(preprocessed.files.clone());
         }
-        // What nothing defines comes from a library, and *which* library is a fact about the target
-        // rather than about the program - so it lives next to the runtime's own name list.
-        let mut wanted = Vec::new();
+        // What nothing defines comes from a library, and *which* library, under *which* name, is a
+        // fact about the target rather than about the program - so it lives next to the runtime's
+        // own name list.
+        // The program's name, the library, and the name the library knows it by: the first is what
+        // a relocation asks for, the last is what the import table must look up.
+        let mut wanted: Vec<(String, &'static str, String)> = Vec::new();
         for name in required_names(&images) {
-            match crate::back::library_of(&name) {
-                Some(library) => wanted.push((library, name)),
+            match crate::back::import_for(&name) {
+                Some((library, exported)) => wanted.push((name, library, exported)),
                 None => {
                     return Err(Diagnostics::new(
                         vec![Diagnostic::error(format!("undefined symbol `{name}`"))
@@ -254,13 +257,13 @@ impl Compile {
         }
         let imports: Vec<crate::back::x64::pe::Imported<'_>> = wanted
             .iter()
-            .map(
-                |(library, name): &(&'static str, String)| crate::back::x64::pe::Imported {
-                    library,
-                    name,
-                },
-            )
+            .map(|(name, library, exported)| crate::back::x64::pe::Imported {
+                library,
+                name,
+                exported,
+            })
             .collect();
+
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
             Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics)),
             Err(missing) => Err(Diagnostics::new(

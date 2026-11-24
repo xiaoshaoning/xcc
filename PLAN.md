@@ -935,6 +935,15 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **Every declared name links.** Measured against `ucrtbase.dll`'s export table: ten of the 178 names
+      the headers declare had no home - `scanf`/`fscanf`/`sscanf` (the scanning front ends are the program's
+      half of the UCRT, like `printf`'s, so the runtime carries them over `__stdio_common_vfscanf`),
+      `atexit` (a wrapper over `_crt_atexit`), `_setjmp` (the library exports `__intrinsic_setjmp`), and
+      `time`/`difftime`/`gmtime`/`localtime`/`mktime` (the target's 64-bit `time_t` names them `_time64` and
+      friends). The rename lives in one table, and the measurement is a gate: a test asks the library for
+      every name, so a name that drifts fails there rather than as `ERROR_PROC_NOT_FOUND` in a user's program.
+      The gate was first written with `contains(name)`, which passes for `time` because `runtime` contains it -
+      a gate satisfied by prose is not a gate.
 - [x] **A linked program is a command-line tool.** `argc`/`argv` come from the runtime the link
       compiles in - `_configure_narrow_argv` plus the two accessors, the same three imports `clang`'s
       startup uses - so the entry point is three lines and no quoting rule of ours. Measured first:
