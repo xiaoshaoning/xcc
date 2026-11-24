@@ -44,6 +44,12 @@ struct Args {
     #[arg(short = 'o', value_name = "PATH")]
     output: Option<PathBuf>,
 
+    /// Makefile dependencies: write `object: source host-headers...` to `PATH`, the way `-MMD`
+    /// does. A header that ships inside this compiler is not listed - a build system cannot rebuild
+    /// what is not a file.
+    #[arg(long = "depfile", value_name = "PATH")]
+    depfile: Option<PathBuf>,
+
     /// Which compiler to be. `dos16` drives borland-reborn's port of Borland C++ 2.0 - the
     /// measuring stick of PLAN.md's M9, not a second product: it writes a 16-bit DOS object for
     /// comparison, and needs `libbcc20` on this machine.
@@ -188,6 +194,10 @@ fn compile_command_line() -> ExitCode {
         eprintln!("xcc: --explain is a mode of its own: no -c, -E or --run with it");
         return ExitCode::from(2);
     }
+    if args.depfile.is_some() && (args.run || args.preprocess_only || args.explain) {
+        eprintln!("xcc: --depfile goes with -c: it names the object a source became");
+        return ExitCode::from(2);
+    }
     if args.explain && args.output.is_some() {
         eprintln!("xcc: --explain writes no object, so -o has nothing to name");
         return ExitCode::from(2);
@@ -264,6 +274,13 @@ fn compile_command_line() -> ExitCode {
                     eprintln!("xcc: cannot write {}: {error}", path.display());
                     return ExitCode::from(2);
                 }
+                if let Some(depfile) = &args.depfile {
+                    let rule = dependencies(&path, artifact.dependencies());
+                    if let Err(error) = std::fs::write(depfile, rule) {
+                        eprintln!("xcc: cannot write {}: {error}", depfile.display());
+                        return ExitCode::from(2);
+                    }
+                }
                 if !artifact.diagnostics().is_empty() {
                     eprintln!(
                         "{}",
@@ -279,6 +296,25 @@ fn compile_command_line() -> ExitCode {
     }
 
     status
+}
+
+/// A makefile rule naming what an object was made from: `target: source header...`, one line, with
+/// the spaces of a path escaped, which is the syntax `make` reads.
+fn dependencies(target: &std::path::Path, files: &[String]) -> String {
+    let mut rule = escape(target.display().to_string());
+    rule.push(':');
+    for file in files {
+        rule.push(' ');
+        rule.push_str(&escape(file.clone()));
+    }
+    rule.push('\n');
+    rule
+}
+
+/// A path as `make` wants it in a rule: a space is escaped, and a `$` is doubled so it is not read
+/// as a variable.
+fn escape(path: String) -> String {
+    path.replace('$', "$$").replace(' ', "\\ ")
 }
 
 /// The options a mode compiles with. `opt_level` is the mode's answer, not the flag's: a link has
@@ -455,10 +491,10 @@ fn run(args: &Args, opt_level: u8) -> ExitCode {
         eprintln!("xcc: --run takes one source");
         return ExitCode::from(2);
     };
-    // `Jit::add_source` compiles with `Options::default()`, so these would be accepted and
-    // quietly ignored. Saying so beats both.
-    if !args.defines.is_empty() || !args.undefines.is_empty() || !args.include_paths.is_empty() {
-        eprintln!("xcc: --run takes no -D, -U or -I yet: the JIT compiles with the defaults");
+    // The defines and the standard travel with the options, like a compile's; `#include` does not,
+    // because the JIT reads the headers that ship inside the compiler and nothing else.
+    if !args.include_paths.is_empty() {
+        eprintln!("xcc: --run takes no -I: the JIT reads the headers inside this binary, and no host files");
         return ExitCode::from(2);
     }
     let name = input.display().to_string();
@@ -469,7 +505,7 @@ fn run(args: &Args, opt_level: u8) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let mut jit = match xcc::Jit::with_opt_level(opt_level) {
+    let mut jit = match xcc::Jit::configured(&options(args, opt_level)) {
         Ok(jit) => jit,
         Err(message) => {
             eprintln!("xcc: {message}");

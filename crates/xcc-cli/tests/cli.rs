@@ -468,6 +468,54 @@ fn defines_come_from_the_command_line() {
 }
 
 #[test]
+fn a_depfile_names_the_files_a_build_system_can_rebuild() {
+    // What `-MMD` writes: the object, a colon, and everything read that is a file. The headers this
+    // compiler ships inside itself are not files, and naming one would send `make` looking for a
+    // `stdio.h` that is not on any disk.
+    let temp = Temp::new("depfile");
+    let source = temp.write(
+        "t.c",
+        "#include <stdio.h>\n#include \"own.h\"\nint main(void) { return WIDTH; }\n",
+    );
+    temp.write("own.h", "#define WIDTH 0\n");
+    let object = temp.path().join("t.obj");
+    let depfile = temp.path().join("t.d");
+    let output = run(xcc()
+        .arg("-c")
+        .arg(&source)
+        .arg("-o")
+        .arg(&object)
+        .arg("--depfile")
+        .arg(&depfile));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let rule = std::fs::read_to_string(&depfile).expect("the depfile is written");
+    assert!(
+        rule.starts_with(&format!("{}:", object.display())),
+        "{rule}"
+    );
+    assert!(rule.contains("t.c"), "{rule}");
+    assert!(
+        rule.contains("own.h"),
+        "a host header is a dependency: {rule}"
+    );
+    assert!(!rule.contains("stdio.h"), "a shipped header is not: {rule}");
+    assert!(rule.ends_with('\n'), "{rule}");
+
+    // A depfile names the object a source became, so a mode that writes no object refuses it.
+    let output = run(xcc()
+        .arg("--run")
+        .arg("--depfile")
+        .arg(&depfile)
+        .arg(&source));
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).contains("--depfile goes with -c"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
 fn a_missing_response_file_says_so() {
     let temp = Temp::new("noresponse");
     let output = run(xcc().current_dir(temp.path()).arg("@nope.rsp"));
@@ -544,12 +592,21 @@ fn run_gives_main_its_arguments_and_reports_a_missing_one() {
         stderr(&output)
     );
 
-    // The JIT compiles with the defaults, so a flag that would change them is refused rather than
-    // accepted and quietly ignored.
-    let output = run(xcc().args(["--run", "-DFOO"]).arg(&source));
+    // A define means what it means in a compile: the JIT takes the same options.
+    let defined = temp.write(
+        "defined.c",
+        "int main(void) { return VALUE; }
+",
+    );
+    let output = run(xcc().args(["--run", "-DVALUE=5"]).arg(&defined));
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+
+    // `-I` is the one that cannot travel: the JIT reads the headers inside this binary, and a
+    // promise to read host files would be a promise it cannot keep.
+    let output = run(xcc().args(["--run", "-I/tmp"]).arg(&source));
     assert_eq!(output.status.code(), Some(2));
     assert!(
-        stderr(&output).contains("--run takes no -D, -U or -I"),
+        stderr(&output).contains("--run takes no -I"),
         "{}",
         stderr(&output)
     );

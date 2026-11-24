@@ -24,6 +24,14 @@ pub(crate) enum Disposition {
 /// Every header in C99's 7.1.2 table, and what happens to it. **The one place** that decides; the
 /// test below walks it against the standard's own list so that a header cannot be added to one and
 /// forgotten in the other, which is how `assert.h` and `errno.h` came to be in neither.
+/// Whether `name` is a header this compiler ships inside itself.
+///
+/// The distinction a build system needs: a file inside the binary cannot be rebuilt, so it is not a
+/// dependency - and a depfile that names `stdio.h` sends `make` looking for one.
+pub(crate) fn is_shipped(name: &str) -> bool {
+    C99_HEADERS.iter().any(|(shipped, _)| *shipped == name)
+}
+
 const C99_HEADERS: &[(&str, Disposition)] = &[
     (
         "assert.h",

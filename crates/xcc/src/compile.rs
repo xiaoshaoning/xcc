@@ -10,14 +10,36 @@ use crate::source::SourceFile;
 pub struct Artifact {
     object: Vec<u8>,
     diagnostics: Vec<Diagnostic>,
+    /// The files this compilation read that somebody else could rebuild: the source, and whatever
+    /// `#include` found on the host. A header that ships inside this compiler is not one of them.
+    dependencies: Vec<String>,
+}
+
+/// What a build system would have to rebuild for this compilation: every file read that is not a
+/// header this compiler carries inside itself.
+fn dependencies(files: &[SourceFile]) -> Vec<String> {
+    let mut dependencies: Vec<String> = files
+        .iter()
+        .map(|file| file.name().to_owned())
+        .filter(|name| !crate::headers::is_shipped(name))
+        .collect();
+    dependencies.sort();
+    dependencies.dedup();
+    dependencies
 }
 
 impl Artifact {
-    fn new(object: Vec<u8>, diagnostics: Vec<Diagnostic>) -> Self {
+    fn new(object: Vec<u8>, diagnostics: Vec<Diagnostic>, dependencies: Vec<String>) -> Self {
         Self {
             object,
             diagnostics,
+            dependencies,
         }
+    }
+
+    /// The files this compilation read that a build system can rebuild: what a depfile lists.
+    pub fn dependencies(&self) -> &[String] {
+        &self.dependencies
     }
 
     /// What the compiler produced: a COFF object for `-c`, a PE32+ image for a link.
@@ -214,6 +236,8 @@ impl Compile {
         // A warning is about one compilation, and a link makes several: they are collected here so
         // that the caller of a link is told what the caller of `-c` is told.
         let mut diagnostics = Vec::new();
+        let mut dependencies: Vec<String> =
+            units.iter().map(|(name, _)| (*name).to_owned()).collect();
         let runtime = [("xcc-crt/main.c", crate::back::CRT_SOURCE)];
         for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
             let (module, preprocessed, warnings) = self.front_end(name, source)?;
@@ -265,7 +289,16 @@ impl Compile {
             .collect();
 
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
-            Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics)),
+            Ok(linked) => {
+                dependencies.extend(
+                    sources
+                        .iter()
+                        .map(|file| file.name().to_owned())
+                        .filter(|name| !crate::headers::is_shipped(name)),
+                );
+                dependencies.dedup();
+                Ok(Artifact::new(linked.bytes, diagnostics, dependencies))
+            }
             Err(missing) => Err(Diagnostics::new(
                 vec![
                     Diagnostic::error(format!("undefined symbol `{}`", missing.name))
@@ -317,8 +350,9 @@ impl Compile {
             }
         };
         let items = truncate_diagnostics(diagnostics, &self.options);
+        let dependencies = dependencies(&sources);
         Ok(Outcome {
-            artifact: Artifact::new(object, items),
+            artifact: Artifact::new(object, items, dependencies),
             explanation: explained,
         })
     }

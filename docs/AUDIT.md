@@ -760,6 +760,38 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - the JIT was already right, and the README was not
+
+Two things the command line promised and did not keep, and one it denied that it could do at all.
+
+**`--run` refused `-D` because of a comment that had stopped being true.** The CLI said the JIT "compiles with
+the defaults", and the message ended in "yet" - but `Jit` has taken [`Options`] all along, through the `unsafe`
+constructor that also wants host symbols. A host that only wanted `--std` and `-D` to mean what they mean in a compile
+had to reach for `unsafe` to get it, so the safe way in is now `Jit::configured(&options)`, and the CLI's refusal is
+narrowed to the one thing that is still true: `-I` needs host files, and the JIT reads the headers inside the binary.
+
+**And the README claimed a bug the JIT does not have.** The last commit wrote that two sources in one `Jit` that each
+define `static int helper(void)` "name the first one". Measured through the API: at `--opt-level=2` each keeps its own
+(`a() = 2`, `b() = 200`), and at levels 0 and 1 `add_source` refuses the second with
+`DuplicateDefinition("helper")`. Correct where it can be, loud where it cannot - the line was a limitation I asserted
+instead of one I measured.
+
+**`--depfile` names what a build system can rebuild.** `xcc -c t.c --depfile t.d` writes `t.obj: t.c own.h`, with the
+files read that exist as files: the shipped headers are filtered out, because a dependency inside the compiler binary is
+not a dependency `make` can rebuild - naming one sends `make` looking for a `stdio.h` that is on no disk. The rule
+lives with the headers (`is_shipped`), the filtering with the compilation (`Artifact::dependencies`), and the CLI only
+prints what it is handed. Spaces and `$` are escaped, since a depfile with an unescaped space in a path is a depfile
+that silently names two files.
+
+**Review of my own patch caught three things**: a `README` insertion that landed in the *linking* row and described the
+depfile as part of linking; a `dependencies()` whose loop a string-slice edit had swallowed, leaving `target:` and a
+newline as the whole rule; and the two escape sequences that the editing shell ate on the way in. The suite caught the
+second; the first and third were caught by reading what was written.
+
+195 unit, 27 parser, 27 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON plus its driver still byte-identical; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - the other three quarters of the same bug
 
 The literal fix only fixed literals. The commit's own README note said a `static` *function* would still collide, and

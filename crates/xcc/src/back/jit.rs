@@ -99,6 +99,19 @@ impl Jit {
         }
     }
 
+    /// A JIT that compiles with `options` and calls only the C runtime.
+    ///
+    /// The same safe contract as [`Jit::new`], with the dialect and the back end a caller asked for:
+    /// a host that wants `-D` and `--std` to mean what they mean in a compile should not have to
+    /// reach for the `unsafe` constructor, which exists for host *symbols* and nothing else.
+    pub fn configured(options: &Options) -> Result<Self, String> {
+        // SAFETY: no host symbols are given; the C runtime's are the machine's own.
+        #[allow(unsafe_code)]
+        unsafe {
+            Self::with_options(&[], options)
+        }
+    }
+
     /// A JIT that can call the host functions in `symbols`, by name, compiling with `options`.
     ///
     /// This is the whole of a host's choice: the dialect, how hard the back end works, and what the
