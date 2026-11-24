@@ -935,6 +935,15 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [ ] **A frame slot is not an instruction.** miniz's `tinfl_decompress` is a state machine whose `case` labels sit
+      inside nested `do { } while (0)` blocks, and a local's `Slot` - a value that names the frame address - is emitted
+      in the block where the declaration stands. One case's block then loads a slot another case created, and the
+      verifier refuses the function: `v739 is defined in block 78 and used in block 83 which it does not dominate`.
+      Emitting the `Slot` in the entry block fixes the dominance and makes our level-2 back end hang on that function
+      (over 30 minutes, against 2 s at levels 0 and 1); 400 locals in one block compile in under a second, so the hang
+      is about that function's shape, not the slot count. Two ways out: give the frame layout its own place (slots as
+      a function-level table, not instructions), or find the level-2 hang first and fix that. Reproducer:
+      `miniz_tinfl.c` from richgel999/miniz, `xcc --opt-level=2 -c`.
 - [x] **A real program, built and run by xcc alone.** cJSON - 3 206 lines of MIT C - and a driver over it,
       compiled and linked with no host tool: `xcc jd.c cJSON.c -o jd.exe` parses a JSON file, walks it, round-trips
       it, and prints byte-identical output to the same sources built by `clang` (13 lines on one input, 1 328 bytes on

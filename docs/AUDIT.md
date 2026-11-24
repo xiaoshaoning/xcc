@@ -760,6 +760,39 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 - 2026-11-22 - miniz: one bug fixed, one diagnosed, one found
+
+The next real program: miniz's deflate and inflate (9 500 lines across six files, MIT). It found three front-end bugs in
+ten minutes, which is the argument for real code.
+
+**Fixed: a subscripted string literal was taken for an initialiser.** `initializer()` looked at the first token, saw a
+string literal, and called the character-array path - so `unsigned a = ""[code - 16];` lost its subscript
+and then complained that a `char *` did not fit an `unsigned`. miniz's deflate is written exactly that way, in
+`TDEFL_PUT_BITS(..., ""[code - 16])`. The literal path now applies when the literal is *not* followed by
+`[`: an expression beginning with a literal is an expression. `char *p = "abc"` and `char s[] = "abc"` are unchanged,
+and a test pins all four shapes.
+
+**Diagnosed, not fixed: a frame slot is a value with a block position, and it should not be.** `tinfl_decompress` is a
+state machine whose `case` labels live *inside* nested `do { } while (0)` blocks; a `Slot` created in one case's block
+is loaded in another, and the verifier refuses the function: `v739 is defined in block 78 and used in block 83 which it
+does not dominate`. Moving the `Slot` instruction to the entry block - which is where a frame slot really lives - makes
+the dominance valid and then **hangs our level-2 back end** (over 30 minutes, against 2 seconds at levels 0 and 1). A
+synthetic function with 400 locals in one block compiles in under a second, so the hang is not "many slots in one
+block" but something about that function's shape at level 2. Reverted to the honest error; PLAN.md carries the
+reproducer, the measurement and the two candidate fixes.
+
+**Found: `-E` ignored `-o`.** `xcc -E t.c -o t.i` printed to stdout and wrote no file, so a build system saw success
+and no output. `-o` names the file every other mode's `-o` names; it does now, and `-E` with no `-o` still prints.
+
+**What does work**: `miniz.c` and `miniz_tdef.c` compile at `--opt-level=2`, link with our own linker, and **compress a
+209 793-byte file to 127 795 bytes that real zlib reads back exactly** - `uncompress` returns `Z_OK`, the length
+matches, and the bytes match. That is a third-party compressor built end to end by this compiler and checked by a
+compressor written by somebody else.
+
+195 unit, 28 parser, 29 CLI, 8 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+cJSON identical; miniz deflate verified by zlib; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - a depfile that named two files with one space
 
 The defines and the depfile, reviewed. Both work; four things about the second were wrong.

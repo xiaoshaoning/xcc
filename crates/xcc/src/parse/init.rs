@@ -22,7 +22,12 @@ impl Parser<'_> {
         let Some(token) = self.peek().copied() else {
             return;
         };
-        if token.kind == crate::lex::TokenKind::Str {
+        // A string literal initialising a character array *is* the initialiser (6.7.8p14). One that
+        // is followed by `[` is not: `unsigned a = ""[i];` is an expression whose value is a
+        // character, and taking the literal path for it dropped the subscript and then complained
+        // that a `char *` did not fit an `unsigned` - which is how miniz's deflate failed to build.
+        let is_subscript = self.peek_at(1).is_some_and(|next| self.is_punct(next, "["));
+        if token.kind == crate::lex::TokenKind::Str && !is_subscript {
             self.literal_initialiser(ty);
             return;
         }

@@ -841,6 +841,14 @@ impl<'a> Builder<'a> {
     }
 
     /// The same, with the alignment `_Alignas` asked for; zero means the type's own.
+    ///
+    /// A frame slot is a function-level fact, but this instruction is emitted where the declaration
+    /// is - which is wrong for a `switch` whose `case` labels sit *inside* nested `do { } while (0)`
+    /// blocks, as miniz's inflater's do: a slot created in one case's block is then loaded from
+    /// another, and the verifier refuses the function. Moving the instruction to the entry block
+    /// fixes the dominance and makes our level-2 back end hang on that function instead (measured:
+    /// 30 minutes, against 2 seconds at levels 0 and 1), so the slot's *position* needs a better
+    /// model than "an instruction somewhere" - PLAN.md carries the measurement and the reproducer.
     pub fn aligned_slot(&mut self, ty: TypeId, pointer: TypeId, alignas: u64, span: Span) -> Value {
         let result = self.func.mint(pointer, self.current);
         self.push(Inst::Slot {

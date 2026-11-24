@@ -447,6 +447,25 @@ fn a_missing_include_says_which_one() {
 }
 
 #[test]
+fn preprocess_to_a_file_honours_the_o_flag() {
+    // `-E t.c -o t.i` wrote nothing and printed to stdout, so a build system saw a file that was
+    // never made and a status that said it had worked.
+    let temp = Temp::new("preprocess");
+    let source = temp.write("t.c", "int  x ;\n");
+    let out = temp.path().join("t.i");
+    let output = run(xcc().arg("-E").arg(&source).arg("-o").arg(&out));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert!(stdout(&output).is_empty(), "the text went to the file");
+    let text = std::fs::read_to_string(&out).expect("the file is written");
+    assert!(text.contains("int"), "{text}");
+    assert!(!text.contains('#'), "directives are gone: {text}");
+
+    // With no `-o` the text goes to stdout, which is what `-E` means on its own.
+    let output = run(xcc().arg("-E").arg(&source));
+    assert!(stdout(&output).contains("int"), "{}", stdout(&output));
+}
+
+#[test]
 fn defines_come_from_the_command_line() {
     let temp = Temp::new("define");
     let source = temp.write(

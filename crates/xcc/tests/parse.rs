@@ -71,6 +71,38 @@ fn refuses(source: &str, expected: &str) {
 }
 
 #[test]
+fn a_string_literal_subscript_is_an_expression_and_not_an_initialiser() {
+    // C99 6.7.8p14 makes `char s[] = "abc"` an initialiser of a character array. A literal that is
+    // *subscripted* is not one: `unsigned a = "\x02\x03"[i];` has the value of a character, and the
+    // initialiser path took the literal, dropped the `[i]` and then said a `char *` did not fit an
+    // `unsigned`. miniz's deflate is written that way.
+    assert!(parses(
+        r#"unsigned f(int i) { unsigned a = "\x02\x03\x07"[i]; return a; }"#
+    ));
+    assert!(
+        parses(r#"char *g(void) { char *p = "abc"; return p; }"#),
+        "a pointer still decays"
+    );
+    assert!(
+        parses(r#"char h(void) { char s[] = "abc"; return s[1]; }"#),
+        "an array still fills"
+    );
+    assert!(parses(
+        r#"unsigned k(void) { unsigned a = "abc"[1]; return a; }"#
+    ));
+    // The subscript after a literal is a *postfix* expression even with a cast in front of it.
+    assert!(parses(r#"int m(void) { return (int)"abc"[0]; }"#));
+
+    // And what the type checker still refuses: a literal is not an initialiser for a non-character
+    // array, subscript or not.
+    let refused = check(r#"int n(void) { int a[2] = "xy"; return a[0]; }"#);
+    assert!(
+        !refused.is_empty(),
+        "an int array is still not a string's home"
+    );
+}
+
+#[test]
 fn simple_declarations_parse() {
     parses("int x;");
     parses("int x, y, z;");

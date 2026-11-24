@@ -253,7 +253,19 @@ fn compile_command_line() -> ExitCode {
         let mut compiler = Compile::with_includes(options, includes);
         if args.preprocess_only {
             match compiler.preprocess(&name, &text) {
-                Ok(preprocessed) => print_spellings(&preprocessed),
+                // `-o` names the file the preprocessed text goes to, the way every other mode's `-o`
+                // names its output. It used to print to stdout and write nothing, which is a flag
+                // that is accepted and ignored - `xcc -E t.c -o t.i` looked like it had worked.
+                Ok(preprocessed) => match &args.output {
+                    Some(path) => {
+                        let text = spellings(&preprocessed);
+                        if let Err(error) = std::fs::write(path, text) {
+                            eprintln!("xcc: cannot write {}: {error}", path.display());
+                            return ExitCode::from(2);
+                        }
+                    }
+                    None => print_spellings(&preprocessed),
+                },
                 Err(diagnostics) => {
                     eprintln!("{}", diagnostics.render(format));
                     status = ExitCode::from(1);
@@ -554,7 +566,9 @@ fn run(args: &Args, opt_level: u8) -> ExitCode {
 }
 
 /// `-E`: the tokens, whitespace between them, wrapped so a person can read it.
-fn print_spellings(preprocessed: &xcc::Preprocessed) {
+/// The preprocessed text, as `-E` prints it: the tokens' own spellings, wrapped at 96 columns.
+fn spellings(preprocessed: &xcc::Preprocessed) -> String {
+    let mut out = String::new();
     let mut line = String::new();
     for token in &preprocessed.tokens {
         if token.kind == xcc::TokenKind::Eof {
@@ -562,7 +576,8 @@ fn print_spellings(preprocessed: &xcc::Preprocessed) {
         }
         let spelling = preprocessed.text(token);
         if line.len() + spelling.len() + 1 > 96 {
-            println!("{line}");
+            out.push_str(&line);
+            out.push('\n');
             line.clear();
         }
         if !line.is_empty() {
@@ -571,8 +586,15 @@ fn print_spellings(preprocessed: &xcc::Preprocessed) {
         line.push_str(spelling);
     }
     if !line.is_empty() {
-        println!("{line}");
+        out.push_str(&line);
+        out.push('\n');
     }
+    out
+}
+
+/// The same text on stdout: `-E` with no `-o`.
+fn print_spellings(preprocessed: &xcc::Preprocessed) {
+    print!("{}", spellings(preprocessed));
 }
 
 /// The files `#include` may read: the path as written, then under each `-I` directory.
