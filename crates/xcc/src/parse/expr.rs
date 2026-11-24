@@ -1059,9 +1059,17 @@ impl Parser<'_> {
     fn float_builtin(&mut self, word: &str, span: Span) -> Value {
         let single = word.ends_with('f');
         if self.eat("(") {
-            // The payload argument is a string this does not read: every spelling a program writes
-            // is `""`, and a NaN is a NaN. `skip_until` takes the `)` itself - asked not to, it
-            // steps over a closer it did not open and eats the rest of the line.
+            // The argument is the NaN's payload, and it is a string this does not read. Every
+            // spelling a program writes is `""`, which is the quiet NaN the constants above are;
+            // a payload that is *not* empty asks for different bits, and answering with the
+            // default ones is a wrong number rather than a smaller one - so it is refused.
+            let payload = matches!(
+                self.peek().map(|token| token.kind),
+                Some(crate::lex::TokenKind::Str)
+            ) && self.spell(self.peek().unwrap()) != "\"\"";
+            if payload {
+                self.error(span, "a NaN payload this compiler does not read yet");
+            }
             self.skip_until(&[")"], true);
         } else {
             self.error(span, "this builtin needs `(`");

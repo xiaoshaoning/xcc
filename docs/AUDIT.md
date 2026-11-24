@@ -786,6 +786,47 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-23 - the ratio in the README, and the zeroes a scalar does not need
+
+The anonymous-member commit, reviewed. The splice holds, tinyexpr still matches `clang`, and the review found one
+performance regression, two rough edges in the new code, and one sentence in the README that had quietly stopped being
+true.
+
+**The zeroing pass ran for scalar elements too.** `int a[] = {1, 2, 3}` was zeroed byte by byte and then written over,
+because the walk had learned to zero every element of an array whose size comes from its list. Only an *aggregate*
+element can have a member the list does not name; a scalar's leaf writes every byte of it. On a five-line program the
+object went from 804 bytes to 588, and nothing else changed. The gate is `!is_scalar(element)`, one condition and one
+sentence saying why.
+
+**`flatten` had two exits for one question.** A member that is not an anonymous record was pushed and `continue`d in two
+places - once for "its type is not a record" and once for "it has a name or is a bitfield". One `match` that answers
+"which record, if any" and one place that pushes it reads better and is one branch shorter.
+
+**And a NaN payload was silently ignored.** `__builtin_nan("0x1")` asks for a different NaN than `__builtin_nan("")`,
+and the builtin was returning the quiet one either way - a wrong number rather than a smaller program. The payload is
+now refused by name. Only `""` reaches the constant, which is what `NAN` is.
+
+**The README's "3.46x `clang -O2`'s code size" had moved to 3.49x and nothing failed.** Measuring it needs `.text` and
+not the object file - a COFF file carries a symbol table, and `clang`'s is longer for reasons that have nothing to do
+with instructions; the first attempt measured objects and got 0.45x, which is the kind of number that tells you the
+measurement is wrong rather than the compiler. The measurement is now a test:
+`the_corpus_is_within_the_code_size_that_was_measured` compiles every comparable corpus program both ways, sums `.text`,
+prints the ratio and fails above 3.55x. It reads 3.490x over 420 programs and costs 40 seconds. The two sentences in
+README.md now say 3.49x and point at the test, and PLAN.md's older numbers say "measured at the time", because they were.
+
+**The fixture's provenance was "commit `master` when the fixture was added"**, which is not a thing anyone can check.
+It names `ba2e32bbcc2d1e644a7e132d24c2f542821cabe0` and the line counts now.
+
+**And the `.gitignore` rule I added last commit to keep commit messages out of the tree did not work.** git has no
+trailing comments: `.msg_*   # commit messages, ...` is a pattern that ends in the comment, so it matched no file at
+all, and the scratch file was still there in `git status`. `git check-ignore -v` says so in one command, which is how
+this was found - and the comment now says that, next to the pattern, so the next person who wants to annotate one knows
+where the annotation may go.
+
+201 unit, 32 parser, 29 CLI, 3 invalid, 18 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong,
+`.text` 3.490x `clang -O2`; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-23 - anonymous members, and the three bugs behind them
 
 `tinyexpr.c` (758 lines, zlib) compiles, links and runs, and prints byte for byte what a `clang` build of the same

@@ -284,8 +284,10 @@ impl Parser<'_> {
             self.offset = base + written as usize * size;
             // The array's size is this list's length, so no pass before the walk could zero it.
             // Element by element is the same bytes: `struct b v[] = { { &x }, { &y } };` left the
-            // members after `&x` holding the frame's leftovers.
-            if self.zero_elements {
+            // members after `&x` holding the frame's leftovers. A scalar element has nothing
+            // unnamed - its leaf writes every byte of it - so `int a[] = {1, 2, 3}` writes no
+            // zeroes at all.
+            if self.zero_elements && !self.types.is_scalar(element) {
                 if let (Some(target), true) = (self.init_target, size != 0) {
                     self.zero_at(target, self.offset, element);
                 }

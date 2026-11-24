@@ -397,19 +397,19 @@ impl Types {
     fn flatten(&self, members: Vec<Member>) -> Vec<Member> {
         let mut flat = Vec::with_capacity(members.len());
         for member in members {
-            // A bitfield with no name is padding, not a record, and an unnamed member of any other
-            // type is not something C11 6.7.2.1p13 covers - it says a struct or union.
-            let anonymous = member.name.is_none()
-                && member.bits.is_none()
-                && matches!(self.kind(member.ty), Type::Record(_));
-            let Type::Record(inner) = *self.kind(member.ty) else {
+            // C11 6.7.2.1p13 is about a member with no name whose type is a struct or union. An
+            // unnamed *bitfield* is padding (6.7.2.1p12) and names nothing to borrow.
+            let spliced = match (member.name, member.bits) {
+                (None, None) => match *self.kind(member.ty) {
+                    Type::Record(inner) => Some(inner),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(inner) = spliced else {
                 flat.push(member);
                 continue;
             };
-            if !anonymous {
-                flat.push(member);
-                continue;
-            }
             for nested in &self.records[inner.0 as usize].members {
                 let mut nested = nested.clone();
                 nested.offset += member.offset;

@@ -628,7 +628,8 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       drift apart"*. **There was no such test.** There is now:
       `a_declaration_can_begin_with_every_specifier` runs all twenty-four words at block scope, which is
       the direction that fails when the two drift.
-      **Measured: 443 corpus programs agree, 20 refused, 0 wrong, 3.45x `clang -O2`.** The frame rounding
+      **Measured at the time: 443 corpus programs agree, 20 refused, 0 wrong, 3.45x `clang -O2`** (the
+      live number is 3.49x and `tests/x64.rs` holds it). The frame rounding
       costs **60 bytes over 444 programs** (79 592 -> 79 652) - measured by stashing the commit and
       rebuilding, because the corpus had also grown by twenty-five programs in between and the two numbers
       were not comparable.

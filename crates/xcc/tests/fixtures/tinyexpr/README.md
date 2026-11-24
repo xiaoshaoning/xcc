@@ -1,8 +1,8 @@
 # tinyexpr, vendored
 
-`tinyexpr.c` and `tinyexpr.h` from <https://github.com/codeplea/tinyexpr> (commit `master` when the
-fixture was added), unmodified, with the project's own `LICENSE` (the zlib licence, "Copyright (C)
-2015-2026 Lewis Van Winkle"). Nothing in them was edited to make this compiler accept them: it did
+`tinyexpr.c` (758 lines) and `tinyexpr.h` (91) from <https://github.com/codeplea/tinyexpr> at
+commit `ba2e32bbcc2d1e644a7e132d24c2f542821cabe0`, unmodified, with the project's own `LICENSE` (the
+zlib licence, "Copyright (C) 2015-2026 Lewis Van Winkle"). Nothing in them was edited to make this compiler accept them: it did
 not have to be, once three bugs were fixed.
 
 `driver.c` is ours: it asks the library to interpret a list of expressions and prints one line per

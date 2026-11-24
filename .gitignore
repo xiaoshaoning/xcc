@@ -3,7 +3,10 @@
 
 # Scratch: edit scripts are written to a file, run, and thrown away
 .*.py
-.msg_*   # commit messages, written to a file and passed to git -F
+.msg_*
+# The line above is a pattern and nothing else: git takes everything after a pattern literally, so a
+# comment on the same line becomes part of it and the rule silently matches nothing. Measured with
+# `git check-ignore -v`, which is the only way to know an ignore rule works.
 
 # Editor and tool scratch
 *.rs.bk

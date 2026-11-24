@@ -895,6 +895,12 @@ fn the_readme_quotes_the_ratchet() {
     );
 }
 
+/// `.text` bytes of this compiler's objects over `clang -O2`'s, across the corpus: the one number
+/// in README.md about code size. Measured 3.49 when the check was written; the ceiling is where a
+/// program that grew would land, and a number in a table is worth nothing if nothing fails when it
+/// stops being true.
+const SIZE_CEILING: f64 = 3.55;
+
 #[test]
 fn the_corpus_agrees_through_both_back_ends() {
     let Some(_) = linker() else {
@@ -1016,4 +1022,94 @@ fn the_corpus_agrees_through_both_back_ends() {
          be: one of them has become something this back end refuses",
         beyond.len()
     );
+}
+
+/// The README says this compiler's code is a certain multiple of `clang -O2`'s. That sentence was
+/// prose for nine milestones, and the review that checked it found it had moved from 3.46 to 3.49
+/// without anything failing. Now the measurement is here: every comparable corpus program compiled
+/// to an object both ways, `.text` summed, and the ratio held under a ceiling.
+///
+/// `.text` and not the object: a COFF file also holds a symbol table, and `clang`'s is longer than
+/// this compiler's for reasons that have nothing to do with instructions.
+#[test]
+fn the_corpus_is_within_the_code_size_that_was_measured() {
+    let Some(_) = linker() else {
+        eprintln!("no linker on this machine: the size check is skipped");
+        return;
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(corpus())
+        .expect("the corpus is in the repository")
+        .map(|entry| entry.expect("an entry").path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .collect();
+    files.sort();
+
+    let dir = std::env::temp_dir().join(format!("xcc-x64-size-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a directory of this test's own");
+    let (mut ours, mut theirs, mut compared) = (0usize, 0usize, 0usize);
+    for path in &files {
+        let name = path
+            .file_stem()
+            .expect("a file stem")
+            .to_string_lossy()
+            .into_owned();
+        if NOT_COMPARABLE.contains(&name.as_str()) {
+            continue;
+        }
+        let source = std::fs::read_to_string(path).expect("the source is readable");
+        let options = Options {
+            opt_level: 2,
+            ..Options::default()
+        };
+        let Ok(artifact) = Compile::new(options).compile(&name, &source) else {
+            continue;
+        };
+        let reference = dir.join(format!("{name}.ref.o"));
+        let source_file = dir.join(format!("{name}.ref.c"));
+        std::fs::write(&source_file, &source).expect("the reference source is written");
+        let built = Command::new("clang")
+            .args(["-O2", "-w", "-c", "-o"])
+            .arg(&reference)
+            .arg(&source_file)
+            .output()
+            .expect("clang runs");
+        if !built.status.success() {
+            continue;
+        }
+        let Ok(theirs_bytes) = std::fs::read(&reference) else {
+            continue;
+        };
+        let (Some(mine), Some(only)) = (text_bytes(artifact.bytes()), text_bytes(&theirs_bytes))
+        else {
+            continue;
+        };
+        ours += mine;
+        theirs += only;
+        compared += 1;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(compared > 400, "the corpus is {compared} programs");
+    let ratio = ours as f64 / theirs as f64;
+    eprintln!("own back end: .text {ratio:.3}x clang -O2 over {compared} corpus programs");
+    assert!(
+        ratio <= SIZE_CEILING,
+        "{ratio:.3}x is over the {SIZE_CEILING}x this compiler measured, {ours} bytes to {theirs}"
+    );
+}
+
+/// The `.text` a COFF object carries, read from its section table.
+fn text_bytes(object: &[u8]) -> Option<usize> {
+    let sections = usize::from(u16::from_le_bytes(object.get(2..4)?.try_into().ok()?));
+    let optional = usize::from(u16::from_le_bytes(object.get(16..18)?.try_into().ok()?));
+    let mut at = 20 + optional;
+    for _ in 0..sections {
+        let name = object.get(at..at + 8)?;
+        if name.starts_with(b".text") {
+            return Some(
+                u32::from_le_bytes(object.get(at + 16..at + 20)?.try_into().ok()?) as usize,
+            );
+        }
+        at += 40;
+    }
+    None
 }
