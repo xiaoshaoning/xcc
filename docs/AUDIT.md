@@ -760,6 +760,36 @@ when.
 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong; fmt and clippy
 clean.
 
+### M10 reviewed - 2026-11-22 - the assertion the refactor ate
+
+The `argc`/`argv` commit, reviewed. The feature works - a linked program reads real arguments, a quoted one stays
+one, `int main(void)` is unaffected - and the review's main finding was against the review's own tidy-up.
+
+**A slicing edit removed an assertion and left the variable that fed it.** Two tests that each linked a program, ran
+it and checked the result had the same eight-line setup, so I extracted a `run_linked` helper. In doing that by string
+indices, the `assert_eq!(code, Some(11))` from the first test fell inside the replaced span, and what remained was
+`let code = ...` with nothing reading it. The suite still passed - it checked the program's *output* and no longer its
+*exit status*, which is half of what a program did. Restored, with a comment saying what it is for. A test that loses
+an assertion does not fail; it just stops asking.
+
+**A comment claimed what `link.exe` does by default.** The argument-mode constant was explained as "what a program
+that is not a setargv program gets from `link.exe`" - plausible, unverified, and not something this repository can
+check. The comment now names the mode and what it means, and leaves the other linker out of it.
+
+**ADR-005 argued both sides of one alternative.** The bullet rejecting `_configure_narrow_argv` had grown a clause
+saying it was measured and chosen anyway, which reads as a decision that disagrees with itself. The decision section
+says it now, and the rejected-alternative bullet says what changed the answer.
+
+**Two things were measured rather than assumed.** The environment: `getenv` works in a linked program, which is not
+obvious - the UCRT populates it alongside `argv`, and if it had not, every linked program calling `getenv` would read
+a null. And the ceiling: a narrow `argv` is converted through the ANSI code page, so `café` arrives as `caf¨¦`
+- stated in the ADR, because a cost that is only observable with a non-ASCII argument is a cost a reader deserves to
+read rather than discover. `--run` passes exactly one argument, the source's name, and the flag's help says so.
+
+194 unit, 27 parser, 24 CLI, 6 exe, 1 crt, 5 x64, 4 hostile, 8 C API, 4 bcc20-sys, differential (415 ran, 5 refused,
+44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal oracle 19/0;
+fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-22 - a link threw its warnings away
 
 The linker commit, reviewed. The binding fix holds - `xcc hello.c` produces a program Windows runs - and the review

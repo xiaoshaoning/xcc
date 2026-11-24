@@ -27,7 +27,8 @@ struct Args {
     ///
     /// The embedding API, used the way a host would. `#include` is not resolved here (there are
     /// no headers until M8), and `main` is called as `int main(int, char **)` whether it was
-    /// written that way or `int main(void)`.
+    /// written that way or `int main(void)`. There is one argument, the source's name: a program
+    /// that needs its own arguments is a program to link and run.
     #[arg(long = "run")]
     run: bool,
 

@@ -935,6 +935,12 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `.pdata` is written with `ADDR32NB` relocations, and the JIT registers the table with
       `RtlAddFunctionTable`. A `longjmp` out of three compiled frames returns 42 at both levels and under
       `--run`; Lua's 34 files compile and link, and the interpreter runs.
+- [x] **A linked program is a command-line tool.** `argc`/`argv` come from the runtime the link
+      compiles in - `_configure_narrow_argv` plus the two accessors, the same three imports `clang`'s
+      startup uses - so the entry point is three lines and no quoting rule of ours. Measured first:
+      a real tool (argv, `fopen`, `fread`, `malloc`, `printf`) linked cleanly and segfaulted, because
+      the runtime called `main()` with nothing and the program read register garbage. `int main(void)`
+      is unaffected; narrow arguments are code-page limited, which the ADR now says.
 - [x] **Lua runs.** Closed: two C bugs stood in the way - a bare `return;` in a `void` function emitted
       nothing, and an initialiser was parsed as a conditional-expression instead of an assignment-expression.
       Every one of Lua's 33 objects is now correct alone and the interpreter's output matches a clang build's.

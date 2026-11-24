@@ -308,6 +308,28 @@ fn the_calling_convention_agrees_with_clang_in_both_directions() {
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
+/// Link `source` with this compiler's own back end and linker, and run the image.
+///
+/// The temporary directory goes with the result: the output is already captured, so a test that
+/// leaves its own binary behind is a slow leak and nothing more.
+#[cfg(target_os = "windows")]
+fn run_linked(test: &str, source: &str, args: &[&str]) -> std::process::Output {
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let image = compiler.link(&[("t.c", source)]).expect("it links");
+    let dir = temp_dir(test);
+    let exe = dir.join("t.exe");
+    std::fs::write(&exe, image.bytes()).expect("the image is written");
+    let out = Command::new(&exe)
+        .args(args)
+        .output()
+        .expect("the program runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    out
+}
+
 /// The whole pipeline in one test: this compiler's front end, its own back end, and its own linker,
 /// with no host tool anywhere - the image is written by `Compile::link` and run by the operating
 /// system, which is the only thing that can say whether the import table is bound.
@@ -326,21 +348,10 @@ int main(void) {
     return 11;
 }
 "#;
-    let mut compiler = Compile::new(Options {
-        opt_level: 2,
-        ..Options::default()
-    });
-    let image = compiler.link(&[("t.c", source)]).expect("it links");
-    let dir = temp_dir("ownlink");
-    let exe = dir.join("t.exe");
-    std::fs::write(&exe, image.bytes()).expect("the image is written");
-    let run = Command::new(&exe).output().expect("the program runs");
+    let run = run_linked("ownlink", source, &[]);
     let code = run.status.code();
     let out = String::from_utf8_lossy(&run.stdout);
-    let _ = std::fs::remove_dir_all(&dir);
-    // The return value is the exit status, and the output is the library's, so this one test
-    // covers the linker, the C runtime it links in and the `printf` front end the runtime carries.
-    assert_eq!(code, Some(11));
+    assert_eq!(code, Some(11), "the exit status is main's return value");
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
@@ -358,30 +369,18 @@ int main(int argc, char **argv) {
     return argc;
 }
 "#;
-    let mut compiler = Compile::new(Options {
-        opt_level: 2,
-        ..Options::default()
-    });
-    let image = compiler.link(&[("t.c", source)]).expect("it links");
-    let dir = temp_dir("argv");
-    let exe = dir.join("t.exe");
-    std::fs::write(&exe, image.bytes()).expect("the image is written");
-    let run = Command::new(&exe)
-        .args(["one", "two words", ""])
-        .output()
-        .expect("the program runs");
+    let run = run_linked("argv", source, &["one", "two words", ""]);
     let code = run.status.code();
-    let out = String::from_utf8_lossy(&run.stdout).into_owned();
-    let _ = std::fs::remove_dir_all(&dir);
+    let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(
         code,
         Some(4),
         "the exit status is argc, counting the program's own name"
     );
-    // `argv[0]` is the path the program was started by, which is this test's business only in
-    // that it exists: the arguments after it are what the command line said.
-    // Split on the byte the C library writes, and take the platform's carriage return off the end
-    // of each line without touching the space the program printed after `[3]`.
+    // `argv[0]` is the path the program was started by, and this test only cares that it
+    // exists: the lines compared are the arguments. Splitting on the newline byte and stripping
+    // a trailing carriage return keeps the space the program printed after `[3]`, which a
+    // `trim_end` would have eaten.
     let lines: Vec<&str> = out
         .split('\n')
         .map(|line| line.strip_suffix('\r').unwrap_or(line))

@@ -19,9 +19,10 @@
 void exit(int code);
 int main(int argc, char **argv);
 
-/* The universal runtime's argument setup: the mode is `_crt_argv_unexpanded_arguments`, which is
- * what a program that is not a setargv program gets from `link.exe` - the command line split into
- * arguments, no wildcard expansion. */
+/* The universal runtime's argument setup. The mode is `_crt_argv_unexpanded_arguments`: the command
+ * line split into arguments by the platform's own quoting rule, with no wildcard expansion. (The
+ * alternative, `_crt_argv_expanded_arguments`, is the `setargv.obj` behaviour, which C does not
+ * ask for.) */
 int _configure_narrow_argv(int mode);
 int *__p___argc(void);
 char ***__p___argv(void);
