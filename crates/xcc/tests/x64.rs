@@ -895,11 +895,16 @@ fn the_readme_quotes_the_ratchet() {
     );
 }
 
-/// `.text` bytes of this compiler's objects over `clang -O2`'s, across the corpus: the one number
-/// in README.md about code size. Measured 3.49 when the check was written; the ceiling is where a
-/// program that grew would land, and a number in a table is worth nothing if nothing fails when it
-/// stops being true.
-const SIZE_CEILING: f64 = 3.55;
+/// The `.text` bytes this compiler emits over every corpus program it compiles, summed. Measured
+/// 80 336 when the check was written; the ceiling is 2% above that, which is where a pass that
+/// started emitting something extra would land.
+///
+/// It is *not* a ratio against `clang`. The first version of this check was, and CI failed on it
+/// while every byte this compiler wrote was identical: the runner's `clang` is a different build
+/// from the one measured here, so the denominator moved. A gate whose result depends on which other
+/// compiler happens to be installed on the machine is not a gate. The ratio is still printed, as
+/// context, and README.md's number comes from this machine's measurement rather than from a test.
+const SIZE_CEILING: usize = 81_950;
 
 #[test]
 fn the_corpus_agrees_through_both_back_ends() {
@@ -1046,7 +1051,11 @@ fn the_corpus_is_within_the_code_size_that_was_measured() {
 
     let dir = std::env::temp_dir().join(format!("xcc-x64-size-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a directory of this test's own");
-    let (mut ours, mut theirs, mut compared) = (0usize, 0usize, 0usize);
+    // `ours` is every program this compiler compiles - the set the ceiling is about. The other
+    // three are the subset `clang` also accepted, which is where the ratio comes from and which a
+    // machine without clang simply leaves empty.
+    let (mut ours, mut compared) = (0usize, 0usize);
+    let (mut ours_as_clang_sees_it, mut theirs, mut compared_with_clang) = (0usize, 0usize, 0usize);
     for path in &files {
         let name = path
             .file_stem()
@@ -1064,6 +1073,14 @@ fn the_corpus_is_within_the_code_size_that_was_measured() {
         let Ok(artifact) = Compile::new(options).compile(&name, &source) else {
             continue;
         };
+        let Some(mine) = text_bytes(artifact.bytes()) else {
+            continue;
+        };
+        ours += mine;
+        compared += 1;
+        // The ratio is context, and `clang` is optional: where it is missing or refuses a program,
+        // the ceiling on *this* compiler's bytes is still the gate. Making the comparison
+        // compulsory is what failed CI on a runner whose clang is a different build.
         let reference = dir.join(format!("{name}.ref.o"));
         let source_file = dir.join(format!("{name}.ref.c"));
         std::fs::write(&source_file, &source).expect("the reference source is written");
@@ -1071,29 +1088,33 @@ fn the_corpus_is_within_the_code_size_that_was_measured() {
             .args(["-O2", "-w", "-c", "-o"])
             .arg(&reference)
             .arg(&source_file)
-            .output()
-            .expect("clang runs");
+            .output();
+        let Ok(built) = built else { continue };
         if !built.status.success() {
             continue;
         }
         let Ok(theirs_bytes) = std::fs::read(&reference) else {
             continue;
         };
-        let (Some(mine), Some(only)) = (text_bytes(artifact.bytes()), text_bytes(&theirs_bytes))
-        else {
-            continue;
-        };
-        ours += mine;
-        theirs += only;
-        compared += 1;
+        if let Some(only) = text_bytes(&theirs_bytes) {
+            compared_with_clang += 1;
+            ours_as_clang_sees_it += mine;
+            theirs += only;
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
     assert!(compared > 400, "the corpus is {compared} programs");
-    let ratio = ours as f64 / theirs as f64;
-    eprintln!("own back end: .text {ratio:.3}x clang -O2 over {compared} corpus programs");
+    let ratio = if theirs == 0 {
+        0.0
+    } else {
+        ours_as_clang_sees_it as f64 / theirs as f64
+    };
+    eprintln!(
+        "own back end: .text {ours} bytes over {compared} corpus programs; over the {compared_with_clang} this machine's clang also accepts, {ratio:.3}x its -O2"
+    );
     assert!(
-        ratio <= SIZE_CEILING,
-        "{ratio:.3}x is over the {SIZE_CEILING}x this compiler measured, {ours} bytes to {theirs}"
+        ours <= SIZE_CEILING,
+        "{ours} bytes is over the {SIZE_CEILING} this compiler measured - {ratio:.3}x the local clang"
     );
 }
 

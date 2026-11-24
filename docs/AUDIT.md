@@ -786,6 +786,19 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-23 - a gate that measured whatever clang the machine had
+
+The tag was pushed and CI failed on the one test that was new since the last release: `the_corpus_is_within_the_code_size_that_was_measured`. Every byte this compiler wrote was identical to the local run; what moved was the *denominator*. The check asserted a **ratio** against `clang -O2`, and the runner's `clang` is a different build from the one measured here.
+
+That is the failure the audit keeps recording under other names - a gate whose result depends on the machine is not a gate - and the fix is the one that rule implies: assert the fact that is this compiler's own. The check now sums the `.text` bytes **it** emits over every corpus program it compiles (80 336 of them, ceiling 81 950, 2% of headroom) and reports the ratio as context, with `clang` optional: where it is missing or refuses a program, the ceiling still holds.
+
+Two smaller things fell out of making it optional. The ratio's denominator now counts only the programs `clang` also accepted - the set the ratio is about - which is a second counter rather than a second meaning of one. And the numbers in README.md say which is which: 80 336 bytes over 444 programs as the assertion, 3.49x over the 420 both compilers accept as the context.
+
+201 unit, 32 parser, 29 CLI, 4 invalid, 20 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures
+byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-23 - the cuts and the singular points, where the formulas were wrong
 
 The transcendental commit, reviewed. The hundred lines of interior values held; the review went looking for the
