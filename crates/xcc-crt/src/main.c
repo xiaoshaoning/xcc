@@ -718,33 +718,33 @@ void __xcc_atomic_fence(void) {
  * rather than guessed: a critical section is 40 bytes on x64 and a condition variable is one
  * pointer. The `_Static_assert`s below are what keeps the header and these casts agreeing.
  */
-typedef struct {
-    unsigned long long opaque[5];
-} xcc_critical_section;
-
-typedef struct {
-    unsigned long long opaque[1];
-} xcc_condition_variable;
-
-_Static_assert(sizeof(xcc_critical_section) == 40, "the critical section the header promises");
-_Static_assert(sizeof(xcc_condition_variable) == 8, "the condition variable the header promises");
+/* The header's own `mtx_t` and `cnd_t`, not copies of them: a second structure of the same shape
+ * would be the same fact written twice, and the assertion would guard the copy rather than the
+ * pair. These two are what the Win32 calls below take. */
+_Static_assert(sizeof(mtx_t) == 40, "the critical section the header promises");
+_Static_assert(sizeof(cnd_t) == 8, "the condition variable the header promises");
 
 unsigned long long _beginthreadex(void *security, unsigned stack, unsigned (*start)(void *),
                                   void *argument, unsigned flags, unsigned *id);
+/* The three the thread code needs and the first version forgot: they were called as implicitly
+ * declared `int` functions, which the compiler warned about on *every* link - and a warning that
+ * appears on every link is one a reader stops seeing. */
+int CloseHandle(void *handle);
+unsigned long WaitForSingleObject(void *handle, unsigned long milliseconds);
+void GetSystemTimeAsFileTime(void *moment);
 void _endthreadex(unsigned code);
 void Sleep(unsigned long milliseconds);
 unsigned long GetCurrentThreadId(void);
 int GetExitCodeThread(void *handle, unsigned long *code);
-void InitializeCriticalSection(xcc_critical_section *section);
-void DeleteCriticalSection(xcc_critical_section *section);
-void EnterCriticalSection(xcc_critical_section *section);
-void LeaveCriticalSection(xcc_critical_section *section);
-int TryEnterCriticalSection(xcc_critical_section *section);
-void InitializeConditionVariable(xcc_condition_variable *condition);
-int SleepConditionVariableCS(xcc_condition_variable *condition, xcc_critical_section *section,
-                             unsigned long milliseconds);
-void WakeConditionVariable(xcc_condition_variable *condition);
-void WakeAllConditionVariable(xcc_condition_variable *condition);
+void InitializeCriticalSection(mtx_t *section);
+void DeleteCriticalSection(mtx_t *section);
+void EnterCriticalSection(mtx_t *section);
+void LeaveCriticalSection(mtx_t *section);
+int TryEnterCriticalSection(mtx_t *section);
+void InitializeConditionVariable(cnd_t *condition);
+int SleepConditionVariableCS(cnd_t *condition, mtx_t *section, unsigned long milliseconds);
+void WakeConditionVariable(cnd_t *condition);
+void WakeAllConditionVariable(cnd_t *condition);
 unsigned long TlsFree(unsigned long index);
 
 int thrd_create(thrd_t *thread, thrd_start_t start, void *argument) {
@@ -823,25 +823,25 @@ int mtx_init(mtx_t *mutex, int type) {
     if (mutex == 0 || type == mtx_timed) {
         return thrd_error;
     }
-    InitializeCriticalSection((xcc_critical_section *)mutex);
+    InitializeCriticalSection(mutex);
     return thrd_success;
 }
 
 int mtx_lock(mtx_t *mutex) {
-    EnterCriticalSection((xcc_critical_section *)mutex);
+    EnterCriticalSection(mutex);
     return thrd_success;
 }
 
 int mtx_trylock(mtx_t *mutex) {
-    return TryEnterCriticalSection((xcc_critical_section *)mutex) ? thrd_success : thrd_busy;
+    return TryEnterCriticalSection(mutex) ? thrd_success : thrd_busy;
 }
 
 int mtx_unlock(mtx_t *mutex) {
-    LeaveCriticalSection((xcc_critical_section *)mutex);
+    LeaveCriticalSection(mutex);
     return thrd_success;
 }
 
-void mtx_destroy(mtx_t *mutex) { DeleteCriticalSection((xcc_critical_section *)mutex); }
+void mtx_destroy(mtx_t *mutex) { DeleteCriticalSection(mutex); }
 
 /* C11 7.27.2.5, which `cnd_timedwait` is the first caller of: the system clock in a `timespec`.
  * The Win32 file time counts 100-nanosecond ticks from 1601, and the Unix epoch is 11 644 473 600
@@ -870,23 +870,23 @@ int cnd_init(cnd_t *condition) {
     if (condition == 0) {
         return thrd_error;
     }
-    InitializeConditionVariable((xcc_condition_variable *)condition);
+    InitializeConditionVariable(condition);
     return thrd_success;
 }
 
 int cnd_signal(cnd_t *condition) {
-    WakeConditionVariable((xcc_condition_variable *)condition);
+    WakeConditionVariable(condition);
     return thrd_success;
 }
 
 int cnd_broadcast(cnd_t *condition) {
-    WakeAllConditionVariable((xcc_condition_variable *)condition);
+    WakeAllConditionVariable(condition);
     return thrd_success;
 }
 
 int cnd_wait(cnd_t *condition, mtx_t *mutex) {
-    int woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
-                                        (xcc_critical_section *)mutex, 0xFFFFFFFFul);
+    int woken = SleepConditionVariableCS(condition,
+                                        mutex, 0xFFFFFFFFul);
     return woken ? thrd_success : thrd_error;
 }
 
@@ -902,12 +902,12 @@ int cnd_timedwait(cnd_t *condition, mtx_t *mutex, const struct timespec *absolut
                    (long long)(absolute->tv_nsec - now.tv_nsec) / 1000000LL;
     if (milliseconds <= 0) {
         /* Already due: ask with the shortest wait there is, and report the timeout if it held. */
-        woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
-                                        (xcc_critical_section *)mutex, 0);
+        woken = SleepConditionVariableCS(condition,
+                                        mutex, 0);
         return woken ? thrd_success : thrd_timedout;
     }
-    woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
-                                     (xcc_critical_section *)mutex, (unsigned long)milliseconds);
+    woken = SleepConditionVariableCS(condition,
+                                     mutex, (unsigned long)milliseconds);
     return woken ? thrd_success : thrd_timedout;
 }
 

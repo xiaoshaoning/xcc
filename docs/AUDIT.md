@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - three kernel calls nothing declared, and a dialect left switched on
+
+The `threads.h` commit, reviewed. The header and the producer/consumer hold; the review found a state leak on an error
+path, a structure written twice, a typedef spelled through to its underlying type, and three functions the runtime
+called without declaring.
+
+**`CloseHandle`, `WaitForSingleObject` and `GetSystemTimeAsFileTime` were called as implicitly declared functions** - the
+compiler said so on *every* link, and I had been filtering its output to the word `error`. That is the finding worth
+keeping: a warning that appears on every run is one a reader stops seeing, and a filter is how it stopped being seen. The
+declarations are in the runtime now, and a link prints nothing.
+
+**The dialect was left switched on.** A link swaps in C11 for the runtime and back for each program unit - and the `?`
+on a failed front end skipped the swap back, so a failed link left the whole `Compile` building C99 programs as C11.
+`std::mem::replace` around exactly the call that needs it, and the restore happens whatever the call answers.
+
+**The runtime had written the header's two structures a second time**, as `xcc_critical_section` and
+`xcc_condition_variable`, and asserted *their* sizes against 40 and 8 - so the assertion guarded the copy and the pair
+could still disagree. One structure now: the assertions are on `sizeof(mtx_t)` and `sizeof(cnd_t)`, and the Win32
+declarations take the header's types with no casts at the call.
+
+**And `struct timespec`'s `tv_sec` was spelled `long long`**, which is what `time_t` happens to be. C11 7.27.1p3 names
+the typedef, and a header that writes through to the underlying type breaks the day it changes width.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 23 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - `threads.h`, and the store the dead-code pass deleted
 
 `threads.h` ships (C11 7.26): a whole threading interface over what the target already has - `_beginthreadex` for a

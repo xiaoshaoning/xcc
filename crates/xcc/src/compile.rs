@@ -250,13 +250,18 @@ impl Compile {
             ..self.options.clone()
         };
         for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
-            let own_options = self.options.clone();
-            self.options = if name.starts_with("xcc-crt/") {
+            let options = if name.starts_with("xcc-crt/") {
                 runtime_options.clone()
             } else {
-                own_options
+                self.options.clone()
             };
-            let (module, preprocessed, warnings) = self.front_end(name, source)?;
+            // Swapped in for this one compilation and put back whatever happens next: the `?` on a
+            // failed front end would otherwise leave the whole `Compile` compiling in the runtime's
+            // dialect, which is a state leak a caller would meet as a strange `_Static_assert`.
+            let saved = std::mem::replace(&mut self.options, options);
+            let compiled = self.front_end(name, source);
+            self.options = saved;
+            let (module, preprocessed, warnings) = compiled?;
             diagnostics.extend(warnings);
             match crate::back::image(&module, preprocessed.names(), self.options.opt_level) {
                 Ok(Some(image)) => images.push(image),

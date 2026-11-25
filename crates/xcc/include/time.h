@@ -35,7 +35,9 @@ size_t strftime(char *restrict to, size_t count, const char *restrict format,
 /* C11 7.27.1: the seconds-and-nanoseconds pair, which `thrd_sleep` and `cnd_timedwait` take.
  * It is C11's rather than C99's, and `threads.h` is the first header here to need it. */
 struct timespec {
-    long long tv_sec;
+    /* `time_t` and not the type it happens to be: 7.27.1p3 names the typedef, and a header that
+     * writes through to the underlying type breaks the day `time_t` changes width. */
+    time_t tv_sec;
     long tv_nsec;
 };
 
