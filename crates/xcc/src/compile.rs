@@ -269,6 +269,9 @@ impl Compile {
         // a relocation asks for, the last is what the import table must look up.
         let mut wanted: Vec<(String, &'static str, String)> = Vec::new();
         for name in required_names(&images) {
+            if crate::back::made_by_the_linker(&name) {
+                continue;
+            }
             match crate::back::import_for(&name) {
                 Some((library, exported)) => wanted.push((name, library, exported)),
                 None => {
@@ -309,6 +312,22 @@ impl Compile {
         let mut diagnostics = Vec::new();
         let (module, preprocessed, from_front_end) = self.front_end(name, source)?;
         diagnostics.extend(from_front_end);
+        // A `_Thread_local` object lives in a block the *linker* lays out - the offsets are assigned
+        // once every unit is in one place - so an object file on its own would carry code that calls
+        // the runtime with an offset nobody wrote. Refused by name, rather than written into an
+        // object that no linker can finish.
+        if let Some(thread) = module.globals.iter().find(|global| global.thread) {
+            let what = thread.name.clone();
+            let message = format!(
+                "`_Thread_local` is laid out by the linker: link the program instead of compiling `{what}` alone"
+            );
+            return Err(Diagnostics::new(
+                vec![Diagnostic::error(message)
+                    .with_file(name)
+                    .with_span(thread.span)],
+                preprocessed.files.clone(),
+            ));
+        }
         let sources = preprocessed.files.clone();
         let opt_level = self.options.opt_level;
 

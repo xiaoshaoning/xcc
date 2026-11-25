@@ -204,6 +204,15 @@ impl Jit {
             return Err(errors.join("; "));
         }
         let mut unit: CirModule = parsed.module;
+        // A `_Thread_local` object is reached through words the *linker* fills, and a unit loaded
+        // into memory has no linker: refused with its reason rather than left to the name
+        // resolution, which would say only that a word is missing.
+        if let Some(thread) = unit.globals.iter().find(|global| global.thread) {
+            return Err(format!(
+                "`_Thread_local` is laid out by the linker: `{}` cannot be run by a JIT, so link the program instead of using `--run`",
+                thread.name
+            ));
+        }
         let names = preprocessed.names().clone();
         // The passes run here, in the one place both lowerings come from: `--run` and an object
         // are the same `cir`, so a pass that helps one helps the other.

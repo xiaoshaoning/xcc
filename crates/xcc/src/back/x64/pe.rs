@@ -141,6 +141,10 @@ struct Program<'a> {
     addr64: Vec<u32>,
     /// Where the entry point is, from `.text`'s start.
     entry: u32,
+    /// How many bytes one thread's copy of every `_Thread_local` object is. The runtime allocates
+    /// that much per thread on first use; the linker is the only place that can add the objects up,
+    /// which is why the number is a word in `.data` rather than an immediate in the code.
+    thread_block: u32,
 }
 
 /// The names a unit keeps to itself: its `static` functions and objects, and the literals and other
@@ -186,6 +190,7 @@ impl<'a> Program<'a> {
             unwind: coff::unwind_layout(&[]),
             addr64: Vec::new(),
             entry: 0,
+            thread_block: 0,
         };
         for (index, unit) in units.iter().enumerate() {
             let base = program.text.len() as u32;
@@ -247,6 +252,57 @@ impl<'a> Program<'a> {
                 }
             }
             program.data.extend_from_slice(&unit.data.bytes);
+        }
+        // The thread-local block's layout, decided here because this is where every unit's objects
+        // are in one place. Each object is placed at its own alignment, and its *offset in the
+        // block* is written into a four-byte word named `__xcc_tls_offset_<name>` in `.data`: the
+        // code that reads a `_Thread_local` object is compiled before this layout exists, so it
+        // reads the offset rather than carrying it as an immediate. The block's total size goes the
+        // same way, into one word, because the runtime allocates the whole block at once.
+        // The template: every thread-local object's bytes, dense, at the offset it will occupy in a
+        // thread's block. It has to be *one* run of bytes rather than one per object, because the
+        // runtime copies a whole block when a thread first touches any of it - per-object copies
+        // would leave every object but the first at zero, which is exactly what the first version
+        // of this did.
+        let mut block: u32 = 0;
+        let mut template: Vec<u8> = Vec::new();
+        for unit in units.iter() {
+            for object in &unit.data.symbols {
+                if !object.thread {
+                    continue;
+                }
+                let align = u64::from(object.align.max(1));
+                block = (u64::from(block).div_ceil(align) * align) as u32;
+                let start = object.offset as usize;
+                let end = start + object.size as usize;
+                template.resize(block as usize, 0);
+                template.extend_from_slice(unit.data.bytes.get(start..end).unwrap_or(&[]));
+                block += object.size.max(1);
+                let offset_word = program.data.len() as u32;
+                program
+                    .data
+                    .extend_from_slice(&block.wrapping_sub(object.size.max(1)).to_le_bytes());
+                program
+                    .objects
+                    .insert(format!("__xcc_tls_offset_{}", object.name), offset_word);
+            }
+        }
+        program.thread_block = block;
+        if block > 0 {
+            template.resize(block as usize, 0);
+            while program.data.len() % 16 != 0 {
+                program.data.push(0);
+            }
+            let template_at = program.data.len() as u32;
+            program.data.extend_from_slice(&template);
+            program
+                .objects
+                .insert("__xcc_tls_template".to_owned(), template_at);
+            let total_word = program.data.len() as u32;
+            program.data.extend_from_slice(&block.to_le_bytes());
+            program
+                .objects
+                .insert("__xcc_tls_total".to_owned(), total_word);
         }
         // The address table: one eight-byte slot per import, then the null that ends it. The slots
         // start empty here and are filled from the import table, which is what knows the RVAs.

@@ -786,6 +786,51 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - `_Thread_local`, and the register the allocator did not know about
+
+The last C11 storage class ships. `_Thread_local` (C11 6.7.3) gives an object thread storage duration: one copy per
+thread, initialised as many times as there are threads. `tests/exe.rs` proves it with two real threads - each adds its
+own id to a copy that starts at 100 and sees 101 and 102, while the main thread's is still 100 - and the program's
+output does not depend on which thread ran first, because each records what it saw in a shared array that main prints
+after joining.
+
+**The shape of the thing, and the trade it makes.** A thread-local object has no link-time address, so the *address* is
+a computation. The linker lays out one block per thread - it is the only place every unit's objects are in one place -
+and writes each object's offset, the block's size and a dense template into `.data`. The compiler emits
+`__xcc_tls(offset, total, template)`, which allocates this thread's block on first use, copies the template into it and
+returns the object's cell. Five instructions and three relocations per access, with a call in them: **the PE TLS
+directory is the fast route - four instructions, no call - and the loader fills it. It needs a `.tls` section, a
+24-byte directory with three relocated addresses and a data-directory entry, which is a bigger piece of the image
+writer than this took on.** The trade is in PLAN.md, where the choice is.
+
+**Then the crash, and it is the same class as two before it.** The first thread test segfaulted inside a *worker*: the
+sequence writes its arguments into `rcx`, `rdx` and `r8`, and `r8` and `r9` are *allocatable* - the allocator's
+caller-saved set is `r8`-`r11`. Nothing spilled, because the operation was not a `Call` and the lowering's "does this
+function make a call" test did not see it. The fix is in the lowering, where that question is asked: a `GlobalAddress`
+naming a thread-local object makes a call. This is the third time a hardcoded register met an allocator that did not
+know about it - `float_const` and `RAX` was the first, and the note in `thread_address` says so.
+
+**And one bug the design had all along: the template was copied per object.** `__xcc_tls` copied an object's own bytes
+when it made the block, so the *first* object a thread touched was initialised and every other one read zero -
+`a=11 b=0` in a two-line program. The template is one dense run covering the whole block now, copied whole.
+
+**The trap was the library, not the code.** Every program stopped loading with `0xC0000139` (ENTRYPOINT_NOT_FOUND) -
+including ones with no thread-local object, because the runtime source calls `TlsAlloc` for the block. `TlsAlloc`,
+`TlsGetValue` and `TlsSetValue` appear in `ucrtbase.dll`'s dump as **its imports of the kernel's**, not as its exports,
+so the import table asked the wrong DLL for them. They are `kernel32` names, in the table next to `ExitProcess`, and
+the note there says how the dump misled.
+
+**Refused where it cannot be honoured.** `-c` and `--run` have no linker to lay a block out, so both refuse by name
+with the reason, and `tests/cli.rs` holds both messages. `_beginthreadex` - the C runtime's thread entry point, which
+the test needs - is declared in `process.h`, a header this compiler does not ship, so it lives in a one-entry table
+saying exactly that rather than in `C_RUNTIME`, whose own test would otherwise fail: it did, which is why the table
+exists.
+
+201 unit, 32 parser, 30 CLI, 4 invalid, 21 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-23 - the tag moved one commit, and why
 
 The release tag went up at `3ae2f6d` and CI failed there on the one test new since the last release - the code-size

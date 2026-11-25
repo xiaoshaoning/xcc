@@ -69,6 +69,13 @@ pub(crate) struct DataRelocation {
 /// One object in the data section.
 #[derive(Debug)]
 pub(crate) struct DataSymbol {
+    /// How many bytes it is, and how strictly it must start: a thread-local one is copied into a
+    /// block per thread, and the block has to give each object the same alignment `.data` did.
+    pub size: u32,
+    pub align: u32,
+    /// Whether it has thread storage duration: its address is not a link-time constant, and the
+    /// program reaches it through the runtime's per-thread block instead of through `.data`.
+    pub thread: bool,
     /// Its link name.
     pub name: String,
     /// Where it starts within the section.

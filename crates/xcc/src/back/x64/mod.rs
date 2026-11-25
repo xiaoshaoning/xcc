@@ -192,6 +192,15 @@ pub(crate) enum Op {
     /// relocation fills in. A string literal, a global object and - since function pointers - a
     /// function are all a name the linker resolves to an address.
     SymbolAddress { dst: VReg, symbol: String },
+    /// The address of a *thread-local* object: not a `lea`, because there is no single address to
+    /// load. The runtime keeps one block per thread and hands out this object's cell in it; the
+    /// linker decides where in that block the object sits, and writes that offset into a word the
+    /// sequence below reads.
+    ThreadAddress {
+        dst: VReg,
+        symbol: String,
+        size: u32,
+    },
     /// Read eight bytes of a frame slot, which is how a block parameter arrives.
     LoadLocal { dst: VReg, offset: i32 },
     /// Write eight bytes of a frame slot, which is how an edge passes them.
@@ -387,6 +396,7 @@ impl Op {
             | Op::Incoming { dst, .. }
             | Op::LocalAddress { dst, .. }
             | Op::SymbolAddress { dst, .. }
+            | Op::ThreadAddress { dst, .. }
             | Op::LoadLocal { dst, .. }
             | Op::LoadMemory { dst, .. }
             | Op::Binary { dst, .. }
@@ -414,6 +424,7 @@ impl Op {
             | Op::Incoming { .. }
             | Op::LocalAddress { .. }
             | Op::SymbolAddress { .. }
+            | Op::ThreadAddress { .. }
             | Op::LoadLocal { .. } => Vec::new(),
             Op::StoreLocal { src, .. } => vec![*src],
             Op::LoadMemory { base, .. } => vec![*base],
@@ -604,6 +615,14 @@ fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
         data.symbols.push(coff::DataSymbol {
             name: global.name.clone(),
             offset: data.bytes.len() as u32,
+            align: align as u32,
+            size: module
+                .types
+                .size_of(global.ty)
+                .unwrap_or(0)
+                .max(global.init.as_ref().map_or(0, |init| init.len() as u64))
+                as u32,
+            thread: global.thread,
             external: global.external,
         });
         // The object's own start in the section, so the addresses inside it can be named from there.

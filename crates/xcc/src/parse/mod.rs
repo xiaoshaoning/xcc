@@ -217,9 +217,32 @@ const FUNDAMENTAL_ALIGNMENT: u64 = 16;
 /// statement is a declaration. `a_declaration_can_begin_with_every_specifier` runs each of these
 /// words at block scope, which is the direction that fails when they drift.
 const SPECIFIERS: &[&str] = &[
-    "typedef", "extern", "static", "auto", "register", "const", "volatile", "restrict", "inline",
-    "void", "_Bool", "char", "short", "int", "long", "float", "double", "signed", "unsigned",
-    "struct", "union", "enum", "_Atomic", "_Alignas",
+    "typedef",
+    "extern",
+    "static",
+    "auto",
+    "register",
+    "const",
+    "volatile",
+    "restrict",
+    "inline",
+    "void",
+    "_Bool",
+    "char",
+    "short",
+    "int",
+    "long",
+    "float",
+    "double",
+    "signed",
+    "unsigned",
+    "struct",
+    "union",
+    "enum",
+    "_Atomic",
+    "_Alignas",
+    "_Complex",
+    "_Thread_local",
 ];
 
 /// One `switch` being read: the `case` values seen so far, so a duplicate is caught
@@ -762,6 +785,24 @@ impl Parser<'_> {
             return None;
         }
         let specs = self.declaration_specifiers();
+        // C11 6.7.1p3: at block scope `_Thread_local` shall be combined with `static` or `extern`;
+        // 6.7.1p4: it shall not appear in a function declaration's specifiers. A permission the
+        // standard gives nowhere would be a promise this compiler cannot keep.
+        if specs.is_thread_local {
+            let span = self.span();
+            if self.in_body() && !specs.is_static && !specs.is_extern {
+                self.error(
+                    span,
+                    "`_Thread_local` at block scope needs `static` or `extern`",
+                );
+            }
+            if specs
+                .ty
+                .is_some_and(|ty| matches!(self.types.kind(ty), Type::Function { .. }))
+            {
+                self.error(span, "a function cannot be `_Thread_local`");
+            }
+        }
         let Some(base) = specs.ty else {
             let span = self.span();
             self.error(span, "expected a type specifier");
@@ -889,7 +930,15 @@ impl Parser<'_> {
             if object && !self.in_body() && !self.at_punct("=") && !specs.is_extern {
                 if let Some(name) = name {
                     let span = self.span();
-                    self.define_global(name, ty, None, specs.alignas, !specs.is_static, span);
+                    self.define_global(
+                        name,
+                        ty,
+                        None,
+                        specs.alignas,
+                        !specs.is_static,
+                        specs.is_thread_local,
+                        span,
+                    );
                 }
             }
             if static_local {
@@ -924,6 +973,7 @@ impl Parser<'_> {
                                     Some((bytes, relocations)),
                                     specs.alignas,
                                     !specs.is_static,
+                                    specs.is_thread_local,
                                     span,
                                 );
                             }
@@ -1039,6 +1089,7 @@ impl Parser<'_> {
             relocations: Vec::new(),
             alignas: 0,
             external: false,
+            thread: false,
             span,
         });
         (ty, name, init)
@@ -1058,6 +1109,7 @@ impl Parser<'_> {
     /// (which makes visibility matter) is the place to read it. Until then every object claims
     /// to be external, which is wrong for a `static` and harmless only because nothing reads the
     /// flag.
+    #[allow(clippy::too_many_arguments)] // every one of them is a fact the caller already has
     fn define_global(
         &mut self,
         name: Symbol,
@@ -1065,6 +1117,7 @@ impl Parser<'_> {
         init: Option<(Vec<u8>, Vec<cir::GlobalRelocation>)>,
         alignas: u64,
         external: bool,
+        thread: bool,
         span: Span,
     ) {
         // A tentative definition defines nothing yet: `int x;` may be followed by `int x = 1;`.
@@ -1105,6 +1158,7 @@ impl Parser<'_> {
                     relocations,
                     alignas,
                     external,
+                    thread,
                     span,
                 });
             }
@@ -1148,6 +1202,7 @@ impl Parser<'_> {
             relocations,
             alignas,
             external: false,
+            thread: false,
             span,
         });
         let pointer = self.pointer_to(ty);
@@ -1216,7 +1271,7 @@ impl Parser<'_> {
         while let Some(token) = self.peek().copied() {
             let word = self.spell(&token).to_owned();
             match word.as_str() {
-                "typedef" | "extern" | "static" | "auto" | "register" => {
+                "typedef" | "extern" | "static" | "auto" | "register" | "_Thread_local" => {
                     if word == "typedef" {
                         specs.is_typedef = true;
                     }
@@ -1225,6 +1280,9 @@ impl Parser<'_> {
                     }
                     if word == "extern" {
                         specs.is_extern = true;
+                    }
+                    if word == "_Thread_local" {
+                        specs.is_thread_local = true;
                     }
                     self.at += 1; // a storage class is not part of the type
                 }
@@ -1371,7 +1429,12 @@ impl Parser<'_> {
         let words: Vec<&str> = spelled
             .iter()
             .map(String::as_str)
-            .filter(|word| !matches!(*word, "typedef" | "extern" | "static" | "auto" | "register"))
+            .filter(|word| {
+                !matches!(
+                    *word,
+                    "typedef" | "extern" | "static" | "auto" | "register" | "_Thread_local"
+                )
+            })
             .collect();
         let count = |word: &str| words.iter().filter(|seen| **seen == word).count();
         let signed = count("unsigned") == 0;
@@ -1984,6 +2047,9 @@ struct Specifiers {
     /// definition (C99 6.9.2p2), so the object belongs to another translation unit and this one must
     /// not lay down bytes for it.
     is_extern: bool,
+    /// Whether `_Thread_local` (C11 6.7.3) was one of them: the object has thread storage duration -
+    /// one copy per thread, initialised as many times as there are threads.
+    is_thread_local: bool,
     /// Whether the specifiers named a tag (`enum E { ... }`), which C lets stand alone as a
     /// declaration that declares nothing.
     declares_tag: bool,

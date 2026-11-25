@@ -474,6 +474,9 @@ impl Encoder<'_> {
                     }
                 }
             }
+            Op::ThreadAddress { dst, symbol, size } => {
+                self.thread_address(*dst, symbol, *size);
+            }
             Op::SymbolAddress { dst, symbol } => {
                 // `lea dst, [rip + disp32]`: the displacement is a relocation, because the linker
                 // decides where the data section goes.
@@ -1575,6 +1578,51 @@ impl Encoder<'_> {
         self.fixups.push(Fixup {
             at: self.code.len(),
             label,
+        });
+        self.bytes(&[0, 0, 0, 0]);
+    }
+
+    /// The address of a thread-local object, which is a *call*: the runtime owns the block and
+    /// only it knows where this thread's copy of the object begins.
+    ///
+    /// `__xcc_tls(offset, total, template)` returns `block + offset`, allocating the block on this
+    /// thread's first use and copying `total` bytes of `template` into it. The offset
+    /// and the block's size are the linker's to decide - it is the one that lays the block out - so
+    /// they reach the call through words in `.data` that the linker fills, which is why this reads
+    /// two of them rather than taking immediates.
+    ///
+    /// Win64 argument order: `rcx`, `rdx`, `r8`, `r9`. Five instructions and three relocations, and
+    /// a program that touches a `_Thread_local` object in a loop pays them every time: the fast
+    /// route is the PE TLS directory, which the loader fills and which this linker does not write
+    /// yet (PLAN.md says so where the choice is made).
+    fn thread_address(&mut self, dst: VReg, symbol: &str, _size: u32) {
+        // rcx = this object's offset in the block
+        self.mov_reg_from_memory_with_relocation(Reg::RCX, format!("__xcc_tls_offset_{symbol}"));
+        // rdx = the block's size, which is how much the runtime copies when a thread first asks
+        self.mov_reg_from_memory_with_relocation(Reg::RDX, "__xcc_tls_total".to_owned());
+        // r8 = the template: every object's initial bytes, laid out the way the block is
+        self.prefix_w(Reg::R8, Reg(0));
+        self.byte(0x8D);
+        self.byte((((Reg::R8).0 & 7) << 3) | 0b101);
+        self.relocations.push(Relocation {
+            offset: self.code.len() as u32,
+            symbol: "__xcc_tls_template".to_owned(),
+        });
+        self.bytes(&[0, 0, 0, 0]);
+        self.call("__xcc_tls");
+        // The call returns `block + offset` in `rax` already; the value goes where it lives.
+        self.write(dst, Reg::RAX);
+        self.release();
+    }
+
+    /// `mov r64, [rip + disp32]`: a load from a named object, with the displacement a relocation.
+    fn mov_reg_from_memory_with_relocation(&mut self, register: Reg, symbol: String) {
+        self.prefix_w(register, Reg(0));
+        self.byte(0x8B);
+        self.byte(((register.0 & 7) << 3) | 0b101);
+        self.relocations.push(Relocation {
+            offset: self.code.len() as u32,
+            symbol,
         });
         self.bytes(&[0, 0, 0, 0]);
     }

@@ -386,6 +386,35 @@ fn a_link_at_another_level_says_which_one_it_needs() {
 }
 
 #[test]
+fn a_thread_local_object_needs_the_linker() {
+    // Its place in a thread's block is decided once every unit is in one place, so an object file
+    // on its own would carry a call with an offset nobody wrote. Both modes that cannot lay the
+    // block out say why, and the link works.
+    let temp = Temp::new("thread-local");
+    let source = temp.write(
+        "t.c",
+        "_Thread_local int counter = 1;
+int main(void) { return counter - 1; }
+",
+    );
+    for mode in [["-c"].as_slice(), ["--run", "--opt-level=2"].as_slice()] {
+        let output = run(xcc().arg(&source).args(mode).args(["--std=c11"]));
+        let message = stderr(&output);
+        // 1, not 2: a compile diagnostic is about the program, and 2 is for a command line this
+        // compiler cannot make sense of.
+        assert_eq!(output.status.code(), Some(1), "{message}");
+        assert!(message.contains("_Thread_local"), "{message}");
+        assert!(message.contains("link the program"), "{message}");
+    }
+    let linked = run(xcc()
+        .arg(&source)
+        .args(["--std=c11", "--opt-level=2"])
+        .arg("-o")
+        .arg(temp.write("t.exe", "")));
+    assert!(linked.status.success(), "{}", stderr(&linked));
+}
+
+#[test]
 fn a_source_that_is_not_there_is_an_operating_error() {
     let temp = Temp::new("missing");
     let output = run(xcc().current_dir(temp.path()).args(["-c", "not-there.c"]));

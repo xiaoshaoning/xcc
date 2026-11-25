@@ -14,6 +14,8 @@
  */
 
 #include <fenv.h>
+#include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <stdarg.h>
 #include <wchar.h>
@@ -609,3 +611,52 @@ float _Complex catanf(float _Complex z) { return XCC_NARROW(catan(XCC_PAIR(z)));
 float _Complex casinhf(float _Complex z) { return XCC_NARROW(casinh(XCC_PAIR(z))); }
 float _Complex cacoshf(float _Complex z) { return XCC_NARROW(cacosh(XCC_PAIR(z))); }
 float _Complex catanhf(float _Complex z) { return XCC_NARROW(catanh(XCC_PAIR(z))); }
+
+/* ---------------------------------------------------------------- _Thread_local (C11 6.7.3)
+ *
+ * One block per thread, holding every `_Thread_local` object of the program, allocated on the
+ * thread's first use and initialised from the template the linker laid out. The compiler reaches an
+ * object through `__xcc_tls` on every access - a call, not the PE TLS directory's four instructions
+ * - because the loader-filled directory is a bigger piece of the image writer than this milestone
+ * took on, and a call is the price of not having it. The trade is recorded in docs/AUDIT.md.
+ *
+ * `TlsAlloc` hands out one process-wide slot, which holds this thread's block; the slot number is
+ * the only thing the runtime keeps, and it is allocated on the first access from anywhere.
+ *
+ * Two limits, stated rather than hidden: a block is never freed (a program that creates threads in
+ * a loop leaks one block per thread), and its destructors - which C does not have for this storage
+ * duration - are not run on thread exit.
+ */
+/* `TlsAlloc` and the two accessors are the universal runtime's, so the linker imports them; this
+ * compiler ships no `windows.h`, which is why they are declared here rather than included. */
+unsigned long TlsAlloc(void);
+void *TlsGetValue(unsigned long index);
+int TlsSetValue(unsigned long index, void *value);
+
+static unsigned long __xcc_tls_key;
+static int __xcc_tls_key_made;
+
+void *__xcc_tls(unsigned offset, unsigned total, const void *initial) {
+    char *block;
+    if (!__xcc_tls_key_made) {
+        __xcc_tls_key = TlsAlloc();
+        if (__xcc_tls_key == (unsigned long)-1) {
+            return 0;
+        }
+        __xcc_tls_key_made = 1;
+    }
+    block = (char *)TlsGetValue(__xcc_tls_key);
+    if (block == 0) {
+        block = (char *)calloc(total ? total : 1, 1);
+        if (block == 0) {
+            return 0;
+        }
+        if (initial != 0 && total != 0) {
+            /* The whole block at once: every `_Thread_local` object of the program is in it, and a
+             * per-object copy here would leave every object but the first one at zero. */
+            memcpy(block, initial, total);
+        }
+        TlsSetValue(__xcc_tls_key, block);
+    }
+    return block + offset;
+}

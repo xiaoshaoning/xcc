@@ -38,6 +38,11 @@ impl Reg {
     pub(crate) const RCX: Reg = Reg(1);
     /// The high half of a division, and the second argument.
     pub(crate) const RDX: Reg = Reg(2);
+    /// The third argument. Nothing else uses it: the allocator's caller-saved set is `r8`-`r11`, and
+    /// this one is named because the thread-local lookup passes a third argument to a call it emits
+    /// itself - and because writing an *allocatable* register there without telling the allocator is
+    /// a bug this compiler has made twice (see `thread_address`).
+    pub(crate) const R8: Reg = Reg(8);
 }
 
 /// Where a value is.

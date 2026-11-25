@@ -173,9 +173,41 @@ pub(crate) const CRT_SOURCE: &str = include_str!("../../../xcc-crt/src/main.c");
 /// which is also why a `clang`-built program imports `_time64` from the time api-set rather than
 /// `time` from `ucrtbase`. This function is the only place that knows the difference, so no caller
 /// and no part of the runtime has to spell a library's own name.
+/// Whether the *linker* makes this name, rather than a unit or a library: the two words the
+/// thread-local lookup reads, one per object and one for the block's size.
+///
+/// They exist because a `_Thread_local` object's place in a thread's block is a fact only the
+/// linker has - it is the one that lays the block out, after every unit is compiled - so the code
+/// that reads it is compiled against a word the linker will fill. `compile.rs` asks here before it
+/// calls a name undefined, and the block layout in `pe.rs` is what defines them.
+pub(crate) fn made_by_the_linker(name: &str) -> bool {
+    name == "__xcc_tls_total"
+        || name == "__xcc_tls_template"
+        || name.starts_with("__xcc_tls_offset_")
+}
+
 pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
-    if name == "ExitProcess" {
-        return Some(("kernel32.dll", "ExitProcess".to_owned()));
+    // The four the kernel exports rather than the C runtime. `TlsAlloc` is the trap: it appears in
+    // `ucrtbase.dll`'s dump, but as an *import* of the kernel's, not as one of its own exports - the
+    // loader said so with `0xC0000139` on every program that linked, which is how it was found.
+    const KERNEL32: [&str; 6] = [
+        "ExitProcess",
+        "TlsAlloc",
+        "TlsGetValue",
+        "TlsSetValue",
+        // The two a *test* waits on a thread with: `tests/exe.rs` starts a second thread to show
+        // that a `_Thread_local` object has a copy per thread, and that needs the wait.
+        "WaitForSingleObject",
+        "CloseHandle",
+    ];
+    if let Some(name) = KERNEL32.iter().find(|kernel| **kernel == name) {
+        return Some(("kernel32.dll", (*name).to_owned()));
+    }
+    if let Some((name, _)) = crt::BEYOND_THE_HEADERS
+        .iter()
+        .find(|(known, _)| *known == name)
+    {
+        return Some(("ucrtbase.dll", (*name).to_owned()));
     }
     if !crt::C_RUNTIME.contains(&name) {
         return None;

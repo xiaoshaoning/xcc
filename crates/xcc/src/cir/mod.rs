@@ -950,6 +950,9 @@ pub struct Global {
     pub relocations: Vec<GlobalRelocation>,
     /// Whether the name is visible outside this translation unit.
     pub external: bool,
+    /// Whether the object has thread storage duration (C11 6.7.3): one copy per thread, and its
+    /// *address* is not a link-time constant - which is the whole of what makes it different.
+    pub thread: bool,
     /// Where in the source.
     pub span: Span,
 }

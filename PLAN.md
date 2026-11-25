@@ -237,9 +237,15 @@ The first thing worth showing, and the reason the project exists.
       documented, `sizeof` 8.
 - [x] Aggregates by value in arguments and returns, struct assignment and initialisation,
       unions with type punning, nested members, anonymous members whose fields the enclosing record
-      borrows (C11 6.7.2.1p13, done - tinyexpr found them); `_Noreturn` is consumed like `inline`.
-      Still missing from C11: `_Thread_local` (which is a storage class and a TLS directory, not a
-      spelling), `_Complex` and the five headers C11 adds.
+      borrows (C11 6.7.2.1p13, done - tinyexpr found them); `_Noreturn` is consumed like `inline`;
+      `_Complex` is C99 6.2.5p11 and its arithmetic is the parser's; `_Thread_local` (C11 6.7.3) has
+      thread storage duration - one block per thread, allocated on first use over the runtime's
+      `TlsAlloc`, with the offsets decided by the linker and an access that is a call. **The trade,
+      recorded where it was made: the PE TLS directory is the fast route - four instructions, no call -
+      and the loader fills it. It needs a `.tls` section, a 24-byte directory with three relocated
+      addresses and a data-directory entry; a call per access was one afternoon against that.**
+      Still missing from C11: the five headers it adds (`stdalign.h`, `stdatomic.h`,
+      `stdnoreturn.h`, `threads.h`, `uchar.h`).
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
       refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
 - [x] `printf`-style calls with integer, character, string and pointer arguments: the call site's

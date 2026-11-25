@@ -28,9 +28,20 @@ pub(crate) fn lower(
     module: &Module,
     names: &crate::intern::Interner,
 ) -> Result<Vec<MachineFunction>, NotYet> {
+    // Which names are thread-local, and how big each is: the two facts an address of one needs and
+    // a `lea` cannot express. Built here because the module is what knows them, and passed down
+    // because the lowering of a function is where the address is.
+    let mut thread_locals: std::collections::HashMap<String, u32> =
+        std::collections::HashMap::new();
+    for global in &module.globals {
+        if global.thread {
+            let size = module.types.size_of(global.ty).unwrap_or(0) as u32;
+            thread_locals.insert(global.name.clone(), size);
+        }
+    }
     let mut lowered = Vec::new();
     for func in &module.funcs {
-        lowered.push(lower_function(func, &module.types, names)?);
+        lowered.push(lower_function(func, &module.types, names, &thread_locals)?);
     }
     Ok(lowered)
 }
@@ -39,9 +50,11 @@ fn lower_function(
     func: &Func,
     types: &Types,
     names: &crate::intern::Interner,
+    thread_locals: &std::collections::HashMap<String, u32>,
 ) -> Result<MachineFunction, NotYet> {
     let mut lowerer = FunctionLowering {
         types,
+        thread_locals,
         regs: vec![None; func.values().count()],
         next_reg: 0,
         blocks: Vec::new(),
@@ -57,10 +70,14 @@ fn lower_function(
     };
     lowerer.run(func)?;
     let makes_call = func.blocks.iter().any(|block| {
-        block
-            .insts
-            .iter()
-            .any(|inst| matches!(inst, Inst::Call { .. }))
+        block.insts.iter().any(|inst| {
+            matches!(inst, Inst::Call { .. })
+                // A thread-local address is a call too: the runtime owns the block. The allocator
+                // has to know, or a value it left in `r8` is destroyed by the argument that goes
+                // there - which is what a segmentation fault in a *worker thread* turned out to be.
+                || matches!(inst, Inst::GlobalAddress { name, .. }
+                    if thread_locals.contains_key(name))
+        })
     });
     // The widest call decides how much outgoing room the frame needs; a call with four arguments
     // needs none, because they all go in registers.
@@ -112,6 +129,8 @@ struct FusedCompare {
 /// The values of one function, the frame slots they use, and the blocks being filled.
 struct FunctionLowering<'a> {
     types: &'a Types,
+    /// The thread-local objects of this module, by link name, with their sizes.
+    thread_locals: &'a std::collections::HashMap<String, u32>,
     /// A machine register per `cir` value, mints on first use.
     regs: Vec<Option<VReg>>,
     next_reg: u32,
@@ -344,10 +363,20 @@ impl FunctionLowering<'_> {
         }
         let dst = self.reg_for(result);
         let op = match &what {
-            Address::Symbol(symbol) => Op::SymbolAddress {
-                dst,
-                symbol: symbol.clone(),
+            // A thread-local object has no address to `lea`: the runtime owns the block and only it
+            // knows where this thread's copy begins.
+            Address::Symbol(symbol) => match self.thread_locals.get(symbol) {
+                Some(size) => Op::ThreadAddress {
+                    dst,
+                    symbol: symbol.clone(),
+                    size: *size,
+                },
+                None => Op::SymbolAddress {
+                    dst,
+                    symbol: symbol.clone(),
+                },
             },
+
             Address::Local(offset) => Op::LocalAddress {
                 dst,
                 offset: *offset,
