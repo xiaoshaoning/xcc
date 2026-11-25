@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M13 reviewed - 2026-11-25 - the other axis of a table, and the one it had never had
+
+The hex-constant fix added the second axis to C99 6.4.4.1p5's table and the review found that **the first axis was
+wrong too**: `1L` was typed `int` and `1UL` was `unsigned int`, because the candidates were written as `(signed, width)`
+and the answer was mapped back through `integer_with(signed, width)` - which cannot tell `int` from `long` on a target
+where both are thirty-two bits. That is the *same* fact a comment three hundred lines away in `finish_specifiers`
+already spells out for declarations: "The *spelling* picks the type, not the size... a table keyed on `(signed, bits)`
+cannot answer: it gave `long` the `int` type object." The lesson was written down in one place and repeated as a bug in
+another.
+
+The table is now the standard's, verbatim, as **names**: `1L` → `["long", "long long"]`, `0x10UL` →
+`["unsigned long", "unsigned long long"]`, and so on down the nine rows. Whether a value fits is asked of the type
+itself (`is `value` less than what a type of this width and signedness can hold`), so the widths are in one place - the
+type table - instead of two. `_Generic` on seven spellings now answers what `clang` answers, and four of them are
+`_Static_assert`ed in the test, including the two that were wrong.
+
+**The comments were wrong with it.** The doc comment above the table said "`long` is 32 bits on this target, so `L` and
+no suffix have the same shape" - true of the *width* and precisely the mistake: they have the same width and are
+different types. It says that now.
+
+Checked and found sound this time: the `captured_parameters` flag is reset by the outermost `declarator` *and* by the
+group's recursive call, which is what makes `int (*f(vfs *p))(struct vfs *)` capture `p` and not the return type's
+parameters; `TokenKind::Stray` is one ASCII byte by construction (every byte of a multi-byte character belongs to an
+identifier), so the slice `push_scanned` interns cannot be a partial character; and a stray byte inside a macro body is
+reported where the macro is *used*, which is where the standard puts it.
+
+205 unit, 40 parser, 30 CLI, 5 invalid, 33 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M13 - 2026-11-25 - sqlite3.c, and the three things it asked for in the first ten minutes
 
 265 977 lines of SQLite, the Windows path, through the SDK headers: **8 errors, then 7** once the fourth was fixed -

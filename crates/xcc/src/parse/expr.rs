@@ -2131,45 +2131,59 @@ impl Parser<'_> {
     /// (a decimal constant never takes an unsigned type before `long long`).
     fn integer_constant_type(
         &mut self,
-        bits: u64,
+        value: u64,
         unsigned: bool,
         longs: usize,
         decimal: bool,
     ) -> Option<TypeId> {
-        // The table of C99 6.4.4.1p5, and the *radix* is one of its two axes: a decimal constant
-        // never takes an unsigned type, and a hexadecimal or octal one does - so
-        // `0xfffffffffc000000LL` is a `unsigned long long`, where the same digits in decimal would
-        // be too large for any type. `long` is 32 bits on this target, so `L` and no suffix have the
-        // same shape and `LL` is the 64-bit one; `u` makes the 64-bit candidate unsigned too, which
-        // is why `18446744073709551615u` is a `unsigned long long` and not too large.
-        let candidates: &[(bool, u8)] = match (unsigned, longs, decimal) {
-            (false, 0, true) => &[(true, 32), (true, 64)],
-            (false, 0, false) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
-            (true, 0, _) => &[(false, 32), (false, 64)],
-            (false, 1, true) => &[(true, 32), (true, 64)],
-            (false, 1, false) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
-            (true, 1, _) => &[(false, 32), (false, 64)],
-            (false, _, true) => &[(true, 64)],
-            (false, _, false) => &[(true, 64), (false, 64)],
-            (true, _, _) => &[(false, 64)],
+        // C99 6.4.4.1p5's table, written the way the standard writes it: **names**, not widths.
+        // `int` and `long` are both thirty-two bits on this target and they are two types, which
+        // `_Generic` asks about directly - a table keyed on `(signed, bits)` answered `int` for `1L`
+        // and `unsigned int` for `1UL`, and did so before this table grew its second axis. The
+        // radix is that axis: a decimal constant never takes an unsigned type, and a hexadecimal or
+        // octal one does, so `0xfffffffffc000000LL` is an `unsigned long long` where the same digits
+        // in decimal would be too large for any type.
+        let candidates: &[&str] = match (unsigned, longs, decimal) {
+            (false, 0, true) => &["int", "long", "long long"],
+            (false, 0, false) => &[
+                "int",
+                "unsigned int",
+                "long",
+                "unsigned long",
+                "long long",
+                "unsigned long long",
+            ],
+            (true, 0, _) => &["unsigned int", "unsigned long", "unsigned long long"],
+            (false, 1, true) => &["long", "long long"],
+            (false, 1, false) => &["long", "unsigned long", "long long", "unsigned long long"],
+            (true, 1, _) => &["unsigned long", "unsigned long long"],
+            (false, _, true) => &["long long"],
+            (false, _, false) => &["long long", "unsigned long long"],
+            (true, _, _) => &["unsigned long long"],
         };
-        let fits = |signed: bool, width: u8| -> bool {
-            if width == 64 {
-                if signed {
-                    bits <= i64::MAX as u64
-                } else {
-                    true
+        // Whether the value fits the type, asked of the type itself: its width and its signedness
+        // are already facts there, and writing them out again here is how `long` became `int`.
+        let fits = |ty: TypeId| -> bool {
+            match self.types.kind(ty) {
+                crate::types::Type::Int { bits, signed } => {
+                    let width = u32::from(*bits);
+                    if width >= 64 {
+                        // Every value an integer constant can have fits a 64-bit unsigned type, and
+                        // the ceiling of the signed one is `i64::MAX`.
+                        !*signed || value <= i64::MAX as u64
+                    } else if *signed {
+                        value < (1u64 << (width - 1))
+                    } else {
+                        value < (1u64 << width)
+                    }
                 }
-            } else if signed {
-                bits <= i32::MAX as u64
-            } else {
-                bits <= u32::MAX as u64
+                _ => false,
             }
         };
-        candidates
-            .iter()
-            .find(|(signed, width)| fits(*signed, *width))
-            .map(|(signed, width)| self.types.integer_with(*signed, *width))
+        candidates.iter().find_map(|name| {
+            let ty = self.types.fundamental(name)?;
+            fits(ty).then_some(ty)
+        })
     }
 
     /// The value of a name: a variable, a function, or an enumeration constant.

@@ -180,9 +180,12 @@ fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
 
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
-    // C99 6.4.4.1p5 has two axes, and the *radix* is one of them: a hexadecimal constant takes an
-    // unsigned type where a decimal one would be too large. `sqlite3.c` writes
-    // `0xfffffffffc000000LL`, which is a `unsigned long long` and was refused as "too large".
+    // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a
+    // hexadecimal constant takes an unsigned type where a decimal one would be too large -
+    // `sqlite3.c` writes `0xfffffffffc000000LL`, a `unsigned long long` that was "too large". And the
+    // *suffix*, which picks a **type** and not a width: `1L` is a `long`, and this target's `int` and
+    // `long` are both thirty-two bits, so a table keyed on `(signed, width)` answered `int` for both
+    // `1L` and `1UL` - which `_Generic` asks about directly.
     let c11 = Options {
         standard: xcc::CStandard::C11,
         ..Options::default()
@@ -201,6 +204,10 @@ _Static_assert(hex_ll == 6, "a hexadecimal `LL` takes `unsigned long long`");
 _Static_assert(hex_int == 2, "and so does one with no suffix");
 _Static_assert(decimal == 5, "a decimal one never takes an unsigned type");
 _Static_assert(suffixed == 2, "a `U` suffix means what it says");
+_Static_assert(T(1L) == 3, "a `L` suffix is a `long` and not an `int`");
+_Static_assert(T(1UL) == 4, "and `UL` is an `unsigned long`");
+_Static_assert(T(0x10L) == 3, "a hexadecimal `L` is a `long` too");
+_Static_assert(T(1LL) == 5, "`LL` is the 64-bit one");
 "#,
     );
     assert!(complaints.is_empty(), "{complaints:?}");
