@@ -462,6 +462,17 @@ impl Preprocessor<'_> {
             if !self.active() {
                 continue;
             }
+            // `__attribute__((...))` is a token sequence that means nothing this compiler
+            // implements, in *any* position - before a declaration, after its declarator, on a
+            // member, on a parameter, after a struct's `}`. Reading it here, where tokens are read,
+            // covers all of them once; the parser would need a case in each, and the one it missed
+            // would be a parse error on a program that is asking for nothing.
+            if self.is_spelled(&raw.token, "__attribute__")
+                || self.is_spelled(&raw.token, "__attribute")
+            {
+                self.attribute(raw);
+                continue;
+            }
             self.emit(raw);
         }
         if let Some(open) = self.conditionals.first() {
@@ -475,6 +486,71 @@ impl Preprocessor<'_> {
         self.conditionals
             .last()
             .is_none_or(|conditional| conditional.active)
+    }
+
+    /// Read one `__attribute__((...))` and say what it asked for.
+    ///
+    /// The list is a comma-separated set of names, some of them taking arguments -
+    /// `((noreturn, aligned(8), visibility("default")))` - so only the names at the *top* of the
+    /// list matter, and a name inside an argument is an argument's. Everything is dropped, except
+    /// the two that would change a layout this compiler computes: `packed` and `aligned` are refused
+    /// by name, because ignoring them gives a struct whose offsets are the natural ones and whose
+    /// program is therefore wrong.
+    fn attribute(&mut self, opening: Raw) {
+        let span = opening.token.span;
+        let mut depth = 0i32;
+        let mut names: Vec<String> = Vec::new();
+        let mut expect_name = true;
+        loop {
+            let Some(raw) = self.next() else {
+                self.error(span, "`__attribute__` is not closed");
+                return;
+            };
+            if raw.token.kind == TokenKind::Eof {
+                self.error(span, "`__attribute__` is not closed");
+                return;
+            }
+            let text = self.spell(raw.token.text).to_owned();
+            if self.is_punct(&raw.token, "(") {
+                depth += 1;
+                continue;
+            }
+            if self.is_punct(&raw.token, ")") {
+                depth -= 1;
+                // The list is closed by the outer `)`: `((` opens two levels, and the inner one
+                // holds the names.
+                if depth <= 0 {
+                    break;
+                }
+                continue;
+            }
+            if depth != 2 {
+                continue;
+            }
+            // Two levels in is the top of the inner list.
+            if self.is_punct(&raw.token, ",") {
+                expect_name = true;
+                continue;
+            }
+            if raw.token.kind == TokenKind::Ident && expect_name {
+                names.push(text);
+                expect_name = false;
+            }
+        }
+        let layout = names.iter().find(|name| {
+            matches!(
+                name.as_str(),
+                "packed" | "__packed__" | "aligned" | "__aligned__"
+            )
+        });
+        if let Some(name) = layout {
+            self.error(
+                span,
+                format!(
+                    "`__attribute__(({name}))` changes a struct's layout, and this compiler does not implement packing yet: the offsets it would compute are the natural ones, which is a wrong program - so this is an error rather than a warning"
+                ),
+            );
+        }
     }
 
     /// Keep a token, or splice what it expands to in front of the tokens still to come.
@@ -966,6 +1042,17 @@ impl Preprocessor<'_> {
             Some(once) if self.is_spelled(&once.token, "once") => {
                 let physical = self.file().physical.clone();
                 self.once.insert(physical);
+            }
+            // `#pragma pack` is the one pragma this compiler must not ignore: it changes every
+            // struct that follows, and a struct laid out the natural way is a wrong program whose
+            // reads and writes land on the wrong bytes. It was a warning, which is the shape that
+            // made it a silent miscompile - so it is an error, and it stays one until packing is
+            // implemented.
+            Some(pack) if self.is_spelled(&pack.token, "pack") => {
+                self.error(
+                    span,
+                    "`#pragma pack` changes the layout of every struct that follows, and this compiler does not implement packing: ignoring it would produce a wrong program, so it is refused by name",
+                );
             }
             Some(known) => {
                 let name = self.spell(known.token.text).to_owned();
@@ -1986,10 +2073,67 @@ yes
     #[test]
     fn pragmas_are_ignored_with_an_answer() {
         assert!(diagnostics("#pragma once\n").is_empty());
-        let warnings = diagnostics("#pragma pack(1)\n");
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(warnings[0].severity, Severity::Warning);
-        assert_eq!(warnings[0].message, "unknown `#pragma pack` ignored");
+        // Except the one that is not ignorable: it decides a struct's offsets, and a compiler that
+        // drops it writes a program that reads and writes the wrong bytes. Measured against `clang`
+        // before it became an error: `struct { char c; int i; }` is 8 bytes naturally and 5 under
+        // `#pragma pack(push,1)`.
+        let refused = diagnostics("#pragma pack(push,1)\n");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].severity, Severity::Error);
+        assert!(refused[0]
+            .message
+            .contains("`#pragma pack` changes the layout"));
+        assert_eq!(
+            diagnostics("#pragma something_else\n")[0].message,
+            "unknown `#pragma something_else` ignored"
+        );
+    }
+
+    #[test]
+    fn attribute_lists_mean_nothing_and_are_dropped() {
+        // The attributes that do not change anything this compiler implements are dropped wherever
+        // a declaration can carry one, because the parser is not the place that would notice them
+        // all: before a declaration, after a declarator, on a member, on a parameter, after a
+        // struct's `}` - and through a macro, which is how cJSON writes its public ones.
+        assert!(diagnostics("__attribute__((unused)) int g;\n").is_empty());
+        assert!(diagnostics("int f(void) __attribute__((noreturn));\n").is_empty());
+        assert!(diagnostics("int f(int x __attribute__((unused)));\n").is_empty());
+        assert!(diagnostics("struct S { int a; } __attribute__((aligned(8)));\n").len() == 1);
+        assert_eq!(
+            spelled("__attribute__((unused)) int g;"),
+            ["int", "g", ";"],
+            "the tokens are gone, not merely tolerated"
+        );
+        assert_eq!(
+            spelled("int f(void) __attribute__((format(printf, 1, 2)));"),
+            ["int", "f", "(", "void", ")", ";"],
+            "an argument list inside the attribute is part of the attribute"
+        );
+    }
+
+    #[test]
+    fn the_two_attributes_that_change_a_layout_are_refused_by_name() {
+        // `packed` and `aligned` decide where a struct's bytes are, and this compiler lays every
+        // struct out naturally: ignoring them is a wrong program, so they are refused with the
+        // reason. `#pragma pack` is the same decision, and its message says so.
+        for attribute in ["packed", "__packed__", "aligned", "__aligned__"] {
+            let refused = diagnostics(&format!(
+                "struct S {{ int a; }} __attribute__(({attribute}));\n"
+            ));
+            assert_eq!(refused.len(), 1, "{attribute}");
+            assert_eq!(refused[0].severity, Severity::Error);
+            assert!(
+                refused[0].message.contains(
+                    "changes a struct's layout, and this compiler does not implement packing"
+                ),
+                "{attribute}: {}",
+                refused[0].message
+            );
+        }
+        // Nested inside another attribute's arguments it is an argument, not the attribute.
+        assert!(diagnostics("__attribute__((warn_unused_result(packed))) int g;\n").is_empty());
+        // A malformed one is closed by name rather than eating the file.
+        assert!(!diagnostics("__attribute__((unused int g;\n").is_empty());
     }
 
     #[test]

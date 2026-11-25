@@ -984,6 +984,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       character here whatever it is, where `clang` asks Unicode's XID tables and so refuses an emoji. The complete
       rule is a table of several thousand ranges; accepting a name `clang` would refuse is a portability trap worth a
       sentence, not a dependency.
+- [ ] **Packing is not implemented, and both spellings are refused by name.** `#pragma pack(N)` /
+      `push` / `pop` and `__attribute__((packed))` / `((aligned(N)))`. Measured against `clang` - the matrix the
+      refusal rests on: `struct { char c; int i; short s; }` is 12/4/8 by default, **7/1/5** under `pack(1)` and
+      8/2/6 under `pack(2)`; a `double` member is 12 bytes at offset 4 under `pack(4)`; `pack()` resets; `push`/`pop`
+      nest. Two rules make it a milestone and not an afternoon: **packing reaches nested records** - `struct inner
+      { char c; int i; }` used as a member of a `pack(2)` struct is laid out *again* with its members capped at 2, so
+      the member is 6 bytes and the outer is 8, not 10 - and **bitfields pack differently** (`unsigned a:3; unsigned
+      b:20; char c;` is 5 bytes under `pack(1)` and 6 under `pack(2)`, against 8 natural). A layout that depends on
+      global state means `Types` cannot cache one layout per record: `size_of`/`align_of`/`complete_record` all take
+      the pack in force, or a packed struct's layout is computed into a copy. Also decide `_Alignas` against `pack`
+      (C11 6.7.5 says an alignment shall not be lowered; MSVC's `align` attribute beats pack).
+- [x] **`__attribute__((...))` is read and dropped**, except `packed`/`aligned`/`__packed__`/`__aligned__`, which are
+      refused by name. Read in the *preprocessor*, because it is a token sequence that means nothing in every position a
+      declaration can carry one - before it, after the declarator, on a member, on a parameter, after a struct's `}` -
+      and a parser needs a case in each, the one it forgets being a parse error on a program that asks for nothing.
+      Measured demand in the local corpus (95 119 C files): 2 304 use `__attribute__`, 528 of those name
+      `packed`/`aligned`.
 - [ ] **Two units defining one external name link silently.** `int shared = 1;` in two units whose
       `shared` differ: `clang` refuses with "multiple definition of `shared`", and this linker keeps the
       first body - a wrong program whenever the two are not identical. Found while building toml-c,

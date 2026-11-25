@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 - 2026-11-25 - the pragma that was a warning, and the attribute that was a parse error
+
+`#pragma pack` was ignored with a warning, and the layout underneath changed. Measured: `struct { char c; int i; }` is
+8 bytes naturally and 5 under `pack(1)` - so every packed struct in a program had the wrong offsets, which is a
+program that reads and writes the wrong bytes, with one line of output saying so. **A warning on a program that then
+miscompiles is the same silent wrongness as no warning at all**, and it is now an error naming the reason.
+
+`__attribute__` was worse in a smaller way: refused outright, with "expected a type specifier", and **2 304 of the
+95 119 C files on this machine use it** - most of them for `unused`, `noreturn`, `always_inline`, `visibility`, which
+change nothing this compiler implements. Reading it is now a *token* decision, taken in the preprocessor: it is a token
+sequence that means nothing in every position a declaration can carry one - before it, after its declarator, on a
+member, on a parameter, after a struct's `}` - and the parser would need a case in each, the one it forgot being a
+parse error on a program that asks for nothing. Two of the attributes do change a layout this compiler computes, and
+they are refused by name: `packed` and `aligned`, 528 files of the 2 304.
+
+The reason packing is refused rather than implemented in this commit is the measurement that goes in PLAN: it reaches
+**nested** records (`struct inner` re-laid out with its members capped at 2 inside a `pack(2)` struct: 6 bytes, outer
+8, not 10) and **bitfields** pack differently (5 bytes under `pack(1)`, 6 under `pack(2)`, 8 natural). A layout that
+depends on global state at the point of a declaration is not a fact `Types` can cache once per record, so the honest
+refusal is the right shape until that is designed.
+
+A synthetic program with all four ignorable attributes prints what `clang` prints (`2 42`, then `exit(1)` from a
+`noreturn` function's `exit`). The four fixtures are unchanged, which is the check that the attributes they guard behind
+`__GNUC__` stayed guarded.
+
+201 unit, 37 parser, 30 CLI, 5 invalid, 28 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 - 2026-11-25 - the import list that was a copy, and the `main` that trapped at exit
 
 `strnlen` is exported by `ucrtbase.dll` and C99's `<string.h>` does not declare it. toml-c declares it itself,
