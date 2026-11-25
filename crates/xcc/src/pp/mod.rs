@@ -273,6 +273,15 @@ const PREDEFINED: &[(&str, &str)] = &[
     ("__x86_64", "1"),
     ("_M_X64", "100"),
     ("_M_AMD64", "100"),
+    // How this target spells its own typedefs. These are facts about `<stddef.h>` - `ptrdiff_t` is
+    // `long long` here and `size_t` is `unsigned long long` - and the *spelling* is what a header
+    // asks for, because it has to write a cast and cannot include the header to learn a type name:
+    // `sqlite3.c` casts an integer to a pointer through `__PTRDIFF_TYPE__` on every compiler that
+    // has it, and falls back to `&((char*)0)[X]` on the others - which is a compiler-specific
+    // trick it is right to avoid, and which this compiler could not lower until recently.
+    ("__PTRDIFF_TYPE__", "long long"),
+    ("__SIZE_TYPE__", "unsigned long long"),
+    ("__WCHAR_TYPE__", "unsigned short"),
     // `-fno-inline`, in the spelling GCC's headers standardised: this compiler has no inliner, so a
     // header that writes an inline wrapper for the compiler to bake in makes a *symbol* here
     // instead. mingw-w64's `stralign.h` is the case that proved it - its `ua_CharUpperW` calls

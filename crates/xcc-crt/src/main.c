@@ -712,6 +712,79 @@ XCC_CAS(unsigned char, uchar)
 XCC_CAS(short, short)
 XCC_CAS(unsigned short, ushort)
 
+/* `_mm_mfence`, which `winnt.h` gives the names `MemoryBarrier` and `MemoryFence`: a full fence is
+ * a locked operation that changes nothing, which is exactly what `__xcc_atomic_fence` already
+ * writes. The SSE name is what the SDK spells it with; the instruction is the machine's, and this
+ * compiler reaches it through its own fence.
+ */
+void _mm_mfence(void) { __xcc_atomic_fence(); }
+
+/* The MSVC-named atomics, which mingw-w64's headers declare as intrinsics and the Windows SDK
+ * leans on: `_InterlockedCompareExchange` is `InterlockedCompareExchange` by another name, and the
+ * whole family is the `lock cmpxchg` loop this runtime already has under `__xcc_*`. Implemented
+ * here so that a program written for MSVC reaches the same machine operation.
+ */
+long _InterlockedCompareExchange(long volatile *destination, long exchange, long comparand) {
+    long expected = comparand;
+    __builtin_atomic_cas(destination, expected, exchange);
+    return expected;
+}
+
+long _InterlockedExchange(long volatile *target, long value) {
+    long old = *target;
+    for (;;) {
+        long seen = __builtin_atomic_cas(target, old, value);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+
+long _InterlockedExchangeAdd(long volatile *addend, long value) {
+    long old = *addend;
+    for (;;) {
+        long seen = __builtin_atomic_cas(addend, old, old + value);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+
+long _InterlockedIncrement(long volatile *addend) { return _InterlockedExchangeAdd(addend, 1) + 1; }
+long _InterlockedDecrement(long volatile *addend) { return _InterlockedExchangeAdd(addend, -1) - 1; }
+long _InterlockedAnd(long volatile *value, long mask) {
+    long old = *value;
+    for (;;) {
+        long seen = __builtin_atomic_cas(value, old, old & mask);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+long _InterlockedOr(long volatile *value, long mask) {
+    long old = *value;
+    for (;;) {
+        long seen = __builtin_atomic_cas(value, old, old | mask);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+long _InterlockedXor(long volatile *value, long mask) {
+    long old = *value;
+    for (;;) {
+        long seen = __builtin_atomic_cas(value, old, old ^ mask);
+        if (seen == old) {
+            return old;
+        }
+        old = seen;
+    }
+}
+
 /* The `__stos*` four are `memset` with an element size, and the products are the two halves a
  * 64x64 multiply gives, the high one through a pointer. */
 void __stosb(unsigned char *dest, unsigned char value, size_t count) {

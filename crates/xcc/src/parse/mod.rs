@@ -2600,12 +2600,13 @@ block0 (entry)(v0: int, v1: int):
 
     #[test]
     fn what_the_emitter_cannot_express_is_refused_and_the_body_dropped() {
-        // An aggregate's value is its address (ADR-004), so a conditional expression choosing
-        // between two of them would have to carry one through a join, and `cir` has no register for
-        // one: refused at the expression, and the function is not lowered.
+        // A `va_arg` of a *record* is the shape: the value has to come back in a register the back
+        // end chose, and an aggregate has no register. (A record-valued `?:` used to be the example
+        // here - it is lowered now, because the arms are already addresses and the join carries
+        // one.)
         let (module, _, diagnostics) = module(
-            "struct S { int a; int b; };
-             int f(int c) { struct S x; struct S y; return (c ? x : y).a; }",
+            "typedef struct { int a; } S;
+             int f(int n, ...) { __builtin_va_list ap; __builtin_va_start(ap, n); S s = __builtin_va_arg(ap, S); return s.a; }",
         );
         let messages: Vec<&str> = diagnostics
             .iter()

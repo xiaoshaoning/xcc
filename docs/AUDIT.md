@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M16 - 2026-11-25 - sqlite3.c compiles, links, and faults inside `open`
+
+**Yes, it compiles.** 265 977 lines, the Windows path, through the SDK headers: **0 errors**, a 2.7 MB object in 7.1
+seconds. Getting the last three took two things.
+
+**The `__PTRDIFF_TYPE__` family.** `sqlite3.c` casts an integer to a pointer through `__PTRDIFF_TYPE__` on any compiler
+that has it, and falls back to `&((char*)0)[X]` on the others - so two errors were sqlite saying "I do not know what kind
+of compiler this is, so here is the trick that works everywhere". `__PTRDIFF_TYPE__`, `__SIZE_TYPE__` and
+`__WCHAR_TYPE__` are *true statements about this target's typedefs* (`long long`, `unsigned long long`,
+`unsigned short`), and defining them is the same class of fix as `__NO_INLINE__`: a header asks, and the answer is a fact
+rather than a claim.
+
+**And the aggregate `?:`, which was a real feature.** `a ? b : c` where the arms are structs. The refusal was right that
+`cir` has no register for an aggregate and wrong that there is nothing else to carry: **a record's value is already its
+address** (ADR-004), so the join carries the `pointer to record` and the result is an rvalue of the record type whose
+place is whichever arm ran. The object is alive for the rest of the full expression, which is as long as a value of
+aggregate type can be used. Two tests asserted the old refusal; both now assert the answer, and the one that needed an
+example of "what the emitter cannot express" uses `va_arg` of a record instead.
+
+**It links** - after two more MSVC intrinsics in the runtime: `_InterlockedCompareExchange` (and the seven beside it,
+which are the `lock cmpxchg` loop this runtime already had under other names) and `_mm_mfence` (`winnt.h`'s
+`MemoryBarrier`, which is this runtime's own fence).
+
+**It does not run.** `sqlite3_open(":memory:")` faults with a NULL dereference, while `clang`'s build of the same two
+files runs the whole driver and answers `sum = 6`. `-DSQLITE_THREADSAFE=0` faults the same way, so it is not the mutex
+path. The fault is at `.text+0x129e2d`, and naming the function there took an `objdump` of the object, a symbol table,
+and arithmetic on the linked image - **because our linked image carries no symbol table at all**. That is the finding
+this measurement leaves behind: a compiler whose output cannot be debugged makes every miscompilation a search, and the
+next piece of work is a symbol table (or a `--map`) in the image, not another guess at sqlite.
+
+205 unit, 41 parser, 30 CLI, 5 invalid, 34 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M15 - 2026-11-25 - the first use is not the right use
 
 A diagnostic about a token from a macro has nowhere to point but the macro's *body* - which is where the token was

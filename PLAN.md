@@ -1077,9 +1077,17 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       one under the cursor. `&((char*)0)[X]` is refused by the `&` *after* `X` has been read, so the caret is on the
       `&` and the cursor is on the `]` - no note, and the span cannot say which use either. Closing that needs the
       site to travel *with* the span (a location type), which is the honest next step rather than a wider search.
-- [ ] **The last three of sqlite3.c**: two `&((char*)0)[X]` uses (the note above cannot name them yet) and a `?:`
-      whose arms are aggregates (`(n==0 ? tok : tok)` on a `Token`), where the result has to copy a value it is given
-      by address.
+- [x] **The last three of sqlite3.c.** Two were sqlite asking "what kind of compiler is this" - it casts through
+      `__PTRDIFF_TYPE__` on any compiler that has it and falls back to `&((char*)0)[X]` on the others, so that family of
+      type-spelling macros is now predefined (it is a true statement about the typedefs). The third was a real feature:
+      an *aggregate* `?:` carries the arms' addresses through the join, because a record's value already is its
+      address. sqlite3.c compiles with **0 errors** and links.
+- [ ] **sqlite3.c does not run**: `sqlite3_open(":memory:")` faults with a NULL dereference where `clang`'s build of
+      the same two files answers `sum = 6`. Not the mutex path (`SQLITE_THREADSAFE=0` faults too). **The obstacle is
+      that a linked image has no symbol table**, so `0x14012ae2d` took an `objdump` of the object plus arithmetic to
+      name - and the name it gives (`fkLookupParent + 0xa44`, a function `sqlite3_open` does not call) is not to be
+      trusted. Next: **a symbol table in the linked image** (or `--map`), which turns every future miscompilation from a
+      search into a lookup.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

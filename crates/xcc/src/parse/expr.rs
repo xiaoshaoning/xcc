@@ -322,22 +322,31 @@ impl Parser<'_> {
         };
         // A `void` arm carries side effects and no value, so the join takes no parameter then.
         let void = matches!(self.types.kind(ty), Type::Void);
-        if !void && !self.lowerable(ty) {
-            // An aggregate arm would have to be carried through the join, and `cir` has no
-            // register for one: refused rather than half-lowered.
-            self.not_lowered(
-                question,
-                "a conditional expression whose arms are aggregates",
-            );
+        // An *aggregate* arm is a record, and a record is never in a register: its value is the
+        // address of the object it was written into. So the join carries that address - which is
+        // exactly how a call returning a record hands its result over - and the `?:`'s value is an
+        // rvalue of the record type whose place is whichever arm ran. The object is alive for the
+        // rest of the full expression, which is as long as the result can be used (C99 6.5.15p5
+        // makes it a value, and a value of aggregate type is only ever read by copying it).
+        let aggregate = !void && self.types.record_of(ty).is_some();
+        if !void && !aggregate && !self.lowerable(ty) {
+            self.not_lowered(question, "a conditional expression of this type");
             // Poisoned: nothing downstream complains a second time about a value with no address.
             return Some(Value::temporary(self.types.error()));
         }
-        let params: Vec<TypeId> = if void { Vec::new() } else { vec![ty] };
+        let carried_ty = if aggregate { self.pointer_to(ty) } else { ty };
+        let params: Vec<TypeId> = if void { Vec::new() } else { vec![carried_ty] };
         let join = self.emit(|builder| builder.append_block(&params, question))?;
         for (exit, arm) in [(then_exit, when_true), (else_exit, when_false)] {
             self.switch_to(exit);
             let carried: Option<cir::Value> = if void {
                 None
+            } else if aggregate {
+                // The arm's own object, which is where its value already is.
+                match arm.cir {
+                    Some(address) => Some(address),
+                    None => return Some(Value::new(ty, folded, false)),
+                }
             } else {
                 match self.convert(arm, ty, question).cir {
                     Some(value) => Some(value),

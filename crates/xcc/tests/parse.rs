@@ -941,10 +941,12 @@ fn what_aggregates_still_cannot_do() {
         "struct S { unsigned a : 3; }; int f(void) { struct S s; return (int)&s.a; }",
         "the address of a bitfield cannot be taken",
     );
-    // An aggregate cannot be carried through a join: the join would need a register for it.
-    refuses(
+    // An aggregate *can* now be carried through a join - the arms are already addresses and the
+    // join carries one - so this asserts the answer rather than the refusal it used to. The
+    // refusal was right about `cir` having no register for an aggregate and wrong about there being
+    // nothing else to carry.
+    parses(
         "struct P { int x; }; int f(int c) { struct P a = {1}; struct P b = {2}; return (c ? a : b).x; }",
-        "a conditional expression whose arms are aggregates",
     );
     // ...but it does travel by value across a call, on the ABI's terms (see the layout test and
     // the ABI test in `back`).
