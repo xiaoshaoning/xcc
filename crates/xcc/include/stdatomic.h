@@ -40,6 +40,8 @@
 /* 7.17.2: the typedefs. The narrow ones are declared as the standard asks and are *not* usable for
  * an operation here - a `char` swap is not one of the machine's operations - so a program that
  * fetches on one is refused by name at the call. */
+/* `_Atomic _Bool` is four bytes here, like a flag: the machine swaps 1, 2, 4 or 8 bytes, and a
+ * one-byte atomic flag would be a *different* operation rather than a cheaper one. */
 typedef _Atomic int atomic_bool;
 typedef _Atomic char atomic_char;
 typedef _Atomic signed char atomic_schar;
@@ -115,6 +117,46 @@ int __xcc_exchange_int(volatile int *object, int wanted);
 unsigned __xcc_exchange_uint(volatile unsigned *object, unsigned wanted);
 long long __xcc_exchange_llong(volatile long long *object, long long wanted);
 unsigned long long __xcc_exchange_ullong(volatile unsigned long long *object, unsigned long long wanted);
+/* char */
+char __xcc_add_char(volatile char *object, char argument);
+char __xcc_sub_char(volatile char *object, char argument);
+char __xcc_and_char(volatile char *object, char argument);
+char __xcc_or_char(volatile char *object, char argument);
+char __xcc_xor_char(volatile char *object, char argument);
+char __xcc_exchange_char(volatile char *object, char wanted);
+int __xcc_cas_char(volatile char *object, char *expected, char desired);
+/* signed char */
+signed char __xcc_add_schar(volatile signed char *object, signed char argument);
+signed char __xcc_sub_schar(volatile signed char *object, signed char argument);
+signed char __xcc_and_schar(volatile signed char *object, signed char argument);
+signed char __xcc_or_schar(volatile signed char *object, signed char argument);
+signed char __xcc_xor_schar(volatile signed char *object, signed char argument);
+signed char __xcc_exchange_schar(volatile signed char *object, signed char wanted);
+int __xcc_cas_schar(volatile signed char *object, signed char *expected, signed char desired);
+/* unsigned char */
+unsigned char __xcc_add_uchar(volatile unsigned char *object, unsigned char argument);
+unsigned char __xcc_sub_uchar(volatile unsigned char *object, unsigned char argument);
+unsigned char __xcc_and_uchar(volatile unsigned char *object, unsigned char argument);
+unsigned char __xcc_or_uchar(volatile unsigned char *object, unsigned char argument);
+unsigned char __xcc_xor_uchar(volatile unsigned char *object, unsigned char argument);
+unsigned char __xcc_exchange_uchar(volatile unsigned char *object, unsigned char wanted);
+int __xcc_cas_uchar(volatile unsigned char *object, unsigned char *expected, unsigned char desired);
+/* short */
+short __xcc_add_short(volatile short *object, short argument);
+short __xcc_sub_short(volatile short *object, short argument);
+short __xcc_and_short(volatile short *object, short argument);
+short __xcc_or_short(volatile short *object, short argument);
+short __xcc_xor_short(volatile short *object, short argument);
+short __xcc_exchange_short(volatile short *object, short wanted);
+int __xcc_cas_short(volatile short *object, short *expected, short desired);
+/* unsigned short */
+unsigned short __xcc_add_ushort(volatile unsigned short *object, unsigned short argument);
+unsigned short __xcc_sub_ushort(volatile unsigned short *object, unsigned short argument);
+unsigned short __xcc_and_ushort(volatile unsigned short *object, unsigned short argument);
+unsigned short __xcc_or_ushort(volatile unsigned short *object, unsigned short argument);
+unsigned short __xcc_xor_ushort(volatile unsigned short *object, unsigned short argument);
+unsigned short __xcc_exchange_ushort(volatile unsigned short *object, unsigned short wanted);
+int __xcc_cas_ushort(volatile unsigned short *object, unsigned short *expected, unsigned short desired);
 int __xcc_cas_int(volatile int *object, int *expected, int desired);
 int __xcc_cas_uint(volatile unsigned *object, unsigned *expected, unsigned desired);
 int __xcc_cas_llong(volatile long long *object, long long *expected, long long desired);
@@ -132,6 +174,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_fetch_add(object, argument) \
     _Generic((object), \
+        char *: __xcc_add_char((volatile char *)(object), (char)(argument)), \
+        signed char *: __xcc_add_schar((volatile signed char *)(object), (signed char)(argument)), \
+        unsigned char *: __xcc_add_uchar((volatile unsigned char *)(object), (unsigned char)(argument)), \
+        short *: __xcc_add_short((volatile short *)(object), (short)(argument)), \
+        unsigned short *: __xcc_add_ushort((volatile unsigned short *)(object), (unsigned short)(argument)), \
         int *: __xcc_add_int((volatile int *)(object), (int)(argument)), \
         unsigned *: __xcc_add_uint((volatile unsigned *)(object), (unsigned)(argument)), \
         long *: (long)__xcc_add_int((volatile int *)(object), (int)(argument)), \
@@ -142,6 +189,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_fetch_sub(object, argument) \
     _Generic((object), \
+        char *: __xcc_sub_char((volatile char *)(object), (char)(argument)), \
+        signed char *: __xcc_sub_schar((volatile signed char *)(object), (signed char)(argument)), \
+        unsigned char *: __xcc_sub_uchar((volatile unsigned char *)(object), (unsigned char)(argument)), \
+        short *: __xcc_sub_short((volatile short *)(object), (short)(argument)), \
+        unsigned short *: __xcc_sub_ushort((volatile unsigned short *)(object), (unsigned short)(argument)), \
         int *: __xcc_sub_int((volatile int *)(object), (int)(argument)), \
         unsigned *: __xcc_sub_uint((volatile unsigned *)(object), (unsigned)(argument)), \
         long *: (long)__xcc_sub_int((volatile int *)(object), (int)(argument)), \
@@ -152,6 +204,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_fetch_and(object, argument) \
     _Generic((object), \
+        char *: __xcc_and_char((volatile char *)(object), (char)(argument)), \
+        signed char *: __xcc_and_schar((volatile signed char *)(object), (signed char)(argument)), \
+        unsigned char *: __xcc_and_uchar((volatile unsigned char *)(object), (unsigned char)(argument)), \
+        short *: __xcc_and_short((volatile short *)(object), (short)(argument)), \
+        unsigned short *: __xcc_and_ushort((volatile unsigned short *)(object), (unsigned short)(argument)), \
         int *: __xcc_and_int((volatile int *)(object), (int)(argument)), \
         unsigned *: __xcc_and_uint((volatile unsigned *)(object), (unsigned)(argument)), \
         long long *: __xcc_and_llong((volatile long long *)(object), (long long)(argument)), \
@@ -160,6 +217,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_fetch_or(object, argument) \
     _Generic((object), \
+        char *: __xcc_or_char((volatile char *)(object), (char)(argument)), \
+        signed char *: __xcc_or_schar((volatile signed char *)(object), (signed char)(argument)), \
+        unsigned char *: __xcc_or_uchar((volatile unsigned char *)(object), (unsigned char)(argument)), \
+        short *: __xcc_or_short((volatile short *)(object), (short)(argument)), \
+        unsigned short *: __xcc_or_ushort((volatile unsigned short *)(object), (unsigned short)(argument)), \
         int *: __xcc_or_int((volatile int *)(object), (int)(argument)), \
         unsigned *: __xcc_or_uint((volatile unsigned *)(object), (unsigned)(argument)), \
         long long *: __xcc_or_llong((volatile long long *)(object), (long long)(argument)), \
@@ -168,6 +230,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_fetch_xor(object, argument) \
     _Generic((object), \
+        char *: __xcc_xor_char((volatile char *)(object), (char)(argument)), \
+        signed char *: __xcc_xor_schar((volatile signed char *)(object), (signed char)(argument)), \
+        unsigned char *: __xcc_xor_uchar((volatile unsigned char *)(object), (unsigned char)(argument)), \
+        short *: __xcc_xor_short((volatile short *)(object), (short)(argument)), \
+        unsigned short *: __xcc_xor_ushort((volatile unsigned short *)(object), (unsigned short)(argument)), \
         int *: __xcc_xor_int((volatile int *)(object), (int)(argument)), \
         long long *: __xcc_xor_llong((volatile long long *)(object), (long long)(argument)), \
         unsigned long long *: __xcc_xor_ullong((volatile unsigned long long *)(object), \
@@ -175,6 +242,11 @@ void __xcc_atomic_fence(void);
 
 #define atomic_exchange(object, desired) \
     _Generic((object), \
+        char *: __xcc_exchange_char((volatile char *)(object), (char)(desired)), \
+        signed char *: __xcc_exchange_schar((volatile signed char *)(object), (signed char)(desired)), \
+        unsigned char *: __xcc_exchange_uchar((volatile unsigned char *)(object), (unsigned char)(desired)), \
+        short *: __xcc_exchange_short((volatile short *)(object), (short)(desired)), \
+        unsigned short *: __xcc_exchange_ushort((volatile unsigned short *)(object), (unsigned short)(desired)), \
         int *: __xcc_exchange_int((volatile int *)(object), (int)(desired)), \
         unsigned *: __xcc_exchange_uint((volatile unsigned *)(object), (unsigned)(desired)), \
         long *: (long)__xcc_exchange_int((volatile int *)(object), (int)(desired)), \
@@ -187,6 +259,11 @@ void __xcc_atomic_fence(void);
  * allows, and which makes the standard's own lock example work either way. */
 #define atomic_compare_exchange_strong(object, expected, desired) \
     _Generic((object), \
+        char *: __xcc_cas_char((volatile char *)(object), (char *)(expected), (char)(desired)), \
+        signed char *: __xcc_cas_schar((volatile signed char *)(object), (signed char *)(expected), (signed char)(desired)), \
+        unsigned char *: __xcc_cas_uchar((volatile unsigned char *)(object), (unsigned char *)(expected), (unsigned char)(desired)), \
+        short *: __xcc_cas_short((volatile short *)(object), (short *)(expected), (short)(desired)), \
+        unsigned short *: __xcc_cas_ushort((volatile unsigned short *)(object), (unsigned short *)(expected), (unsigned short)(desired)), \
         int *: __xcc_cas_int((volatile int *)(object), (int *)(expected), (int)(desired)), \
         unsigned *: __xcc_cas_uint((volatile unsigned *)(object), (unsigned *)(expected), \
                                    (unsigned)(desired)), \

@@ -564,6 +564,43 @@ int main(void) {
 }
 "#;
 
+/// The program the narrow-atomic test below compiles, as a raw Rust string.
+const NARROW_ATOMIC_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <stdatomic.h>
+
+/* The narrow widths: `lock cmpxchg` has a form for one byte and for two, so an `_Atomic char` and
+ * an `_Atomic short` are real atomics and not a wider word pretending. The signed ones matter
+ * because `cmpxchg` writes only the low byte or word of `rax` - a result that is not extended back
+ * to its type reads as a large positive number where the program sees a negative one. */
+int main(void) {
+    atomic_char small = 10;
+    atomic_short medium = 100;
+    char expected = 15;
+    short wanted = 0;
+
+    printf("char %d -> %d\n", (int)atomic_fetch_add(&small, 5), (int)atomic_load(&small));
+    printf("short %d -> %d\n", (int)atomic_fetch_add(&medium, 20), (int)atomic_load(&medium));
+    printf("char cas %d -> %d\n", atomic_compare_exchange_strong(&small, &expected, 99),
+           (int)atomic_load(&small));
+    printf("short cas fail %d -> %d\n", atomic_compare_exchange_strong(&medium, &wanted, 1),
+           (int)wanted);
+
+    {
+        atomic_char negative = -5;
+        atomic_short bigger = -300;
+        char seen = -5;
+        short other = 0;
+        printf("signed cas %d -> %d\n", atomic_compare_exchange_strong(&negative, &seen, 7),
+               (int)atomic_load(&negative));
+        printf("signed fail %d -> %d\n", atomic_compare_exchange_strong(&bigger, &other, 1),
+               (int)other);
+        printf("signed add %d -> %d\n", (int)atomic_fetch_add(&bigger, 300), (int)atomic_load(&bigger));
+    }
+    return 0;
+}
+"#;
+
 /// The program the atomic test below compiles, as a raw Rust string.
 const ATOMIC_PROGRAM: &str = r#"
 #include <stdio.h>
@@ -1300,5 +1337,19 @@ fn uchar_types_conversions_and_the_three_literal_families() {
     assert_eq!(run.status.code(), Some(0), "it ran to completion");
     let out = String::from_utf8_lossy(&run.stdout);
     let expected = "sizes 7 12 24 2 4@@firsts 104 104 104 -61 233 233@@chars 2 233 4 233 2@@mbrtoc16 97 1@@mbrtoc32 97 1@@c16rtomb 1 Z@@c32rtomb 1 Q@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
+/// The narrow atomics: `_Atomic char` and `_Atomic short`, signed ones included. The signed cases
+/// are the point - `cmpxchg` writes one byte or two and leaves the rest of `rax` as it was, so a
+/// result that is not extended back to its type reads as a large positive number. Every line is
+/// what `clang` prints for this program.
+#[test]
+#[cfg(target_os = "windows")]
+fn atomic_char_and_short_are_real_atomics() {
+    let run = run_linked_with("c11", "narrow-atomics", NARROW_ATOMIC_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "char 10 -> 15@@short 100 -> 120@@char cas 1 -> 99@@short cas fail 0 -> 120@@signed cas 1 -> 7@@signed fail 0 -> -300@@signed add -300 -> 0@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }

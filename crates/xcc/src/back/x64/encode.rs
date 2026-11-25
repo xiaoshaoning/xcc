@@ -1653,14 +1653,20 @@ impl Encoder<'_> {
         } else if let Operand::Value(register) = expected {
             self.read_into(*register, Reg::RAX);
         }
-        // `lock cmpxchg [r/m], r64` (`F0 REX.W 0F B1 /r`) or the 32-bit form without the REX.W.
+        // `lock cmpxchg [r/m], r`: 64 bits with a REX.W, 32 without, 16 with a `66` in front of the
+        // lock, and 8 bits through the other opcode (`B0`). The accumulator is `rax`, `eax`, `ax` or
+        // `al` by the same width, which is why one register serves all four.
+        if size == 2 {
+            self.byte(0x66);
+        }
         self.byte(0xF0);
         if size == 8 {
             self.prefix_w(value, address);
         } else {
+            // No `W` for 32 bits, and a REX byte still needed for an extended register at 1 or 2.
             self.prefix(value, address);
         }
-        self.bytes(&[0x0F, 0xB1]);
+        self.bytes(&[0x0F, if size == 1 { 0xB0 } else { 0xB1 }]);
         self.modrm(0, value.0, address);
         // The old value is in `rax`, which is where the result goes too.
         if self.allocation.location(dst) != Location::Register(Reg::RAX) {

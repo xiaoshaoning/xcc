@@ -1359,7 +1359,7 @@ impl Parser<'_> {
                     }
                 }
                 "void" | "_Bool" | "char" | "short" | "int" | "long" | "float" | "double"
-                | "signed" | "unsigned" | "_Complex" => {
+                | "signed" | "unsigned" | "_Complex" | "_Imaginary" => {
                     spelled.push(word);
                     specs.has_type_specifier = true;
                     self.at += 1;
@@ -1450,6 +1450,18 @@ impl Parser<'_> {
         }
         if count("_Bool") > 0 {
             specs.ty = Some(self.types.fundamental("_Bool").unwrap());
+            return specs;
+        }
+        // C99 6.2.5p11's three imaginary types, refused by name: C11 removed them, `clang` says
+        // "imaginary types are not supported" in every dialect, and a program that asked for one
+        // wants a `_Complex` value whose real part is zero.
+        if count("_Imaginary") > 0 {
+            let span = self.span();
+            self.error(
+                span,
+                "imaginary types are not supported: C11 removed them, and a `_Complex` value with a zero real part is what such a program means",
+            );
+            specs.ty = Some(self.types.error());
             return specs;
         }
         // C99 6.2.5p11: `_Complex` on its own is `double _Complex`, and the three complex types

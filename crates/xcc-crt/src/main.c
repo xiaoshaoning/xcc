@@ -689,6 +689,13 @@ XCC_ATOMIC(int, int)
 XCC_ATOMIC(unsigned, uint)
 XCC_ATOMIC(long long, llong)
 XCC_ATOMIC(unsigned long long, ullong)
+/* The narrow widths too: `lock cmpxchg` has a form for one byte and for two, so `_Atomic
+ * char` and `_Atomic short` are as cheap as the wide ones and need a loop each. */
+XCC_ATOMIC(char, char)
+XCC_ATOMIC(signed char, schar)
+XCC_ATOMIC(unsigned char, uchar)
+XCC_ATOMIC(short, short)
+XCC_ATOMIC(unsigned short, ushort)
 
 /* 7.17.7.4: the compare-and-exchange, whose *contract* is that a failure writes the value it found
  * into `expected`. One primitive, used once - the read of `*expected` is the comparand the caller
@@ -699,6 +706,11 @@ XCC_CAS(int, int)
 XCC_CAS(unsigned, uint)
 XCC_CAS(long long, llong)
 XCC_CAS(unsigned long long, ullong)
+XCC_CAS(char, char)
+XCC_CAS(signed char, schar)
+XCC_CAS(unsigned char, uchar)
+XCC_CAS(short, short)
+XCC_CAS(unsigned short, ushort)
 
 /* And the fence: a full barrier is a locked operation that changes nothing, and a compare-and-swap
  * against the value the object already holds is exactly that. */

@@ -873,29 +873,8 @@ impl Parser<'_> {
                 // function name already *is* an address and is never an lvalue - so the rule below
                 // refuses it. `lua_atpanic(L, &panic)` is how Lua hands a function over, and the
                 // value the name produces is exactly the pointer this operator would return.
-                //
-                // The test is the token in front of the operand, because the operand itself cannot
-                // say: by the time a function's name is a value it has decayed to a pointer to
-                // function, which is the same type a call returning one has. What the lookahead
-                // must exclude is everything that makes the designator *part* of a larger
-                // expression - `&f(x)->m` is the address of a member of the call's result, and
-                // taking the shortcut there made it `(&f)(x)->m`, which lz4frame.c found.
-                // `&(f)` is the one shape this cannot see; PLAN.md carries it.
-                if let Some(token) = self.peek().copied() {
-                    let names_a_function = self
-                        .symbols
-                        .lookup(token.text)
-                        .is_some_and(|entry| matches!(entry.kind, Kind::Function));
-                    let followed = self.peek_at(1).is_some_and(|next| {
-                        ["(", "[", ".", "->"]
-                            .iter()
-                            .any(|operator| self.is_punct(next, operator))
-                    });
-                    let function =
-                        token.kind == crate::lex::TokenKind::Ident && names_a_function && !followed;
-                    if function {
-                        return self.primary_expression();
-                    }
+                if self.operand_is_a_function_designator() {
+                    return self.primary_expression();
                 }
                 let value = self.unary_expression()?;
                 if self.types.is_error(value.ty) {
@@ -1002,6 +981,57 @@ impl Parser<'_> {
             }
             _ => self.postfix_expression(),
         }
+    }
+
+    /// Whether the operand at the cursor - which `&` is about to take the address of - is *exactly*
+    /// a function designator: parentheses and a function's name, and nothing else.
+    ///
+    /// A lookahead on the identifier alone answered this while every designator was bare, and it was
+    /// wrong in both directions: `&f(x)->m` was taken as a designator and became `(&f)(x)->m`
+    /// (lz4frame.c found that), and `&(f)` was not taken as one though it is. The question is about
+    /// the token *range* the operand covers, so this one looks at the range: open parens, a name, the
+    /// matching closes, end. A call cannot match, because its close paren follows more than a name.
+    fn operand_is_a_function_designator(&self) -> bool {
+        let mut ahead = 0;
+        let mut opens = 0;
+        while self
+            .peek_at(ahead)
+            .is_some_and(|token| self.is_punct(token, "("))
+        {
+            ahead += 1;
+            opens += 1;
+        }
+        let Some(token) = self.peek_at(ahead).copied() else {
+            return false;
+        };
+        if token.kind != crate::lex::TokenKind::Ident {
+            return false;
+        }
+        let names_a_function = self
+            .symbols
+            .lookup(token.text)
+            .is_some_and(|entry| matches!(entry.kind, Kind::Function));
+        if !names_a_function {
+            return false;
+        }
+        ahead += 1;
+        for _ in 0..opens {
+            let Some(close) = self.peek_at(ahead) else {
+                return false;
+            };
+            if !self.is_punct(close, ")") {
+                return false;
+            }
+            ahead += 1;
+        }
+        // ...and nothing may follow it: `&f(x)->m` is the address of a member of the call's result,
+        // and calling the shortcut there made it `(&f)(x)->m` - the bug lz4frame.c found, and one
+        // this rewrite brought back for exactly one commit by asking only the first half.
+        !self.peek_at(ahead).is_some_and(|next| {
+            ["(", "[", ".", "->"]
+                .iter()
+                .any(|operator| self.is_punct(next, operator))
+        })
     }
 
     /// `++x` and `x++` (and their `--` forms): read the place, add or subtract one, write it
@@ -1151,14 +1181,15 @@ impl Parser<'_> {
             return Value::temporary(self.types.error());
         }
         let object = self.types.pointee(pointer.ty);
-        // The machine swaps 32 or 64 bits and nothing else: a `char` swap is not one instruction,
-        // so it is refused here rather than done as the wrong width.
-        let integer = matches!(self.types.kind(object), Type::Int { bits: 32 | 64, .. });
+        // `lock cmpxchg` has a form for 1, 2, 4 and 8 bytes - the four widths an integer has here -
+        // so any integer is a legal object and anything else is refused rather than swapped as the
+        // wrong width.
+        let integer = self.types.is_integer(object);
         if !integer {
             let ty = self.describe(object);
             self.error(
                 span,
-                format!("an atomic operation needs a 32- or 64-bit integer, not {ty}"),
+                format!("an atomic operation needs an integer, not {ty}"),
             );
             return Value::temporary(self.types.error());
         }

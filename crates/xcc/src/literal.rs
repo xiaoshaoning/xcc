@@ -40,6 +40,18 @@ fn escape_value(escape: &str) -> Option<i64> {
     }
     // A numeric escape is one or more digits and nothing else; the range rule is the same one
     // a string literal follows.
+    // C99 6.4.3p2: the two universal character names, which a character constant reads the same way
+    // a literal does - four or eight hex digits and a code point.
+    if first == b'u' || first == b'U' {
+        let digits = if first == b'u' { 4 } else { 8 };
+        let mut at = 1;
+        let value = universal_character_name(bytes, &mut at, digits)?;
+        return if at == bytes.len() {
+            Some(i64::from(value))
+        } else {
+            None
+        };
+    }
     let radix = if first == b'x' { 16 } else { 8 };
     let mut at = if radix == 16 { 1 } else { 0 };
     let value = numeric_escape(bytes, &mut at, radix)?;
@@ -110,10 +122,40 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
                 at -= 1;
                 out.push(numeric_escape(bytes, &mut at, 8)?);
             }
+            // A universal character name is a *character* in a narrow literal too, so it takes the
+            // bytes its UTF-8 form has rather than one byte of it.
+            b'u' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 4)?)?,
+            b'U' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 8)?)?,
             other => out.push(named_escape(other)?),
         }
     }
     Some(out)
+}
+
+/// A universal character name (C99 6.4.3p2): exactly `digits` hex digits, naming a character.
+///
+/// `None` for a value that is not one - a surrogate, or past the last code point - because a
+/// character that is not a character must not silently become something else.
+fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usize) -> Option<u32> {
+    let end = *at + digits;
+    let text = std::str::from_utf8(bytes.get(*at..end)?).ok()?;
+    if !text.bytes().all(|byte| (byte as char).is_ascii_hexdigit()) {
+        return None;
+    }
+    *at = end;
+    let value = u32::from_str_radix(text, 16).ok()?;
+    if (0xD800..=0xDFFF).contains(&value) || value > 0x10FFFF {
+        return None;
+    }
+    Some(value)
+}
+
+/// One code point as UTF-8 bytes, which is what a narrow literal holds.
+fn push_utf8(out: &mut Vec<u8>, at: u32) -> Option<()> {
+    let character = char::from_u32(at)?;
+    let mut encoded = [0u8; 4];
+    out.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
+    Some(())
 }
 
 /// Whether a literal carries the `L` prefix. Its characters are `wchar_t`s - two bytes here -
@@ -223,6 +265,8 @@ fn utf32_bytes(spelling: &str) -> Option<Vec<u8>> {
                 at -= 1;
                 numeric_escape_utf32(bytes, &mut at, 8)?
             }
+            b'u' => universal_character_name(bytes, &mut at, 4)?,
+            b'U' => universal_character_name(bytes, &mut at, 8)?,
             other => u32::from(named_escape(other)?),
         };
         out.extend_from_slice(&value.to_le_bytes());
@@ -277,6 +321,8 @@ pub fn wide_bytes(spelling: &str) -> Option<Vec<u8>> {
                 at -= 1;
                 numeric_escape_wide(bytes, &mut at, 8)?
             }
+            b'u' => universal_character_name(bytes, &mut at, 4)?,
+            b'U' => universal_character_name(bytes, &mut at, 8)?,
             other => u32::from(named_escape(other)?),
         };
         push_code_point(&mut out, value)?;

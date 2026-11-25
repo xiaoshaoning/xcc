@@ -558,14 +558,14 @@ impl FunctionLowering<'_> {
                 ty,
                 ..
             } => {
-                // 32 or 64 bits, and an integer either way: `_Atomic` of a float is not something
-                // this compiler accepts, because a float swap is not one instruction.
-                let (size, _, class) = self.scalar(*ty, span)?;
-                if class != Class::Integer || !(size == 4 || size == 8) {
+                // An integer of 1, 2, 4 or 8 bytes: `cmpxchg` has a form for each, and `_Atomic` of
+                // a float is not something this compiler accepts, because a float swap is not one
+                // instruction.
+                let (size, signed, class) = self.scalar(*ty, span)?;
+                if class != Class::Integer || !matches!(size, 1 | 2 | 4 | 8) {
                     return Err(NotYet {
-                        message:
-                            "an atomic operation on this type: it needs a 32- or 64-bit integer"
-                                .into(),
+                        message: "an atomic operation on this type: it needs an integer of 1, 2, 4                                   or 8 bytes"
+                            .into(),
                         span,
                     });
                 }
@@ -581,6 +581,17 @@ impl FunctionLowering<'_> {
                     desired,
                     size,
                 });
+                // `cmpxchg` writes `al` or `ax` and leaves the rest of `rax` alone, so a value of one
+                // or two bytes is not canonical until it is extended - and every later operation
+                // assumes the canonical form. Four and eight bytes arrive whole.
+                if size < 4 {
+                    ops.push(Op::Canonical {
+                        dst,
+                        src: dst,
+                        size,
+                        signed,
+                    });
+                }
             }
             Inst::Const {
                 result, ty, bits, ..

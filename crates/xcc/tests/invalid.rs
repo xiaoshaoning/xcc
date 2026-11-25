@@ -138,21 +138,43 @@ fn a_complex_value_has_no_order_and_is_not_an_integer() {
 }
 
 #[test]
-fn an_atomic_operation_needs_a_width_the_machine_has() {
-    // The header's tables have one arm per width the machine can swap: 32 bits and 64. A `char` or
-    // a `double` has none, so the generic selection has nothing to pick and says so at the call -
-    // which is the honest answer, and the alternative is a swap of the wrong number of bytes.
-    assert!(!compiles_in_c11(
+fn an_atomic_operation_needs_an_integer() {
+    // `lock cmpxchg` has a form for 1, 2, 4 and 8 bytes - the four widths an integer has here - so
+    // every integer type is a legal atomic object and a floating-point one is not. This asserted
+    // the opposite for `atomic_char` until the narrow forms were written; the boundary that does
+    // not rot with the next width is the one below, integer or not.
+    assert!(compiles_in_c11(
         "#include <stdatomic.h>\nint f(void) { atomic_char c = 1; return atomic_fetch_add(&c, 1); }"
     ));
-    assert!(!compiles_in_c11(
-        "#include <stdatomic.h>\nint f(void) { _Atomic double d = 1.0; return (int)atomic_fetch_add(&d, 1.0); }"
+    assert!(compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { atomic_short s = 1; return (int)atomic_fetch_add(&s, 1); }"
     ));
     assert!(compiles_in_c11(
         "#include <stdatomic.h>\nint f(void) { atomic_int i = 1; return atomic_fetch_add(&i, 1); }"
     ));
     assert!(compiles_in_c11(
         "#include <stdatomic.h>\nint f(void) { atomic_ullong l = 1; return (int)atomic_fetch_add(&l, 1); }"
+    ));
+    // A float is not one of the machine's swaps, and is refused rather than swapped as bits.
+    assert!(!compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { _Atomic double d = 1.0; return (int)atomic_fetch_add(&d, 1.0); }"
+    ));
+    assert!(!compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { _Atomic float f = 1.0F; return (int)atomic_fetch_add(&f, 1.0F); }"
+    ));
+}
+
+#[test]
+fn imaginary_types_are_refused_by_name() {
+    // C99 6.2.5p11 has three imaginary types; C11 removed them and clang says "imaginary types are
+    // not supported" in every dialect. Refused with a reason rather than left as a parse error two
+    // tokens later, which is what "expected `;` after a declaration" was.
+    assert!(refused("double _Imaginary z = 1.0;"));
+    assert!(refused(
+        "int f(void) { _Imaginary float z; (void)z; return 0; }"
+    ));
+    assert!(compiles(
+        "int f(void) { double _Complex z = { 1.0, 0.0 }; (void)z; return 0; }"
     ));
 }
 

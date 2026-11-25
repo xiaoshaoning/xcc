@@ -103,6 +103,46 @@ int main(void) { return partial[0]; }"
 }
 
 #[test]
+fn the_address_of_a_parenthesised_function_designator_is_the_designator() {
+    // C99 6.5.3.2p3 asks about the *operand*, and parentheses do not change what it is: `&(g)` is
+    // `&g`. The shortcut used to read the token in front of the operand, where a `(` hid it - and
+    // when the rule was rewritten as a token *range* the other half went missing for a commit, so
+    // `&f(x)->m` became `(&f)(x)->m` again. Both halves are here now.
+    let function = "static void g(void) { }\n";
+    assert!(parses(&format!(
+        "{function}int f(void) {{ void (*p)(void) = &(g); p(); return 0; }}"
+    )));
+    assert!(parses(&format!(
+        "{function}int f(void) {{ void (*p)(void) = &((g)); p(); return 0; }}"
+    )));
+    assert!(parses(
+        "struct j { int d; };\nstatic struct j one;\nstatic struct j *mk(int n) { (void)n; return &one; }\n\
+         int f(void) { return &mk(1)->d != 0; }"
+    ));
+    // A call's result is not a designator, so its address is still an rvalue's address.
+    refuses(
+        "static int fn(int x) { return x; }\nint f(void) { int *p = &fn(1); (void)p; return 0; }",
+        "needs something it can take the address of",
+    );
+}
+
+#[test]
+fn universal_character_names_are_characters() {
+    // C99 6.4.3p2: `\u` is four hex digits and `\U` eight, and the value is a *character* - so a
+    // narrow literal holds its UTF-8 bytes, a `u` literal its UTF-16 units, and a surrogate is not
+    // a character at all.
+    assert!(parses(
+        "int f(void) { const char *s = \"caf\\u00e9\"; return s[3]; }"
+    ));
+    assert!(parses("int f(void) { return u'\\u00e9'; }"));
+    assert!(parses("int f(void) { return (int)U'\\U0001F600'; }"));
+    refuses(
+        "int f(void) { const char *s = \"caf\\uD800\"; return s[0]; }",
+        "escape this compiler does not read",
+    );
+}
+
+#[test]
 fn the_address_of_a_function_designator_is_the_designator() {
     // C99 6.5.3.2p3 - but only when the designator is the *whole* operand. `&f(x)->m` is the
     // address of a member of the call's result; taking the shortcut there made it `(&f)(x)->m`.

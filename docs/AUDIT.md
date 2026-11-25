@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - the four gaps, and the one that had to be closed twice
+
+The four things the last report listed as open are closed. Three were small; the first was small and the second half
+of it was not.
+
+**`&(f)` was the shape the lookahead could not see**, and the fix is a question about the operand's *token range* -
+parentheses, a function's name, the matching closes - rather than about the token in front of it. **And the rewrite
+brought the old bug back for one commit**: a range check that asks only what the range *is* accepts `&mk` in
+`&mk(1)->d`, because the call's `(` belongs to nothing the check looked at. What must also be true is that *nothing
+follows* the range, and the lz4 test failed exactly as it did in July. Both halves are in now, with `&(g)`, `&((g))`
+and `&mk(1)->d` in the parse suite.
+
+**`_Imaginary` is refused by name.** C99 6.2.5p11 has three imaginary types, C11 removed them, and `clang` says
+"imaginary types are not supported" in every dialect - so refusing is the oracle's answer, and the message says what
+such a program means (`_Complex` with a zero real part). The old behaviour was a parse error two tokens later.
+
+**Universal character names** - `\uXXXX` and `\UXXXXXXXX` - are read where a character is: a narrow literal holds the
+character's UTF-8 bytes (so `"caf\u00e9"` is five bytes, not six), a `u` literal its UTF-16 units, a `U` literal its
+code point, and a surrogate or a value past `0x10FFFF` is refused rather than becoming something else. Four readers
+needed it - narrow, UTF-16, UTF-32 and the character constant - which is now one `universal_character_name`.
+
+**And the narrow atomics**: `lock cmpxchg` has a form for one byte and for two, so `_Atomic char` and `_Atomic short`
+are real atomics. The interesting half is the *result*: `cmpxchg` writes only `al` or `ax` and leaves the rest of `rax`
+as it was, so a narrow result must be extended back to its type - `Op::Canonical` after the swap - or a signed
+`_Atomic short` holding -300 reads as a large positive number. The narrow forms are in the encoder, the lowering, five
+runtime loops and seven tables in the header, and `tests/exe.rs` compares seven lines with `clang`, two of them negative.
+
+201 unit, 34 parser, 30 CLI, 6 invalid, 25 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - the width that was missing, and a diagnostic that spoke Rust
 
 The `uchar.h` commit, reviewed. The literals encode right for all three families and the conversions match `clang`;
