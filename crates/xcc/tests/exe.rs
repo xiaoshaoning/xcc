@@ -1340,6 +1340,161 @@ fn uchar_types_conversions_and_the_three_literal_families() {
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
+/// The `#pragma pack` matrix the test below runs: every line is what `clang -std=c11` prints for
+/// this program, and the `sizeof`/`offsetof` numbers are the whole of what packing decides.
+const PACK_PROGRAM: &str = r#"#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+/* The default: nothing packed. */
+struct plain {
+  char c;
+  int i;
+  short s;
+};
+#pragma pack(1)
+struct p1 {
+  char c;
+  int i;
+  short s;
+};
+#pragma pack(2)
+struct p2 {
+  char c;
+  int i;
+  short s;
+};
+#pragma pack(4)
+struct p4 {
+  char c;
+  double d;
+};
+#pragma pack(push, 2)
+struct pushed {
+  char c;
+  int i;
+};
+#pragma pack(pop)
+struct popped {
+  char c;
+  int i;
+};
+#pragma pack()
+struct reset {
+  char c;
+  int i;
+};
+#pragma pack(1)
+struct bits1 {
+  unsigned a : 3;
+  unsigned b : 20;
+  char c;
+};
+#pragma pack(2)
+struct bits2 {
+  unsigned a : 3;
+  unsigned b : 20;
+  char c;
+};
+struct inner {
+  char c;
+  int i;
+};
+#pragma pack(1)
+struct outer1 {
+  char c;
+  struct inner in;
+};
+#pragma pack(2)
+struct outer2 {
+  char c;
+  struct inner in;
+};
+#pragma pack()
+struct aligned {
+  _Alignas(16) char c;
+  int i;
+};
+#pragma pack(2)
+struct capped_alignment {
+  _Alignas(16) char c;
+  int i;
+};
+
+/* A packed struct the program actually uses: by value through the ABI, in an array, initialised,
+ * and as bytes. */
+#pragma pack(push, 1)
+struct packet {
+  unsigned char tag;
+  unsigned int length;
+  unsigned short kind;
+};
+#pragma pack(pop)
+
+struct packet make(unsigned char tag, unsigned int length, unsigned short kind) {
+  struct packet made;
+  made.tag = tag;
+  made.length = length;
+  made.kind = kind;
+  return made;
+}
+
+unsigned int total(struct packet one) { return one.tag + one.length + one.kind; }
+
+int main(void) {
+  printf("plain %d %d %d %d\n", (int)sizeof(struct plain), (int)offsetof(struct plain, i),
+         (int)offsetof(struct plain, s), (int)_Alignof(struct plain));
+  printf("p1 %d %d %d %d\n", (int)sizeof(struct p1), (int)offsetof(struct p1, i),
+         (int)offsetof(struct p1, s), (int)_Alignof(struct p1));
+  printf("p2 %d %d %d %d\n", (int)sizeof(struct p2), (int)offsetof(struct p2, i),
+         (int)offsetof(struct p2, s), (int)_Alignof(struct p2));
+  printf("p4 %d %d %d\n", (int)sizeof(struct p4), (int)offsetof(struct p4, d),
+         (int)_Alignof(struct p4));
+  printf("push %d %d pop %d %d reset %d %d\n", (int)sizeof(struct pushed),
+         (int)offsetof(struct pushed, i), (int)sizeof(struct popped),
+         (int)offsetof(struct popped, i), (int)sizeof(struct reset),
+         (int)offsetof(struct reset, i));
+  printf("bits %d %d\n", (int)sizeof(struct bits1), (int)sizeof(struct bits2));
+  printf("outer %d %d %d %d %d\n", (int)sizeof(struct inner), (int)sizeof(struct outer1),
+         (int)offsetof(struct outer1, in), (int)sizeof(struct outer2),
+         (int)offsetof(struct outer2, in));
+  printf("align %d %d %d %d\n", (int)sizeof(struct aligned), (int)_Alignof(struct aligned),
+         (int)sizeof(struct capped_alignment), (int)_Alignof(struct capped_alignment));
+
+  struct packet one = make(1, 4096, 7);
+  struct packet list[2] = {{2, 300, 9}, {3, 400, 11}};
+  printf("packet %d %u %d %u %u\n", (int)sizeof(struct packet), one.length, (int)one.kind,
+         total(one), total(list[1]));
+  printf("array %d %d %u %u\n", (int)list[0].tag, (int)list[1].tag, list[0].length,
+         list[1].length);
+  {
+    unsigned char bytes[7];
+    memcpy(bytes, &one, sizeof(struct packet));
+    printf("bytes %d %d %d\n", (int)bytes[0], (int)bytes[1], (int)bytes[2]);
+  }
+  return 0;
+}
+"#;
+
+/// `#pragma pack` decides a struct's offsets, and a compiler that ignores it writes a program that
+/// touches the wrong bytes. The numbers here are the measurement: `{char,int,short}` is 12/4/8
+/// unpacked, 7/1/5 under `pack(1)`, 8/2/6 under `pack(2)`; a `double` moves from offset 8 to 4
+/// under `pack(4)`; a bitfield unit's alignment is capped the same way (5 and 6 bytes against 8);
+/// `pack` caps an explicit `_Alignas(16)` too (6 bytes, align 2 under `pack(2)` against 16/16).
+///
+/// The last three lines are the ones a `sizeof` table cannot prove: a packed struct passed **by
+/// value**, in an array, initialised in braces, and read back as raw bytes - so the offsets are
+/// used by the object writer and the ABI, not merely computed.
+#[test]
+#[cfg(target_os = "windows")]
+fn packing_decides_offsets_the_way_clang_does() {
+    let run = run_linked_with("c11", "pack", PACK_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "plain 12 4 8 4@@p1 7 1 5 1@@p2 8 2 6 2@@p4 12 4 4@@push 6 2 pop 8 4 reset 8 4@@bits 5 6@@outer 6 7 1 8 2@@align 16 16 6 2@@packet 7 4096 7 4104 414@@array 2 3 300 400@@bytes 1 0 16@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
 /// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
 /// name, and an object written with one links against a use written with the other. That exercises
 /// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes

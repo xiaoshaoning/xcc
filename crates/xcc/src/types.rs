@@ -291,7 +291,10 @@ impl Types {
             bits: None,
             alignas: 0,
         };
-        self.complete_record(record, vec![part.clone(), part]);
+        // A `_Complex` is two floating-point members and has the ABI's layout whatever `#pragma
+        // pack` is in force: it is not a declared struct, so no pragma reaches it, and packing it
+        // would break the ABI that passes it in registers.
+        self.complete_record(record, vec![part.clone(), part], Self::DEFAULT_PACK);
         self.complex.insert(element, ty);
         self.complex_records.insert(record);
         ty
@@ -352,7 +355,22 @@ impl Types {
     ///
     /// The layout is the target's own: each member starts at the next offset that satisfies its
     /// alignment, a bitfield is packed into its unit, and a union's members all start at zero.
-    pub fn complete_record(&mut self, record: RecordId, members: Vec<Member>) {
+    /// The largest alignment a member may have when nothing packs it: the ABI's, which is what
+    /// `_Alignas(16)` may ask for. `#pragma pack` lowers it.
+    pub const DEFAULT_PACK: u8 = 16;
+
+    /// Lay out a record: where each member goes, and the record's size and alignment.
+    ///
+    /// `pack` is the `#pragma pack` limit in force where the record is declared, and it is the
+    /// *whole* of packing: a member's alignment is `min(its own, pack)`, which is measured against
+    /// `clang` - `struct { char c; int i; short s; }` is 12/4/8 unpacked, 7/1/5 under `pack(1)` and
+    /// 8/2/6 under `pack(2)`; a `double` member moves from offset 8 to 4 under `pack(4)`; a bitfield
+    /// unit's alignment is capped the same way, so the three members above are 5 bytes packed and 6
+    /// under `pack(2)` against 8 unpacked. Two things it does **not** do, both measured: a nested
+    /// record keeps the layout of its own declaration (the member's *placement* is capped, its
+    /// inside is not), and `pack` caps an explicit `_Alignas` too - `pack(2)` puts a
+    /// `_Alignas(16)` member at 2 with the record's alignment at 2.
+    pub fn complete_record(&mut self, record: RecordId, members: Vec<Member>, pack: u8) {
         let kind = self.records[record.0 as usize].kind;
         let mut offset = 0u64; // end of what has been laid out
         let mut size = 0u64; // the largest end, which is the size for a union
@@ -364,7 +382,14 @@ impl Types {
 
         let mut laid_out: Vec<Member> = Vec::with_capacity(members.len());
         for mut member in members {
-            let member_align = self.align_of(member.ty).unwrap_or(1).max(member.alignas);
+            // Everything else in this function reads `member_align`, so the cap is asked once -
+            // including for the bitfield unit's start, which is the one an explicit cap would
+            // otherwise have missed.
+            let member_align = self
+                .align_of(member.ty)
+                .unwrap_or(1)
+                .max(member.alignas)
+                .min(u64::from(pack));
             if matches!(member.bits, Some((_, 0))) {
                 // `int :0` is a marker: it closes the unit being packed and is otherwise
                 // nothing - no offset of its own, no size, and no alignment to raise. That is

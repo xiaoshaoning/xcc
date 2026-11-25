@@ -80,12 +80,26 @@ pub struct Preprocessed {
     /// The names the tokens are spelled with: ids are only meaningful with the table that
     /// minted them, so it travels with them rather than being left behind.
     names: Interner,
+    /// Where `#pragma pack` changed the limit: `(token index, pack)`, in order.
+    pack_changes: Vec<(usize, u8)>,
 }
 
 impl Preprocessed {
     /// The name table the tokens' ids are meaningful in.
     pub fn names(&self) -> &Interner {
         &self.names
+    }
+
+    /// The `#pragma pack` limit in force at token `index`: the limit a record whose body ends
+    /// *there* is laid out with. Without a pragma it is the ABI's, which is what `_Alignas(16)`
+    /// may ask for.
+    pub fn pack_at(&self, index: usize) -> u8 {
+        // How many changes have happened at or before this token; the last of them is in force.
+        let past = self.pack_changes.partition_point(|(at, _)| *at <= index);
+        match past {
+            0 => crate::types::Types::DEFAULT_PACK,
+            _ => self.pack_changes[past - 1].1,
+        }
     }
 }
 
@@ -135,6 +149,14 @@ impl Preprocessed {
 /// headers and libraries test, and the last two are what code written for this instruction set
 /// tests. Without `_WIN32`, a program that selects its platform - sqlite's own `os_setup.h` is one -
 /// decides it is on Unix and includes `<pthread.h>`.
+/// The limit a `#pragma pack(N)` can name: the five alignments this target has.
+fn pack_limit(number: &str) -> Option<u8> {
+    match number.parse::<u8>() {
+        Ok(limit) if matches!(limit, 1 | 2 | 4 | 8 | 16) => Some(limit),
+        _ => None,
+    }
+}
+
 /// The attributes that ask for nothing this compiler implements, and may therefore be dropped.
 ///
 /// The criterion is "carries no meaning here", not "is well known": this compiler collects no
@@ -222,6 +244,9 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         current: 0,
         depth: 0,
         conditionals: Vec::new(),
+        pack: crate::types::Types::DEFAULT_PACK,
+        pack_stack: Vec::new(),
+        pack_changes: Vec::new(),
         in_command_line: false,
     };
     preprocessor.read_root();
@@ -248,6 +273,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         .collect();
     let diagnostics = std::mem::take(&mut preprocessor.diagnostics);
     let tokens = std::mem::take(&mut preprocessor.out);
+    let pack_changes = std::mem::take(&mut preprocessor.pack_changes);
     drop(preprocessor);
     Preprocessed {
         tokens,
@@ -255,6 +281,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         diagnostics,
         standard: options.standard,
         names: interner,
+        pack_changes,
     }
 }
 
@@ -385,6 +412,16 @@ struct Preprocessor<'a> {
     depth: usize,
     /// The conditionals being read, innermost last.
     conditionals: Vec<Conditional>,
+    /// The `#pragma pack` limit in force, and the stack `push`/`pop` walk. The pragma's *grammar*
+    /// is this layer's, for the same reason the conditional stack is: the parser is told a number
+    /// and never sees a `push`.
+    pack: u8,
+    pack_stack: Vec<u8>,
+    /// Where the limit changed, as `(token index, pack)`: from that token on, records are laid out
+    /// with it. That is what `#pragma pack` is - a fact about a *position* in the token stream, not
+    /// about a declaration - so the parser reads it by the position it has reached, and no loop that
+    /// reads declarations needs to know a pragma exists.
+    pack_changes: Vec<(usize, u8)>,
     /// Whether the tokens being read are a `-D` from the command line, whose spans point into
     /// text the user never wrote.
     in_command_line: bool,
@@ -1116,17 +1153,9 @@ impl Preprocessor<'_> {
                 let physical = self.file().physical.clone();
                 self.once.insert(physical);
             }
-            // `#pragma pack` is the one pragma this compiler must not ignore: it changes every
-            // struct that follows, and a struct laid out the natural way is a wrong program whose
-            // reads and writes land on the wrong bytes. It was a warning, which is the shape that
-            // made it a silent miscompile - so it is an error, and it stays one until packing is
-            // implemented.
-            Some(pack) if self.is_spelled(&pack.token, "pack") => {
-                self.error(
-                    span,
-                    "`#pragma pack` changes the layout of every struct that follows, and this compiler does not implement packing: ignoring it would produce a wrong program, so it is refused by name",
-                );
-            }
+            // The one pragma this compiler does something with that is not "ignore it": it decides
+            // the layout of every record declared after it.
+            Some(pack) if self.is_spelled(&pack.token, "pack") => self.pack_pragma(rest, span),
             // The other pragma that decides something the compiler must get right: a weak
             // definition is one another unit may replace, and this compiler has no weak symbols -
             // so ignoring it means the definition here wins, which is the wrong program whenever a
@@ -1142,6 +1171,69 @@ impl Preprocessor<'_> {
                 self.warning(span, format!("unknown `#pragma {name}` ignored"));
             }
             None => self.warning(span, "empty `#pragma` ignored"),
+        }
+    }
+
+    /// `#pragma pack(...)`: the five forms MSVC documents.
+    ///
+    /// `(N)` sets the limit; `()` returns to the default; `(push)` saves the current limit;
+    /// `(push, N)` saves and sets; `(pop)` restores. The limit is 1, 2, 4, 8 or 16 - never past the
+    /// alignment this target guarantees. Everything else is refused with the list of forms, because
+    /// a pragma somebody wrote and this compiler misread is a layout nobody chose.
+    ///
+    /// `rest` is every token after `#pragma`, so `rest[0]` is `pack` and what follows is the
+    /// parenthesised argument list.
+    fn pack_pragma(&mut self, rest: &[Raw], span: Span) {
+        let mut words: Vec<String> = Vec::new();
+        for raw in rest.iter().skip(1) {
+            // The parentheses and commas are the form, not the content.
+            if raw.token.kind == TokenKind::Punct {
+                continue;
+            }
+            words.push(self.spell(raw.token.text).to_owned());
+        }
+        // The action first, so the diagnostics do not have to talk to `&mut self` from inside a
+        // match that borrows `words`.
+        let form: Vec<&str> = words.iter().map(String::as_str).collect();
+        let limit = match form.as_slice() {
+            [] => Some(crate::types::Types::DEFAULT_PACK),
+            ["push"] => {
+                self.pack_stack.push(self.pack);
+                return;
+            }
+            // A `pop` with nothing pushed is the default, which is what MSVC does and what a
+            // header that pops defensively expects.
+            ["pop"] => Some(
+                self.pack_stack
+                    .pop()
+                    .unwrap_or(crate::types::Types::DEFAULT_PACK),
+            ),
+            ["push", number] => {
+                self.pack_stack.push(self.pack);
+                pack_limit(number)
+            }
+            [number] => pack_limit(number),
+            _ => {
+                self.error(
+                    span,
+                    "`#pragma pack` takes `(N)`, `()`, `(push)`, `(push, N)` or `(pop)`, where N is 1, 2, 4, 8 or 16",
+                );
+                return;
+            }
+        };
+        let Some(limit) = limit else {
+            self.error(
+                span,
+                format!(
+                    "`#pragma pack({})`: the limit here is 1, 2, 4, 8 or 16, the alignments this target has",
+                    words.last().map(String::as_str).unwrap_or_default()
+                ),
+            );
+            return;
+        };
+        self.pack = limit;
+        if self.pack_changes.last().map(|(_, pack)| *pack) != Some(limit) {
+            self.pack_changes.push((self.out.len(), limit));
         }
     }
 
@@ -1694,6 +1786,13 @@ mod tests {
         run_options(source, &options, &())
     }
 
+    /// The whole preprocessed output, for the tests that ask it a question (`pack_at`) rather than
+    /// only what it spells.
+    fn preprocessed_of(source: &str) -> Preprocessed {
+        let file = SourceFile::new("t.c", source);
+        preprocess(&file, &Options::default(), &())
+    }
+
     fn run_options(
         source: &str,
         options: &Options,
@@ -2154,24 +2253,58 @@ yes
     }
 
     #[test]
+    fn pack_pragma_forms_and_their_refusals() {
+        // The five forms MSVC documents, each a change to the limit the records declared *after* it
+        // are laid out with. The table is keyed by token index - what a pragma is a fact about - and
+        // the test asks it the way the parser does: where is this declaration, and what limit
+        // applies there.
+        let pack_of = |source: &str, name: &str| {
+            let preprocessed = preprocessed_of(source);
+            let spellings = preprocessed.spellings();
+            let at = spellings
+                .iter()
+                .position(|spelling| spelling == name)
+                .unwrap_or_else(|| panic!("no `{name}` in {source:?}"));
+            preprocessed.pack_at(at)
+        };
+        assert_eq!(
+            pack_of("int x;\n", "x"),
+            16,
+            "the ABI's alignment, untouched"
+        );
+        assert_eq!(pack_of("#pragma pack(1)\nint x;\n", "x"), 1);
+        let nested = "#pragma pack(push, 2)\nint x;\n#pragma pack(pop)\nint y;\n";
+        assert_eq!(pack_of(nested, "x"), 2);
+        assert_eq!(pack_of(nested, "y"), 16, "`pop` restores what `push` saved");
+        assert_eq!(
+            pack_of("#pragma pack(1)\n#pragma pack()\nint x;\n", "x"),
+            16
+        );
+        // A `pop` with nothing pushed is the default, which is what MSVC does and what a header
+        // that pops defensively relies on.
+        assert_eq!(pack_of("#pragma pack(pop)\nint x;\n", "x"), 16);
+        // The limit is one of the target's alignments and the form is one of the five: a pragma
+        // this compiler misread is a layout nobody chose.
+        assert!(diagnostics("#pragma pack(3)\nint x;\n")[0]
+            .message
+            .contains("the limit here is 1, 2, 4, 8 or 16"));
+        assert!(diagnostics("#pragma pack(push, 2, 3)\nint x;\n")[0]
+            .message
+            .contains("takes `(N)`, `()`, `(push)`, `(push, N)` or `(pop)`"));
+    }
+
+    #[test]
     fn pragmas_are_ignored_with_an_answer() {
         assert!(diagnostics("#pragma once\n").is_empty());
-        // Except the one that is not ignorable: it decides a struct's offsets, and a compiler that
-        // drops it writes a program that reads and writes the wrong bytes. Measured against `clang`
-        // before it became an error: `struct { char c; int i; }` is 8 bytes naturally and 5 under
-        // `#pragma pack(push,1)`.
-        let refused = diagnostics("#pragma pack(push,1)\n");
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0].severity, Severity::Error);
-        assert!(refused[0]
-            .message
-            .contains("`#pragma pack` changes the layout"));
+        // `#pragma pack` is no longer one of the ignored ones - it is implemented, and the test
+        // above asks it what limit it leaves in force. What stays ignored is what asks for nothing.
+        assert!(diagnostics("#pragma pack(push,1)\nstruct S { char c; int i; };\n").is_empty());
         assert_eq!(
             diagnostics("#pragma something_else\n")[0].message,
             "unknown `#pragma something_else` ignored"
         );
-        // Linkage is the second thing a pragma can decide wrongly, and it is refused for the same
-        // reason: ignoring it makes the definition here the one that wins.
+        // Except the pragmas that decide something wrongly if dropped: `weak` is one, and
+        // ignoring it makes the definition here the one that wins.
         let weak = diagnostics("#pragma weak f\n");
         assert_eq!(weak[0].severity, Severity::Error);
         assert!(weak[0]

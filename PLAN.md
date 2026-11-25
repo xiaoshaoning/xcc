@@ -984,7 +984,23 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       character here whatever it is, where `clang` asks Unicode's XID tables and so refuses an emoji. The complete
       rule is a table of several thousand ranges; accepting a name `clang` would refuse is a portability trap worth a
       sentence, not a dependency.
-- [ ] **Packing is not implemented, and both spellings are refused by name.** `#pragma pack(N)` /
+- [x] **`#pragma pack`**, all five forms of it, against a matrix measured from `clang`. The whole of packing is
+      **one line**: `complete_record` caps a member's alignment at the limit (`.min(pack)`), and every offset, the
+      record's own alignment and its size follow from that line - `{char,int,short}` is 12/4/8 unpacked, 7/1/5 under
+      `pack(1)`, 8/2/6 under `pack(2)`; a `double` member moves from 8 to 4 under `pack(4)`; a bitfield unit's
+      alignment is capped the same way (5 and 6 bytes against 8). **The correction that mattered**: an earlier note
+      here said packing "reaches nested records", because a nested struct appeared to be re-laid out at 6 bytes - it
+      was not, it had been declared *inside* the pragma region, and the measurement that showed it is
+      `offsetof(outer2, in.i)`, which stays 2+4. A record is laid out once, with the limit in force where its
+      declaration is. `pack` also caps an explicit `_Alignas(16)` (6 bytes, align 2 under `pack(2)`) - measured, and
+      not what MSVC's own `align` attribute does.
+      **How it reaches layout**: the pp owns the pragma's grammar (`push`/`pop`/the stack, like `#if`) and records
+      `(token index, limit)`; `Preprocessed::pack_at(index)` answers for a position, so no loop that reads a
+      declaration has to know a pragma exists. A pragma *inside* a struct body is refused by name, because one record
+      gets one layout.
+- [ ] **`__attribute__((packed))` and `((aligned(N)))` are still refused.** They are the same layout decision with a
+      different spelling, and they are now the only part of packing left: when they are done, the refusal goes and the
+      test matrix above already covers the numbers. `#pragma pack(N)` /
       `push` / `pop` and `__attribute__((packed))` / `((aligned(N)))`. Measured against `clang` - the matrix the
       refusal rests on: `struct { char c; int i; short s; }` is 12/4/8 by default, **7/1/5** under `pack(1)` and
       8/2/6 under `pack(2)`; a `double` member is 12 bytes at offset 4 under `pack(4)`; `pack()` resets; `push`/`pop`

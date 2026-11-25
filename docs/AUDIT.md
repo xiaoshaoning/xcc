@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 - 2026-11-25 - packing is one line, and the note that had measured the wrong struct
+
+`#pragma pack` is implemented: all five forms MSVC documents, against a matrix from `clang`. The whole of packing is
+**one line** - `complete_record` caps a member's alignment at the limit, `.min(pack)`, and every offset, the record's
+own alignment and its size follow from it. `{char,int,short}` is 12/4/8 unpacked, 7/1/5 under `pack(1)` and 8/2/6 under
+`pack(2)`; a `double` member moves from 8 to 4 under `pack(4)`; a bitfield unit's alignment is capped the same way, so
+one struct is 5 bytes packed and 6 under `pack(2)` against 8 unpacked. `pack` caps an explicit `_Alignas(16)` as well
+(6 bytes, align 2 under `pack(2)`), which MSVC's own `align` attribute would not - measured, not assumed.
+
+**The design question was how the limit reaches layout, and the answer is that a pragma is a fact about a position in
+the token stream.** The preprocessor owns the pragma's grammar - the `push`/`pop` stack, exactly as it owns the
+conditional stack - and records `(token index, limit)`; `Preprocessed::pack_at(index)` answers for a position. So the
+parser asks "what limit applies where this body ends" and no loop that reads a declaration has to know a pragma exists,
+which is a class of *unknown unknowns* removed rather than three call sites guarded. The one thing this cannot express
+is a pragma *inside* a struct body, where different members would get different limits: refused by name.
+
+**And the note in PLAN was wrong, in the way that matters most - it was a measurement.** It said packing "reaches
+nested records", and gave a number: a `struct inner` of `{char,int}` inside a `pack(2)` struct is 6 bytes, so the outer
+is 8. The truth is that `struct inner` was *declared inside* the `#pragma pack(2)` region in that program, so its own
+declaration was packed; the measurement that separates the two readings is `offsetof(outer2, in.i)`, which is 2+4 and
+not 2+2. A record is laid out once, with the limit in force where it is declared. Had the note been trusted, the
+implementation would have re-laid out nested records - work that is not only unnecessary but wrong.
+
+The proof is not a `sizeof` table alone: the test's last three lines pass a packed struct **by value** through the ABI,
+index an array of them, and read one back as raw bytes (`memcpy`), which is where a wrong offset stops being a number
+and becomes wrong memory. Eleven lines, byte-identical to `clang`.
+
+201 unit, 38 parser, 30 CLI, 5 invalid, 29 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 reviewed - 2026-11-25 - the list that decided "unknown means harmless"
 
 Reading the attribute reader a second time found the shape this codebase keeps finding, in its most dangerous form.

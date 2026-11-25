@@ -179,6 +179,32 @@ fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
 }
 
 #[test]
+fn a_pack_pragma_inside_a_body_is_refused_and_outside_it_is_laid_out() {
+    // A record gets one layout, so it gets one limit - the one in force where its body ends. A
+    // pragma *inside* the body would give different members different limits, which this compiler's
+    // one pass cannot express, so it says so instead of quietly applying it to half the members.
+    refuses(
+        "struct S { int a;
+#pragma pack(1)
+int b; };",
+        "a `#pragma pack` inside a struct or union body is not supported",
+    );
+    // Outside, it is a fact about a position in the token stream, and the layout follows it. The
+    // numbers are `clang`'s, measured in `tests/exe.rs`.
+    assert!(parses(
+        "#pragma pack(1)
+struct S { char c; int i; };
+#pragma pack()
+int f(void) { return (int)sizeof(struct S); }"
+    ));
+    refuses(
+        "#pragma pack(3)
+struct S { int a; };",
+        "the limit here is 1, 2, 4, 8 or 16",
+    );
+}
+
+#[test]
 fn a_universal_character_name_in_an_identifier_is_that_identifier() {
     // C99 6.4.2.1 lets a universal character name stand for a letter of an identifier, and 6.4.3p2
     // makes it the *same* identifier as the character it names - so the two spellings collide.

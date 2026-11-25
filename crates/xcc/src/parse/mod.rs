@@ -1629,8 +1629,10 @@ impl Parser<'_> {
                     self.member_list();
                     return ty;
                 }
+                let opened = self.at;
                 let members = self.member_list();
-                self.types.complete_record(record, members);
+                let pack = self.pack_after_body(opened, span);
+                self.types.complete_record(record, members, pack);
                 self.check_member_names(record);
                 return ty;
             }
@@ -1639,10 +1641,29 @@ impl Parser<'_> {
         if let Some(tag) = tag {
             self.symbols.declare_tag(tag, ty);
         }
+        let opened = self.at;
         let members = self.member_list();
-        self.types.complete_record(record, members);
+        let pack = self.pack_after_body(opened, span);
+        self.types.complete_record(record, members, pack);
         self.check_member_names(record);
         ty
+    }
+
+    /// The `#pragma pack` limit a record whose body ends here is laid out with.
+    ///
+    /// A record gets **one** number, taken where its body ends, because a record has one layout.
+    /// A pragma *inside* the body would give different members different limits - which MSVC does
+    /// accept - and a compiler laying the record out in one pass cannot express it, so it is
+    /// refused by name rather than silently applied to half the members.
+    fn pack_after_body(&mut self, opened: usize, span: Span) -> u8 {
+        let here = self.preprocessed.pack_at(self.at);
+        if here != self.preprocessed.pack_at(opened) {
+            self.error(
+                span,
+                "a `#pragma pack` inside a struct or union body is not supported: a record is laid out with the limit in force where it ends",
+            );
+        }
+        here
     }
 
     /// C99 6.7.2.1p1: no two members of one struct or union may have the same name - and C11
