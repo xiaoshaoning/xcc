@@ -1700,6 +1700,58 @@ fn the_sdk_intrinsics_compute_what_clang_computes() {
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
+/// The addend program: addresses *into* objects in a data-section initialiser, and the constant
+/// pointer sqlite makes out of an integer. Every line is what `clang` prints.
+const ADDEND_PROGRAM: &str = r#"#include <stdio.h>
+
+/* An address in a data-section initialiser, which is a symbol *and how far into it* - the addend.
+ * Every shape here needs one: an element of a table, a member of an element, a cast on the way,
+ * and sqlite's `SQLITE_INT_TO_PTR`, which turns an integer into a pointer with no symbol at all. */
+static const unsigned char table[16] = "0123456789abcdef";
+const char *const later = (const char *)&table[4];
+const char *const direct = &table[10];
+
+struct point {
+  int x;
+  int y;
+};
+static struct point points[4] = {{0, 0}, {1, 10}, {2, 20}, {3, 30}};
+static const int *const second = &points[1].y;
+
+static const char letters[] = "abcdef";
+const char *const from = &letters[3];
+
+/* sqlite's shape: `&((char *)0)[X]` is `(char *)0 + X`, and C99 6.5.3.2p3 makes the address of a
+ * dereference the pointer that produced it. A constant base makes it a constant, so the bytes go in
+ * with no relocation; a table of them is sqlite's function registry. */
+#define INT_TO_PTR(X) ((void *)&((char *)0)[X])
+static void *const registry[] = {INT_TO_PTR(0), INT_TO_PTR(5), INT_TO_PTR(9)};
+
+int main(void) {
+  printf("%c %c %d %s\n", *later, *direct, *second, from);
+  printf("%d %d %d\n", (int)(long long)registry[1], (int)(long long)registry[2],
+         (int)(size_t)registry[0]);
+  return 0;
+}
+"#;
+
+/// An address in a file-scope initialiser is a symbol **and how far into it**. `&table[4]` is that,
+/// `&points[1].y` is that plus a member's offset, and both need the relocation's addend - without it
+/// the only addresses a compiler can write are the ones that start an object.
+///
+/// The last three lines are the other half: `&((char*)0)[X]` is sqlite's `SQLITE_INT_TO_PTR`, an
+/// integer made into a pointer. With a constant `X` there is no symbol at all, so the bytes go in
+/// directly - and C99 6.5.3.2p3 is what makes the address of a dereference the pointer behind it.
+#[test]
+#[cfg(target_os = "windows")]
+fn an_address_into_an_object_needs_an_addend() {
+    let run = run_linked_with("c11", "addend", ADDEND_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "4 a 10 def@@5 9 0@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
 /// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
 /// name, and an object written with one links against a use written with the other. That exercises
 /// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes

@@ -1060,12 +1060,22 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       (4) **One header, one struct.** Our `time.h` and the SDK's `sys/types.h` both define `struct timespec` (and
       `struct tm`), under different guards; ours now says `_TIMESPEC_DEFINED` and `_TM_DEFINED`, so whichever is read
       first the other stays out.
-- [ ] **The three things sqlite3.c still needs**, each with 265 977 lines of real code asking for it:
-      `&array[index]` **at file scope** (4 errors: `sqlite3aLTb = &sqlite3UpperToLower[256-OP_Ne]`) - the ADR-004
-      address-expression gap, which needs a relocation **addend**; `&((char*)0)[X]` (2 errors: sqlite's
-      `SQLITE_INT_TO_PTR` on a compiler that is neither GCC nor MSVC), which is the same gap from the other side;
-      and a **conditional expression whose arms are aggregates** (1 error: `(n==0 ? tok : tok)` on a `Token`), where
-      `?:` has to copy a value it is given by address.
+- [x] **The relocation addend**, which was the address gap from both sides at once. `GlobalRelocation` and
+      `DataRelocation` carry `addend: i64`; the linker answers `S + A`; the object writer puts `A` in the field,
+      because that is what an `IMAGE_REL_AMD64_ADDR64` means. On the parser side an *address* became a symbol **and
+      how far into it** (`Value.address: Option<(Symbol, i64)>`), and every way of reaching an offset adds to it: a
+      walk at file scope (`&table[4]`), a member (`&points[1].y`), a cast, and a *constant* base, where the walk folds
+      to a constant with no symbol at all - sqlite's `SQLITE_INT_TO_PTR`, whose `&((char*)0)[X]` is
+      `(char*)0 + X` by C99 6.5.3.2p3. `constant_bytes` had said "only the null pointer is a constant"; it now writes
+      the number, which is what a table of function pointers at file scope is made of. sqlite3.c: **7 errors to 3**.
+- [ ] **The last three of sqlite3.c**, and the first obstacle is the *diagnostic*: two of them point at the macro
+      *definition* (`14617:40`, `SQLITE_INT_TO_PTR`) and not at the use, so the measurement cannot say which of the
+      seventeen uses fails. Neutralising all seventeen removes both errors, and neutralising any one does not - so the
+      expansion is inside one of them in a shape the minimal tests (`from_call`, `from_var`, a struct member, a
+      `static` local) did not reproduce. **The next step is therefore `Raw`/`Preprocessed` carrying the expansion site
+      of every token a macro produced**, which is a real piece of work and the only thing that can name these two.
+      The third is `?:` whose arms are aggregates (`(n==0 ? tok : tok)` on a `Token`), where the result has to copy a
+      value it is given by address.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

@@ -471,7 +471,10 @@ impl<'a> Program<'a> {
                         name: relocation.symbol.clone(),
                     })?;
                 let at = (self.unit_data[index] + relocation.offset) as usize;
-                let absolute = IMAGE_BASE + u64::from(target);
+                // `S + A`: the addend is how far into the symbol the address is, and it is what
+                // makes `&table[3]` an address and not a missing feature.
+                let absolute =
+                    (IMAGE_BASE + u64::from(target)).wrapping_add(relocation.addend as u64);
                 self.data[at..at + 8].copy_from_slice(&absolute.to_le_bytes());
                 self.addr64.push(at as u32);
             }

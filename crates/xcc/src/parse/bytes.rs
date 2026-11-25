@@ -31,11 +31,15 @@ pub(super) fn constant_bytes(types: &Types, ty: TypeId, value: Value) -> Option<
         return Some(vec![u8::from(!types.constant_is_zero(value.ty, bits))]);
     }
     if types.is_pointer(ty) {
-        // Only the null pointer is a constant, and its bytes are already zeroes.
-        return match value.constant {
-            Some(0) => Some(bytes),
-            _ => None,
-        };
+        // A pointer constant is the number itself, bytes and all: the null pointer is eight zeroes
+        // and `(void *)&((char *)0)[5]` is five. That second shape is sqlite's `SQLITE_INT_TO_PTR`
+        // for a compiler that is neither GCC nor MSVC, and a table of them at file scope is its
+        // function registry - so "only the null pointer is a constant" was a rule about this
+        // compiler's reach, not about C.
+        let constant = value.constant?;
+        let at = bytes.len() - 8;
+        bytes[at..].copy_from_slice(&(constant as u64).to_le_bytes());
+        return Some(bytes);
     }
     if types.is_arithmetic(ty) {
         let constant = value.constant?;
@@ -147,10 +151,13 @@ mod tests {
         let (mut types, int) = types();
         let pointer = types.pointer(int);
         assert_eq!(constant_bytes(&types, int, Value::temporary(int)), None);
+        // A pointer constant is the number itself: the null pointer is zeroes, and 4096 is 4096.
+        // This asserted the opposite while the only pointer constant there could be was null;
+        // sqlite's `SQLITE_INT_TO_PTR` makes the rest of them, in a table of function pointers at
+        // file scope, and `clang` puts the number in the bytes.
         assert_eq!(
             constant_bytes(&types, pointer, Value::constant(pointer, 4096)),
-            None,
-            "a non-null address is not a constant"
+            Some(vec![0, 16, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             constant_bytes(&types, pointer, Value::constant(pointer, 0)),

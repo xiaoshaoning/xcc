@@ -160,6 +160,7 @@ impl Parser<'_> {
             self.init_relocations.push(crate::cir::GlobalRelocation {
                 offset: at,
                 symbol: name.clone(),
+                addend: 0,
             });
             if let Some(out) = self.bytes.as_mut() {
                 let end = self.offset + 8;
@@ -503,7 +504,7 @@ impl Parser<'_> {
         // An *address* is eight bytes the linker fills, and the placeholder is zero because the
         // relocation adds the symbol to it: `static hooks = { my_malloc }` is how every C program with
         // a vtable is written.
-        if let Some(symbol) = value.address {
+        if let Some((symbol, addend)) = value.address {
             let name = self.spell_of(symbol).to_owned();
             let Some(out) = self.bytes.as_mut() else {
                 return;
@@ -516,6 +517,7 @@ impl Parser<'_> {
             self.init_relocations.push(crate::cir::GlobalRelocation {
                 offset: at as u32,
                 symbol: name,
+                addend,
             });
             self.offset = end;
             return;

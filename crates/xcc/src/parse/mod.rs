@@ -140,10 +140,12 @@ struct Value {
     cir: Option<cir::Value>,
     /// The address, when the value is a place that can be assigned to or taken.
     place: Option<cir::Value>,
-    /// The address of a symbol, when the value *is* one and there is no code to hold it: at file
-    /// scope there is no `cir` yet, and `char *p = "hi"` or `hooks = { my_malloc }` are eight bytes the
-    /// linker fills. In a body the address is `cir` and this is `None`.
-    address: Option<Symbol>,
+    /// The address of a symbol, and how many bytes into it, when the value *is* an address and there
+    /// is no code to hold it: at file scope there is no `cir` yet, and `char *p = "hi"`,
+    /// `hooks = { my_malloc }` and `sqlite3aLTb = &table[256-OP_Ne]` are eight bytes the linker
+    /// fills. The second half is the *addend* - what makes `&a[i]` a place in the data section and
+    /// not a missing feature - and it travels to the linker inside the relocation.
+    address: Option<(Symbol, i64)>,
     /// For a bitfield: the bit it starts at in the storage unit whose address is `place`, and
     /// its width. Reading the value went through it; writing one has to read the unit, clear
     /// these bits and put them back, so the places that write need to know.
@@ -187,7 +189,7 @@ impl Value {
 
     /// The same value, carrying the symbol whose address it is: what an address is when there is no
     /// code to hold one.
-    fn with_address(mut self, address: Option<Symbol>) -> Self {
+    fn with_address(mut self, address: Option<(Symbol, i64)>) -> Self {
         self.address = address;
         self
     }

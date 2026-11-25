@@ -64,6 +64,9 @@ pub(crate) struct DataRelocation {
     pub offset: u32,
     /// The symbol whose address it is.
     pub symbol: String,
+    /// How many bytes into it: written into the field, because that is what an `IMAGE_REL_AMD64_
+    /// ADDR64` means - the linker's answer is `S + A` and `A` is what the bytes already hold.
+    pub addend: i64,
 }
 
 /// One object in the data section.

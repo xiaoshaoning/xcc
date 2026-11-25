@@ -679,6 +679,7 @@ fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
             data.relocations.push(coff::DataRelocation {
                 offset: start + relocation.offset,
                 symbol: relocation.symbol.clone(),
+                addend: relocation.addend,
             });
         }
         match &global.init {

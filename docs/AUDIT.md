@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M14 - 2026-11-25 - the addend, and the two halves of an address
+
+The relocation had one thing to say about an address: the symbol. That is enough for `&x` and for `char *p = "hi"`,
+and it is why `&sqlite3UpperToLower[256-OP_Ne]` was four errors in sqlite3.c: the address is a symbol **and how far into
+it**. `GlobalRelocation` and `DataRelocation` now carry `addend: i64`; the linker answers `S + A`, and the object writer
+puts `A` in the field because that is what an `IMAGE_REL_AMD64_ADDR64` means.
+
+The parser half is the more interesting one, because *four* ways of reaching an offset all had to agree: a walk at file
+scope (`&table[4]`), a member (`&points[1].y`), a cast on the way (`(const char *)&table[4]`), and a **constant base**,
+where there is no symbol at all. That last one is sqlite's `SQLITE_INT_TO_PTR`, `&((char*)0)[5]` - an integer made into a
+pointer, by C99 6.5.3.2p3's rule that the address of a dereference is the pointer behind it - and with a constant base the
+walk folds to a constant, so the bytes go in directly and nothing is relocated. A `_Static` table of them is sqlite's
+function registry.
+
+That fold uncovered a rule that had been true only of this compiler's reach: `constant_bytes` said **"only the null
+pointer is a constant"**. It now writes the number, and the test that asserted the old rule says why it changed - the
+same shape as the `1L` fix a review ago, where a rule was right about what the compiler *could* do and wrong about C.
+
+Three things were wrong on the way and each was found by running a program rather than reading: `subscript`'s no-code
+arm kept the address and dropped the constant; `decay` kept neither the constant nor the symbol for a constant base; and
+the cast's fold refused a pointer-to-pointer conversion because it only folds arithmetic to integer. Each is one arm of
+one match, and the shape of the bug is the same every time - *a value has two halves and one of them was dropped on the
+way through*.
+
+sqlite3.c is at **3 errors**, and the measurement has stopped being able to help: two of the three point at the macro's
+*definition*, not its use, so the diagnostic cannot say which of seventeen uses fails. That is the next piece of work,
+and it is named in PLAN rather than guessed at.
+
+205 unit, 40 parser, 30 CLI, 5 invalid, 34 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M13 reviewed - 2026-11-25 - the other axis of a table, and the one it had never had
 
 The hex-constant fix added the second axis to C99 6.4.4.1p5's table and the review found that **the first axis was

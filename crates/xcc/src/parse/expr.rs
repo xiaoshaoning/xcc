@@ -756,8 +756,10 @@ impl Parser<'_> {
         // a pointer returns above: neither decays, and a record is not loaded anywhere.
         let Some(address) = value.cir else {
             // At file scope the array's address is the symbol itself, and the decay is a change of
-            // type with nothing to compute.
-            return Value::new(ty, None, false).with_address(value.address);
+            // type with nothing to compute - and an array whose base is a *constant* address
+            // (`((char *)0)[i]`) keeps its constant through the decay too, which is the half of the
+            // value that a subscript's walk reads.
+            return Value::new(ty, value.constant, false).with_address(value.address);
         };
         let span = self.span();
         let from = if self.types.value_is_address(value.ty) {
@@ -902,11 +904,17 @@ impl Parser<'_> {
                     return Some(Value::new(pointer, None, false));
                 }
                 let Some(place) = value.place else {
-                    // A place with no code: a file-scope object, whose address is its symbol. Anything
-                    // reached through it - `&x`, `&s`, `arr` - is that address; `&s.member` and `a + 1`
-                    // are an address plus an offset, which is the next step and not this one.
-                    if let Some(symbol) = value.address {
-                        return Some(Value::new(pointer, None, false).with_address(Some(symbol)));
+                    // A place with no code: a file-scope object, whose address is its symbol plus
+                    // however far into the object it was reached - `&x`, `&arr`, `&a[i]` and
+                    // `&s.member` are all that, because a walk at file scope *is* an offset.
+                    if value.address.is_some() {
+                        return Some(Value::new(pointer, None, false).with_address(value.address));
+                    }
+                    // And a *constant* place is a constant address: `&((char*)0)[5]` is 5, which is
+                    // how a table at file scope holds integers made into pointers. No relocation,
+                    // because there is nothing for the linker to resolve.
+                    if let Some(at) = value.constant {
+                        return Some(Value::new(pointer, Some(at), false));
                     }
                     self.not_lowered(span, "the address of this kind of place");
                     return Some(Value::temporary(self.types.error()));
@@ -1531,7 +1539,13 @@ impl Parser<'_> {
                 let address = self.pointer_walk(pointer, base, index, true, span);
                 match address.cir {
                     Some(place) => self.read_place(element, place, span),
-                    None => Value::new(element, None, true),
+                    // No code: at file scope the walk answered with a symbol and an offset, or with
+                    // a constant. Either way the *place* is that address - reading it here is not a
+                    // constant, but `&a[i]` is the address itself, which is what a relocation (or,
+                    // for a constant base, the bytes) needs.
+                    None => Value::new(element, None, true)
+                        .with_address(address.address)
+                        .with_constant(address.constant),
                 }
             }
             _ => {
@@ -1911,9 +1925,16 @@ impl Parser<'_> {
         };
         let (member_ty, offset, bitfield) = (member.ty, member.offset, member.bits);
         let Some(base_address) = base.cir else {
-            // The object has no address this compiler can name yet (a global, as `named_value`
-            // says): the member is a place all the same, and whatever uses it refuses in its own
-            // words rather than this saying the same thing a second time.
+            // No code: at file scope the base is an address in the data section - a symbol and an
+            // offset - and a member is that address plus the member's own offset. `&points[1].y`
+            // is how sqlite writes a table of pointers into a table of structs.
+            if let Some((symbol, at)) = base.address {
+                return Value::new(member_ty, None, base.lvalue || arrow)
+                    .with_address(Some((symbol, at.wrapping_add(offset as i64))));
+            }
+            // The object has no address this compiler can name yet: the member is a place all the
+            // same, and whatever uses it refuses in its own words rather than this saying the same
+            // thing a second time.
             return Value::new(member_ty, None, base.lvalue || arrow);
         };
         let aggregate_ty = if arrow {
@@ -2259,7 +2280,7 @@ impl Parser<'_> {
                     // No code to hold the address - a file-scope initialiser, where it is a
                     // relocation. `static hooks = { my_malloc, my_free };` is how every C program
                     // with a vtable is written, and cJSON is one.
-                    None => Value::new(pointer, None, false).with_address(Some(name)),
+                    None => Value::new(pointer, None, false).with_address(Some((name, 0))),
                 }
             }
             Kind::Typedef => {
@@ -2282,7 +2303,7 @@ impl Parser<'_> {
                             Some(address) => self.read_place(ty, address, span),
                             // At file scope there is no code: the value *is* the symbol, which is what
                             // `int *p = &x;` and `char *s = str;` need to say.
-                            None => Value::new(ty, None, true).with_address(Some(name)),
+                            None => Value::new(ty, None, true).with_address(Some((name, 0))),
                         }
                     }
                 }

@@ -228,6 +228,22 @@ impl Parser<'_> {
             // cast is the one operator that had a constant on each side and produced none, and
             // `char b[((int)(16 * sizeof(void *) * sizeof(double)))]` - how Lua sizes a buffer - is
             // the shape real code writes.
+            //
+            // An *address* and a constant are both answers here: `(const char *)&table[4]` is the
+            // same place as `&table[4]`, and a cast between two pointer types changes the type and
+            // nothing about where the bytes are.
+            if value.address.is_some() && self.types.is_pointer(wanted) {
+                return Value::new(wanted, None, false).with_address(value.address);
+            }
+            // A constant pointer stays a constant pointer: `(void *)&((char*)0)[5]` is 5 with a
+            // different type, and folding it as an arithmetic-to-integer conversion is not a thing
+            // C99 6.6p6 allows - but nothing is converted, only written down differently.
+            if value.constant.is_some()
+                && self.types.is_pointer(wanted)
+                && self.types.is_pointer(value.ty)
+            {
+                return Value::new(wanted, value.constant, false);
+            }
             let folded = value
                 .constant
                 .and_then(|constant| self.fold_conversion(value.ty, wanted, constant));
@@ -249,6 +265,23 @@ impl Parser<'_> {
     }
 
     /// An integer constant of type `ty`, with code when a body is being built.
+    /// The same value, emitting an instruction for it if it is a constant with no code yet.
+    ///
+    /// A constant is a `Value` with its bits and no `cir` until something needs to compute with it -
+    /// which is most of the time, since folding is free. An operation that needs *both* sides in
+    /// registers asks for this first.
+    pub(super) fn with_code(&mut self, value: Value, span: Span) -> Value {
+        if value.cir.is_some() {
+            return value;
+        }
+        match value.constant {
+            Some(bits) if !self.types.record_of(value.ty).is_some() => {
+                self.constant_of(value.ty, bits, span)
+            }
+            _ => value,
+        }
+    }
+
     pub(super) fn constant_of(&mut self, ty: TypeId, value: i64, span: Span) -> Value {
         match self.emit(|builder| builder.constant(ty, value as u64, span)) {
             Some(cir) => Value::code(ty, cir).with_constant(Some(value)),
@@ -316,6 +349,38 @@ impl Parser<'_> {
     ) -> Value {
         let result = Value::new(pointer_ty, None, false);
         if !self.in_body() {
+            // At file scope there is no code to walk with, so a walk is an *address in the data
+            // section*: the symbol it starts at and the byte offset it reaches. That is what
+            // `&sqlite3UpperToLower[256-OP_Ne]` is, and `arr + 2`, and it is why the offset is part
+            // of the value rather than something the linker has to guess.
+            let element = self.types.pointee(pointer_ty);
+            let size = self.types.size_of(element).unwrap_or(1).max(1) as i64;
+            let (pointer, index) = if self.types.is_pointer(left.ty) {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            if let (Some((symbol, offset)), Some(index)) = (pointer.address, index.constant) {
+                let walked = index.wrapping_mul(size);
+                let at = if add {
+                    offset.wrapping_add(walked)
+                } else {
+                    offset.wrapping_sub(walked)
+                };
+                return result.with_address(Some((symbol, at)));
+            }
+            // A base that is a *constant* - `(char*)0` - makes the walk a constant too, which is
+            // what `SQLITE_INT_TO_PTR(5)` is: an integer that has been made a pointer, in a table of
+            // them at file scope. It needs no relocation because there is nothing to relocate.
+            if let Some(base) = pointer.constant {
+                let walked = index.constant.unwrap_or(0).wrapping_mul(size);
+                let at = if add {
+                    base.wrapping_add(walked)
+                } else {
+                    base.wrapping_sub(walked)
+                };
+                return result.with_constant(Some(at));
+            }
             return result;
         }
         let element = self.types.pointee(pointer_ty);
@@ -330,6 +395,12 @@ impl Parser<'_> {
         let pointer = self.convert(pointer, address, span);
         let index = self.convert(index, address, span);
         let scale = self.constant_of(address, size, span);
+        // A constant operand gains code here if it has none: `&((char*)0)[X]` is how sqlite turns an
+        // integer into a pointer, and C99 6.5.3.2p3 makes the address of a dereference the pointer
+        // arithmetic that produced it - so the walk has to be emittable, not refused because one
+        // side was a constant with nothing to compile.
+        let pointer = self.with_code(pointer, span);
+        let index = self.with_code(index, span);
         let (Some(pointer), Some(index), Some(scale)) = (pointer.cir, index.cir, scale.cir) else {
             return result;
         };

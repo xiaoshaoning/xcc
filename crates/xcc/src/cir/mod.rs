@@ -1054,6 +1054,10 @@ pub struct GlobalRelocation {
     pub offset: u32,
     /// What it is the address of.
     pub symbol: String,
+    /// How many bytes into that symbol the address is. `&table[3]` is the symbol plus three
+    /// elements; the linker adds this to the address it resolves, and the object writer puts it in
+    /// the field because that is what a COFF relocation means (`S + A`, `A` already written).
+    pub addend: i64,
 }
 
 /// A translation unit.
