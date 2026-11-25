@@ -1062,12 +1062,21 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       answering "which library" from it sent `TlsAlloc` to `ucrtbase` and every linked program failed to load.
       The segment read is a real instruction: `__readgsqword(0x30)` is `NtCurrentTeb()`, and a program that declares
       it by hand can prove it - the TEB's client id, 0x48 bytes in, equals `GetCurrentThreadId()`.
-- [ ] **`windows.h` compiles but does not yet *link*.** One symbol: `__shiftright128`, called by an SDK inline function
-      nothing reaches. The compiler emits every `extern __inline__` definition a header contains, so a link requires
-      every intrinsic any of them mentions. The fix is the one a linker with whole-program vision should have:
-      **require an import only for a name reachable from the entry point** - a call graph over the relocations the
-      linker already resolves, marked from `mainCRTStartup`, and unreachable functions either dropped or their
-      references resolved to a trap. One piece of work, and it kills the whole class.
+- [x] **`windows.h` links and runs.** `xcc -I <mingw-w64 include>` compiles, links and *runs* a Win32 program, and
+      the fixes were three, each smaller than the call-graph work I had planned for it:
+      (1) `__NO_INLINE__` is predefined, because it is *true* - this compiler has no inliner, so a header's inline
+      wrapper makes a symbol instead of being baked in, and `stralign.h`'s `ua_CharUpperW` calls `uaw_CharUpperW`,
+      which x64 has never had (its own TODO says so). That single macro was the difference between "compiles" and
+      "links". (2) The MSVC intrinsics the SDK's inline functions name are **arithmetic, not encodings**, so they are
+      C in the runtime: `__shiftright128`/`__shiftleft128`/`__stosb`/`__stosw`/`__stosd`/`__stosq`/`_umul128`/
+      `_mul128`, every one checked against `clang`, whose versions are `shrd` and `mul`. (3) A **back-end bug** they
+      found: `shift` wanted a third scratch register when both operands were spilled - `(low >> n) | (high << (64 - n))`
+      in a function with parameters, where the register pool is empty - and the count's scratch was never needed
+      because the instruction reads `rcx`.
+      Still open, and the general answer to this whole class: **require an import only for a name reachable from the
+      entry point**. Every `extern inline` definition in a header is emitted today, so a link demands symbols nothing
+      calls. It costs nothing while a program links, and it is why a header's *unused* helpers can still refuse a
+      build.
 - [x] **`wchar.h`.** Closed: fifty-seven of its seventy-five C99 names were already exported, and the eighteen that
       were not are the runtime source's - the twelve wide `stdio` front ends over `__stdio_common_vfwprintf` and its
       three siblings, four `wmem*`, `wmemset` and `mbsinit`. `fwide` is the platform's stub: this runtime tracks no

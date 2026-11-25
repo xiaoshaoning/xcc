@@ -786,6 +786,39 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M12 - 2026-11-25 - `windows.h` runs, and the two arithmetic mistakes inside it
+
+`#include <windows.h>` links and runs. Getting there took three things, and the largest was not the one I had planned.
+
+**One macro.** `__NO_INLINE__`, predefined, and it is *true*: this compiler has no inliner, so a header's inline
+wrapper becomes a symbol rather than being baked in. mingw-w64's `stralign.h` is the case that proved it -
+`ua_CharUpperW` is `__CRT_INLINE` and calls `uaw_CharUpperW`, which **x64 has never had** (the file's own TODO says
+so) - so a program that merely *included* `<windows.h>` could not link, twice over: once for the intrinsic
+`__shiftright128`, then for a helper that does not exist. The reachability work I had named in PLAN would also have
+fixed it; a True statement about the compiler was cheaper and does not need the linker to know which code is dead.
+
+**Eight intrinsics, in C.** `__shiftright128`, `__shiftleft128`, `__stosb`/`w`/`d`/`q`, `_umul128`, `_mul128`. They are
+*arithmetic*, not instruction encodings - the compilers that own them make them `shrd`, `mul` and `stos` for speed, and
+a program cannot tell a call from an instruction except by how long it takes. Every one is checked against `clang`
+line for line, and two were wrong first:
+
+- `__shiftleft128` returned the **low** half's expression; it is the *high* half of `(high:low) << n`, so
+  `0x1111…:0x2222…` by 4 came out `0x1111…12` where `clang` says `0x2222…21`.
+- `_umul128` dropped the `al*bh` term from its **low** word - the high word uses the same `t3` and came out right,
+  which is the shape of bug a plausible-looking test misses and a line-by-line comparison does not.
+
+**And a back-end bug they found.** `(low >> n) | (high << (64 - n))` in a function with parameters panicked the
+encoder: *an operation is holding both scratch registers already*. A function with parameters *and* a shift has an
+empty register pool - that is the design, everything spills - so both operands of the shift are in memory, and `shift`
+read the count into a scratch as well and then wanted a third one for the destination. The count's scratch was never
+needed: the instruction reads the count in `rcx`, so it is read *into* `rcx`. Two operands, two scratches, and the
+panic is gone. That is the fourth time a fixed register and the allocator have disagreed, and the first time the
+compiler's own runtime was the program that found it.
+
+204 unit, 39 parser, 30 CLI, 5 invalid, 33 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M12 - 2026-11-25 - the SDK's headers, read as C
 
 `#include <windows.h>` compiles. It was 86 errors, then 66, then 14, then 5, then 2, then none - and **every step was a

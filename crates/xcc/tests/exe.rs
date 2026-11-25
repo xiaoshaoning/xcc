@@ -1639,6 +1639,65 @@ int main(void) {
     assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "1 1 1");
 }
 
+/// The Microsoft intrinsics the runtime implements, as a program: every line is what `clang`
+/// prints, so the arithmetic is checked against the compiler that has them as instructions.
+const INTRINSIC_PROGRAM: &str = r#"#include <stdio.h>
+#include <string.h>
+
+unsigned long long __shiftright128(unsigned long long, unsigned long long, unsigned char);
+unsigned long long __shiftleft128(unsigned long long, unsigned long long, unsigned char);
+unsigned long long _umul128(unsigned long long, unsigned long long, unsigned long long *);
+long long _mul128(long long, long long, long long *);
+void __stosb(unsigned char *, unsigned char, unsigned long long);
+void __stosw(unsigned short *, unsigned short, unsigned long long);
+
+int main(void) {
+  unsigned long long high = 0;
+  long long signed_high = 0;
+  unsigned char filled[8];
+
+  printf("%llx %llx %llx %llx\n", __shiftright128(0x1111111111111111ULL, 0x2222222222222222ULL, 4),
+         __shiftright128(0xFFFFFFFFFFFFFFFFULL, 0x123456789ABCDEF0ULL, 0),
+         __shiftleft128(0x1111111111111111ULL, 0x2222222222222222ULL, 4),
+         __shiftleft128(0x1111111111111111ULL, 0x2222222222222222ULL, 0));
+  printf("%llx %llx\n", __shiftleft128(0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 60),
+         __shiftright128(0xFEDCBA9876543210ULL, 0x0123456789ABCDEFULL, 60));
+
+  unsigned long long low = _umul128(0x123456789ABCDEF0ULL, 0xFEDCBA9876543210ULL, &high);
+  printf("umul %llx %llx\n", low, high);
+  long long sl = _mul128(-123456789012345LL, 98765432109876LL, &signed_high);
+  printf("mul %llx %llx\n", (unsigned long long)sl, (unsigned long long)signed_high);
+
+  memset(filled, 0, sizeof filled);
+  __stosb(filled, 0xAB, 5);
+  printf("stosb %d %d %d\n", (int)filled[4], (int)filled[5], (int)filled[7]);
+  {
+    unsigned short words[4] = {0, 0, 0, 0};
+    __stosw(words, 0x1234, 3);
+    printf("stosw %d %d %d %d\n", (int)words[0], (int)words[2], (int)words[3], (int)words[3]);
+  }
+  return 0;
+}
+"#;
+
+/// The Microsoft intrinsics a Windows SDK's headers call, implemented as *C* in the runtime - the
+/// 128-bit shift pair, the two 64x64 products and the `__stos*` fills. They are arithmetic, not
+/// instruction encodings: `clang` has them as `shrd`/`mul`/`stos`, and every line here is what
+/// `clang` prints for the same program.
+///
+/// The first version of `_umul128` had the wrong *low* word - it dropped the `al*bh` term - and the
+/// high word was right, which is exactly the shape of bug a `sizeof`-sized test would miss and this
+/// one did not.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_sdk_intrinsics_compute_what_clang_computes() {
+    let run = run_linked_with("c99", "intrinsics", INTRINSIC_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "2111111111111111 ffffffffffffffff 2222222222222221 2222222222222222@@123456789abcde 123456789abcdeff@@umul 236d88fe5618cf00 121fa00ad77d7422@@mul 1f3127d607a6b86c ffffffffd899f81a@@stosb 171 0 0@@stosw 4660 4660 0 0@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
 /// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
 /// name, and an object written with one links against a use written with the other. That exercises
 /// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes

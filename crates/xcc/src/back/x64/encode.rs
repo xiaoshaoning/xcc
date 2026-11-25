@@ -808,9 +808,13 @@ impl Encoder<'_> {
         size: u8,
         signed: bool,
     ) {
+        // The count goes to `rcx` because the instruction reads it there, so it is read *into* that
+        // register rather than into a scratch and moved: a function with parameters and a shift has
+        // no allocatable register left at all, so every operand is spilled - and reading the count
+        // into a scratch as well made this operation want a third one, which was `unreachable!` and
+        // became a panic the first time real C asked for `(low >> n) | (high << (64 - n))`.
+        self.read_into(right, Reg::RCX);
         let source = self.read(left);
-        let count = self.read(right);
-        self.mov_reg(Reg::RCX, count);
         let target = if self.is_in(dst, source) {
             source
         } else {

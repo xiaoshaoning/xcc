@@ -712,6 +712,106 @@ XCC_CAS(unsigned char, uchar)
 XCC_CAS(short, short)
 XCC_CAS(unsigned short, ushort)
 
+/* The fill and product intrinsics in the same family. The `__stos*` four are `memset` with an
+ * element size - the SDK's `RtlZeroMemory` and the threadpool helpers are made of them - and the
+ * products are the two halves a 64x64 multiply produces, the high one through a pointer. */
+void __stosb(unsigned char *dest, unsigned char value, size_t count) {
+    memset(dest, value, count);
+}
+
+void __stosw(unsigned short *dest, unsigned short value, size_t count) {
+    while (count-- > 0) {
+        *dest++ = value;
+    }
+}
+
+void __stosd(unsigned long *dest, unsigned long value, size_t count) {
+    while (count-- > 0) {
+        *dest++ = value;
+    }
+}
+
+void __stosq(unsigned long long *dest, unsigned long long value, size_t count) {
+    while (count-- > 0) {
+        *dest++ = value;
+    }
+}
+
+/* The low 64 bits of `a * b`, with the high 64 through `high`. Four 32-bit products, which is how
+ * a compiler without a 128-bit type does it: `a = ah:al`, `b = bh:bl`. */
+unsigned long long _umul128(unsigned long long a, unsigned long long b,
+                            unsigned long long *high) {
+    unsigned long long al = a & 0xFFFFFFFFu;
+    unsigned long long ah = a >> 32;
+    unsigned long long bl = b & 0xFFFFFFFFu;
+    unsigned long long bh = b >> 32;
+    unsigned long long low = al * bl;
+    // `t2` is `ah*bl` plus the carry out of `al*bl`, and cannot overflow; `t3` is `al*bh` plus the
+    // low half of `t2`, which cannot either. The product's low word is the low half of `t3` beside
+    // the low half of `al*bl` - the first version forgot `al*bh` there, so its *low* word was wrong
+    // while the high one, which uses the same `t3`, came out right.
+    unsigned long long t2 = ah * bl + (low >> 32);
+    unsigned long long t3 = al * bh + (t2 & 0xFFFFFFFFu);
+    *high = ah * bh + (t2 >> 32) + (t3 >> 32);
+    return ((t3 & 0xFFFFFFFFu) << 32) | (low & 0xFFFFFFFFu);
+}
+
+/* The signed one, over the magnitudes: the high half is the unsigned one's, corrected by the signs
+ * of the two operands - which is what two's complement multiplication does to the top word. */
+long long _mul128(long long a, long long b, long long *high) {
+    unsigned long long ua = a < 0 ? 0 - (unsigned long long)a : (unsigned long long)a;
+    unsigned long long ub = b < 0 ? 0 - (unsigned long long)b : (unsigned long long)b;
+    unsigned long long top = 0;
+    unsigned long long low = _umul128(ua, ub, &top);
+    if ((a < 0) != (b < 0)) {
+        // The product is negative: its magnitude's high word is complemented with the low one's
+        // borrow, which is the same as negating the 128-bit value.
+        low = 0 - low;
+        top = ~top + (low == 0 ? 1 : 0);
+    }
+    *high = (long long)top;
+    return (long long)low;
+}
+
+/* The Microsoft intrinsics a Windows SDK's headers call.
+ *
+ * `winnt.h` and `winbase.h` write a hundred `static __inline` functions whose bodies name these -
+ * `ShiftRight128` is `__shiftright128` - and a compiler emits every one it reads, so a link needs
+ * them whether or not the program calls one. They are *arithmetic*, not instruction encodings: the
+ * compilers that own them make them intrinsics for speed, and a program cannot tell a call from an
+ * instruction except by how long it takes.
+ *
+ * The shift pair is the 128-bit shift `(high:low)` by `count`, in the SDK's argument order - low
+ * part first, then the high one - and the count is a *runtime* value, so each guards both edges: a
+ * shift by 0 is the operand unchanged, and by 64 or more is the other part, where a bare
+ * `<< (64 - count)` would be undefined behaviour.
+ */
+unsigned long long __shiftright128(unsigned long long low, unsigned long long high,
+                                   unsigned char count) {
+    if (count == 0) {
+        return low;
+    }
+    if (count >= 64) {
+        return count == 64 ? high : 0;
+    }
+    return (low >> count) | (high << (64 - count));
+}
+
+/* The *high* half of `(high:low) << count`, which is the half the SDK's `SHL`-based helpers want -
+ * the first version of this returned the low half's expression, and `0x1111... : 0x2222...` by 4
+ * came out `0x1111...12` where `clang` says `0x2222...21`. Counts of 64 and above are undefined
+ * for both intrinsics (MSVC requires less than 64), so they are answered rather than trusted. */
+unsigned long long __shiftleft128(unsigned long long low, unsigned long long high,
+                                  unsigned char count) {
+    if (count == 0) {
+        return high;
+    }
+    if (count >= 64) {
+        return count == 64 ? low : 0;
+    }
+    return (high << count) | (low >> (64 - count));
+}
+
 /* And the fence: a full barrier is a locked operation that changes nothing, and a compare-and-swap
  * against the value the object already holds is exactly that. */
 void __xcc_atomic_fence(void) {

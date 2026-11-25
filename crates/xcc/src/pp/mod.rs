@@ -254,6 +254,12 @@ const PREDEFINED: &[(&str, &str)] = &[
     ("__x86_64", "1"),
     ("_M_X64", "100"),
     ("_M_AMD64", "100"),
+    // `-fno-inline`, in the spelling GCC's headers standardised: this compiler has no inliner, so a
+    // header that writes an inline wrapper for the compiler to bake in makes a *symbol* here
+    // instead. mingw-w64's `stralign.h` is the case that proved it - its `ua_CharUpperW` calls
+    // `uaw_CharUpperW`, which x64 has never had (the file's own TODO says so), so a program that
+    // merely included `<windows.h>` could not link.
+    ("__NO_INLINE__", "1"),
     ("__XCC__", "1"),
 ];
 
