@@ -62,6 +62,10 @@ const C11_HEADERS: &[(&str, Disposition)] = &[
         "threads.h",
         Disposition::Shipped(include_str!("../include/threads.h")),
     ),
+    (
+        "uchar.h",
+        Disposition::Shipped(include_str!("../include/uchar.h")),
+    ),
 ];
 
 const C99_HEADERS: &[(&str, Disposition)] = &[
@@ -168,6 +172,15 @@ const C99_HEADERS: &[(&str, Disposition)] = &[
 #[cfg(test)]
 pub(crate) fn c99_headers() -> &'static [(&'static str, Disposition)] {
     C99_HEADERS
+}
+
+/// The headers C11 adds that this compiler ships. A second table because it is a second claim: C99's
+/// list is the standard's and a test compares it to the standard, and these are this compiler's own
+/// choices among C11's five. Read by the ledger test in `back::crt`, which is the only caller - hence
+/// `cfg(test)`: an accessor with no production caller is a seam nobody is on the other side of.
+#[cfg(test)]
+pub(crate) fn c11_headers() -> &'static [(&'static str, Disposition)] {
+    C11_HEADERS
 }
 
 /// The text of a header this compiler ships, by the name an `#include` uses.
@@ -289,7 +302,7 @@ mod tests {
     /// them.
     #[test]
     fn the_readme_counts_the_headers_that_ship() {
-        const NUMERALS: [&str; 29] = [
+        const NUMERALS: [&str; 30] = [
             "",
             "one",
             "two",
@@ -319,6 +332,7 @@ mod tests {
             "twenty-six",
             "twenty-seven",
             "twenty-eight",
+            "twenty-nine",
         ];
         let readme = include_str!("../../../README.md");
         let line = readme

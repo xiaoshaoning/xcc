@@ -11,8 +11,10 @@
 /// `None` is not "zero": a multi-character constant (`'ab'`) has an implementation-defined value
 /// and is refused, and so is an escape that does not name a character. C99 6.4.4.4.
 pub fn character_constant(spelling: &str) -> Option<i64> {
-    let body = spelling.strip_prefix('L').unwrap_or(spelling);
-    let body = body.strip_prefix('\'')?.strip_suffix('\'')?;
+    // The prefix says what the value's *type* is, which the caller decides; the value is the
+    // character's code point whatever the prefix - and `'é'` in a UTF-8 source is one character
+    // however many bytes it is written in.
+    let body = body_of(spelling)?;
     if let Some(escape) = body.strip_prefix('\\') {
         return escape_value(escape);
     }
@@ -87,8 +89,7 @@ fn numeric_escape(bytes: &[u8], at: &mut usize, radix: u32) -> Option<u8> {
 /// would be a program that reads the wrong bytes, which is the failure CONSTRAINTS 3 forbids.
 #[allow(dead_code)] // the global initialiser reader is the caller: ADR-004, patch 2
 pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
-    let body = spelling.strip_prefix('L').unwrap_or(spelling);
-    let body = body.strip_prefix('"')?.strip_suffix('"')?;
+    let body = body_of(spelling)?;
     let bytes = body.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
@@ -117,8 +118,117 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
 
 /// Whether a literal carries the `L` prefix. Its characters are `wchar_t`s - two bytes here -
 /// and a string of them is an array of those, which is the whole of what "wide" means in C99.
-pub fn is_wide(spelling: &str) -> bool {
-    spelling.starts_with('L')
+/// The encoding prefix a string or character literal was written with (C11 6.4.5p1).
+///
+/// It was a `bool` - "wide or not" - while `L` was the only prefix. C11 has four, and a boolean
+/// would have made `u` and `U` and `u8` one thing: they are two, two and one byte respectively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prefix {
+    /// No prefix: `"abc"` is an array of `char`, and `'a'` is an `int`.
+    None,
+    /// `L`: an array of `wchar_t`, which is 16 bits on this target.
+    Wide,
+    /// `u`: an array of `char16_t`, which is 16 bits.
+    Utf16,
+    /// `U`: an array of `char32_t`, which is 32.
+    Utf32,
+    /// `u8`: an array of `char`, holding UTF-8 - which is how this compiler's source is already
+    /// read, so the same bytes as no prefix at all.
+    Utf8,
+}
+
+impl Prefix {
+    /// How wide one element is, in bytes.
+    pub fn width(self) -> usize {
+        match self {
+            Prefix::Utf32 => 4,
+            Prefix::Wide | Prefix::Utf16 => 2,
+            Prefix::None | Prefix::Utf8 => 1,
+        }
+    }
+}
+
+/// Which prefix a spelling starts with. `u8` is read before `u`, or two prefixes would be one.
+pub fn prefix_of(spelling: &str) -> Prefix {
+    if spelling.starts_with("u8") {
+        Prefix::Utf8
+    } else if spelling.starts_with('u') {
+        Prefix::Utf16
+    } else if spelling.starts_with('U') {
+        Prefix::Utf32
+    } else if spelling.starts_with('L') {
+        Prefix::Wide
+    } else {
+        Prefix::None
+    }
+}
+
+/// The spelling without its prefix and its quotes.
+fn body_of(spelling: &str) -> Option<&str> {
+    let rest = match prefix_of(spelling) {
+        Prefix::Utf8 => spelling.strip_prefix("u8")?,
+        Prefix::Utf16 => spelling.strip_prefix('u')?,
+        Prefix::Utf32 => spelling.strip_prefix('U')?,
+        Prefix::Wide => spelling.strip_prefix('L')?,
+        Prefix::None => spelling,
+    };
+    let quote = rest.chars().next()?;
+    rest.strip_prefix(quote)?.strip_suffix(quote)
+}
+
+/// What a string literal holds, as bytes, without the terminator: one element per character of the
+/// literal, in the width and encoding its prefix asks for.
+pub fn bytes_of(spelling: &str) -> Option<Vec<u8>> {
+    match prefix_of(spelling) {
+        // `L` and `u` are both UTF-16 units here, because this target's `wchar_t` is 16 bits - one
+        // encoder for the two, and the *type* is what differs.
+        Prefix::Wide | Prefix::Utf16 => wide_bytes(spelling),
+        Prefix::Utf32 => utf32_bytes(spelling),
+        Prefix::None | Prefix::Utf8 => string_bytes(spelling),
+    }
+}
+
+/// A `U` literal: one 32-bit unit per code point, with no surrogate pairs to keep.
+fn utf32_bytes(spelling: &str) -> Option<Vec<u8>> {
+    let body = body_of(spelling)?;
+    let bytes = body.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() * 4);
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] != b'\\' {
+            let rest = std::str::from_utf8(&bytes[at..]).ok()?;
+            let character = rest.chars().next()?;
+            out.extend_from_slice(&u32::from(character).to_le_bytes());
+            at += character.len_utf8();
+            continue;
+        }
+        at += 1;
+        let escape = *bytes.get(at)?;
+        at += 1;
+        let value = match escape {
+            b'x' => numeric_escape_utf32(bytes, &mut at, 16)?,
+            b'0'..=b'7' => {
+                at -= 1;
+                numeric_escape_utf32(bytes, &mut at, 8)?
+            }
+            other => u32::from(named_escape(other)?),
+        };
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    Some(out)
+}
+
+/// A numeric escape in a `U` literal: any value a `char32_t` can hold.
+fn numeric_escape_utf32(bytes: &[u8], at: &mut usize, radix: u32) -> Option<u32> {
+    let start = *at;
+    let limit = if radix == 8 { 3 } else { usize::MAX };
+    while *at < bytes.len() && (*at - start) < limit && (bytes[*at] as char).is_digit(radix) {
+        *at += 1;
+    }
+    let digits = std::str::from_utf8(&bytes[start..*at]).ok()?;
+    u32::from_str_radix(digits, radix)
+        .ok()
+        .filter(|value| *value <= 0x10FFFF)
 }
 
 /// What a wide string literal holds, as UTF-16 code units in little-endian bytes, without the
@@ -131,10 +241,7 @@ pub fn is_wide(spelling: &str) -> bool {
 /// `None` when an escape is one this compiler does not read, or a numeric escape does not fit the
 /// target's `wchar_t`. A guessed character is a program that prints the wrong text.
 pub fn wide_bytes(spelling: &str) -> Option<Vec<u8>> {
-    let body = spelling
-        .strip_prefix('L')?
-        .strip_prefix('"')?
-        .strip_suffix('"')?;
+    let body = body_of(spelling)?;
     let bytes = body.as_bytes();
     let mut out = Vec::with_capacity(bytes.len() * 2);
     let mut at = 0;
@@ -194,7 +301,7 @@ fn numeric_escape_wide(bytes: &[u8], at: &mut usize, radix: u32) -> Option<u32> 
 /// byte each: an escape is scanned to its end rather than counted by its letters. A character
 /// outside ASCII takes the bytes it takes in UTF-8, which is what a compilation reads.
 pub fn string_length(spelling: &str) -> u64 {
-    let body = spelling.strip_prefix('L').unwrap_or(spelling);
+    let body = body_of(spelling).unwrap_or(spelling);
     let body = body
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))

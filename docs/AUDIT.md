@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - `uchar.h`, and the character constant C11 does not have
+
+`uchar.h` ships, and with it **all five of C11's headers**. The header itself is short - two typedefs and the four
+multibyte conversions, all four of which the universal runtime exports under exactly those names, measured before a
+line was written. The work was the *compiler* half: C11 6.4.5's `u`, `U` and `u8` prefixes on string and character
+literals, which no header can give.
+
+**The prefix was a boolean, and that is where the change went.** `literal::is_wide` returned "starts with `L`", which
+was the whole truth while `L` was the only prefix. It is a `Prefix` now - `None`, `Wide`, `Utf16`, `Utf32`, `Utf8` - with
+its width and its element type beside it, and one `bytes_of` that encodes for all five: UTF-16 for `L` and `u`, code
+points for `U`, UTF-8 for `u8` and for no prefix at all (this compiler reads its source as UTF-8, so those two are the
+same bytes and different types). The lexer's two entry points became one, because a literal is a prefix and a quote and
+the quote says which kind it is.
+
+**And a program this compiler was accepting that C11 does not have.** `u8'a'` - a UTF-8 *character* constant - is C23's,
+not C11's, and `clang -std=c11` refuses it. This compiler took it and gave it type `char`. It is refused by name now,
+next to the note saying why `u8"..."` is not: one is a string and one is not a character, in the standard's own
+partition.
+
+**Then the ledger test found two things of its own.** The runtime's declared names were collected from C99's table only,
+so with `uchar.h` shipping, `mbrtoc16` looked homeless - fixed by walking both tables, which is what the rest of the
+ledger already did. And the thirty functions `threads.h` and `stdatomic.h` declare for the runtime to define were called
+homeless too, because the runtime defines many of them *through a macro* (`XCC_ATOMIC(int, int)` makes
+`__xcc_add_int`) and no text scan can see that: the `__xcc_` prefix is the compiler's reservation and is now the promise,
+the way `__builtin_` already was.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 24 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - three kernel calls nothing declared, and a dialect left switched on
 
 The `threads.h` commit, reviewed. The header and the producer/consumer hold; the review found a state leak on an error

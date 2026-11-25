@@ -217,11 +217,8 @@ impl Lexer<'_> {
                 self.push(TokenKind::Eof, "", start, start);
                 return;
             };
-            if byte == b'"' || (byte == b'L' && self.peek(1) == Some(b'"')) {
-                let kind = self.string_literal();
-                self.push_scanned(kind, start);
-            } else if byte == b'\'' || (byte == b'L' && self.peek(1) == Some(b'\'')) {
-                let kind = self.char_literal();
+            if self.is_literal_start() {
+                let kind = self.literal();
                 self.push_scanned(kind, start);
             } else if is_ident_start(byte) {
                 self.identifier();
@@ -322,18 +319,38 @@ impl Lexer<'_> {
         }
     }
 
-    fn string_literal(&mut self) -> TokenKind {
-        if self.bytes[self.at] == b'L' {
-            self.at += 1;
+    /// How many bytes of encoding prefix a literal at the cursor has: `L`, `u`, `U` is one, `u8` is
+    /// two, and none is zero. C11 6.4.5p1, and the prefix only counts when a quote follows it - or
+    /// an identifier called `u8` would be read as the start of a literal.
+    fn literal_prefix(&self) -> usize {
+        let quote_follows = |ahead: usize| {
+            self.peek(ahead)
+                .is_some_and(|byte| byte == b'"' || byte == b'\'')
+        };
+        if self.peek(0) == Some(b'u') && self.peek(1) == Some(b'8') && quote_follows(2) {
+            return 2;
         }
-        self.quoted(b'"', "string")
+        if matches!(self.peek(0), Some(b'L' | b'u' | b'U')) && quote_follows(1) {
+            return 1;
+        }
+        0
     }
 
-    fn char_literal(&mut self) -> TokenKind {
-        if self.bytes[self.at] == b'L' {
-            self.at += 1;
+    /// Whether a literal starts here, of either kind and with any prefix.
+    fn is_literal_start(&self) -> bool {
+        let prefix = self.literal_prefix();
+        matches!(self.peek(prefix), Some(b'"' | b'\''))
+            && (prefix > 0 || matches!(self.peek(0), Some(b'"' | b'\'')))
+    }
+
+    /// Scan a literal from its prefix: the quote after the prefix says which kind it is.
+    fn literal(&mut self) -> TokenKind {
+        self.at += self.literal_prefix();
+        if self.peek(0) == Some(b'"') {
+            self.quoted(b'"', "string")
+        } else {
+            self.quoted(b'\'', "character constant")
         }
-        self.quoted(b'\'', "character constant")
     }
 
     /// Scan from the opening quote to its partner, honouring backslash escapes.

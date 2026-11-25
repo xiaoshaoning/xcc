@@ -55,6 +55,12 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     // the wide stdio front ends, the four `wmem*`, `mbsinit` and `fwide` are the runtime source's.
     // `time.h`'s C11 addition, which the runtime source defines.
     "timespec_get",
+    // uchar.h, C11 7.28: the four multibyte conversions, which the library exports under these
+    // names - measured against its export table before the header was written.
+    "mbrtoc16",
+    "c16rtomb",
+    "mbrtoc32",
+    "c32rtomb",
     "btowc",
     "fgetwc",
     "fgetws",
@@ -674,7 +680,12 @@ mod tests {
         let mut parameters: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         // The names the headers define as macros: a body that calls one of these calls nothing.
         let mut ours: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (_, disposition) in crate::headers::c99_headers() {
+        // Both tables: `uchar.h` is where `mbrtoc16` is declared, and a ledger that reads only
+        // C99's list calls it undeclared.
+        for (_, disposition) in crate::headers::c99_headers()
+            .iter()
+            .chain(crate::headers::c11_headers())
+        {
             let crate::headers::Disposition::Shipped(text) = disposition else {
                 continue;
             };
@@ -728,8 +739,15 @@ mod tests {
                     if parameters.contains(&name) {
                         continue;
                     }
-                    // A `__builtin_` is this compiler's own, not the C runtime's.
-                    if !KEYWORDS.contains(&name.as_str()) && !name.starts_with("__builtin_") {
+                    // A `__builtin_` is this compiler's own, not the C runtime's - and so is a
+                    // `__xcc_` name, which `stdatomic.h` and `threads.h` declare for the runtime
+                    // source to define. That source defines many of them through a macro
+                    // (`XCC_ATOMIC(int, int)` makes `__xcc_add_int`), which no text scan can see,
+                    // so the prefix is the promise rather than the definition.
+                    if !KEYWORDS.contains(&name.as_str())
+                        && !name.starts_with("__builtin_")
+                        && !name.starts_with("__xcc_")
+                    {
                         declared.insert(name);
                     }
                 }
@@ -742,11 +760,20 @@ mod tests {
         let available: std::collections::BTreeSet<&str> = C_RUNTIME.iter().copied().collect();
         let unavailable: std::collections::BTreeSet<&str> =
             UNAVAILABLE.iter().map(|(name, _)| *name).collect();
+        let runtime_source = crate::back::CRT_SOURCE;
         let missing: Vec<&str> = declared
             .iter()
             .map(String::as_str)
             .filter(|name| !ours.contains(*name))
-            .filter(|name| !available.contains(name) && !unavailable.contains(name))
+            // A name's home is one of three: the library, a documented absence, or the runtime
+            // source's own definition - `threads.h` and `stdatomic.h` declare the second kind
+            // (`thrd_create`, `__xcc_add_int`), which is what the two C11 headers added. Without
+            // this, the check called thirty of the runtime's own functions homeless.
+            .filter(|name| {
+                !available.contains(name)
+                    && !unavailable.contains(name)
+                    && !defines(runtime_source, name)
+            })
             .collect();
         assert!(
             missing.is_empty(),

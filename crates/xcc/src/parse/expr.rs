@@ -1692,14 +1692,26 @@ impl Parser<'_> {
             }
             crate::lex::TokenKind::Chr => {
                 self.bump();
-                // C99 6.4.4.4p10: a wide character constant has type `wchar_t`, which this target
-                // makes two bytes; an ordinary one is an `int`.
-                let int = if crate::literal::is_wide(self.spell(&token)) {
-                    self.types
+                // C99 6.4.4.4p10 and C11 6.4.4.4p12: the prefix picks the type - `wchar_t` for
+                // `L` (two bytes here), `char16_t` and `char32_t` for `u` and `U`, `char` for `u8`,
+                // and a plain `int` for none of them.
+                let int = match crate::literal::prefix_of(self.spell(&token)) {
+                    crate::literal::Prefix::Wide | crate::literal::Prefix::Utf16 => self
+                        .types
                         .fundamental("unsigned short")
-                        .unwrap_or_else(|| self.types.error())
-                } else {
-                    self.types.fundamental("int").unwrap()
+                        .unwrap_or_else(|| self.types.error()),
+                    crate::literal::Prefix::Utf32 => self
+                        .types
+                        .fundamental("unsigned int")
+                        .unwrap_or_else(|| self.types.error()),
+                    // C11 6.4.4.4 has no `u8` character constant - `u8'a'` is C23's - and accepting
+                    // it would be accepting a program the standard this compiler claims does not
+                    // have. `u8"..."` *is* C11's, which is why only this one is refused.
+                    crate::literal::Prefix::Utf8 => {
+                        self.error(span, "a `u8` character constant is C23's, not C11's");
+                        self.types.fundamental("int").unwrap()
+                    }
+                    crate::literal::Prefix::None => self.types.fundamental("int").unwrap(),
                 };
                 // A constant this does not read is refused, not turned into zero.
                 match character_constant(self.spell(&token)) {

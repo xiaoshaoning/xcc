@@ -463,6 +463,43 @@ int main(void) {
 }
 "#;
 
+/// The program the uchar test below compiles, as a raw Rust string.
+const UCHAR_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <uchar.h>
+#include <uchar.h>
+
+/* The two character types and the four conversions the header adds, and the three literal families
+ * the compiler adds: `u` is UTF-16 code units, `U` is code points, `u8` is UTF-8 bytes. */
+int main(void) {
+    const char *narrow = u8"héllo";
+    const unsigned short *sixteen = u"héllo";
+    const unsigned int *thirty_two = U"héllo";
+    char16_t sixteen_from_mb = 0;
+    char32_t thirty_two_from_mb = 0;
+    mbstate_t state16 = { 0 };
+    mbstate_t state32 = { 0 };
+    char out[8];
+    size_t count;
+
+    printf("sizes %d %d %d %d %d\n", (int)sizeof(u8"héllo"), (int)sizeof(u"héllo"),
+           (int)sizeof(U"héllo"), (int)sizeof(char16_t), (int)sizeof(char32_t));
+    printf("firsts %d %d %d %d %d %d\n", (int)narrow[0], (int)sixteen[0], (int)thirty_two[0],
+           (int)narrow[1], (int)sixteen[1], (int)thirty_two[1]);
+    printf("chars %d %d %d %d %d\n", (int)sizeof(u'é'), (int)u'é', (int)sizeof(U'é'), (int)U'é',
+           (int)sizeof(u'x'));
+    count = mbrtoc16(&sixteen_from_mb, "abc", 1, &state16);
+    printf("mbrtoc16 %d %d\n", (int)sixteen_from_mb, (int)count);
+    count = mbrtoc32(&thirty_two_from_mb, "abc", 1, &state32);
+    printf("mbrtoc32 %d %d\n", (int)thirty_two_from_mb, (int)count);
+    count = c16rtomb(out, (char16_t)'Z', &state16);
+    printf("c16rtomb %d %c\n", (int)count, out[0]);
+    count = c32rtomb(out, (char32_t)'Q', &state32);
+    printf("c32rtomb %d %c\n", (int)count, out[0]);
+    return 0;
+}
+"#;
+
 /// The program the threads test below compiles, as a raw Rust string.
 const THREADS_PROGRAM: &str = r#"
 #include <stdio.h>
@@ -1249,5 +1286,19 @@ fn threads_a_mutex_a_condition_variable_and_a_once_flag_work() {
     assert_eq!(run.status.code(), Some(0), "it ran to completion");
     let out = String::from_utf8_lossy(&run.stdout);
     let expected = "consumer saw 42, tss 1, once 1@@joined with 43, once ran 1 time(s)@@equal 1, timed mutex 4@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
+/// `uchar.h` (C11 7.28): the two character types, the four conversions, and the three literal
+/// families - `u` is UTF-16 code units, `U` is code points, `u8` is UTF-8 bytes, which is the
+/// encoding this compiler reads its source in. Every number is what `clang` prints for this
+/// program with the same locale; the header being included twice is the include guard's business.
+#[test]
+#[cfg(target_os = "windows")]
+fn uchar_types_conversions_and_the_three_literal_families() {
+    let run = run_linked_with("c11", "uchar", UCHAR_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "sizes 7 12 24 2 4@@firsts 104 104 104 -61 233 233@@chars 2 233 4 233 2@@mbrtoc16 97 1@@mbrtoc32 97 1@@c16rtomb 1 Z@@c32rtomb 1 Q@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }

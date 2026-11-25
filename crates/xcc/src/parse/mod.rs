@@ -1021,28 +1021,30 @@ impl Parser<'_> {
     /// literal, and the two would disagree about escapes and adjacent runs.
     fn string_literal(&mut self) -> (TypeId, String, Vec<u8>) {
         let span = self.span();
-        // C99 6.4.5p5: adjacent literals concatenate, and they must be of the same kind.
-        let wide = self
-            .peek()
-            .is_some_and(|token| crate::literal::is_wide(self.spell(token)));
+        // C99 6.4.5p5: adjacent literals concatenate, and they must be of the same *kind* - which
+        // in C11 means the same prefix, not merely "both wide": `u"a" U"b"` is a program C has no
+        // type for, and joining them as one encoding would be an answer nobody asked for.
+        let prefix = self.peek().map_or(crate::literal::Prefix::None, |token| {
+            crate::literal::prefix_of(self.spell(token))
+        });
+        let wide = prefix.width();
         let mut init: Vec<u8> = Vec::new();
         while let Some(token) = self.peek().copied() {
             if token.kind != crate::lex::TokenKind::Str {
                 break;
             }
             let written = self.spell(&token).to_owned();
-            if crate::literal::is_wide(&written) != wide {
+            let own = crate::literal::prefix_of(&written);
+            if own != prefix {
                 self.error(
                     span,
-                    "a wide string literal and a narrow one cannot be joined into one",
+                    format!(
+                        "a `{prefix:?}` string literal and a `{own:?}` one cannot be joined into one"
+                    ),
                 );
             }
             self.bump();
-            let decoded = if wide {
-                crate::literal::wide_bytes(&written)
-            } else {
-                crate::literal::string_bytes(&written)
-            };
+            let decoded = crate::literal::bytes_of(&written);
             match decoded {
                 Some(mut bytes) => init.append(&mut bytes),
                 None => {
@@ -1054,29 +1056,30 @@ impl Parser<'_> {
                         "this string literal has an escape this compiler does not read",
                     );
                     let units = string_length(&written) as usize;
-                    let width = if wide { 2 } else { 1 };
-                    init.resize(init.len() + units * width, 0);
+                    init.resize(init.len() + units * wide, 0);
                 }
             }
         }
-        // The terminator is one code unit: a byte for a narrow literal, two for a wide one.
-        if wide {
-            init.extend_from_slice(&[0, 0]);
-        } else {
-            init.push(0);
-        }
-        let element = if wide {
-            self.types
+        // The terminator is one code unit, and the unit's width is the prefix's.
+        init.resize(init.len() + wide, 0);
+        let element = match prefix {
+            crate::literal::Prefix::Wide | crate::literal::Prefix::Utf16 => self
+                .types
                 .fundamental("unsigned short")
-                .unwrap_or_else(|| self.types.error())
-        } else {
-            self.types
+                .unwrap_or_else(|| self.types.error()),
+            crate::literal::Prefix::Utf32 => self
+                .types
+                .fundamental("unsigned int")
+                .unwrap_or_else(|| self.types.error()),
+            crate::literal::Prefix::None | crate::literal::Prefix::Utf8 => self
+                .types
                 .fundamental("char")
-                .unwrap_or_else(|| self.types.error())
+                .unwrap_or_else(|| self.types.error()),
         };
-        // The array's length is in *elements*: a wide literal's bytes are twice its characters.
-        let width = if wide { 2 } else { 1 };
-        let ty = self.types.array(element, Some(init.len() as u64 / width));
+        // The array's length is in *elements*: the bytes are the characters times the width.
+        let ty = self
+            .types
+            .array(element, Some(init.len() as u64 / wide as u64));
         // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
         // named with a `.` prefix so it can never collide with a C identifier.
         let name = format!(".str{}", self.literals);

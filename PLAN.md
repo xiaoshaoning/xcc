@@ -250,9 +250,8 @@ The first thing worth showing, and the reason the project exists.
       Four of the five headers C11 adds ship: `stdalign.h`, `stdnoreturn.h`, `stdatomic.h` with real atomics - one
       `lock cmpxchg` in the back end (`__builtin_atomic_cas`) and every other operation a loop of it in C - and
       `threads.h`, which is threads over `_beginthreadex`, mutexes over the target's critical section, condition
-      variables over its own, `tss_t` over the runtime's thread-local slot and `call_once` over the same swap. **Still
-      missing: `uchar.h`** - the last of the five, and the only one that needs a compiler feature (`u"..."` and
-      `U"..."` literals) rather than a header.
+      variables over its own, `tss_t` over the runtime's thread-local slot and `call_once` over the same swap - and
+      `uchar.h`, whose compiler half is the three literal families. **All five of C11's headers ship.**
 
 - [x] **A CAS loop written with a *loop-carried* value lost its increments - the allocator did not
       know the swap writes `rax`.** `writes_rax` names the operations that leave a value in the
