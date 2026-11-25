@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - the list the swap was missing from, and a mode that printed nothing
+
+The atomics commit, reviewed. The review's first job was the bug that commit had *dodged* - the CAS loop that lost a
+sixth of its increments - and it is now found, fixed, and the natural shape of the loop is back in the runtime.
+
+**`writes_rax` is a list of the operations that leave a value in `rax`, and `Op::AtomicCas` was not on it.** The
+allocator moves a function's *return* value into `rax` by design, guarded by that list. A CAS loop returns the value it
+had carried across iterations, so that value lived in `rax` - and `lock cmpxchg` writes `rax`, which nothing had told
+the allocator. The value was therefore destroyed by the swap it was the witness of, and `seen == old` compared the
+value just read with itself: the loop exited on the first attempt whether or not the swap had happened. Threads then
+lost increments, a sixth of them. One entry in the list, and the loop that reads once and carries the value across the
+back edge is **exact three runs running** - which is the shape the runtime has again, the in-loop load having been an
+experiment rather than a fix.
+
+**`Op::ThreadAddress` was missing for exactly the same reason**: the thread-local lookup is a call this back end emits
+itself, so it is not an `Op::Call`, and it clobbers `rax` too - which would have broken any function that *returns* a
+thread-local value. Measured after the fix: `int get(void) { return counter; }` with `counter` thread-local is right,
+at both values tried.
+
+**And `--explain` printed nothing at `--opt-level=2` and exited 0.** The level-2 path returned an empty explanation,
+because the listing is Cranelift's and this back end does not write one. Found by reaching for it while chasing the
+allocator bug and getting silence - a mode that silently does nothing is worse than one that says it cannot, so it
+refuses now with the reason and points at `--opt-level=0`, where it works. The sentence is one line on purpose: written
+through a shell heredoc first, its continuations became a run of spaces in the diagnostic.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 22 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - atomic operations, and the loop the allocator miscompiled
 
 `stdatomic.h` ships, with real atomics. The demand was measured first, across the ~200 repositories in

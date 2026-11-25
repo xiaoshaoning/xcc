@@ -252,17 +252,15 @@ The first thing worth showing, and the reason the project exists.
       missing: `threads.h` (a second threading interface over the same `_beginthreadex`, worth doing after atomics
       settle) and `uchar.h` (which needs `u"..."` and `U"..."` literals - a compiler feature, not a header).
 
-- [ ] **A CAS loop written with a *loop-carried* value loses its increments, and the workaround is in the runtime.**
-      The atomic loops were first written the obvious way - read once, then carry the last value across the back edge
-      (`T old = *object; for (;;) { T seen = cas(object, old, ...); if (seen == old) return old; old = seen; }`) - and
-      with two threads the counter came out at 335 999 of 400 000. Moving the load inside the loop -
-      `for (;;) { T old = *object; T seen = cas(...); if (seen == old) return old; }` - is exact three runs running.
-      The disassembly of the first form compares the value it just read with *itself* (`cmp %rax,%r10` where both are
-      the compare-and-swap's result), so the loop exits on the first attempt whether or not the swap happened: an
-      allocator problem, most likely the coalescing hint on the `old = seen` copy, which is legitimate for a straight
-      line and not for a back edge. **It is not an atomics bug** - the same shape would miscompile a user's CAS loop -
-      and the shapes tried so far in plain C do not reproduce it, so the reproducer is the atomic loop itself.
-      Next: bisect it from that function
+- [x] **A CAS loop written with a *loop-carried* value lost its increments - the allocator did not
+      know the swap writes `rax`.** `writes_rax` names the operations that leave a value in the
+      accumulator, and the function's *return* value is moved there by design. `lock cmpxchg`
+      writes it too, and `Op::AtomicCas` was not in that list - so a CAS loop whose result fed the
+      return value had that value destroyed by the swap, and `seen == old` compared the value just
+      read with itself: the loop exited on the first attempt whether or not the swap happened, and
+      two threads lost a sixth of their increments. `Op::ThreadAddress` was missing for the same
+      reason - it is a call this back end emits itself, not an `Op::Call` - and would have broken a
+      function that returns a thread-local value. One list, two entries, and the loops are exact.
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
       refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
 - [x] `printf`-style calls with integer, character, string and pointer arguments: the call site's

@@ -487,7 +487,13 @@ impl Op {
 fn writes_rax(op: &Op) -> bool {
     matches!(
         op,
+        // The four that need the accumulator by the instruction set's choice...
         Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. } | Op::CallIndirect { .. }
+        // ...and the two that need it because this compiler wrote them:
+        // `lock cmpxchg` compares against `rax` and leaves the value it read there, and the
+        // thread-local lookup is a call this back end emits itself rather than an `Op::Call`.
+        | Op::AtomicCas { .. }
+        | Op::ThreadAddress { .. }
     )
 }
 

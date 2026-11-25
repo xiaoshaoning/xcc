@@ -272,6 +272,17 @@ pub fn object(
     // Level 2 is this compiler's own back end (ADR-008): Cranelift is not in the path at all, so a
     // number that says "the compiler's own code" cannot quietly mean somebody else's.
     if opt_level >= 2 {
+        // The explanation is Cranelift's own listing - its functions, its virtual registers - and
+        // this back end has no such listing yet. It used to return an *empty* one, so `--explain`
+        // printed nothing and exited 0: a mode that silently does nothing is worse than one that
+        // says it cannot.
+        if explain {
+            return Err(LoweringError::not_lowered(
+                "`--explain` at `--opt-level=2`: the explanation is Cranelift's listing of what it built, and this compiler's own back end does not write one yet - use --opt-level=0"
+                    .into(),
+                crate::diag::Span::at(0),
+            ));
+        }
         let bytes = x64::object(module, names)
             .map_err(|gap| LoweringError::not_lowered(format!("{gap}"), gap.span))?;
         return Ok(Lowered {

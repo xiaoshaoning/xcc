@@ -682,49 +682,7 @@ void *__xcc_tls(unsigned offset, unsigned total, const void *initial) {
  * a call anyway.
  */
 
-#define XCC_ATOMIC(T, tag)                                                                 \
-    T __xcc_add_##tag(volatile T *object, T argument) {                                    \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, old + argument);    \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }                                                                                      \
-    T __xcc_sub_##tag(volatile T *object, T argument) {                                    \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, old - argument);    \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }                                                                                      \
-    T __xcc_and_##tag(volatile T *object, T argument) {                                    \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, old & argument);    \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }                                                                                      \
-    T __xcc_or_##tag(volatile T *object, T argument) {                                     \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, old | argument);    \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }                                                                                      \
-    T __xcc_xor_##tag(volatile T *object, T argument) {                                    \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, old ^ argument);    \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }                                                                                      \
-    T __xcc_exchange_##tag(volatile T *object, T wanted) {                                 \
-        for (;;) {                                                                         \
-            T old = *object;                                                               \
-            T seen = __builtin_atomic_cas(object, old, wanted);           \
-            if (seen == old) return old;                                                   \
-        }                                                                                  \
-    }
+#define XCC_ATOMIC(T, tag)                                                                     T __xcc_add_##tag(volatile T *object, T argument) {                                            T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, old + argument);                                if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }                                                                                          T __xcc_sub_##tag(volatile T *object, T argument) {                                            T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, old - argument);                                if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }                                                                                          T __xcc_and_##tag(volatile T *object, T argument) {                                            T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, old & argument);                                if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }                                                                                          T __xcc_or_##tag(volatile T *object, T argument) {                                             T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, old | argument);                                if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }                                                                                          T __xcc_xor_##tag(volatile T *object, T argument) {                                            T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, old ^ argument);                                if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }                                                                                          T __xcc_exchange_##tag(volatile T *object, T wanted) {                                         T old = *object;                                                                           for (;;) {                                                                                     T seen = __builtin_atomic_cas(object, old, wanted);                                        if (seen == old) return old;                                                               old = seen;                                                                            }                                                                                      }
 
 XCC_ATOMIC(int, int)
 XCC_ATOMIC(unsigned, uint)
