@@ -135,6 +135,64 @@ impl Preprocessed {
 /// headers and libraries test, and the last two are what code written for this instruction set
 /// tests. Without `_WIN32`, a program that selects its platform - sqlite's own `os_setup.h` is one -
 /// decides it is on Unix and includes `<pthread.h>`.
+/// The attributes that ask for nothing this compiler implements, and may therefore be dropped.
+///
+/// The criterion is "carries no meaning here", not "is well known": this compiler collects no
+/// garbage (`used`), links nothing dynamically (`visibility`), has one calling convention, has no
+/// optimiser to guide (`always_inline`, `pure`, `cold`), and implements no `format` diagnostics.
+/// `noreturn` is in because a promise about control flow is not a layout - and a function that
+/// breaks it has undefined behaviour of its own.
+///
+/// Anything else is refused by name: an unknown attribute could change the program - `vector_size`
+/// a type's size, `section` where its bytes go, `cleanup` what runs at the end of a block, `weak`
+/// whether a definition wins - and not noticing is silent. `packed` and `aligned` are named
+/// separately only because their diagnostic says what the program would have got wrong.
+const HARMLESS_ATTRIBUTES: &[&str] = &[
+    // What a diagnostic would say, in a compiler that does not say it.
+    "unused",
+    "__unused__",
+    "warn_unused_result",
+    "nodiscard",
+    "deprecated",
+    "format",
+    "__format__",
+    "format_arg",
+    "nonnull",
+    "returns_nonnull",
+    "sentinel",
+    "fallthrough",
+    "artificial",
+    // What an optimiser would like to know, in a compiler that does not ask.
+    "always_inline",
+    "__always_inline__",
+    "noinline",
+    "__noinline__",
+    "flatten",
+    "cold",
+    "hot",
+    "noclone",
+    "optimize",
+    "target",
+    "leaf",
+    "pure",
+    "__pure__",
+    "const",
+    "__const__",
+    "noreturn",
+    "__noreturn__",
+    "nothrow",
+    "may_alias",
+    // Keeping something from a collection that is not done.
+    "used",
+    "__used__",
+    "retain",
+    // Linkage a static link makes moot.
+    "visibility",
+    "gnu_inline",
+    "__gnu_inline__",
+    "externally_visible",
+];
+
 const PREDEFINED: &[(&str, &str)] = &[
     ("__STDC__", "1"),
     ("__STDC_HOSTED__", "1"),
@@ -488,14 +546,19 @@ impl Preprocessor<'_> {
             .is_none_or(|conditional| conditional.active)
     }
 
-    /// Read one `__attribute__((...))` and say what it asked for.
+    /// Read one `__attribute__((...))` and act on it.
     ///
-    /// The list is a comma-separated set of names, some of them taking arguments -
-    /// `((noreturn, aligned(8), visibility("default")))` - so only the names at the *top* of the
-    /// list matter, and a name inside an argument is an argument's. Everything is dropped, except
-    /// the two that would change a layout this compiler computes: `packed` and `aligned` are refused
-    /// by name, because ignoring them gives a struct whose offsets are the natural ones and whose
-    /// program is therefore wrong.
+    /// The list is comma-separated names, some taking arguments - `((noreturn, aligned(8),
+    /// visibility("default")))` - so only the names at the *top* of the inner list matter; a name
+    /// inside an argument is the argument's.
+    ///
+    /// Each name is looked up in `HARMLESS_ATTRIBUTES` and dropped, or refused by name. **The list
+    /// is what may be dropped, not what may not**: an attribute this compiler has never heard of
+    /// could change the program - `vector_size` changes a type's size, `section` where its bytes go,
+    /// `cleanup` what runs at the end of a block, `weak` whether a definition wins - and the first
+    /// version of this function dropped everything except two names, which quietly accepted all
+    /// four. Silence about a thing not understood is the wrong default; a diagnostic naming it is
+    /// the answer, and it costs the writer one line to correct.
     fn attribute(&mut self, opening: Raw) {
         let span = opening.token.span;
         let mut depth = 0i32;
@@ -510,50 +573,60 @@ impl Preprocessor<'_> {
                 self.error(span, "`__attribute__` is not closed");
                 return;
             }
-            let text = self.spell(raw.token.text).to_owned();
             if self.is_punct(&raw.token, "(") {
                 depth += 1;
                 continue;
             }
             if self.is_punct(&raw.token, ")") {
                 depth -= 1;
-                // The list is closed by the outer `)`: `((` opens two levels, and the inner one
-                // holds the names.
+                // The outer `)` closes the list: `((` opens two levels and the inner one holds the
+                // names.
                 if depth <= 0 {
                     break;
                 }
                 continue;
             }
+            // Two levels in is the top of the inner list.
             if depth != 2 {
                 continue;
             }
-            // Two levels in is the top of the inner list.
             if self.is_punct(&raw.token, ",") {
                 expect_name = true;
                 continue;
             }
             if raw.token.kind == TokenKind::Ident && expect_name {
-                names.push(text);
+                names.push(self.spell(raw.token.text).to_owned());
                 expect_name = false;
             }
         }
-        let layout = names.iter().find(|name| {
-            matches!(
-                name.as_str(),
-                "packed" | "__packed__" | "aligned" | "__aligned__"
-            )
-        });
-        if let Some(name) = layout {
+        for name in names {
+            self.attribute_named(&name, span);
+        }
+    }
+
+    /// One attribute, by the name the list gave it.
+    fn attribute_named(&mut self, name: &str, span: Span) {
+        if HARMLESS_ATTRIBUTES.contains(&name) {
+            return;
+        }
+        if matches!(name, "packed" | "__packed__" | "aligned" | "__aligned__") {
             self.error(
                 span,
                 format!(
                     "`__attribute__(({name}))` changes a struct's layout, and this compiler does not implement packing yet: the offsets it would compute are the natural ones, which is a wrong program - so this is an error rather than a warning"
                 ),
             );
+            return;
         }
+        self.error(
+            span,
+            format!(
+                "`__attribute__(({name}))` is not an attribute this compiler knows: an attribute it dropped could change the program, so it is refused by name rather than ignored. If that attribute asks for nothing this compiler does, adding it to `HARMLESS_ATTRIBUTES` in `pp/mod.rs` is the whole change"
+            ),
+        );
     }
 
-    /// Keep a token, or splice what it expands to in front of the tokens still to come.
+    /// Keep a token, or splice what it expands to    /// Keep a token, or splice what it expands to in front of the tokens still to come.
     fn emit(&mut self, raw: Raw) {
         if self.out.len() >= self.budgets.max_tokens {
             self.too_many_tokens(raw.token.span);
@@ -1052,6 +1125,16 @@ impl Preprocessor<'_> {
                 self.error(
                     span,
                     "`#pragma pack` changes the layout of every struct that follows, and this compiler does not implement packing: ignoring it would produce a wrong program, so it is refused by name",
+                );
+            }
+            // The other pragma that decides something the compiler must get right: a weak
+            // definition is one another unit may replace, and this compiler has no weak symbols -
+            // so ignoring it means the definition here wins, which is the wrong program whenever a
+            // program wrote it to be overridden. Seven files of 95 119 on this machine write it.
+            Some(weak) if self.is_spelled(&weak.token, "weak") => {
+                self.error(
+                    span,
+                    "`#pragma weak` makes a definition replaceable, and this compiler has no weak symbols: ignoring it would give the definition here as the one that wins, so it is refused by name",
                 );
             }
             Some(known) => {
@@ -2087,6 +2170,13 @@ yes
             diagnostics("#pragma something_else\n")[0].message,
             "unknown `#pragma something_else` ignored"
         );
+        // Linkage is the second thing a pragma can decide wrongly, and it is refused for the same
+        // reason: ignoring it makes the definition here the one that wins.
+        let weak = diagnostics("#pragma weak f\n");
+        assert_eq!(weak[0].severity, Severity::Error);
+        assert!(weak[0]
+            .message
+            .contains("`#pragma weak` makes a definition replaceable"));
     }
 
     #[test]
@@ -2132,6 +2222,26 @@ yes
         }
         // Nested inside another attribute's arguments it is an argument, not the attribute.
         assert!(diagnostics("__attribute__((warn_unused_result(packed))) int g;\n").is_empty());
+        // And an attribute this compiler has never heard of is refused, not dropped: the list is
+        // what *may* be dropped, so the default for the unknown is a diagnostic. Each of these four
+        // changes the program - a type's size, where its bytes go, what runs at the end of a block,
+        // and whether a definition wins - and the first version of this reader accepted all four.
+        for attribute in [
+            "vector_size(16)",
+            "section(\".text.hot\")",
+            "cleanup(free)",
+            "weak",
+        ] {
+            let refused = diagnostics(&format!("int g __attribute__(({attribute}));\n"));
+            assert_eq!(refused.len(), 1, "{attribute}");
+            assert!(
+                refused[0]
+                    .message
+                    .contains("is not an attribute this compiler knows"),
+                "{attribute}: {}",
+                refused[0].message
+            );
+        }
         // A malformed one is closed by name rather than eating the file.
         assert!(!diagnostics("__attribute__((unused int g;\n").is_empty());
     }

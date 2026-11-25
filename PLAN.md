@@ -995,10 +995,15 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       global state means `Types` cannot cache one layout per record: `size_of`/`align_of`/`complete_record` all take
       the pack in force, or a packed struct's layout is computed into a copy. Also decide `_Alignas` against `pack`
       (C11 6.7.5 says an alignment shall not be lowered; MSVC's `align` attribute beats pack).
-- [x] **`__attribute__((...))` is read and dropped**, except `packed`/`aligned`/`__packed__`/`__aligned__`, which are
-      refused by name. Read in the *preprocessor*, because it is a token sequence that means nothing in every position a
-      declaration can carry one - before it, after the declarator, on a member, on a parameter, after a struct's `}` -
-      and a parser needs a case in each, the one it forgets being a parse error on a program that asks for nothing.
+- [x] **`__attribute__((...))` is read in the preprocessor and *dropped only by name*.** The list is
+      `HARMLESS_ATTRIBUTES` - what asks for nothing this compiler implements (`unused`, `noreturn`, `format`,
+      `always_inline`, `visibility`, ...) - and **anything else is refused by name**, because an attribute nobody thought
+      about could change the program: the first version dropped everything except `packed`/`aligned` and quietly
+      accepted `vector_size` (a type's size), `section` (where the bytes go), `cleanup` (what runs at the end of a
+      block) and `weak` (whether a definition wins). The reader lives where tokens are read because the attribute
+      appears in every position a declaration can carry one - before it, after the declarator, on a member, on a
+      parameter, after a struct's `}` - and a parser needs a case in each, the one it forgets being a parse error on a
+      program that asks for nothing.
       Measured demand in the local corpus (95 119 C files): 2 304 use `__attribute__`, 528 of those name
       `packed`/`aligned`.
 - [ ] **Two units defining one external name link silently.** `int shared = 1;` in two units whose

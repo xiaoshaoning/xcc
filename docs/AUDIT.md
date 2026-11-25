@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 reviewed - 2026-11-25 - the list that decided "unknown means harmless"
+
+Reading the attribute reader a second time found the shape this codebase keeps finding, in its most dangerous form.
+
+**It was a denylist of two.** `__attribute__((packed))` and `((aligned))` were refused and *everything else was dropped* -
+so `vector_size(16)`, which decides a type's size; `section(".text.hot")`, which decides where its bytes go;
+`cleanup(free)`, which decides what runs at the end of a block; and `weak`, which decides whether a definition wins, all
+became nothing, silently. Measured on the built compiler: all four accepted. The default for an unknown attribute was
+"harmless", and an attribute nobody had thought about is precisely the case a compiler cannot answer.
+
+The list is now what *may* be dropped - `HARMLESS_ATTRIBUTES`, whose criterion is "carries no meaning here" and whose
+comment says why each group qualifies: no garbage collection (`used`), no dynamic linking (`visibility`), one calling
+convention, no optimiser to guide (`always_inline`, `pure`, `cold`), no `format` diagnostics. Anything else is refused
+*by name*, with a message that says where the list is. That is the honest default: a diagnostic costs the writer one
+line and cannot be wrong about a program.
+
+**And the same question for pragmas found a second one.** `#pragma pack` was refused in the previous commit; `#pragma
+weak` - seven files in the local corpus - had the same fault: ignoring it makes the definition here the one that wins,
+which is the wrong program whenever it was written to be overridden. Refused by name, and the two are now the whole list
+of pragmas whose ignorance is a wrong binary rather than a missing feature. `#pragma GCC diagnostic` (443 files) and
+`#pragma comment(lib, ...)` (33) stay warnings, correctly: one is diagnostics and the other is an import a static link
+would refuse anyway.
+
+**Two of my own documents described the rule I had just replaced** - PLAN's closed row and the `C99-SUPPORT` cell both
+still said "dropped except `packed`/`aligned`" - and both say what the code does now.
+
+Also checked and found sound this time: `cargo package --list` ships `ucrtbase-exports.txt` (an `include_str!` that is
+not in the package is a publish-time failure, not a build-time one), the capture is 2 484 names sorted and unique as the
+tool writes it, and `Func::reachable` is one allocation per function definition, asked once.
+
+201 unit, 37 parser, 30 CLI, 5 invalid, 28 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 - 2026-11-25 - the pragma that was a warning, and the attribute that was a parse error
 
 `#pragma pack` was ignored with a warning, and the layout underneath changed. Measured: `struct { char c; int i; }` is
