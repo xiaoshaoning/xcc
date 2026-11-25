@@ -1679,7 +1679,15 @@ impl Parser<'_> {
             );
         }
         let mut layout = crate::types::Layout::new(pack);
-        for attribute in self.preprocessed.layout_attributes(began, self.at) {
+        // The record's own attributes are the ones written *outside* its body: before the `{` and
+        // immediately after the `}`. A member's attribute is inside and belongs to that member -
+        // `struct { char c; int i __attribute__((packed)); short s; }` is 8 bytes with `i` alone
+        // packed, and taking the attribute for the record's made it 7.
+        let mut attributes = self
+            .preprocessed
+            .layout_attributes(began, opened.saturating_sub(1));
+        attributes.extend(self.preprocessed.layout_attributes(self.at, self.at));
+        for attribute in attributes {
             match attribute {
                 crate::types::LayoutAttribute::Packed => layout.packed = true,
                 crate::types::LayoutAttribute::Aligned(alignment) => {
@@ -1722,6 +1730,10 @@ impl Parser<'_> {
             return members;
         }
         while !self.at_punct("}") && !self.at_eof() {
+            // Where this member's declaration starts, so its own attributes can be found by the
+            // range it covers - before the type (`__attribute__((aligned(8))) int i`) as well as
+            // after the declarator (`int i __attribute__((packed))`).
+            let member_from = self.at;
             let specs = self.declaration_specifiers();
             // C11 6.7.3p2 asks for a *variable* declaration, and a member is not one: clang's own
             // words are "type name does not allow storage class to be specified".
@@ -1736,9 +1748,6 @@ impl Parser<'_> {
                 continue;
             };
             loop {
-                // Where this member's declaration starts, so its own attributes - `int i
-                // __attribute__((packed))` - can be found by the range it covers.
-                let member_from = self.at;
                 // `int : 3;` - an anonymous bitfield, used only to pad.
                 if self.at_punct(":") {
                     let width = self.bit_width();

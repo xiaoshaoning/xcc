@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 reviewed - 2026-11-25 - the attribute that became the record's, and the one the range began after
+
+The matrix from the previous commit matched `clang` on all eight of its rows, and the review found two bugs that the
+matrix could not see - both in the same place, both silent.
+
+**A member's `packed` became the record's.** `record_layout` asked for every attribute in the record's range, and a
+member's attribute is inside that range. `struct { char c; int i __attribute__((packed)); short s; }` came out 7/1/5/1 -
+packed throughout, alignment 1 - where `clang` says 8/1/6/2: only `i` is packed. The eight measured rows could not show
+it because the one row with a member `packed` had nothing after it, where both readings agree. The range is now the
+record's *own* fence: before the `{` and immediately after the `}`, which is where both spellings of a record attribute
+are written, and never inside.
+
+**An attribute before the member's type was dropped.** `__attribute__((aligned(8))) int i;` inside a struct is 16 bytes
+with `i` at 8 in `clang`; the member's range started *after* the specifiers, so the attribute was outside it and
+`sizeof` came back 8 with `i` at 4 - silently the natural layout. The range now starts before the specifiers, and the
+per-declarator *end* stays where it was, which keeps `int a, b __attribute__((packed))` meaning what it says: the
+attribute is after `b`, so `a` never sees it.
+
+Both are the same failure of the same idea, and it is worth naming: **a range is only as good as its ends**, and this
+commit's ends were "the whole record" and "from the declarator". The positions were right - an attribute is a fact about
+where it is written - and the fence around them was not.
+
+The test could not catch either, which is the more important finding. Its matrix had one row per *kind* of attribute and
+none for the *fence*: a member attribute with a member after it, and an attribute before a type. Both rows are in the
+program now, with `clang`'s numbers - `one_member 8 1 6 2` and `attribute_first 16 8 8` - so the two readings are
+distinguishable from the inside.
+
+Checked and found sound: `#pragma pack` is untouched by any of it (five matrices re-run against `clang`, identical),
+`aligned` on an object still reaches `_Alignas` from either side of the declarator, and the pp's index convention - an
+attribute is recorded at the position of the *next* token - is what makes the inclusive range end work.
+
+201 unit, 38 parser, 30 CLI, 5 invalid, 30 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 - 2026-11-25 - the two spellings that are not the same decision
 
 `__attribute__((packed))` and `((aligned(N)))` are implemented on a record, on one member and on an object, against a

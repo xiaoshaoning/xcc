@@ -1535,7 +1535,33 @@ struct packed_member_aligned {
 
 int global __attribute__((aligned(16)));
 
+
+/* A member packed, the record not: `i` at 1, `s` aligned to 2, 8 bytes - not 7, which is what
+ * treating the member's attribute as the record's produced. */
+struct one_member {
+  char c;
+  int i __attribute__((packed));
+  short s;
+};
+
+/* A member's attribute written *before* its type, which a range that started at the declarator
+ * missed entirely: 16 bytes with `i` at 8, against 8 and 4 for the natural layout. */
+struct attribute_first {
+  char c;
+  __attribute__((aligned(8))) int i;
+};
+
+int extra(void) {
+  printf("one_member %d %d %d %d\n", (int)sizeof(struct one_member),
+         (int)offsetof(struct one_member, i), (int)offsetof(struct one_member, s),
+         (int)_Alignof(struct one_member));
+  printf("attribute_first %d %d %d\n", (int)sizeof(struct attribute_first),
+         (int)offsetof(struct attribute_first, i), (int)_Alignof(struct attribute_first));
+  return 0;
+}
+
 int main(void) {
+  extra();
   printf("whole %d %d %d\n", (int)sizeof(struct whole), (int)offsetof(struct whole, i),
          (int)_Alignof(struct whole));
   printf("member %d %d %d\n", (int)sizeof(struct member), (int)offsetof(struct member, i),
@@ -1569,7 +1595,7 @@ fn packed_and_aligned_decide_offsets_the_way_clang_does() {
     let run = run_linked_with("c11", "attribute-layout", ATTRIBUTE_LAYOUT_PROGRAM, &[]);
     assert_eq!(run.status.code(), Some(0), "it ran to completion");
     let out = String::from_utf8_lossy(&run.stdout);
-    let expected = "whole 5 1 1@@member 5 1 1@@raised 16 16@@both 8 8@@member_aligned 16 8 8@@packed_alignas 16 1 16@@packed_member_aligned 16 8 8@@global 0@@";
+    let expected = "one_member 8 1 6 2@@attribute_first 16 8 8@@whole 5 1 1@@member 5 1 1@@raised 16 16@@both 8 8@@member_aligned 16 8 8@@packed_alignas 16 1 16@@packed_member_aligned 16 8 8@@global 0@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
