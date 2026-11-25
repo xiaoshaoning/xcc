@@ -998,9 +998,17 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       `(token index, limit)`; `Preprocessed::pack_at(index)` answers for a position, so no loop that reads a
       declaration has to know a pragma exists. A pragma *inside* a struct body is refused by name, because one record
       gets one layout.
-- [ ] **`__attribute__((packed))` and `((aligned(N)))` are still refused.** They are the same layout decision with a
-      different spelling, and they are now the only part of packing left: when they are done, the refusal goes and the
-      test matrix above already covers the numbers. `#pragma pack(N)` /
+- [x] **`__attribute__((packed))` and `((aligned(N)))`**, on a record, on one member, and on an object. Measured from
+      `clang`, and **the two spellings are not the same decision**: `#pragma pack(1)` caps an explicit `_Alignas(16)`
+      member to 1, while `__attribute__((packed))` leaves it at 16 - so `Layout` takes the explicit alignment *after*
+      the packed cap and *before* the pragma's. A record `packed, aligned(8)` is 8 bytes with alignment 8, so `aligned`
+      is a floor over the packed cap, and `aligned` on an object is `_Alignas` (16 is the ceiling, refused above it
+      exactly as `_Alignas` is). Eight measured rows, seven of them `sizeof`/`offsetof`/`_Alignof`, the last the
+      address of an over-aligned global.
+      **How it reaches layout**: the preprocessor records `(token index, attribute)` for the two that matter - `packed`
+      and `aligned(N)` - and the parser asks about the *range* it parsed, which is how an attribute that comes *after*
+      a record's body (`struct S {...} __attribute__((packed))`) is found by a parser that completes the record at the
+      `}`. A reader for the argument during the same pass, because the parentheses belong to the name. `#pragma pack(N)` /
       `push` / `pop` and `__attribute__((packed))` / `((aligned(N)))`. Measured against `clang` - the matrix the
       refusal rests on: `struct { char c; int i; short s; }` is 12/4/8 by default, **7/1/5** under `pack(1)` and
       8/2/6 under `pack(2)`; a `double` member is 12 bytes at offset 4 under `pack(4)`; `pack()` resets; `push`/`pop`

@@ -82,6 +82,11 @@ pub struct Preprocessed {
     names: Interner,
     /// Where `#pragma pack` changed the limit: `(token index, pack)`, in order.
     pack_changes: Vec<(usize, u8)>,
+    /// Where the attributes that change a layout were written: `(token index, attribute)`. The
+    /// *position* is the whole of it - `struct S { ... } __attribute__((packed))` is packed because
+    /// the attribute sits where the declaration does - so a parser asks about the range it just
+    /// parsed instead of meeting an attribute where it does not expect one.
+    layout_attributes: Vec<(usize, crate::types::LayoutAttribute)>,
 }
 
 impl Preprocessed {
@@ -100,6 +105,17 @@ impl Preprocessed {
             0 => crate::types::Types::DEFAULT_PACK,
             _ => self.pack_changes[past - 1].1,
         }
+    }
+
+    /// The layout attributes written between tokens `from` and `to`, both included: everything one
+    /// declaration can have said about where its bytes go.
+    pub fn layout_attributes(&self, from: usize, to: usize) -> Vec<crate::types::LayoutAttribute> {
+        let first = self.layout_attributes.partition_point(|(at, _)| *at < from);
+        self.layout_attributes[first..]
+            .iter()
+            .take_while(|(at, _)| *at <= to)
+            .map(|(_, attribute)| *attribute)
+            .collect()
     }
 }
 
@@ -247,6 +263,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         pack: crate::types::Types::DEFAULT_PACK,
         pack_stack: Vec::new(),
         pack_changes: Vec::new(),
+        layout_attributes: Vec::new(),
         in_command_line: false,
     };
     preprocessor.read_root();
@@ -274,6 +291,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
     let diagnostics = std::mem::take(&mut preprocessor.diagnostics);
     let tokens = std::mem::take(&mut preprocessor.out);
     let pack_changes = std::mem::take(&mut preprocessor.pack_changes);
+    let layout_attributes = std::mem::take(&mut preprocessor.layout_attributes);
     drop(preprocessor);
     Preprocessed {
         tokens,
@@ -282,6 +300,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         standard: options.standard,
         names: interner,
         pack_changes,
+        layout_attributes,
     }
 }
 
@@ -422,6 +441,8 @@ struct Preprocessor<'a> {
     /// about a declaration - so the parser reads it by the position it has reached, and no loop that
     /// reads declarations needs to know a pragma exists.
     pack_changes: Vec<(usize, u8)>,
+    /// Where the attributes that change a layout were written, as `(token index, attribute)`.
+    layout_attributes: Vec<(usize, crate::types::LayoutAttribute)>,
     /// Whether the tokens being read are a `-D` from the command line, whose spans point into
     /// text the user never wrote.
     in_command_line: bool,
@@ -585,22 +606,30 @@ impl Preprocessor<'_> {
 
     /// Read one `__attribute__((...))` and act on it.
     ///
-    /// The list is comma-separated names, some taking arguments - `((noreturn, aligned(8),
-    /// visibility("default")))` - so only the names at the *top* of the inner list matter; a name
-    /// inside an argument is the argument's.
+    /// The list is comma-separated names, some taking an argument -
+    /// `((noreturn, aligned(8), visibility("default")))` - so only the names at the *top* of the
+    /// inner list matter, and a name inside an argument is the argument's.
     ///
-    /// Each name is looked up in `HARMLESS_ATTRIBUTES` and dropped, or refused by name. **The list
-    /// is what may be dropped, not what may not**: an attribute this compiler has never heard of
-    /// could change the program - `vector_size` changes a type's size, `section` where its bytes go,
-    /// `cleanup` what runs at the end of a block, `weak` whether a definition wins - and the first
-    /// version of this function dropped everything except two names, which quietly accepted all
-    /// four. Silence about a thing not understood is the wrong default; a diagnostic naming it is
-    /// the answer, and it costs the writer one line to correct.
+    /// Each name is looked up in `HARMLESS_ATTRIBUTES` and dropped, or recorded in
+    /// `layout_attributes` when it decides where bytes go, or refused by name. **The list is what
+    /// may be dropped, not what may not**: an attribute this compiler has never heard of could
+    /// change the program - `vector_size` a type's size, `section` where its bytes go, `cleanup`
+    /// what runs at the end of a block, `weak` whether a definition wins - and the first version of
+    /// this function dropped everything except the two names it knew, which quietly accepted all
+    /// four. Silence about a thing not understood is the wrong default.
+    ///
+    /// What it found is recorded against the *position* in the token stream, because that is how the
+    /// parser decides what an attribute is on: a declaration asks about the range it parsed.
     fn attribute(&mut self, opening: Raw) {
         let span = opening.token.span;
+        let at = self.out.len();
         let mut depth = 0i32;
-        let mut names: Vec<String> = Vec::new();
+        // Each name, and the argument its parentheses held in one word - `aligned(8)` is
+        // `("aligned", Some("8"))` and `aligned` alone is `("aligned", None)`.
+        let mut found: Vec<(String, Option<String>)> = Vec::new();
         let mut expect_name = true;
+        // The argument text being collected, when the name before it took parentheses.
+        let mut argument: Option<String> = None;
         loop {
             let Some(raw) = self.next() else {
                 self.error(span, "`__attribute__` is not closed");
@@ -612,47 +641,83 @@ impl Preprocessor<'_> {
             }
             if self.is_punct(&raw.token, "(") {
                 depth += 1;
+                if depth == 3 {
+                    argument = Some(String::new());
+                }
                 continue;
             }
             if self.is_punct(&raw.token, ")") {
                 depth -= 1;
-                // The outer `)` closes the list: `((` opens two levels and the inner one holds the
+                if depth == 2 {
+                    if let Some(text) = argument.take() {
+                        if let Some(last) = found.last_mut() {
+                            last.1 = Some(text);
+                        }
+                    }
+                }
+                // The outer `)` closes the list: `((` opens two levels and the inner holds the
                 // names.
                 if depth <= 0 {
                     break;
                 }
                 continue;
             }
-            // Two levels in is the top of the inner list.
-            if depth != 2 {
+            if depth == 2 {
+                if self.is_punct(&raw.token, ",") {
+                    expect_name = true;
+                    continue;
+                }
+                if raw.token.kind == TokenKind::Ident && expect_name {
+                    found.push((self.spell(raw.token.text).to_owned(), None));
+                    expect_name = false;
+                }
                 continue;
             }
-            if self.is_punct(&raw.token, ",") {
-                expect_name = true;
-                continue;
-            }
-            if raw.token.kind == TokenKind::Ident && expect_name {
-                names.push(self.spell(raw.token.text).to_owned());
-                expect_name = false;
+            if depth == 3 {
+                // The first word of an argument is the whole of it as far as this compiler reads:
+                // `aligned(8)` names a number, and an expression there would need a second constant
+                // evaluator in the preprocessor.
+                if let Some(text) = argument.as_mut() {
+                    if text.is_empty() {
+                        text.push_str(self.spell(raw.token.text));
+                    }
+                }
             }
         }
-        for name in names {
-            self.attribute_named(&name, span);
+        for (name, argument) in found {
+            self.attribute_named(&name, argument.as_deref(), span, at);
         }
     }
 
-    /// One attribute, by the name the list gave it.
-    fn attribute_named(&mut self, name: &str, span: Span) {
+    /// One attribute, by the name the list gave it, found at token `at`.
+    fn attribute_named(&mut self, name: &str, argument: Option<&str>, span: Span, at: usize) {
         if HARMLESS_ATTRIBUTES.contains(&name) {
             return;
         }
-        if matches!(name, "packed" | "__packed__" | "aligned" | "__aligned__") {
-            self.error(
-                span,
-                format!(
-                    "`__attribute__(({name}))` changes a struct's layout, and this compiler does not implement packing yet: the offsets it would compute are the natural ones, which is a wrong program - so this is an error rather than a warning"
-                ),
-            );
+        if matches!(name, "packed" | "__packed__") {
+            self.layout_attributes
+                .push((at, crate::types::LayoutAttribute::Packed));
+            return;
+        }
+        if matches!(name, "aligned" | "__aligned__") {
+            let alignment = match argument {
+                // `aligned` with no argument is the largest alignment the target has.
+                None => u64::from(crate::types::Types::DEFAULT_PACK),
+                Some(text) => match text.parse::<u64>() {
+                    Ok(alignment) if alignment.is_power_of_two() && alignment <= 16 => alignment,
+                    _ => {
+                        self.error(
+                            span,
+                            format!(
+                                "`__attribute__((aligned({text})))`: the alignment is a power of two up to 16, the largest this target has"
+                            ),
+                        );
+                        return;
+                    }
+                },
+            };
+            self.layout_attributes
+                .push((at, crate::types::LayoutAttribute::Aligned(alignment)));
             return;
         }
         self.error(
@@ -2321,7 +2386,7 @@ yes
         assert!(diagnostics("__attribute__((unused)) int g;\n").is_empty());
         assert!(diagnostics("int f(void) __attribute__((noreturn));\n").is_empty());
         assert!(diagnostics("int f(int x __attribute__((unused)));\n").is_empty());
-        assert!(diagnostics("struct S { int a; } __attribute__((aligned(8)));\n").len() == 1);
+        assert!(diagnostics("__attribute__((noreturn, cold)) int g;\n").is_empty());
         assert_eq!(
             spelled("__attribute__((unused)) int g;"),
             ["int", "g", ";"],
@@ -2335,30 +2400,33 @@ yes
     }
 
     #[test]
-    fn the_two_attributes_that_change_a_layout_are_refused_by_name() {
-        // `packed` and `aligned` decide where a struct's bytes are, and this compiler lays every
-        // struct out naturally: ignoring them is a wrong program, so they are refused with the
-        // reason. `#pragma pack` is the same decision, and its message says so.
-        for attribute in ["packed", "__packed__", "aligned", "__aligned__"] {
-            let refused = diagnostics(&format!(
-                "struct S {{ int a; }} __attribute__(({attribute}));\n"
-            ));
-            assert_eq!(refused.len(), 1, "{attribute}");
-            assert_eq!(refused[0].severity, Severity::Error);
-            assert!(
-                refused[0].message.contains(
-                    "changes a struct's layout, and this compiler does not implement packing"
-                ),
-                "{attribute}: {}",
-                refused[0].message
-            );
-        }
-        // Nested inside another attribute's arguments it is an argument, not the attribute.
-        assert!(diagnostics("__attribute__((warn_unused_result(packed))) int g;\n").is_empty());
-        // And an attribute this compiler has never heard of is refused, not dropped: the list is
-        // what *may* be dropped, so the default for the unknown is a diagnostic. Each of these four
-        // changes the program - a type's size, where its bytes go, what runs at the end of a block,
-        // and whether a definition wins - and the first version of this reader accepted all four.
+    fn the_two_attributes_that_decide_a_layout_are_recorded_where_they_were_written() {
+        // `packed` and `aligned(N)` are not dropped: they are facts about a *position*, because that
+        // is how the parser decides what an attribute is on - the range it parsed. The numbers are
+        // measured against `clang` in `tests/exe.rs`.
+        let attributes = |source: &str| {
+            let preprocessed = preprocessed_of(source);
+            preprocessed.layout_attributes(0, preprocessed.tokens.len())
+        };
+        assert_eq!(
+            attributes("struct S { int a; } __attribute__((packed));\n"),
+            [crate::types::LayoutAttribute::Packed]
+        );
+        assert_eq!(
+            attributes("struct S { int a; } __attribute__((aligned(8), packed));\n"),
+            [
+                crate::types::LayoutAttribute::Aligned(8),
+                crate::types::LayoutAttribute::Packed
+            ]
+        );
+        // `aligned` with no argument is the largest alignment the target has.
+        assert_eq!(
+            attributes("struct S { int a; } __attribute__((aligned));\n"),
+            [crate::types::LayoutAttribute::Aligned(16)]
+        );
+        // Anything else is refused by name, because an attribute nobody thought about could change
+        // the program - and the first version of this reader dropped everything except the two names
+        // it knew, which quietly accepted `vector_size`, `section`, `cleanup` and `weak`.
         for attribute in [
             "vector_size(16)",
             "section(\".text.hot\")",
@@ -2375,6 +2443,12 @@ yes
                 refused[0].message
             );
         }
+        // An alignment past what this target guarantees is refused, as `_Alignas` is.
+        assert!(diagnostics("int g __attribute__((aligned(32)));\n")[0]
+            .message
+            .contains("the alignment is a power of two up to 16"));
+        // Nested inside another attribute's arguments it is an argument, not the attribute.
+        assert!(diagnostics("__attribute__((warn_unused_result(packed))) int g;\n").is_empty());
         // A malformed one is closed by name rather than eating the file.
         assert!(!diagnostics("__attribute__((unused int g;\n").is_empty());
     }

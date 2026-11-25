@@ -789,6 +789,7 @@ impl Parser<'_> {
             self.static_assertion();
             return None;
         }
+        let began = self.at;
         let specs = self.declaration_specifiers();
         // C11 6.7.1p3: at block scope `_Thread_local` shall be combined with `static` or `extern`;
         // 6.7.1p4: it shall not appear in a function declaration's specifiers. A permission the
@@ -814,7 +815,7 @@ impl Parser<'_> {
             self.skip_until(&[";"], true);
             return None;
         };
-        let specs = Specifiers {
+        let mut specs = Specifiers {
             ty: Some(base),
             ..specs
         };
@@ -826,6 +827,12 @@ impl Parser<'_> {
             };
             let name = tree.name;
             let ty = self.apply_declarator(tree, base);
+            // `int g __attribute__((aligned(16)))` writes the attribute after the declarator, and
+            // `__attribute__((aligned(16))) int g` before the type: one question, "what alignment
+            // did this declaration ask for", asked over the whole of it. An object aligned past
+            // what it needed is not a wrong program, so a declaration with two declarators sharing
+            // one attribute over-aligns the second rather than misaligning anything.
+            specs.alignas = self.declaration_alignment(began, specs.alignas);
             let entry = Entry {
                 ty,
                 storage: None,
@@ -1597,6 +1604,10 @@ impl Parser<'_> {
     /// A tag with no body is a forward declaration, which is how two structs can point at each
     /// other; a tag that already has a body is completed rather than redeclared.
     fn record_specifier(&mut self, kind: RecordKind, span: Span) -> TypeId {
+        // Where the specifier starts, which is where an attribute can be: `struct __attribute__
+        // ((packed)) S { ... }` puts one before the tag and `struct S { ... } __attribute__
+        // ((packed))` puts one after the body. Both are "in this record's range".
+        let began = self.at;
         let tag = if self
             .peek()
             .is_some_and(|token| token.kind == crate::lex::TokenKind::Ident)
@@ -1631,8 +1642,8 @@ impl Parser<'_> {
                 }
                 let opened = self.at;
                 let members = self.member_list();
-                let pack = self.pack_after_body(opened, span);
-                self.types.complete_record(record, members, pack);
+                let layout = self.record_layout(began, opened, span);
+                self.types.complete_record(record, members, layout);
                 self.check_member_names(record);
                 return ty;
             }
@@ -1643,27 +1654,40 @@ impl Parser<'_> {
         }
         let opened = self.at;
         let members = self.member_list();
-        let pack = self.pack_after_body(opened, span);
-        self.types.complete_record(record, members, pack);
+        let layout = self.record_layout(began, opened, span);
+        self.types.complete_record(record, members, layout);
         self.check_member_names(record);
         ty
     }
 
-    /// The `#pragma pack` limit a record whose body ends here is laid out with.
+    /// Everything a record's declaration said about where its members go.
     ///
-    /// A record gets **one** number, taken where its body ends, because a record has one layout.
-    /// A pragma *inside* the body would give different members different limits - which MSVC does
-    /// accept - and a compiler laying the record out in one pass cannot express it, so it is
-    /// refused by name rather than silently applied to half the members.
-    fn pack_after_body(&mut self, opened: usize, span: Span) -> u8 {
-        let here = self.preprocessed.pack_at(self.at);
-        if here != self.preprocessed.pack_at(opened) {
+    /// `began` is where its specifier started and `opened` is its `{`; the attributes that belong to
+    /// it are the ones written in that range and immediately after the body, which is where
+    /// `struct S { ... } __attribute__((packed))` puts one.
+    ///
+    /// A record gets **one** layout, taken where its body ends. A `#pragma pack` *inside* the body
+    /// would give different members different limits - which MSVC does accept - and a compiler laying
+    /// the record out in one pass cannot express it, so it is refused by name rather than quietly
+    /// applied to half the members.
+    fn record_layout(&mut self, began: usize, opened: usize, span: Span) -> crate::types::Layout {
+        let pack = self.preprocessed.pack_at(self.at);
+        if pack != self.preprocessed.pack_at(opened) {
             self.error(
                 span,
                 "a `#pragma pack` inside a struct or union body is not supported: a record is laid out with the limit in force where it ends",
             );
         }
-        here
+        let mut layout = crate::types::Layout::new(pack);
+        for attribute in self.preprocessed.layout_attributes(began, self.at) {
+            match attribute {
+                crate::types::LayoutAttribute::Packed => layout.packed = true,
+                crate::types::LayoutAttribute::Aligned(alignment) => {
+                    layout.aligned = Some(layout.aligned.unwrap_or(1).max(alignment));
+                }
+            }
+        }
+        layout
     }
 
     /// C99 6.7.2.1p1: no two members of one struct or union may have the same name - and C11
@@ -1712,15 +1736,20 @@ impl Parser<'_> {
                 continue;
             };
             loop {
+                // Where this member's declaration starts, so its own attributes - `int i
+                // __attribute__((packed))` - can be found by the range it covers.
+                let member_from = self.at;
                 // `int : 3;` - an anonymous bitfield, used only to pad.
                 if self.at_punct(":") {
                     let width = self.bit_width();
+                    let (alignas, packed) = self.member_attributes(member_from, specs.alignas);
                     members.push(Member {
                         name: None,
                         ty: base,
                         offset: 0,
                         bits: Some((0, width)),
-                        alignas: specs.alignas,
+                        alignas,
+                        packed,
                     });
                 } else {
                     let Some(tree) = self.declarator(false) else {
@@ -1734,12 +1763,14 @@ impl Parser<'_> {
                     } else {
                         None
                     };
+                    let (alignas, packed) = self.member_attributes(member_from, specs.alignas);
                     members.push(Member {
                         name,
                         ty,
                         offset: 0,
                         bits,
-                        alignas: specs.alignas,
+                        alignas,
+                        packed,
                     });
                 }
                 if !self.eat(",") {
@@ -1755,6 +1786,36 @@ impl Parser<'_> {
             self.error_at_current("expected `}` to end the members");
         }
         members
+    }
+
+    /// The alignment a declaration asked for: `__attribute__((aligned(N)))`, which raises, over
+    /// whatever `_Alignas` and the attribute list before the type already said.
+    fn declaration_alignment(&self, began: usize, alignas: u64) -> u64 {
+        let mut alignas = alignas;
+        for attribute in self.preprocessed.layout_attributes(began, self.at) {
+            if let crate::types::LayoutAttribute::Aligned(alignment) = attribute {
+                alignas = alignas.max(alignment);
+            }
+        }
+        alignas
+    }
+
+    /// What one member's declaration said about its alignment, ready to spread into its `Member`.
+    ///
+    /// `__attribute__((packed))` on the member caps its *natural* alignment at 1, and `aligned(N)`
+    /// raises it - which is the same question `_Alignas` asks, so `specs.alignas` is the seed.
+    fn member_attributes(&self, from: usize, alignas: u64) -> (u64, bool) {
+        let mut packed = false;
+        let mut alignas = alignas;
+        for attribute in self.preprocessed.layout_attributes(from, self.at) {
+            match attribute {
+                crate::types::LayoutAttribute::Packed => packed = true,
+                crate::types::LayoutAttribute::Aligned(alignment) => {
+                    alignas = alignas.max(alignment);
+                }
+            }
+        }
+        (alignas, packed)
     }
 
     fn bit_width(&mut self) -> u8 {

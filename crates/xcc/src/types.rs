@@ -97,6 +97,54 @@ pub(crate) struct Member {
     /// *member's* alignment and not the type's, which is why it lives here - `jmp_buf`'s 16 bytes
     /// are what the ABI's `movaps` needs and `unsigned long long[2]` does not have.
     pub alignas: u64,
+    /// Whether the member said `__attribute__((packed))`: its natural alignment is 1, and an
+    /// explicit alignment beside it still stands.
+    pub packed: bool,
+}
+
+/// What a declaration asked for that the layout of a record has to honour.
+///
+/// Two spellings for one decision, and they are **not** the same decision: `#pragma pack(N)` caps
+/// every alignment including an explicit `_Alignas(16)` (measured: `pack(1)` puts that member at 1
+/// with the record's alignment at 1), while `__attribute__((packed))` caps only the *natural*
+/// alignment and leaves the explicit one standing (the same struct is 16 bytes with alignment 16).
+/// A `struct { int i; } __attribute__((packed, aligned(8)))` is 8 bytes and alignment 8, so
+/// `aligned` is a floor over the packed cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The `#pragma pack` limit where the record is declared: caps every member, explicitly
+    /// aligned ones included.
+    pub pack: u8,
+    /// The record's own `__attribute__((packed))`: every member's *natural* alignment is 1.
+    pub packed: bool,
+    /// The record's own `__attribute__((aligned(N)))`: a floor under the record's alignment.
+    pub aligned: Option<u64>,
+}
+
+impl Layout {
+    /// The layout a record gets from `#pragma pack` alone, which is what most records have.
+    pub fn new(pack: u8) -> Self {
+        Self {
+            pack,
+            packed: false,
+            aligned: None,
+        }
+    }
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::new(Types::DEFAULT_PACK)
+    }
+}
+
+/// One `__attribute__` that changes a layout this compiler computes, as the preprocessor found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutAttribute {
+    /// `packed`: the natural alignment of what it is on is 1.
+    Packed,
+    /// `aligned(N)`: a floor under the alignment of what it is on.
+    Aligned(u64),
 }
 
 /// A struct or union: its members once it is complete, and its layout.
@@ -285,6 +333,7 @@ impl Types {
         }
         let (ty, record) = self.record(RecordKind::Struct, None);
         let part = Member {
+            packed: false,
             name: None,
             ty: element,
             offset: 0,
@@ -294,7 +343,7 @@ impl Types {
         // A `_Complex` is two floating-point members and has the ABI's layout whatever `#pragma
         // pack` is in force: it is not a declared struct, so no pragma reaches it, and packing it
         // would break the ABI that passes it in registers.
-        self.complete_record(record, vec![part.clone(), part], Self::DEFAULT_PACK);
+        self.complete_record(record, vec![part.clone(), part], Layout::default());
         self.complex.insert(element, ty);
         self.complex_records.insert(record);
         ty
@@ -361,16 +410,17 @@ impl Types {
 
     /// Lay out a record: where each member goes, and the record's size and alignment.
     ///
-    /// `pack` is the `#pragma pack` limit in force where the record is declared, and it is the
-    /// *whole* of packing: a member's alignment is `min(its own, pack)`, which is measured against
-    /// `clang` - `struct { char c; int i; short s; }` is 12/4/8 unpacked, 7/1/5 under `pack(1)` and
-    /// 8/2/6 under `pack(2)`; a `double` member moves from offset 8 to 4 under `pack(4)`; a bitfield
-    /// unit's alignment is capped the same way, so the three members above are 5 bytes packed and 6
-    /// under `pack(2)` against 8 unpacked. Two things it does **not** do, both measured: a nested
-    /// record keeps the layout of its own declaration (the member's *placement* is capped, its
-    /// inside is not), and `pack` caps an explicit `_Alignas` too - `pack(2)` puts a
-    /// `_Alignas(16)` member at 2 with the record's alignment at 2.
-    pub fn complete_record(&mut self, record: RecordId, members: Vec<Member>, pack: u8) {
+    /// `layout` is everything the declaration said about where the members go, and it is the *whole*
+    /// of packing - a member's alignment is `max(natural-capped, explicit)` and then `#pragma pack`
+    /// caps the result, which is measured against `clang`: `struct { char c; int i; short s; }` is
+    /// 12/4/8 unpacked, 7/1/5 under `pack(1)` and 8/2/6 under `pack(2)`; a `double` member moves from
+    /// offset 8 to 4 under `pack(4)`; a bitfield unit's alignment is capped the same way, so the
+    /// three members above are 5 bytes packed and 6 under `pack(2)` against 8 unpacked.
+    ///
+    /// The two spellings differ exactly once, and it is measured in both directions: `pack(1)` caps
+    /// a `_Alignas(16)` member to 1, and `__attribute__((packed))` leaves the same member at 16 -
+    /// which is why the explicit alignment is taken *after* the packed cap and before the pragma's.
+    pub fn complete_record(&mut self, record: RecordId, members: Vec<Member>, layout: Layout) {
         let kind = self.records[record.0 as usize].kind;
         let mut offset = 0u64; // end of what has been laid out
         let mut size = 0u64; // the largest end, which is the size for a union
@@ -382,14 +432,14 @@ impl Types {
 
         let mut laid_out: Vec<Member> = Vec::with_capacity(members.len());
         for mut member in members {
-            // Everything else in this function reads `member_align`, so the cap is asked once -
-            // including for the bitfield unit's start, which is the one an explicit cap would
-            // otherwise have missed.
-            let member_align = self
-                .align_of(member.ty)
-                .unwrap_or(1)
-                .max(member.alignas)
-                .min(u64::from(pack));
+            // Everything else in this function reads `member_align`, so the caps are asked once -
+            // including for the bitfield unit's start, which a per-offset cap would have missed.
+            let natural = if layout.packed || member.packed {
+                1
+            } else {
+                self.align_of(member.ty).unwrap_or(1)
+            };
+            let member_align = natural.max(member.alignas).min(u64::from(layout.pack));
             if matches!(member.bits, Some((_, 0))) {
                 // `int :0` is a marker: it closes the unit being packed and is otherwise
                 // nothing - no offset of its own, no size, and no alignment to raise. That is
@@ -454,6 +504,9 @@ impl Types {
         }
 
         let flat = self.flatten(laid_out);
+        // `__attribute__((aligned(N)))` on the record is a floor under its alignment, and the size
+        // rounds up to it: `struct { char c; } __attribute__((aligned(16)))` is 16 bytes.
+        let align = align.max(layout.aligned.unwrap_or(1));
         let record = &mut self.records[record.0 as usize];
         record.size = align_up(size, align.max(1));
         record.align = align.max(1);

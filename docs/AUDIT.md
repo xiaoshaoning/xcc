@@ -786,6 +786,44 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 - 2026-11-25 - the two spellings that are not the same decision
+
+`__attribute__((packed))` and `((aligned(N)))` are implemented on a record, on one member and on an object, against a
+matrix from `clang` - all eight rows identical - and the interesting part of it is that **they are not `#pragma pack`
+with another spelling**:
+
+| | size | offset | align |
+|---|---|---|---|
+| `struct {char,int} __attribute__((packed))` | 5 | 1 | 1 |
+| `struct {char; int i __attribute__((packed));}` | 5 | 1 | 1 |
+| `struct {char} __attribute__((aligned(16)))` | 16 | — | 16 |
+| `struct {int} __attribute__((packed, aligned(8)))` | 8 | — | 8 |
+| `struct {char; int i __attribute__((aligned(8)));}` | 16 | 8 | 8 |
+| `struct {_Alignas(16) char; int} __attribute__((packed))` | **16** | 1 | **16** |
+
+The last row is the whole difference: `#pragma pack(1)` caps a `_Alignas(16)` member to 1 (measured in the previous
+commit, 5 bytes, alignment 1) and `__attribute__((packed))` leaves it at 16. So the layout takes the explicit alignment
+*after* the packed cap and *before* the pragma's - `max(natural-capped, explicit).min(pack)` - which is one expression
+that reproduces both spellings, and `aligned` is a floor applied after it (`packed, aligned(8)` is 8 bytes, alignment
+8).
+
+**How it reaches layout** is the design question, and the answer is the same one `#pragma pack` got: a fact about a
+*position* in the token stream. The preprocessor records `(token index, attribute)`; the parser asks about the range it
+parsed. That is what makes `struct S { ... } __attribute__((packed))` work at all, because the attribute comes *after*
+the `}` and the record is completed *at* it - a parser that met attributes where it expects them would need a case in
+every position a declaration can carry one, which is the class of bug this compiler keeps finding. The argument reader
+(`aligned(8)` rather than `aligned(8 + 8)`) runs in the same pass, because the parentheses belong to the name.
+
+Two smaller decisions: `aligned` on an object is `_Alignas` (16 is the ceiling, refused above it with the same
+reasoning and now the same wording), and a declaration's attributes are asked for over the *whole* declaration - so
+`int g __attribute__((aligned(16)))` and `__attribute__((aligned(16))) int g` are one question. Over-aligning an object
+is not a wrong program, which is why a declaration with two declarators sharing one attribute is left over-applied
+rather than tracked per declarator.
+
+201 unit, 38 parser, 30 CLI, 5 invalid, 30 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 - 2026-11-25 - packing is one line, and the note that had measured the wrong struct
 
 `#pragma pack` is implemented: all five forms MSVC documents, against a matrix from `clang`. The whole of packing is

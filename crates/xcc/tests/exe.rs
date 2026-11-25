@@ -1495,6 +1495,84 @@ fn packing_decides_offsets_the_way_clang_does() {
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
+/// The `__attribute__((packed))` / `((aligned(N)))` matrix the test below runs: every line is what
+/// `clang -std=c11` prints for this program.
+const ATTRIBUTE_LAYOUT_PROGRAM: &str = r#"#include <stddef.h>
+#include <stdio.h>
+
+struct whole {
+  char c;
+  int i;
+} __attribute__((packed));
+
+struct member {
+  char c;
+  int i __attribute__((packed));
+};
+
+struct raised {
+  char c;
+} __attribute__((aligned(16)));
+
+struct both {
+  int i;
+} __attribute__((packed, aligned(8)));
+
+struct member_aligned {
+  char c;
+  int i __attribute__((aligned(8)));
+};
+
+struct packed_alignas {
+  _Alignas(16) char c;
+  int i;
+} __attribute__((packed));
+
+struct packed_member_aligned {
+  char c;
+  int i __attribute__((packed, aligned(8)));
+};
+
+int global __attribute__((aligned(16)));
+
+int main(void) {
+  printf("whole %d %d %d\n", (int)sizeof(struct whole), (int)offsetof(struct whole, i),
+         (int)_Alignof(struct whole));
+  printf("member %d %d %d\n", (int)sizeof(struct member), (int)offsetof(struct member, i),
+         (int)_Alignof(struct member));
+  printf("raised %d %d\n", (int)sizeof(struct raised), (int)_Alignof(struct raised));
+  printf("both %d %d\n", (int)sizeof(struct both), (int)_Alignof(struct both));
+  printf("member_aligned %d %d %d\n", (int)sizeof(struct member_aligned),
+         (int)offsetof(struct member_aligned, i), (int)_Alignof(struct member_aligned));
+  printf("packed_alignas %d %d %d\n", (int)sizeof(struct packed_alignas),
+         (int)offsetof(struct packed_alignas, i), (int)_Alignof(struct packed_alignas));
+  printf("packed_member_aligned %d %d %d\n", (int)sizeof(struct packed_member_aligned),
+         (int)offsetof(struct packed_member_aligned, i),
+         (int)_Alignof(struct packed_member_aligned));
+  printf("global %d\n", (int)((unsigned long long)&global % 16));
+  return 0;
+}
+"#;
+
+/// The two attributes that decide where bytes go, and the one place they differ from `#pragma pack`.
+///
+/// `struct { char c; int i; } __attribute__((packed))` is 5 bytes with `i` at 1 and alignment 1;
+/// on one member it is the same 5 bytes; `aligned(16)` on a record is 16 bytes and alignment 16;
+/// `packed, aligned(8)` is 8 and 8, so `aligned` is a floor over the packed cap.
+///
+/// The row that measures the difference: a `_Alignas(16)` member in a packed struct keeps its 16
+/// (`packed` caps the *natural* alignment only), where `#pragma pack(1)` would cap it to 1 - the
+/// previous commit's matrix says so, and both are `clang`'s answer.
+#[test]
+#[cfg(target_os = "windows")]
+fn packed_and_aligned_decide_offsets_the_way_clang_does() {
+    let run = run_linked_with("c11", "attribute-layout", ATTRIBUTE_LAYOUT_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "whole 5 1 1@@member 5 1 1@@raised 16 16@@both 8 8@@member_aligned 16 8 8@@packed_alignas 16 1 16@@packed_member_aligned 16 8 8@@global 0@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
 /// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
 /// name, and an object written with one links against a use written with the other. That exercises
 /// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes
