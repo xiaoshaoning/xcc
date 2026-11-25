@@ -2401,7 +2401,38 @@ impl Parser<'_> {
         if !terminated {
             if matches!(self.types.kind(result), Type::Void) {
                 self.emit(|builder| builder.ret(None, span));
+            } else if !self
+                .body
+                .as_ref()
+                .is_some_and(|body| body.func.reachable(body.current))
+            {
+                // Nothing can arrive here: the tail of a `for (;;)` with no `break`, or of a body
+                // whose every path returned. It still needs a terminator, and saying so is all this
+                // is - the first version of the diagnostic below fired on every one of the runtime's
+                // CAS loops.
+                self.emit(|builder| builder.unreachable(span));
+            } else if self.spell_of(name) == "main" {
+                // C99 5.1.2.2.3p1: reaching the `}` that ends `main` returns 0. That is not
+                // undefined behaviour, so it is not the trap below - and it was: every program
+                // whose `main` had no final `return` died of `ud2` at exit, `example/table.c` of
+                // toml-c among them.
+                self.emit(|builder| {
+                    let zero = builder.constant(result, 0, span);
+                    builder.ret(Some(zero), span)
+                });
             } else {
+                // C99 6.9.1p12: only `main` defines this. The program is legal C, and the *call's*
+                // value is undefined if anyone reads it - so this is a warning, as it is in `clang`,
+                // and the trap below turns the undefined case into a failure at the point it
+                // happens rather than a number that looks like an answer.
+                self.warning(
+                    span,
+                    format!(
+                        "control reaches the end of `{}`, which returns {}: the value it returns is undefined",
+                        self.spell_of(name),
+                        self.describe(result)
+                    ),
+                );
                 self.emit(|builder| builder.unreachable(span));
             }
         }

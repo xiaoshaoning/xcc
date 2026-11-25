@@ -187,6 +187,37 @@ pub(crate) fn made_by_the_linker(name: &str) -> bool {
         || name.starts_with("__xcc_tls_offset_")
 }
 
+/// Every name `ucrtbase.dll` exports, as the library itself lists them.
+///
+/// This file is a *capture*, not a list: `ucrtbase.dll` version 10.0.26100.9711 on this machine,
+/// read by `tools/pe_exports.py` and checked in verbatim, because a link must not depend on reading
+/// a DLL - the point of this linker is that it needs no library files at all. Regenerate with
+///
+/// ```text
+/// python3 crates/xcc/tools/pe_exports.py C:/Windows/System32/ucrtbase.dll \
+///     > crates/xcc/src/back/ucrtbase-exports.txt
+/// ```
+///
+/// It is the *fallback* below the headers' own list, and it exists because `C_RUNTIME` is what the
+/// shipped headers declare, not what the runtime has: `strnlen` is an export that C99's `<string.h>`
+/// does not declare, and toml-c - which declares it itself - was told "undefined symbol" by a
+/// compiler that could have linked it.
+const UCRTBASE_EXPORTS: &str = include_str!("ucrtbase-exports.txt");
+
+/// Whether `ucrtbase.dll` exports `name`. Built on the first link and kept.
+fn ucrtbase_exports(name: &str) -> bool {
+    static EXPORTS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
+        std::sync::OnceLock::new();
+    EXPORTS
+        .get_or_init(|| {
+            UCRTBASE_EXPORTS
+                .lines()
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .contains(name)
+}
+
 pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
     // The four the kernel exports rather than the C runtime. `TlsAlloc` is the trap: it appears in
     // `ucrtbase.dll`'s dump, but as an *import* of the kernel's, not as one of its own exports - the
@@ -225,7 +256,10 @@ pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
     {
         return Some(("ucrtbase.dll", (*name).to_owned()));
     }
-    if !crt::C_RUNTIME.contains(&name) {
+    // Two answers, in order of authority: the headers this compiler ships, whose names its runtime
+    // and JIT also know; and then the library's own export table, for a name a *program* declared
+    // itself - a POSIX or C23 function, or one of the runtime's that C99's headers do not list.
+    if !crt::C_RUNTIME.contains(&name) && !ucrtbase_exports(name) {
         return None;
     }
     Some(("ucrtbase.dll", exported_as(name).to_owned()))

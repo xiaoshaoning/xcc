@@ -161,6 +161,24 @@ fn imaginary_types_are_refused_by_name() {
 }
 
 #[test]
+fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
+    // C99 6.9.1p12: reaching the `}` of a non-void function makes the *call's* value undefined, and
+    // only `main` defines it. `clang` warns and returns whatever is in the register; this compiler
+    // warns and traps, so the undefined case fails where it happens instead of yielding a number
+    // that looks like an answer. The warning is the part a program can see.
+    let expected = "control reaches the end of `f`, which returns int";
+    assert!(warnings("int f(void) { if (0) return 1; }")
+        .iter()
+        .any(|message| message.contains(expected)));
+    // `void` returning nothing is not a warning, and neither is a `main` - whose fall-off the
+    // standard defines.
+    assert!(warnings("void f(void) { }").is_empty());
+    assert!(warnings("int main(void) { }").is_empty());
+    // Every path returning is neither.
+    assert!(warnings("int f(int x) { if (x) return 1; return 0; }").is_empty());
+}
+
+#[test]
 fn a_universal_character_name_in_an_identifier_is_that_identifier() {
     // C99 6.4.2.1 lets a universal character name stand for a letter of an identifier, and 6.4.3p2
     // makes it the *same* identifier as the character it names - so the two spellings collide.

@@ -984,6 +984,13 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       character here whatever it is, where `clang` asks Unicode's XID tables and so refuses an emoji. The complete
       rule is a table of several thousand ranges; accepting a name `clang` would refuse is a portability trap worth a
       sentence, not a dependency.
+- [ ] **Two units defining one external name link silently.** `int shared = 1;` in two units whose
+      `shared` differ: `clang` refuses with "multiple definition of `shared`", and this linker keeps the
+      first body - a wrong program whenever the two are not identical. Found while building toml-c,
+      whose single-header distribution is *meant* to be compiled alone; `toml.c` and `example/table.c`
+      together produced 28 duplicate definitions and a working executable. The fix needs the link to
+      carry a second kind of error, and must not refuse a *tentative* definition (C99 6.9.2) or an
+      `inline` definition from a header (6.7.4p6), which are the two legal duplicates.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

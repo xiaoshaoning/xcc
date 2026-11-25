@@ -199,8 +199,12 @@ impl<'a> Program<'a> {
             program.unit_text.push(base);
             for function in &unit.functions {
                 if function.external {
-                    // A name two units define is a duplicate symbol; the first wins and a `-c`
-                    // build's object writer is where the duplicate is reported.
+                    // A name two units define is a duplicate symbol, and **the first wins silently**:
+                    // `clang` says "multiple definition of `f`" and refuses the link, and this
+                    // compiler picks one body - which is the same program only when the two are
+                    // identical. Measured with two units defining one function and one object;
+                    // recorded in PLAN as an open gap, because reporting it needs the link to
+                    // carry a second kind of error.
                     program
                         .functions
                         .entry(function.name.clone())

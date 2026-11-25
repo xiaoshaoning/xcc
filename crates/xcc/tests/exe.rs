@@ -1358,6 +1358,46 @@ fn a_universal_character_name_in_an_identifier_links() {
     assert_eq!(run.status.code(), Some(0), "the two spellings are one name");
 }
 
+/// C99 5.1.2.2.3p1: reaching the `}` that ends `main` returns 0. That is not undefined behaviour, so
+/// it must not be the trap this compiler used for every other function that falls off its end - and
+/// it was: a program with no final `return 0` died of `ud2` at exit. toml-c's `example/table.c` has
+/// exactly that shape, which is where the bug was found.
+#[test]
+#[cfg(target_os = "windows")]
+fn main_that_falls_off_its_end_returns_zero() {
+    let run = run_linked_with("c99", "main-falls-off", "int main(void) { }\n", &[]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the standard's answer, not a trap"
+    );
+}
+
+/// A name the headers do not declare and the library does: `strnlen` is `ucrtbase`'s export and
+/// C99's `<string.h>` says nothing about it, so the compiler's import list - which is what the
+/// shipped headers declare - used to answer "undefined symbol" to a program that declared it
+/// itself. `clang` links this and prints 3, which is what the test asserts.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_name_the_library_exports_links_even_without_a_header() {
+    let source = "#include <stdio.h>\n#include <stddef.h>\n\nsize_t strnlen(const char *s, size_t maxlen);\n\n\
+                  int main(void) {\n  printf(\"%d\\n\", (int)strnlen(\"hello\", 3));\n  return 0;\n}\n";
+    let run = run_linked_with("c99", "strnlen", source, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran");
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "3");
+    // A name the library does *not* have is still refused, at link time, by name.
+    let typo = source.replace("strnlen", "strnlenz");
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let error = compiler
+        .link(&[("t.c", typo.as_str())])
+        .expect_err("no such export");
+    let said = format!("{error:?}");
+    assert!(said.contains("undefined symbol"), "{said}");
+}
+
 /// The narrow atomics: `_Atomic char` and `_Atomic short`, signed ones included. The signed cases
 /// are the point - `cmpxchg` writes one byte or two and leaves the rest of `rax` as it was, so a
 /// result that is not extended back to its type reads as a large positive number. Every line is

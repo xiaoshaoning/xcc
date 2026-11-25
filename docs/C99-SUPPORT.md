@@ -91,6 +91,7 @@ may not ask the program to change its standard.
 | full C99 operator set and precedence, assignment operators, conditional, comma | `sound` (M3.2), with C's usual arithmetic conversions, array-to-pointer decay and constant folding of integer expressions |
 | casts, `sizeof` a type, `sizeof` an expression | `sound` (M3.2) |
 | `sizeof` a VLA, `offsetof` | `planned` (with VLAs) |
+| a function that reaches its closing `}` | `sound` - `main` returns 0 (C99 5.1.2.2.3p1), and any other non-void function is warned about by name and trapped, because the value it would return is undefined (6.9.1p12) |
 | an address in a file-scope initialiser: `char *p = "hello"`, `char *t[] = {"a", "b"}` | `sound` (M10) **at `--opt-level=2`**: the object's bytes hold eight zeroes and the data section carries a relocation naming the object the address is for, which the linker fills. An address *expression* - `int *p = &x;`, `arr + 2` - is still refused, because the parser has no symbolic constant to carry it ([ADR-004](ADR-004-data.md)) |
 | compound literals, brace initialisers with C's brace elision | `sound` (M6) in a function - a compound literal gets a slot of its own and the walker fills it; at file scope a compound literal is refused (there is no frame to put it in) |
 | designated initialisers (`.x = 1`, `[2] = ...`) one level deep | `sound` (M3.4); a designator that names a sub-object (`.a.b =`, `[1].x =`) is refused with a diagnostic |

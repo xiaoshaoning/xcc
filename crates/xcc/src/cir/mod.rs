@@ -1464,6 +1464,16 @@ impl Func {
         }
     }
 
+    /// Whether control can get to `block` from the entry at all.
+    ///
+    /// The block after a `for (;;)` that never breaks is not reachable, and the fact matters where a
+    /// block's terminator is chosen: "this function falls off its end" is only true of a block
+    /// something can arrive at. Unreachable blocks still need *a* terminator, and `unreachable` is
+    /// the honest one.
+    pub fn reachable(&self, block: Block) -> bool {
+        self.reverse_postorder().contains(&block)
+    }
+
     /// Every block reachable from the entry, in an order where each comes after the blocks that
     /// dominate it.
     fn reverse_postorder(&self) -> Vec<Block> {

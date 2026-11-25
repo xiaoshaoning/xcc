@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 - 2026-11-25 - the import list that was a copy, and the `main` that trapped at exit
+
+`strnlen` is exported by `ucrtbase.dll` and C99's `<string.h>` does not declare it. toml-c declares it itself,
+because every POSIX platform does - and this compiler answered "undefined symbol `strnlen`", which blames the
+program for a name the runtime has. `clang` links the same source and prints 3.
+
+`C_RUNTIME` is *what the shipped headers declare* - the JIT binds exactly those, and a test walks it - so it was
+never going to grow by a name nobody's header mentions. The list the linker needed is the library's own: 2 484
+exports, captured once by `tools/pe_exports.py` (which reads a PE export table, and had the same class of bug the
+linker did - it read `AddressOfFunctions` where `AddressOfNames` belongs, so every "name" was code bytes) and checked
+in as `src/back/ucrtbase-exports.txt` with the version and size of the DLL it came from. A link still reads no DLL:
+that is the design, and a capture is how a fact the DLL owns crosses into the source without the link depending on
+the machine. The headers stay the first answer, so nothing that worked changes; the export table is the second.
+
+Then toml-c's example ran, and crashed - `ud2`, an illegal instruction, at exit. `example/table.c`'s `int main()` has
+no `return`, and **C99 5.1.2.2.3p1 says reaching the `}` that ends `main` returns 0** - it is the one function for
+which falling off the end is defined. Every other non-void function got `unreachable` for the undefined value it
+would return (a defensible choice, since C99 6.9.1p12 makes the value undefined), and `main` was swept up with them:
+`int main(void) { }` alone aborting with SIGILL was the minimal reproduction.
+
+Two things came out of fixing it. The diagnostic that now warns about a real fall-off fired on fifty of the runtime's
+own atomic loops, whose tails sit after a `for (;;)` - reachable is not the same as terminated, so the question is
+asked of the CIR (`Func::reachable`, which is `reverse_postorder` given a name) and an unreachable tail is silent. And
+the warning is a *warning*: the function is legal C, only the call's value is undefined, exactly as `clang` says.
+
+Building the example also exposed a third thing, recorded not fixed: compiling `toml.c` and `example/table.c` together
+defines 28 names twice and the link succeeds, taking the first of each - `clang` says "multiple definition" and
+refuses. The comment in `pe.rs` claimed a `-c` build reported it, which was never true.
+
+toml-c's example is byte-identical to `clang`'s: `example.com:80`, `key #0: key`, `key #1: sub`.
+
+201 unit, 37 parser, 30 CLI, 5 invalid, 28 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - the predicate twice, and the number that was already a character
 
 Reading the identifier scanner a second time found two design smells and no bugs - and one of the two smells was the
