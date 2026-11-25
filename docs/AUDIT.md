@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 - 2026-11-25 - the first body wins, and the two cases that are not duplicates
+
+The linker kept the first of two definitions and said nothing. `clang` says "multiple definition of `f`" and refuses,
+and the difference is not stylistic: whichever unit came first wins, so the program is the one written only when the two
+definitions are identical. Found by accident while building toml-c, whose single-header distribution is meant to be
+compiled alone - `toml.c` and `example/table.c` together defined 28 names twice and produced a working executable, which
+is the worst kind of evidence.
+
+The check itself is four cases, and **the first version of it was wrong in the way order-dependent checks are**: it
+tracked "real definitions" and "tentative definitions" in two sets and asked each set separately, so a tentative in unit
+A beside a real definition in unit B was refused one way round and accepted the other. The sets are asked together now -
+a name is a duplicate if it is defined for real twice, or if a real definition meets a tentative one - and the state
+lives outside both loops, because every unit's functions are gathered before any unit's objects and a name checked
+against half of them would be checked wrongly.
+
+**The one exemption is the standard's, and it needed no new field.** C99 6.9.2p2: `int shared;` with no initialiser is
+a *tentative* definition, not an external definition, and a program may have one in every unit. In this compiler that
+predicate is already spelled `external && init.is_none()`, so the object writer reads "tentative" off the global it
+already had rather than the parser growing a flag. Two tentatives merge, and the program runs.
+
+That is also the one place this linker is now **more permissive than the `clang` beside it**: `-fno-common` makes each
+tentative a real definition, so clang refuses two of them. Refusing valid C would be the gap, so the merge stays - and
+because a divergence nobody wrote down is a trap, PLAN's closed row and this entry both say where and why.
+
+The message names the rule and the usual cause, because the usual cause is structural: a function defined in a header,
+or a `.c` file compiled beside a unit that already includes it - which is exactly what toml-c's single-header build had
+been doing silently.
+
+201 unit, 38 parser, 30 CLI, 5 invalid, 31 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 reviewed - 2026-11-25 - the attribute that became the record's, and the one the range began after
 
 The matrix from the previous commit matched `clang` on all eight of its rows, and the review found two bugs that the

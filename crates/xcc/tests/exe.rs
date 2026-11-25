@@ -319,6 +319,17 @@ fn run_linked(test: &str, source: &str, args: &[&str]) -> std::process::Output {
 
 /// The same, with a leading define that names the dialect: `c11` compiles at `--std=c11`.
 fn run_linked_with(dialect: &str, test: &str, source: &str, args: &[&str]) -> std::process::Output {
+    run_units(dialect, test, &[("t.c", source)], args)
+}
+
+/// The same for a program of several translation units: the linker is where a name defined twice is
+/// caught, and one unit cannot show that.
+fn run_units(
+    dialect: &str,
+    test: &str,
+    units: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
     let standard = if dialect == "c11" {
         xcc::CStandard::C11
     } else {
@@ -329,7 +340,7 @@ fn run_linked_with(dialect: &str, test: &str, source: &str, args: &[&str]) -> st
         standard,
         ..Options::default()
     });
-    let image = compiler.link(&[("t.c", source)]).expect("it links");
+    let image = compiler.link(units).expect("it links");
     let dir = temp_dir(test);
     let exe = dir.join("t.exe");
     std::fs::write(&exe, image.bytes()).expect("the image is written");
@@ -1629,6 +1640,96 @@ fn main_that_falls_off_its_end_returns_zero() {
         run.status.code(),
         Some(0),
         "the standard's answer, not a trap"
+    );
+}
+
+/// C99 6.9p5: a program has one external definition of each name. Two units that define `f` - or an
+/// object with an initialiser twice, or a function beside an object of one name - are refused, where
+/// this linker used to keep whichever came first and build a program nobody wrote. Measured against
+/// `clang`, which says "multiple definition of `f`".
+///
+/// The exemption is the standard's: a *tentative* definition, `int shared;` with no initialiser, is
+/// not an external definition (6.9.2p2) and may appear in every unit, so two of them are one object
+/// and the program runs. That is the one place this linker accepts what the `clang` beside it
+/// refuses - its default is `-fno-common`, which makes each tentative a real definition.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_name_defined_in_two_units_is_refused_unless_both_definitions_are_tentative() {
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let mut duplicate = |units: &[(&str, &str)], name: &str| {
+        let error = compiler.link(units).expect_err("it is a duplicate");
+        let said = format!("{error:?}");
+        assert!(
+            said.contains(&format!(
+                "`{name}` is defined in more than one translation unit"
+            )),
+            "{said}"
+        );
+    };
+    duplicate(
+        &[
+            ("a.c", "int f(void) { return 1; }"),
+            (
+                "b.c",
+                "int f(void) { return 2; }\nint main(void) { return f(); }",
+            ),
+        ],
+        "f",
+    );
+    duplicate(
+        &[
+            ("a.c", "int shared = 1;"),
+            ("b.c", "int shared = 2;\nint main(void) { return shared; }"),
+        ],
+        "shared",
+    );
+    // A tentative beside a real definition is a duplicate too, in either order.
+    duplicate(
+        &[
+            ("a.c", "int shared;"),
+            ("b.c", "int shared = 2;\nint main(void) { return shared; }"),
+        ],
+        "shared",
+    );
+    duplicate(
+        &[
+            ("a.c", "int shared = 2;"),
+            ("b.c", "int shared;\nint main(void) { return shared; }"),
+        ],
+        "shared",
+    );
+    // A function and an object of one name: no declaration could have made those one name.
+    duplicate(
+        &[
+            ("a.c", "int clash = 1;"),
+            (
+                "b.c",
+                "int clash(void) { return 2; }\nint main(void) { return clash(); }",
+            ),
+        ],
+        "clash",
+    );
+
+    // Two tentatives are one object, and the program links and runs.
+    let run = run_units(
+        "c99",
+        "tentative",
+        &[
+            (
+                "a.c",
+                "int shared;\nint f(void);\nint main(void) { shared = 4; return f(); }",
+            ),
+            ("b.c", "int shared;\nint f(void) { return shared * 10; }"),
+        ],
+        &[],
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(40),
+        "the two tentatives are one object"
     );
 }
 

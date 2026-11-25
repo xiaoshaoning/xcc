@@ -314,14 +314,24 @@ impl Compile {
 
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
             Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics, dependencies)),
-            Err(missing) => Err(Diagnostics::new(
-                vec![
-                    Diagnostic::error(format!("undefined symbol `{}`", missing.name))
+            Err(error) => {
+                use crate::back::x64::pe::LinkError;
+                let message = match error {
+                    LinkError::Undefined { name } => format!("undefined symbol `{name}`"),
+                    // C99 6.9p5: one external definition of each name in a program. A linker that
+                    // took the first of two would build whichever unit came first, which is the same
+                    // program only when the two are identical.
+                    LinkError::Duplicate { name } => format!(
+                        "`{name}` is defined in more than one translation unit: a program has one external definition of each name (C99 6.9p5). A definition in a header, or a `.c` file compiled beside a unit that already includes it, is the usual cause"
+                    ),
+                };
+                Err(Diagnostics::new(
+                    vec![Diagnostic::error(message)
                         .with_file("link")
-                        .with_span(Span::at(0)),
-                ],
-                sources,
-            )),
+                        .with_span(Span::at(0))],
+                    sources,
+                ))
+            }
         }
     }
 

@@ -85,9 +85,14 @@ pub(crate) struct Linked {
 }
 
 /// A name nothing defined and no library offered.
-pub(crate) struct Unlinked {
-    /// Which name.
-    pub name: String,
+pub(crate) enum LinkError {
+    /// A name nothing defines and no library exports.
+    Undefined { name: String },
+    /// A name more than one unit *defines*. C99 6.9p5 wants exactly one external definition of each
+    /// name in a program, and a linker that takes the first of two silently builds whichever unit
+    /// came first - a wrong program whenever the two are not identical, which is what `clang`'s
+    /// "multiple definition of `f`" exists to prevent. A *tentative* definition does not count.
+    Duplicate { name: String },
 }
 
 /// Link one program: the units in the order they were compiled, and the library functions to import.
@@ -99,11 +104,14 @@ pub(crate) fn link(
     units: &[Image],
     entry: &str,
     imports: &[Imported<'_>],
-) -> Result<Linked, Unlinked> {
-    let mut program = Program::gather(units, imports);
-    program.entry = *program.functions.get(entry).ok_or_else(|| Unlinked {
-        name: entry.to_owned(),
-    })?;
+) -> Result<Linked, LinkError> {
+    let mut program = Program::gather(units, imports)?;
+    program.entry = *program
+        .functions
+        .get(entry)
+        .ok_or_else(|| LinkError::Undefined {
+            name: entry.to_owned(),
+        })?;
     Ok(Linked {
         bytes: program.write()?,
     })
@@ -176,7 +184,7 @@ struct Slot {
 
 impl<'a> Program<'a> {
     /// Concatenate the units, and give each import its slot and its thunk.
-    fn gather(units: &'a [Image], imports: &[Imported<'a>]) -> Self {
+    fn gather(units: &'a [Image], imports: &[Imported<'a>]) -> Result<Self, LinkError> {
         let mut program = Program {
             units,
             functions: BTreeMap::new(),
@@ -192,6 +200,18 @@ impl<'a> Program<'a> {
             entry: 0,
             thread_block: 0,
         };
+        // C99 6.9p5: one external definition of each name in a program, and 6.9.2p2: a *tentative*
+        // definition - `int shared;` with no initialiser - is not an external definition and may
+        // appear in every unit. So a duplicate is a name defined for real twice, or a real
+        // definition beside a tentative one; **two tentative definitions are one object**, which is
+        // what the standard says and what a compiler older than `-fno-common` did by merging `.comm`
+        // symbols. That last rule is the one place this linker accepts a program the `clang` beside
+        // it refuses; it is conforming, and AUDIT says so.
+        //
+        // The state lives outside the loops because every unit's functions are gathered before any
+        // unit's objects, and a name checked against half of them would be checked wrongly.
+        let mut real: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut tentative: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for (index, unit) in units.iter().enumerate() {
             let base = program.text.len() as u32;
             // A unit's functions are placed relative to its own code, and its relocations are
@@ -199,16 +219,18 @@ impl<'a> Program<'a> {
             program.unit_text.push(base);
             for function in &unit.functions {
                 if function.external {
-                    // A name two units define is a duplicate symbol, and **the first wins silently**:
-                    // `clang` says "multiple definition of `f`" and refuses the link, and this
-                    // compiler picks one body - which is the same program only when the two are
-                    // identical. Measured with two units defining one function and one object;
-                    // recorded in PLAN as an open gap, because reporting it needs the link to
-                    // carry a second kind of error.
+                    // A function definition is never tentative: two units that both define `f` are a
+                    // duplicate whatever the bodies say - and so is a function beside an object of
+                    // the same name, which no declaration could have made one name.
+                    let name = function.name.as_str();
+                    if real.contains(name) || tentative.contains(name) || !real.insert(name) {
+                        return Err(LinkError::Duplicate {
+                            name: function.name.clone(),
+                        });
+                    }
                     program
                         .functions
-                        .entry(function.name.clone())
-                        .or_insert(base + function.start);
+                        .insert(function.name.clone(), base + function.start);
                 } else {
                     program.local[index]
                         .functions
@@ -245,10 +267,29 @@ impl<'a> Program<'a> {
             program.unit_data.push(base);
             for object in &unit.data.symbols {
                 if object.external {
+                    // `int shared;` with no initialiser is a *tentative* definition, and a tentative
+                    // one in every unit is still one object (C99 6.9.2p2) - the one thing this
+                    // linker accepts that the `clang` beside it refuses. Beside a *real* definition
+                    // it is a duplicate, in either order.
+                    let name = object.name.as_str();
+                    let repeated = if object.tentative {
+                        if real.contains(name) {
+                            true
+                        } else {
+                            tentative.insert(name);
+                            false
+                        }
+                    } else {
+                        real.contains(name) || tentative.contains(name) || !real.insert(name)
+                    };
+                    if repeated {
+                        return Err(LinkError::Duplicate {
+                            name: object.name.clone(),
+                        });
+                    }
                     program
                         .objects
-                        .entry(object.name.clone())
-                        .or_insert(base + object.offset);
+                        .insert(object.name.clone(), base + object.offset);
                 } else {
                     program.local[program.unit_data.len() - 1]
                         .objects
@@ -338,7 +379,7 @@ impl<'a> Program<'a> {
             })
             .collect();
         program.unwind = coff::unwind_layout(&described);
-        program
+        Ok(program)
     }
 
     /// The offset of a name from the start of the image: `.text` for a function, `.data` for an
@@ -372,7 +413,7 @@ impl<'a> Program<'a> {
     }
 
     /// Lay the sections out, fill the relocations in, then write the file.
-    fn write(&mut self) -> Result<Vec<u8>, Unlinked> {
+    fn write(&mut self) -> Result<Vec<u8>, LinkError> {
         let sizes = Sizes::of(self);
         let sections = Sections::new(sizes);
         self.resolve(&sections)?;
@@ -380,13 +421,13 @@ impl<'a> Program<'a> {
     }
 
     /// Fill every relocation in, now that the addresses are known.
-    fn resolve(&mut self, sections: &Sections) -> Result<(), Unlinked> {
+    fn resolve(&mut self, sections: &Sections) -> Result<(), LinkError> {
         for (index, unit) in self.units.iter().enumerate() {
             for function in &unit.functions {
                 for relocation in &function.relocations {
                     let target = self
                         .within(Some(index), &relocation.symbol, sections)
-                        .ok_or_else(|| Unlinked {
+                        .ok_or_else(|| LinkError::Undefined {
                             name: relocation.symbol.clone(),
                         })?;
                     // `rel32` is measured from the byte after the four-byte displacement, and it is
@@ -407,7 +448,7 @@ impl<'a> Program<'a> {
             for relocation in &unit.data.relocations {
                 let target = self
                     .within(Some(index), &relocation.symbol, sections)
-                    .ok_or_else(|| Unlinked {
+                    .ok_or_else(|| LinkError::Undefined {
                         name: relocation.symbol.clone(),
                     })?;
                 let at = (self.unit_data[index] + relocation.offset) as usize;

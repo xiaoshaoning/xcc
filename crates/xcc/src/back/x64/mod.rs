@@ -656,6 +656,9 @@ fn data_section(module: &crate::cir::Module) -> Result<coff::Data, NotYet> {
                 as u32,
             thread: global.thread,
             external: global.external,
+            // `int shared;` with no initialiser is a *tentative* definition, and one in two units is
+            // still one object; `int shared = 1;` is a definition, and two of those are a duplicate.
+            tentative: global.external && global.init.is_none(),
         });
         // The object's own start in the section, so the addresses inside it can be named from there.
         let start = data.bytes.len() as u32;

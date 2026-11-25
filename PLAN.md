@@ -1030,13 +1030,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       program that asks for nothing.
       Measured demand in the local corpus (95 119 C files): 2 304 use `__attribute__`, 528 of those name
       `packed`/`aligned`.
-- [ ] **Two units defining one external name link silently.** `int shared = 1;` in two units whose
-      `shared` differ: `clang` refuses with "multiple definition of `shared`", and this linker keeps the
-      first body - a wrong program whenever the two are not identical. Found while building toml-c,
-      whose single-header distribution is *meant* to be compiled alone; `toml.c` and `example/table.c`
-      together produced 28 duplicate definitions and a working executable. The fix needs the link to
-      carry a second kind of error, and must not refuse a *tentative* definition (C99 6.9.2) or an
-      `inline` definition from a header (6.7.4p6), which are the two legal duplicates.
+- [x] **Two units defining one external name are refused.** `LinkError::Duplicate`, with the name and the rule
+      (C99 6.9p5) in the message. The check is order-independent by construction: every unit's functions are gathered
+      before any unit's objects, so one state can answer for both, and the four cases are measured - a function twice, an
+      object with an initialiser twice, a real definition beside a tentative one (either order), and a function beside
+      an object of one name. "Tentative" needed no new field in the IR: it *is* `external && init.is_none()`, so the
+      object writer reads it off the global it already had.
+      **One deliberate divergence, in the permissive direction**: two *tentative* definitions are one object, which is
+      what C99 6.9.2p2 says the linker should merge and what `-fcommon` used to do; the `clang` beside this one refuses
+      them because its default is `-fno-common`. Refusing valid C would be the gap, so the merge is kept and AUDIT says
+      where it differs. The `inline` case needs nothing yet: `inline` is consumed and dropped, so a header's `inline`
+      definition is an ordinary external one, and two of those are duplicates - which is what C99 6.7.4p6 says is
+      ill-formed anyway (the program needs one external definition).
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

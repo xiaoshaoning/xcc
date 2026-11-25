@@ -82,6 +82,11 @@ pub(crate) struct DataSymbol {
     pub offset: u32,
     /// Whether the name is visible outside this translation unit.
     pub external: bool,
+    /// Whether this is a *tentative* definition - `int shared;` at file scope, which C99 6.9.2p2
+    /// says behaves as if it were one definition initialised to zero. Tentative definitions may
+    /// appear in every unit of a program; a real one may appear in exactly one, which is what the
+    /// linker's duplicate check reads this for.
+    pub tentative: bool,
 }
 
 /// One function: where its code went, and which symbols it defines.
