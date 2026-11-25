@@ -82,9 +82,19 @@ pub(super) fn string_literal_bytes(types: &Types, ty: TypeId, literal: &[u8]) ->
     // A character array holds the literal's own characters: one byte each for `char`, two for the
     // target's `wchar_t`. The literal's bytes are already in that encoding - `L"ab"` arrives as
     // four UTF-16 bytes - so the room is the element width times the count.
+    // The widths a literal can be: `char`, `wchar_t` and `char16_t`, `char32_t`. The four was
+    // missing while 16 bits was the widest literal there was - and an unsized `char32_t a[] =
+    // U"ab"` then took its length from the literal and none of its *bytes*, so `a[0]` was right by
+    // accident and `a[1]` read zero.
+    // `char`, `wchar_t`/`char16_t` and `char32_t` - and not `int`, which is 32 bits too and is not a
+    // character type. The width alone cannot tell `char32_t` from `int`; the unsignedness can.
     let width = match *types.kind(element) {
         Type::Int { bits: 8, .. } => 1,
         Type::Int { bits: 16, .. } => 2,
+        Type::Int {
+            bits: 32,
+            signed: false,
+        } => 4,
         _ => return None,
     };
     let count = count? as usize;

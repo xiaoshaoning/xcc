@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - the width that was missing, and a diagnostic that spoke Rust
+
+The `uchar.h` commit, reviewed. The literals encode right for all three families and the conversions match `clang`;
+the review found that a `U` literal could not *initialise* anything, that a message printed Rust at a C programmer, and
+two smaller repetitions.
+
+**`char32_t a[] = U"ab"` was refused, and the reason read as a type error in the program.** Two helpers decide what a
+string literal may fill - one in `init.rs`, one in `bytes.rs` - and both knew 8 and 16 bits, because 16 was the widest
+literal this compiler had. A 32-bit element answered "not a character type". Then, once the width was added, `a[0]` came
+out right and `a[1]` zero: an *unsized* array takes its length from the literal and its bytes from the second helper,
+which was still refusing.
+
+**And the fix that looked obvious was wrong in the way the old test said it would be.** Accepting every 32-bit element
+made `int a[] = "hi"` legal - and the existing test for exactly that failed, which is the test doing its job. `char32_t`
+is `unsigned int` and `int` is `int`: the width alone cannot tell them apart, and the unsignedness can. Both helpers say
+so now, and `int a[] = "hi"` is still refused in the same words.
+
+**A diagnostic printed `Utf16` and `Utf32`.** Joining `u"a"` with `U"b"` is an error - C joins *identically prefixed*
+literals and nothing else - and the message said `a `Utf16` string literal and a `Utf32` one`, which is Rust talking to
+a C programmer. `Prefix::spelling` gives the source's own `u` and `U`.
+
+**And `is_literal_start` had two clauses for one question**: "the byte after the prefix is a quote" is the whole rule,
+with or without a prefix.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 24 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - `uchar.h`, and the character constant C11 does not have
 
 `uchar.h` ships, and with it **all five of C11's headers**. The header itself is short - two typedefs and the four

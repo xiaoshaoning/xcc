@@ -138,6 +138,18 @@ pub enum Prefix {
 }
 
 impl Prefix {
+    /// The prefix as the source writes it, for a diagnostic: a message that says `Utf16` is
+    /// speaking Rust at a C programmer.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            Prefix::None => "",
+            Prefix::Wide => "L",
+            Prefix::Utf16 => "u",
+            Prefix::Utf32 => "U",
+            Prefix::Utf8 => "u8",
+        }
+    }
+
     /// How wide one element is, in bytes.
     pub fn width(self) -> usize {
         match self {

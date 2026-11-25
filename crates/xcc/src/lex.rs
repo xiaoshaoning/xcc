@@ -336,11 +336,11 @@ impl Lexer<'_> {
         0
     }
 
-    /// Whether a literal starts here, of either kind and with any prefix.
+    /// Whether a literal starts here, of either kind and with any prefix: the byte after the
+    /// prefix is a quote. With no prefix that byte is the one here, which is the same question -
+    /// so one clause, not two.
     fn is_literal_start(&self) -> bool {
-        let prefix = self.literal_prefix();
-        matches!(self.peek(prefix), Some(b'"' | b'\''))
-            && (prefix > 0 || matches!(self.peek(0), Some(b'"' | b'\'')))
+        matches!(self.peek(self.literal_prefix()), Some(b'"' | b'\''))
     }
 
     /// Scan a literal from its prefix: the quote after the prefix says which kind it is.

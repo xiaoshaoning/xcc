@@ -63,10 +63,19 @@ impl Parser<'_> {
             // C99 6.7.8p14: an array of character type, and of the *literal's* own: a wide literal
             // fills an array of `wchar_t` and a narrow one an array of `char`. `int` is neither,
             // even though a character converts to one.
+            // One, two or four bytes: the widths a literal can have - `char`, `wchar_t` and
+            // `char16_t`, and `char32_t`. The four was missing while 16 bits was the widest
+            // literal this compiler had, and it refused `char32_t a[] = U"ab"` for a reason that
+            // read as a type error in the program.
             let width =
                 |types: &crate::types::Types, ty: crate::types::TypeId| match *types.kind(ty) {
                     Type::Int { bits: 8, .. } => Some(1u64),
                     Type::Int { bits: 16, .. } => Some(2u64),
+                    // `char32_t`, and not `int`: 32 bits signed is an integer, not a character.
+                    Type::Int {
+                        bits: 32,
+                        signed: false,
+                    } => Some(4u64),
                     _ => None,
                 };
             let literal_element = match *self.types.kind(literal) {

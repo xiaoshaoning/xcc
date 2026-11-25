@@ -1039,7 +1039,9 @@ impl Parser<'_> {
                 self.error(
                     span,
                     format!(
-                        "a `{prefix:?}` string literal and a `{own:?}` one cannot be joined into one"
+                        "a `{}` string literal and a `{}` one cannot be joined into one",
+                        prefix.spelling(),
+                        own.spelling()
                     ),
                 );
             }
