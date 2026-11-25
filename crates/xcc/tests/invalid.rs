@@ -165,20 +165,6 @@ fn an_atomic_operation_needs_an_integer() {
 }
 
 #[test]
-fn imaginary_types_are_refused_by_name() {
-    // C99 6.2.5p11 has three imaginary types; C11 removed them and clang says "imaginary types are
-    // not supported" in every dialect. Refused with a reason rather than left as a parse error two
-    // tokens later, which is what "expected `;` after a declaration" was.
-    assert!(refused("double _Imaginary z = 1.0;"));
-    assert!(refused(
-        "int f(void) { _Imaginary float z; (void)z; return 0; }"
-    ));
-    assert!(compiles(
-        "int f(void) { double _Complex z = { 1.0, 0.0 }; (void)z; return 0; }"
-    ));
-}
-
-#[test]
 fn the_mistakes_that_were_already_caught_stay_caught() {
     assert!(refused("int f(int x) { case 1: return 0; return x; }"));
     assert!(refused(

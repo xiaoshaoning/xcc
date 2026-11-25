@@ -38,8 +38,6 @@ fn escape_value(escape: &str) -> Option<i64> {
             None
         };
     }
-    // A numeric escape is one or more digits and nothing else; the range rule is the same one
-    // a string literal follows.
     // C99 6.4.3p2: the two universal character names, which a character constant reads the same way
     // a literal does - four or eight hex digits and a code point.
     if first == b'u' || first == b'U' {
@@ -52,6 +50,8 @@ fn escape_value(escape: &str) -> Option<i64> {
             None
         };
     }
+    // A numeric escape is one or more digits and nothing else; the range rule is the same one
+    // a string literal follows.
     let radix = if first == b'x' { 16 } else { 8 };
     let mut at = if radix == 16 { 1 } else { 0 };
     let value = numeric_escape(bytes, &mut at, radix)?;
@@ -144,6 +144,14 @@ fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usize) -> Opti
     }
     *at = end;
     let value = u32::from_str_radix(text, 16).ok()?;
+    // C99 6.4.3p2, and C11 kept it: a character whose short identifier is below `0xA0` is written as
+    // itself, except the three the standard names - `$`, `@` and the backtick - so those, a
+    // surrogate and anything past the last code point are not a universal character name at all.
+    // `clang` says the same thing about `"\u0041"`: "character 'A' cannot be specified by a
+    // universal character name".
+    if value < 0xA0 && !matches!(value, 0x24 | 0x40 | 0x60) {
+        return None;
+    }
     if (0xD800..=0xDFFF).contains(&value) || value > 0x10FFFF {
         return None;
     }

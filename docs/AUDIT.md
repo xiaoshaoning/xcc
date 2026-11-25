@@ -786,6 +786,45 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - the rule the standard has three times, and the list that decides what a declaration is
+
+The four gaps were closed with a full gate behind them and four findings came out of reading the diff.
+
+**C99 6.4.3p2 has a third rule** - a character whose short identifier is below `0xA0` is spelled as itself, so a
+universal character name may not name one, except `$`, `@` and the backtick. The new reader had the range and the
+surrogate rule and not this one, so `"\u0041"` compiled to `"A"` here and is an error in `clang` ("character 'A' cannot
+be specified by a universal character name"). Measured in all four kinds of literal - narrow, UTF-16, UTF-32 and a
+character constant - refused in the one place all four read from. **A rule with three clauses is where a fourth
+usually waits**, so the "what is a character" question now has one answer with all of it in it.
+
+**`_Imaginary` was refused at the right moment and pointed at the wrong word.** The diagnostic used `self.span()`,
+which by then is the token *after* the specifiers, so `double _Imaginary z` blamed `z`. Refusing where the word is
+read - as `_Alignas` next door already did - fixes the span and deletes the block in `finish_specifiers` with it.
+**And at block scope it never got that far**: `_Imaginary float z;` said "`_Imaginary` is not declared", because
+`SPECIFIERS` is the list that decides whether a statement is a declaration, and it did not have the word. Two lists
+knowing one thing, which the comment above `SPECIFIERS` already warns about. The test that guards it walks *that*
+list, so a word missing from the list is a word the test never tries - and my first version asserted only that
+compiling *failed*, which "not declared" also does. The test asserts the reason now, which is the half that fails on
+the interesting mistake.
+
+**The 8-bit `cmpxchg` emitted its REX byte only for an extended register.** That is right for 32- and 64-bit forms
+and wrong for the byte form: without a REX prefix `r4` to `r7` name `ah`, `ch`, `dh` and `bh`, which are different
+registers. Nothing miscompiles today - the scratch pair is `r10`/`r11`, or `rcx`/`rdx` with a pool that starts at
+`r8` - and that is the whole problem: the encoder would depend on an invariant about the register plan that neither
+file states. The byte form now always emits it.
+
+**A comment that described the branch two below it.** The new universal-character-name branch was inserted between
+"A numeric escape is one or more digits and nothing else" and the numeric escape it describes. Moved back.
+
+Honest about what a reader will still see: a universal character name that names a character below `0xA0` is refused
+with the same message as an escape that is not read at all, because the four readers get one `None` and cannot tell
+the two apart. The reason is in the code and in PLAN; a third answer through four call sites is not worth a message
+for a spelling that means "write the character instead".
+
+201 unit, 35 parser, 30 CLI, 5 invalid, 25 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - the four gaps, and the one that had to be closed twice
 
 The four things the last report listed as open are closed. Three were small; the first was small and the second half

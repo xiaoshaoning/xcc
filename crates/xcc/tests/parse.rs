@@ -127,6 +127,29 @@ fn the_address_of_a_parenthesised_function_designator_is_the_designator() {
 }
 
 #[test]
+fn imaginary_types_are_refused_by_name() {
+    // C99 6.2.5p11 has three imaginary types; C11 removed them and `clang` says "imaginary types are
+    // not supported" in every dialect - so refusing is the oracle's answer, with a reason rather
+    // than the "expected `;` after a declaration" it used to be.
+    //
+    // The block-scope case is the one that matters: what decides whether a statement is a
+    // declaration is `SPECIFIERS`, and `_Imaginary float z;` in a function was read as a use of an
+    // undeclared *name* until the word was added to that list. Asserting only that it fails would
+    // still pass on that message, so the reason is asserted.
+    let reason = "imaginary types are not supported";
+    refuses("double _Imaginary z = 1.0;", reason);
+    refuses("int f(void) { _Imaginary float z; return 0; }", reason);
+    refuses(
+        "int f(void) { double _Imaginary z = { 1.0, 0.0 }; return 0; }",
+        reason,
+    );
+    // And the type such a program means is there: a `_Complex` whose real part is zero.
+    assert!(parses(
+        "int f(void) { double _Complex z = { 1.0, 0.0 }; return (int)z; }"
+    ));
+}
+
+#[test]
 fn universal_character_names_are_characters() {
     // C99 6.4.3p2: `\u` is four hex digits and `\U` eight, and the value is a *character* - so a
     // narrow literal holds its UTF-8 bytes, a `u` literal its UTF-16 units, and a surrogate is not
@@ -140,6 +163,20 @@ fn universal_character_names_are_characters() {
         "int f(void) { const char *s = \"caf\\uD800\"; return s[0]; }",
         "escape this compiler does not read",
     );
+    // C99 6.4.3p2's third rule: a character below `0xA0` is spelled as itself, so a universal
+    // character name may not name one - except `$`, `@` and the backtick. `clang` says "character
+    // 'A' cannot be specified by a universal character name" for the first and accepts the rest.
+    refuses(
+        "int f(void) { const char *s = \"\\u0041\"; return s[0]; }",
+        "escape this compiler does not read",
+    );
+    refuses(
+        "int f(void) { unsigned short *s = L\"\\u0042\"; return s[0]; }",
+        "escape this compiler does not read",
+    );
+    assert!(parses(
+        "int f(void) { const char *s = \"\\u0024\\u0040\\u0060\\u00a0\"; return s[0]; }"
+    ));
 }
 
 #[test]

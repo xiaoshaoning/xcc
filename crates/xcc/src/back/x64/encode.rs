@@ -1660,11 +1660,18 @@ impl Encoder<'_> {
             self.byte(0x66);
         }
         self.byte(0xF0);
-        if size == 8 {
-            self.prefix_w(value, address);
-        } else {
-            // No `W` for 32 bits, and a REX byte still needed for an extended register at 1 or 2.
-            self.prefix(value, address);
+        match size {
+            8 => self.prefix_w(value, address),
+            1 => {
+                // Always a REX byte, even for a register below eight: without one, `r4` to `r7` name
+                // `ah`, `ch`, `dh` and `bh` - *different* registers - and `prefix`, which emits only
+                // what is needed for an extended register, would name the wrong one. Today neither
+                // operand can land there (the scratch pair is `r10`/`r11` or `rcx`/`rdx` and the
+                // pool in that case starts at `r8`), and that is exactly the kind of invariant a
+                // register-pool change breaks silently.
+                self.rex_byte(value, address);
+            }
+            _ => self.prefix(value, address),
         }
         self.bytes(&[0x0F, if size == 1 { 0xB0 } else { 0xB1 }]);
         self.modrm(0, value.0, address);

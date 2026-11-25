@@ -972,12 +972,16 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       (6.7.5.3p15) - two facts, and the sweep caught the first version losing the first while doing the second.
       Duplicate member names too (6.7.2.1p1), and `tests/invalid.rs` holds seventeen forbidden programs measured
       against `clang`, so the next one is found by the suite.
-- [ ] **`&(f)` of a parenthesised function designator is refused.** `&g` is the designator (C99 6.5.3.2p3) and
-      `&(g)` is the same designator, but the shortcut reads the token *in front of* the operand, and a `(`
-      there hides it. The operand cannot answer instead: by the time a function name is a value it has decayed
-      to a pointer to function, which is the type a call returning one also has. A fix has to look through the
-      parentheses by counting them, and that rule is only worth writing when something needs it - `&f` is the
-      idiom, and lz4, Lua, miniz, cJSON and stb_image all write that.
+- [x] **`&(f)`, the parenthesised function designator.** Closed: the question is about the operand's token *range*
+      (open parens, a function's name, the matching closes, nothing after), not about the token in front of it.
+      The second half is the one that was learned twice - a range check with no "nothing follows" clause accepts
+      `&mk` in `&mk(1)->d` and reproduces the lz4frame.c bug - and both halves are in `operand_is_a_function_designator`.
+- [ ] **A universal character name in an *identifier* is refused.** `int \u00e9 = 1;` is C99 6.4.2.1's spelling of
+      `int é = 1;` and `clang` accepts it; this compiler says "stray `\` in program", which is at least not a silent
+      wrong answer. The literal half is done - `\u`/`\U` are read in all four kinds of literal, with C99 6.4.3p2's
+      rules (a surrogate, a value past `0x10FFFF`, and a character below `0xA0` other than `$`, `@` and the backtick
+      are not one) - so what is missing is the lexer turning one into a name, and the answer that suggests the
+      non-escaped spelling.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.
