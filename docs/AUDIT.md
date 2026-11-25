@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M16 reviewed - 2026-11-25 - the warning on every link, and the lvalue that was not one
+
+The aggregate `?:` landed and the review found two things, and the second is older than the feature that exposed it.
+
+**A warning on every link.** `_mm_mfence` calls `__xcc_atomic_fence`, which the runtime defines two hundred lines
+below it - so every linked program printed "`__xcc_atomic_fence` is not declared; it is taken to be a function returning
+`int`". A call to a function with an `int` return that is actually `void` is the shape that breaks on a target where
+return values travel differently; and a warning that appears on every single run is one a reader stops seeing, which is
+how the three `kernel32` names in `b36a6f6` hid for a commit. The definition moved below the fence it calls.
+
+**Two values that claimed to be lvalues.** `member_access` set `lvalue: true` on every member it produced, and a call
+returning a record claimed the same - so `make().x = 1` and `(c ? a : b).x = 1` were accepted and wrote into an object
+the program never named. C99 6.5.2.3p3 answers the first ("a member of an lvalue is an lvalue and a member of anything
+else is not") and 6.5.2.2p5 the second. `make().x = 1` was wrong before the aggregate `?:` existed; the `?:` is simply
+the first thing that made the question easy to ask, which is the usual reason an old bug gets found by new code.
+
+**And the aggregate `?:` itself is right where it matters**: two arms that are calls, a compound literal, a variable;
+chained and nested conditionals; the result passed by value twice from one expression and read through - six lines,
+identical to `clang`. It carries the arms' addresses because a record's value already is its address (ADR-004), so the
+join has something to carry after all; the refusal it replaces was right about `cir` and wrong about there being
+nothing else.
+
+sqlite3.c still compiles with 0 errors and still faults inside `sqlite3_open` - unchanged, and the reason it is hard to
+chase is unchanged too: the linked image has no symbol table.
+
+206 unit, 41 parser, 30 CLI, 5 invalid, 34 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M16 - 2026-11-25 - sqlite3.c compiles, links, and faults inside `open`
 
 **Yes, it compiles.** 265 977 lines, the Windows path, through the SDK headers: **0 errors**, a 2.7 MB object in 7.1

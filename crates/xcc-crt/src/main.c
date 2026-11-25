@@ -712,13 +712,6 @@ XCC_CAS(unsigned char, uchar)
 XCC_CAS(short, short)
 XCC_CAS(unsigned short, ushort)
 
-/* `_mm_mfence`, which `winnt.h` gives the names `MemoryBarrier` and `MemoryFence`: a full fence is
- * a locked operation that changes nothing, which is exactly what `__xcc_atomic_fence` already
- * writes. The SSE name is what the SDK spells it with; the instruction is the machine's, and this
- * compiler reaches it through its own fence.
- */
-void _mm_mfence(void) { __xcc_atomic_fence(); }
-
 /* The MSVC-named atomics, which mingw-w64's headers declare as intrinsics and the Windows SDK
  * leans on: `_InterlockedCompareExchange` is `InterlockedCompareExchange` by another name, and the
  * whole family is the `lock cmpxchg` loop this runtime already has under `__xcc_*`. Implemented
@@ -896,6 +889,12 @@ void __xcc_atomic_fence(void) {
     static int scratch;
     (void)__builtin_atomic_cas(&scratch, 0, 0);
 }
+
+/* `_mm_mfence`, which `winnt.h` gives the names `MemoryBarrier` and `MemoryFence`. It is written
+ * *after* the fence it calls, because the runtime is one translation unit and C99 wants a
+ * declaration before a call - the first version sat above it, and every link printed
+ * "`__xcc_atomic_fence` is not declared". */
+void _mm_mfence(void) { __xcc_atomic_fence(); }
 
 /* ---------------------------------------------------------------- C11 7.26, threads
  *

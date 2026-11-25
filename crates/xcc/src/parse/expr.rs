@@ -1778,13 +1778,16 @@ impl Parser<'_> {
                 self.emit(|builder| builder.store(address, returned, span));
             }
         }
-        // The value of a call returning a record is the object it was written into.
+        // The value of a call returning a record is the object it was written into - and it is a
+        // *value* (C99 6.5.2.2p5), not an lvalue: `make().x = 1` writes into an object the program
+        // never named, and this said it was writable until the aggregate `?:` made the question
+        // easy to ask. The buffer is still where the bytes are, which is what reading it needs.
         Value {
             ty: result,
             constant: None,
-            lvalue: true,
+            lvalue: false,
             cir: Some(buffer),
-            place: Some(buffer),
+            place: None,
             bits: None,
             address: None,
         }
@@ -1971,9 +1974,17 @@ impl Parser<'_> {
                 None => Value::new(member_ty, None, true),
             };
         };
-        match bitfield {
+        let value = match bitfield {
             None => self.read_place(member_ty, address, span),
             Some(bits) => self.read_bitfield(member_ty, address, bits, span),
+        };
+        // C99 6.5.2.3p3: a member of an *lvalue* is an lvalue, and a member of anything else is not.
+        // `->` is always one - the pointer's target is an object - but `make().x` and
+        // `(c ? a : b).x` are values, and writing through them (which this accepted until the
+        // aggregate `?:` made it easy to hit) writes into an object the program never named.
+        Value {
+            lvalue: arrow || base.lvalue,
+            ..value
         }
     }
 
