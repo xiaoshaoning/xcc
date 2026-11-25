@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M18 - 2026-11-25 - the initialiser that was a constant, and the one that was zeroes
+
+The symbol table named the fault: `sqlite3InsertBuiltinFuncs + 163`, a `movsbq` of `zName[0]` where `zName` was NULL. Its
+table of 31 function definitions is a `static FuncDef aJsonFunc[]` inside `sqlite3RegisterJsonFunctions`, and **all 2496
+bytes of it were zero in the image**. Three bugs were behind that, and only the first was the one being chased.
+
+**An integer constant cast to a pointer is an address constant** (C99 6.6p9: an address constant "shall be created
+explicitly using the unary `&` operator or an integer constant cast to pointer type"). `convert`'s constant path kept a
+constant pointer *to* a pointer, and dropped one going *from* an integer - so `(void*)7` was a value with nothing in it.
+sqlite writes every element of that table through `SQLITE_INT_TO_PTR`, which is `(void*)(intptr_t)`, so every element's
+`pUserData` and `zName` was dropped. One condition, widened: a constant becoming a pointer stays the constant it was.
+
+**A static local's initialiser that cannot be written is not the same as no initialiser.** `static_local` fell back to
+zeroes with a comment saying the initialiser "has already said so" - and for `(void*)7` it had said nothing at all. Now a
+present initialiser that produces no bytes is refused, in the file-scope path's own words (`a static local's initialiser
+must be a constant expression`). This is the guard that turns the next silent zero into a diagnostic.
+
+**A string literal is an object, so its value is its address** - the same shape a file-scope object's value has (ADR-004).
+The expression reader gave a literal an address only when it was emitting code, so `(u8*)" "` - how sqlite builds its
+one-character set - was a cast of a value that was nothing. `static const unsigned char * const azOne[] = { (u8*)" " }`
+had no bytes either. The parser may now mint the literal's name in the *preprocessor's* interner (`Preprocessed::intern`,
+`&mut Preprocessed` through `parse`), because one name table is the whole point: a compiler-made object needs a symbol
+like any other, and `Value.address` stays "a symbol and an addend".
+
+Measured: `sqlite_driver.c` + `sqlite3.c` now get **past `sqlite3_open`** and reach the query planner, where they stop at
+a `ud2` in `whereLoopAddBtree` - a different bug, named by the same symbol table. Before: a SIGSEGV inside `open`.
+
+206 unit, 41 parser, 36 exe (one more: the three shapes, run and compared), 4 real, 1 crt, 6 invalid (one more: the
+refusals), 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 415 ran, 0 mismatched; 443 corpus programs agree, 0
+wrong; fmt and clippy clean.
+
 ### M17 - 2026-11-25 - the image names its own functions
 
 `sqlite3_open` faulted at `.text+0x129e2d` and there was no way to say which function that is: the linked image had no

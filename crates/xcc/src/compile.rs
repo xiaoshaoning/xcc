@@ -174,12 +174,12 @@ impl Compile {
         }
 
         // Phases 1 and 2, tokens, and the directives that exist so far.
-        let preprocessed = self.preprocess(name, source)?;
+        let mut preprocessed = self.preprocess(name, source)?;
         let sources = preprocessed.files.clone();
         diagnostics.extend(preprocessed.diagnostics.clone());
 
         // Declarations and their types: the first slice of M3.
-        let parsed = crate::parse::parse(&preprocessed, &self.options.budgets);
+        let parsed = crate::parse::parse(&mut preprocessed, &self.options.budgets);
         let failed = parsed.diagnostics.iter().any(Diagnostic::is_error);
         diagnostics.extend(parsed.diagnostics);
         if failed {

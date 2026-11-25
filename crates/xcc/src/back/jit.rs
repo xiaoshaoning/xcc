@@ -193,12 +193,13 @@ impl Jit {
     pub fn add_source(&mut self, source: &str) -> Result<(), String> {
         let file = SourceFile::new("<jit>", source);
         let options = self.options.clone();
-        let preprocessed = preprocess(&file, &options, &crate::headers::Headers::new(Box::new(())));
+        let mut preprocessed =
+            preprocess(&file, &options, &crate::headers::Headers::new(Box::new(())));
         // Both stages report the same way, and every error is reported: a host fixing one
         // mistake at a time is a host that recompiles once per mistake.
         let mut errors: Vec<String> = Vec::new();
         collect_errors(&preprocessed.diagnostics, &mut errors);
-        let parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         collect_errors(&parsed.diagnostics, &mut errors);
         if !errors.is_empty() {
             return Err(errors.join("; "));

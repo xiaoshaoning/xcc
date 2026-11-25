@@ -97,8 +97,8 @@ mod tests {
     pub(crate) fn folded(source: &str) -> (usize, usize) {
         let file = SourceFile::new("t.c", source);
         let options = Options::default();
-        let preprocessed = preprocess(&file, &options, &());
-        let parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        let mut preprocessed = preprocess(&file, &options, &());
+        let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let mut module = parsed.module;
         // Counting instructions cannot see a fold - one instruction replaces another - so count the
@@ -121,8 +121,8 @@ mod tests {
     fn promoted(source: &str) -> (String, Changes) {
         let file = SourceFile::new("t.c", source);
         let options = Options::default();
-        let preprocessed = preprocess(&file, &options, &());
-        let mut parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        let mut preprocessed = preprocess(&file, &options, &());
+        let mut parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let changes = optimise(&mut parsed.module).unwrap_or_else(|(function, broken)| {
             panic!(

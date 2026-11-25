@@ -377,6 +377,45 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// Three initialisers that a static object can have and this compiler once wrote as zeroes: an
+/// integer constant cast to a pointer (C99 6.6p9 - sqlite's `SQLITE_INT_TO_PTR`), a string literal
+/// cast to a pointer (`(u8*)" "`, sqlite's one-character set), and the same literal reached through
+/// a `static` local's table. Each is a *value*, not a computation, so each is bytes in the image.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_initialisers_that_are_values_stay_values() {
+    let source = r#"
+#include <stdio.h>
+
+#define INT_TO_PTR(x) ((void*)(long)(x))
+
+struct FuncDef { short nArg; unsigned flags; void *pUserData; };
+static struct FuncDef table[] = {
+    { 1, 0x1234, INT_TO_PTR(7) },
+    { 2, 0,       INT_TO_PTR(1 | 2) },
+};
+
+int count(void) {
+    static const char * const names[] = { (char*)"one", (char*)"two" };
+    return (int)names[1][2];
+}
+
+int main(void) {
+    printf("%d %d %d %d\n", table[0].nArg, table[0].pUserData == (void*)7,
+           table[1].pUserData == (void*)3, count());
+    return 0;
+}
+"#;
+    let run = run_linked("values", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(
+        out.trim_end(),
+        "1 1 1 111",
+        "the table holds its numbers and its addresses"
+    );
+    assert_eq!(run.status.code(), Some(0));
+}
+
 /// The image names its own functions. A COFF symbol table sits after the last section's bytes -
 /// nothing maps it and the loader never reads it - and `objdump -t` and `gdb` do: it is the
 /// difference between "the program faulted at `.text+0x129e2d`" and "the program faulted in

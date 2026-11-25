@@ -106,6 +106,15 @@ impl Preprocessed {
         &self.names
     }
 
+    /// The symbol for `name`, minting one if this is the first time it has been seen. The lexer and
+    /// the preprocessor mint the names they find in the source; the parser mints the ones it makes
+    /// up - `.str0` for a string literal, which is an object with an address (ADR-004) and therefore
+    /// needs a symbol like any other object. One table, so that a name is one symbol however it was
+    /// spelled into existence, and ids still depend on the source text alone.
+    pub fn intern(&mut self, name: &str) -> Symbol {
+        self.names.intern(name)
+    }
+
     /// The invocation a token came from, when it came from one: the macro's name and where it was
     /// used. `None` for a token the program wrote itself - a diagnostic about a token in a macro
     /// *body* points at the body, which is where it was written, and this is what lets it add the

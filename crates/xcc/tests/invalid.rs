@@ -191,3 +191,23 @@ fn the_mistakes_that_were_already_caught_stay_caught() {
     ));
     assert!(compiles("int f(void) { } int main(void) { return f(); }"));
 }
+
+#[test]
+fn a_static_local_initialiser_is_a_constant_expression_or_nothing() {
+    // C99 6.7.8p4. A static object's bytes are in the image before the program runs, so an
+    // initialiser that is not a constant expression cannot be written - and this compiler used to
+    // answer *zeroes*, silently. sqlite's table of function definitions was all NULL that way, and
+    // the fault was a mile from the cause; the refusal is the whole fix.
+    assert!(refused(
+        "int g(void); int f(void) { static int a[2] = { g(), 1 }; return a[0]; }"
+    ));
+    assert!(refused("int f(int x) { static int a = x; return a; }"));
+    // ... and these are constants: C99 6.6p9's address constant is "an integer constant cast to
+    // pointer type", and a literal's address is an address like any other.
+    assert!(compiles(
+        "struct S { short n; void *p; }; static struct S t[] = { { 1, (void*)7 } };
+         int main(void) { return t[0].p == (void*)7 && t[0].n == 1; }"
+    ));
+    // A literal's address is a *relocation*, which level 0 does not write - that is its own
+    // refusal, and `tests/exe.rs` holds the level-2 case that ends in a program which runs.
+}

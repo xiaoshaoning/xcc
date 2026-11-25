@@ -44,7 +44,7 @@ use crate::types::{Member, RecordId, RecordKind, Type, TypeId, Types};
 /// Returns every diagnostic, in source order. An empty list means the declarations are
 /// well formed and typed; it says nothing about the code an expression would generate, because
 /// there is no code generation yet.
-pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
+pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parsed {
     let mut parser = Parser {
         preprocessed,
         at: 0,
@@ -283,7 +283,7 @@ struct Switch {
 }
 
 struct Parser<'a> {
-    preprocessed: &'a Preprocessed,
+    preprocessed: &'a mut Preprocessed,
     /// Position in the token stream.
     at: usize,
     types: Types,
@@ -1256,12 +1256,25 @@ impl Parser<'_> {
             None => self.spell_of(name).to_owned(),
         };
         // The initialiser, or zeroes: a static object with none holds zero (C99 6.7.8p10), and
-        // the data section must carry those bytes rather than the frame's leftovers. An
-        // initialiser this cannot write has already said so, and the object still gets its bytes:
-        // a use of the name afterwards must not become a second, internal complaint about a
-        // symbol the compiler never made.
-        let written = if self.eat("=") {
-            self.initializer_bytes(ty)
+        // the data section must carry those bytes rather than the frame's leftovers. The object
+        // gets its bytes either way - a use of the name afterwards must not become a second,
+        // internal complaint about a symbol the compiler never made.
+        let initialised = self.eat("=");
+        let written = if initialised {
+            let before = self.error_count();
+            let written = self.initializer_bytes(ty);
+            // **An initialiser that could not be written is not the same as no initialiser.** This
+            // fell back to zeros silently, and "has already said so" was not true: `(void*)7` in a
+            // static table produced no bytes and no diagnostic, so the table was all NULL in the
+            // image and the fault was a mile from the cause. C99 6.7.8p4 wants a constant
+            // expression, and an object this cannot evaluate is a wrong program, not a smaller one.
+            if written.is_none() && self.error_count() == before {
+                self.error(
+                    span,
+                    "a static local\'s initialiser must be a constant expression",
+                );
+            }
+            written
         } else {
             None
         };
@@ -2414,13 +2427,13 @@ mod tests {
     fn module(source: &str) -> (cir::Module, Interner, Vec<Diagnostic>) {
         let file = SourceFile::new("t.c", source);
         let options = crate::options::Options::default();
-        let preprocessed = preprocess(&file, &options, &());
+        let mut preprocessed = preprocess(&file, &options, &());
         assert!(
             !preprocessed.has_errors(),
             "the test source preprocesses: {:?}",
             preprocessed.diagnostics
         );
-        let parsed = parse(&preprocessed, &options.budgets);
+        let parsed = parse(&mut preprocessed, &options.budgets);
         let names = preprocessed.names().clone();
         (parsed.module, names, parsed.diagnostics)
     }
@@ -2572,9 +2585,9 @@ block0 (entry)(v0: int, v1: int):
             .collect();
         let file = SourceFile::new("many.c", &source);
         let options = crate::options::Options::default();
-        let preprocessed = preprocess(&file, &options, &());
+        let mut preprocessed = preprocess(&file, &options, &());
         let generous = parse(
-            &preprocessed,
+            &mut preprocessed,
             &crate::options::Budgets {
                 max_diagnostics: 10_000,
                 ..crate::options::Budgets::default()
@@ -2584,7 +2597,7 @@ block0 (entry)(v0: int, v1: int):
         assert!(total > 100, "the source earns more than a hundred: {total}");
 
         let capped = parse(
-            &preprocessed,
+            &mut preprocessed,
             &crate::options::Budgets {
                 max_diagnostics: 10,
                 ..crate::options::Budgets::default()

@@ -108,8 +108,8 @@ mod tests {
     fn optimised(source: &str) -> (String, super::super::Changes) {
         let file = SourceFile::new("t.c", source);
         let options = Options::default();
-        let preprocessed = preprocess(&file, &options, &());
-        let parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        let mut preprocessed = preprocess(&file, &options, &());
+        let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let mut module = parsed.module;
         let changes = super::super::optimise(&mut module)

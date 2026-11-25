@@ -1179,8 +1179,8 @@ mod tests {
     fn object_of(source: &str) -> Vec<u8> {
         let file = SourceFile::new("t.c", source);
         let options = Options::default();
-        let preprocessed = preprocess(&file, &options, &());
-        let parsed = crate::parse::parse(&preprocessed, &options.budgets);
+        let mut preprocessed = preprocess(&file, &options, &());
+        let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         object(&parsed.module, preprocessed.names(), false, 0)
             .expect("lowering works")

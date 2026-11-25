@@ -235,13 +235,14 @@ impl Parser<'_> {
             if value.address.is_some() && self.types.is_pointer(wanted) {
                 return Value::new(wanted, None, false).with_address(value.address);
             }
-            // A constant pointer stays a constant pointer: `(void *)&((char*)0)[5]` is 5 with a
-            // different type, and folding it as an arithmetic-to-integer conversion is not a thing
-            // C99 6.6p6 allows - but nothing is converted, only written down differently.
-            if value.constant.is_some()
-                && self.types.is_pointer(wanted)
-                && self.types.is_pointer(value.ty)
-            {
+            // C99 6.6p9: an address constant is "an integer constant cast to pointer type" - so
+            // `(void*)7` is a *number the object holds*, not a computation, and `(void *)&table[5]`
+            // is 5 with a different type. Both are the same rule: a constant becoming a pointer
+            // stays the constant it was. Asking only about pointer-to-pointer left the
+            // integer-to-pointer half out, and sqlite builds a table of function definitions with
+            // `SQLITE_INT_TO_PTR` - every element of that table came out zero, which is a table of
+            // NULL names and a crash inside `sqlite3_open`.
+            if value.constant.is_some() && self.types.is_pointer(wanted) {
                 return Value::new(wanted, value.constant, false);
             }
             let folded = value

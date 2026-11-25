@@ -1850,7 +1850,14 @@ impl Parser<'_> {
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
                 let (ty, name, _) = self.string_literal();
                 let pointer = self.types.pointer(ty);
-                let mut value = Value::new(ty, None, true);
+                // A literal is an object, so its value is its address - the same shape a file-scope
+                // object's value has (ADR-004). Without the address, a *cast* of a literal was a
+                // value with nothing in it: `static const unsigned char * const azOne[] =
+                // { (u8*)" " }` - how sqlite builds its one-character set - wrote no bytes at all,
+                // and the table was NULL. Nothing else needed it: an initialiser that is a bare
+                // literal is written by the byte walker before an expression is ever read.
+                let symbol = self.preprocessed.intern(&name);
+                let mut value = Value::new(ty, None, true).with_address(Some((symbol, 0)));
                 if let Some(address) =
                     self.emit(|builder| builder.global_address(name, pointer, span))
                 {
