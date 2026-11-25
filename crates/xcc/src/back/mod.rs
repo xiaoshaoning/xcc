@@ -191,15 +191,30 @@ pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
     // The four the kernel exports rather than the C runtime. `TlsAlloc` is the trap: it appears in
     // `ucrtbase.dll`'s dump, but as an *import* of the kernel's, not as one of its own exports - the
     // loader said so with `0xC0000139` on every program that linked, which is how it was found.
-    const KERNEL32: [&str; 6] = [
+    const KERNEL32: [&str; 20] = [
         "ExitProcess",
         "TlsAlloc",
         "TlsGetValue",
         "TlsSetValue",
-        // The two a *test* waits on a thread with: `tests/exe.rs` starts a second thread to show
-        // that a `_Thread_local` object has a copy per thread, and that needs the wait.
+        // `threads.h`'s primitives, all of them the kernel's: waiting on and ending a thread, a
+        // critical section for a mutex, a condition variable, and the runtime's TLS slot.
         "WaitForSingleObject",
         "CloseHandle",
+        "Sleep",
+        "GetCurrentThreadId",
+        "GetExitCodeThread",
+        "InitializeCriticalSection",
+        "DeleteCriticalSection",
+        "EnterCriticalSection",
+        "LeaveCriticalSection",
+        "TryEnterCriticalSection",
+        "InitializeConditionVariable",
+        "SleepConditionVariableCS",
+        "WakeConditionVariable",
+        "WakeAllConditionVariable",
+        "TlsFree",
+        // `timespec_get`, C11 7.27.2.5, which the condition variable's timeout needs.
+        "GetSystemTimeAsFileTime",
     ];
     if let Some(name) = KERNEL32.iter().find(|kernel| **kernel == name) {
         return Some(("kernel32.dll", (*name).to_owned()));

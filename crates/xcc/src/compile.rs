@@ -241,7 +241,21 @@ impl Compile {
         // A link's dependencies are the units it was given: the runtime it compiles in is nobody's file.
         let dependencies = dependencies(units.iter().map(|(name, _)| (*name).to_owned()));
         let runtime = [("xcc-crt/main.c", crate::back::CRT_SOURCE)];
+        // The runtime is *this compiler's* source, so it is compiled in the dialect this compiler
+        // is written for, not the caller's: `threads.h` uses `_Static_assert`, and a program that
+        // asks for C99 must still link - the runtime's dialect is not the program's choice. Found
+        // by the C99 copy of `tests/crt.rs` failing the moment `threads.h` joined the runtime.
+        let runtime_options = Options {
+            standard: crate::CStandard::C11,
+            ..self.options.clone()
+        };
         for (name, source) in runtime.iter().copied().chain(units.iter().copied()) {
+            let own_options = self.options.clone();
+            self.options = if name.starts_with("xcc-crt/") {
+                runtime_options.clone()
+            } else {
+                own_options
+            };
             let (module, preprocessed, warnings) = self.front_end(name, source)?;
             diagnostics.extend(warnings);
             match crate::back::image(&module, preprocessed.names(), self.options.opt_level) {

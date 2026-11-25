@@ -31,6 +31,10 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "TlsAlloc",
     "TlsGetValue",
     "TlsSetValue",
+    // `threads.h`: the C runtime's own thread entry point and its exit, which is what a thread
+    // started through `thrd_create` runs and ends with.
+    "_beginthreadex",
+    "_endthreadex",
     // The UCRT's formatting engine, which is what the CRT source's `printf` front ends call. The
     // library exports this and not `printf` itself, so these are the names a link imports.
     "__stdio_common_vfprintf",
@@ -49,6 +53,8 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     // result from: `argc`/`argv` are the runtime's, not a startup prologue this file writes.
     // wchar.h: the wide string, conversion and stdio functions. The library exports most of them;
     // the wide stdio front ends, the four `wmem*`, `mbsinit` and `fwide` are the runtime source's.
+    // `time.h`'s C11 addition, which the runtime source defines.
+    "timespec_get",
     "btowc",
     "fgetwc",
     "fgetws",

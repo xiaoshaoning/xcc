@@ -46,6 +46,11 @@ fn is_pure(inst: &Inst) -> bool {
     match inst {
         // A store writes memory and a call does something; a slot is what gives the frame its shape.
         Inst::Store { .. } | Inst::Slot { .. } | Inst::Call { .. } => false,
+        // A compare-and-swap writes memory and a thread-local lookup *is* a call this back end emits
+        // itself. The first is the reason `call_once` hung: `(void)__builtin_atomic_cas(...)` is how
+        // a program says "swap and ignore what was there", and this pass was deleting the swap -
+        // leaving the flag at "running" for ever, which every other thread then waits on.
+        Inst::AtomicCas { .. } => false,
         _ => true,
     }
 }

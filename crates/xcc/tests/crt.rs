@@ -11,8 +11,11 @@ const CRT: &str = include_str!("../../xcc-crt/src/main.c");
 
 #[test]
 fn the_crt_compiles_with_xcc() {
+    // C11, the dialect a link compiles the runtime in: it is this compiler's own source, so the
+    // program's `--std` is not its choice, and `threads.h` - which it includes - is C11's.
     let artifact = Compile::new(Options {
         opt_level: 2,
+        standard: xcc::CStandard::C11,
         ..Options::default()
     })
     .compile("main.c", CRT)

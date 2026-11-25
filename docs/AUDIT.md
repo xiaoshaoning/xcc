@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - `threads.h`, and the store the dead-code pass deleted
+
+`threads.h` ships (C11 7.26): a whole threading interface over what the target already has - `_beginthreadex` for a
+thread, the critical section for a mutex, the Win32 condition variable for `cnd_t`, the runtime's thread-local slot for
+`tss_t`, and `__builtin_atomic_cas` for `call_once`. **It was 48 files of measured demand**, third behind `stdatomic.h`
+and ahead of everything else.
+
+**A producer and a consumer proved it**, and three things the header cannot promise are written down rather than
+implied: `mtx_timed` is refused by `mtx_init`, because a critical section cannot be entered with a timeout; a `tss_t`
+destructor is not run, because Windows' thread-local storage has none to run; and a `cnd_timedwait` timeout has
+millisecond resolution, which is what the call underneath has. mingw ships no `threads.h` at all - measured, `clang`
+says "file not found" - so the test's three expected lines are the standard's, not another compiler's.
+
+**And it found the fourth instance of one bug class.** `call_once` sets its flag with `(void)__builtin_atomic_cas(...)`
+- swap, and ignore what was there - and the dead-code pass *deleted the swap*, because its list of instructions with an
+effect beyond their result was `Store`, `Slot` and `Call`, and a compare-and-swap is none of those. The flag then stayed
+at "running" for ever and the second `call_once` spun. The fix is one entry where `dce` decides, and the note there says
+what the first version cost.
+
+**Then `C99` broke everywhere, and the runtime was the reason.** `threads.h` uses `_Static_assert`, the runtime includes
+it, and a link compiled the runtime in the *caller's* dialect - so a C99 program built a C99 runtime and could no longer
+link. The runtime is this compiler's own source, so its dialect is the compiler's choice: a link now compiles it as C11
+whatever the program asked for, and `tests/crt.rs` says the same thing where it compiles the runtime on its own.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 23 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - the list the swap was missing from, and a mode that printed nothing
 
 The atomics commit, reviewed. The review's first job was the bug that commit had *dodged* - the CAS loop that lost a

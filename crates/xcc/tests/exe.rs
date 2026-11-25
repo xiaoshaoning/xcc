@@ -463,6 +463,70 @@ int main(void) {
 }
 "#;
 
+/// The program the threads test below compiles, as a raw Rust string.
+const THREADS_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <threads.h>
+
+/* A producer and a consumer, which is the standard's own use of a mutex and a condition variable,
+ * plus the three other things `threads.h` provides: thread-specific storage, one-time
+ * initialisation, and a thread whose return value is the join's result. */
+static mtx_t lock;
+static cnd_t ready;
+static int produced;
+static tss_t slot;
+static once_flag once = ONCE_FLAG_INIT;
+static int initialised;
+
+static void initialise(void) { initialised = initialised + 1; }
+
+static int consumer(void *argument) {
+    int seen;
+    (void)argument;
+    call_once(&once, initialise);
+    tss_set(slot, (void *)0x1234);
+    mtx_lock(&lock);
+    while (produced == 0) {
+        cnd_wait(&ready, &lock);
+    }
+    seen = produced;
+    mtx_unlock(&lock);
+    printf("consumer saw %d, tss %d, once %d\n", seen, tss_get(slot) == (void *)0x1234, initialised);
+    return seen + 1;
+}
+
+int main(void) {
+    thrd_t thread;
+    int result = 0;
+    if (mtx_init(&lock, mtx_plain) != thrd_success || cnd_init(&ready) != thrd_success ||
+        tss_create(&slot, 0) != thrd_success) {
+        printf("setup failed\n");
+        return 1;
+    }
+    call_once(&once, initialise);
+    if (thrd_create(&thread, consumer, 0) != thrd_success) {
+        printf("thrd_create failed\n");
+        return 1;
+    }
+    thrd_yield();
+    mtx_lock(&lock);
+    produced = 42;
+    cnd_signal(&ready);
+    mtx_unlock(&lock);
+    if (thrd_join(thread, &result) != thrd_success) {
+        printf("thrd_join failed\n");
+        return 1;
+    }
+    printf("joined with %d, once ran %d time(s)\n", result, initialised);
+    printf("equal %d, timed mutex %d\n", thrd_equal(thrd_current(), thrd_current()),
+           mtx_init(&lock, mtx_timed));
+    tss_delete(slot);
+    mtx_destroy(&lock);
+    cnd_destroy(&ready);
+    return 0;
+}
+"#;
+
 /// The program the atomic test below compiles, as a raw Rust string.
 const ATOMIC_PROGRAM: &str = r#"
 #include <stdio.h>
@@ -1168,5 +1232,22 @@ fn atomic_counters_lose_nothing_across_two_threads() {
     assert_eq!(run.status.code(), Some(0), "it ran to completion");
     let out = String::from_utf8_lossy(&run.stdout);
     let expected = "counters 200000 200000 200000, expected 200000@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
+/// `threads.h` (C11 7.26): a producer and a consumer over a mutex and a condition variable, a
+/// thread-specific slot, a one-time initialisation that must run exactly once, and a join that
+/// carries the thread's return value.
+///
+/// There is no `clang` oracle here: mingw ships no `threads.h` at all - measured, `clang -std=c11`
+/// says "file not found" - so these three lines are what C11 7.26 says must happen, written down
+/// when the header was added.
+#[test]
+#[cfg(target_os = "windows")]
+fn threads_a_mutex_a_condition_variable_and_a_once_flag_work() {
+    let run = run_linked_with("c11", "threads", THREADS_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "consumer saw 42, tss 1, once 1@@joined with 43, once ran 1 time(s)@@equal 1, timed mutex 4@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }

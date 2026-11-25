@@ -14,6 +14,7 @@
  */
 
 #include <fenv.h>
+#include <threads.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -704,4 +705,258 @@ XCC_CAS(unsigned long long, ullong)
 void __xcc_atomic_fence(void) {
     static int scratch;
     (void)__builtin_atomic_cas(&scratch, 0, 0);
+}
+
+/* ---------------------------------------------------------------- C11 7.26, threads
+ *
+ * Every one of these is the target's own primitive, declared here because this compiler ships no
+ * `windows.h`: `_beginthreadex` for a thread (the C runtime's entry point, so the per-thread runtime
+ * state is set up before the function runs), the Win32 critical section for a mutex, the Win32
+ * condition variable for `cnd_t`, and the runtime's own TLS slot for `tss_t`.
+ *
+ * The two representations in `threads.h` are this implementation's, and their sizes are measured
+ * rather than guessed: a critical section is 40 bytes on x64 and a condition variable is one
+ * pointer. The `_Static_assert`s below are what keeps the header and these casts agreeing.
+ */
+typedef struct {
+    unsigned long long opaque[5];
+} xcc_critical_section;
+
+typedef struct {
+    unsigned long long opaque[1];
+} xcc_condition_variable;
+
+_Static_assert(sizeof(xcc_critical_section) == 40, "the critical section the header promises");
+_Static_assert(sizeof(xcc_condition_variable) == 8, "the condition variable the header promises");
+
+unsigned long long _beginthreadex(void *security, unsigned stack, unsigned (*start)(void *),
+                                  void *argument, unsigned flags, unsigned *id);
+void _endthreadex(unsigned code);
+void Sleep(unsigned long milliseconds);
+unsigned long GetCurrentThreadId(void);
+int GetExitCodeThread(void *handle, unsigned long *code);
+void InitializeCriticalSection(xcc_critical_section *section);
+void DeleteCriticalSection(xcc_critical_section *section);
+void EnterCriticalSection(xcc_critical_section *section);
+void LeaveCriticalSection(xcc_critical_section *section);
+int TryEnterCriticalSection(xcc_critical_section *section);
+void InitializeConditionVariable(xcc_condition_variable *condition);
+int SleepConditionVariableCS(xcc_condition_variable *condition, xcc_critical_section *section,
+                             unsigned long milliseconds);
+void WakeConditionVariable(xcc_condition_variable *condition);
+void WakeAllConditionVariable(xcc_condition_variable *condition);
+unsigned long TlsFree(unsigned long index);
+
+int thrd_create(thrd_t *thread, thrd_start_t start, void *argument) {
+    unsigned id = 0;
+    if (thread == 0 || start == 0) {
+        return thrd_error;
+    }
+    /* The C runtime's entry point takes a function returning `unsigned`; the standard's returns
+     * `int`. The result is the thread's exit code either way, which is all a join reads. */
+    thread->handle = (void *)_beginthreadex(0, 0, (unsigned (*)(void *))start, argument, 0, &id);
+    thread->id = (unsigned long)id;
+    return thread->handle == 0 ? thrd_nomem : thrd_success;
+}
+
+int thrd_equal(thrd_t left, thrd_t right) { return left.id == right.id; }
+
+thrd_t thrd_current(void) {
+    thrd_t thread;
+    thread.handle = 0;
+    thread.id = GetCurrentThreadId();
+    return thread;
+}
+
+int thrd_sleep(const struct timespec *duration, struct timespec *remaining) {
+    if (duration == 0) {
+        return -1;
+    }
+    /* Milliseconds are the resolution the call underneath has; a sub-millisecond request still
+     * sleeps for one rather than for none. */
+    unsigned long milliseconds = (unsigned long)(duration->tv_sec * 1000L) +
+                                 (unsigned long)(duration->tv_nsec / 1000000L);
+    if (milliseconds == 0 && (duration->tv_sec != 0 || duration->tv_nsec != 0)) {
+        milliseconds = 1;
+    }
+    Sleep(milliseconds);
+    if (remaining != 0) {
+        remaining->tv_sec = 0;
+        remaining->tv_nsec = 0;
+    }
+    return 0;
+}
+
+void thrd_yield(void) { Sleep(0); }
+
+void thrd_exit(int result) { _endthreadex((unsigned)result); }
+
+int thrd_detach(thrd_t thread) {
+    if (thread.handle == 0 || !CloseHandle(thread.handle)) {
+        return thrd_error;
+    }
+    return thrd_success;
+}
+
+int thrd_join(thrd_t thread, int *result) {
+    unsigned long code = 0;
+    if (thread.handle == 0) {
+        return thrd_error;
+    }
+    if (WaitForSingleObject(thread.handle, 0xFFFFFFFFul) != 0) {
+        return thrd_error;
+    }
+    if (result != 0 && !GetExitCodeThread(thread.handle, &code)) {
+        return thrd_error;
+    }
+    CloseHandle(thread.handle);
+    if (result != 0) {
+        *result = (int)code;
+    }
+    return thrd_success;
+}
+
+/* 7.26.4: a mutex is a critical section. `mtx_timed` is refused: a critical section cannot be
+ * entered with a timeout, and handing back a mutex that would block forever would be a promise the
+ * platform cannot keep. */
+int mtx_init(mtx_t *mutex, int type) {
+    if (mutex == 0 || type == mtx_timed) {
+        return thrd_error;
+    }
+    InitializeCriticalSection((xcc_critical_section *)mutex);
+    return thrd_success;
+}
+
+int mtx_lock(mtx_t *mutex) {
+    EnterCriticalSection((xcc_critical_section *)mutex);
+    return thrd_success;
+}
+
+int mtx_trylock(mtx_t *mutex) {
+    return TryEnterCriticalSection((xcc_critical_section *)mutex) ? thrd_success : thrd_busy;
+}
+
+int mtx_unlock(mtx_t *mutex) {
+    LeaveCriticalSection((xcc_critical_section *)mutex);
+    return thrd_success;
+}
+
+void mtx_destroy(mtx_t *mutex) { DeleteCriticalSection((xcc_critical_section *)mutex); }
+
+/* C11 7.27.2.5, which `cnd_timedwait` is the first caller of: the system clock in a `timespec`.
+ * The Win32 file time counts 100-nanosecond ticks from 1601, and the Unix epoch is 11 644 473 600
+ * seconds later - one subtraction, and the two fields of the answer. */
+int timespec_get(struct timespec *moment, int base) {
+    unsigned long long ticks;
+    unsigned long long since_epoch;
+    struct {
+        unsigned low;
+        unsigned high;
+    } file_time;
+
+    if (moment == 0 || base != TIME_UTC) {
+        return 0;
+    }
+    GetSystemTimeAsFileTime(&file_time);
+    ticks = ((unsigned long long)file_time.high << 32) | file_time.low;
+    since_epoch = ticks - 116444736000000000ULL;
+    moment->tv_sec = (long long)(since_epoch / 10000000ULL);
+    moment->tv_nsec = (long)(since_epoch % 10000000ULL) * 100L;
+    return base;
+}
+
+/* 7.26.3: a condition variable is the Win32 one. */
+int cnd_init(cnd_t *condition) {
+    if (condition == 0) {
+        return thrd_error;
+    }
+    InitializeConditionVariable((xcc_condition_variable *)condition);
+    return thrd_success;
+}
+
+int cnd_signal(cnd_t *condition) {
+    WakeConditionVariable((xcc_condition_variable *)condition);
+    return thrd_success;
+}
+
+int cnd_broadcast(cnd_t *condition) {
+    WakeAllConditionVariable((xcc_condition_variable *)condition);
+    return thrd_success;
+}
+
+int cnd_wait(cnd_t *condition, mtx_t *mutex) {
+    int woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
+                                        (xcc_critical_section *)mutex, 0xFFFFFFFFul);
+    return woken ? thrd_success : thrd_error;
+}
+
+int cnd_timedwait(cnd_t *condition, mtx_t *mutex, const struct timespec *absolute) {
+    struct timespec now;
+    long long milliseconds;
+    int woken;
+    if (absolute == 0) {
+        return thrd_error;
+    }
+    timespec_get(&now, TIME_UTC);
+    milliseconds = (long long)(absolute->tv_sec - now.tv_sec) * 1000LL +
+                   (long long)(absolute->tv_nsec - now.tv_nsec) / 1000000LL;
+    if (milliseconds <= 0) {
+        /* Already due: ask with the shortest wait there is, and report the timeout if it held. */
+        woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
+                                        (xcc_critical_section *)mutex, 0);
+        return woken ? thrd_success : thrd_timedout;
+    }
+    woken = SleepConditionVariableCS((xcc_condition_variable *)condition,
+                                     (xcc_critical_section *)mutex, (unsigned long)milliseconds);
+    return woken ? thrd_success : thrd_timedout;
+}
+
+void cnd_destroy(cnd_t *condition) { (void)condition; }
+
+/* 7.26.6: thread-specific storage is the runtime's own slot. The destructor is *not* run, and the
+ * header says so: Windows' thread-local storage has no destructor to run. */
+int tss_create(tss_t *key, tss_dtor_t destructor) {
+    unsigned long index;
+    (void)destructor;
+    if (key == 0) {
+        return thrd_error;
+    }
+    index = TlsAlloc();
+    if (index == (unsigned long)-1) {
+        return thrd_error;
+    }
+    *key = index;
+    return thrd_success;
+}
+
+void *tss_get(tss_t key) { return TlsGetValue(key); }
+
+int tss_set(tss_t key, void *value) { return TlsSetValue(key, value) ? thrd_success : thrd_error; }
+
+void tss_delete(tss_t key) { (void)TlsFree(key); }
+
+/* 7.26.2: one-time initialisation. A compare-and-swap, which is what the machine has: 0 means "not
+ * run", 1 "running", 2 "done". A thread that finds 1 spins, because the alternative - a blocking
+ * wait - needs a condition variable that does not exist yet. */
+void call_once(once_flag *flag, once_callback callback) {
+    volatile int *state = (volatile int *)flag;
+    for (;;) {
+        int seen = __builtin_atomic_cas(state, 0, 1);
+        if (seen == 0) {
+            callback();
+            (void)__builtin_atomic_cas(state, 1, 2);
+            return;
+        }
+        if (seen == 2) {
+            return;
+        }
+        if (seen == 1) {
+            while (*state == 1) {
+                Sleep(0);
+            }
+            if (*state == 2) {
+                return;
+            }
+        }
+    }
 }

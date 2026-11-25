@@ -32,4 +32,16 @@ struct tm *gmtime(const time_t *at);
 size_t strftime(char *restrict to, size_t count, const char *restrict format,
                 const struct tm *restrict broken);
 
+/* C11 7.27.1: the seconds-and-nanoseconds pair, which `thrd_sleep` and `cnd_timedwait` take.
+ * It is C11's rather than C99's, and `threads.h` is the first header here to need it. */
+struct timespec {
+    long long tv_sec;
+    long tv_nsec;
+};
+
+/* C11 7.27.2.5: the clock a `timespec` is read from. `TIME_UTC` is the only base the standard
+ * requires, and its value is this implementation's. */
+#define TIME_UTC 1
+int timespec_get(struct timespec *moment, int base);
+
 #endif

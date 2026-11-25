@@ -58,6 +58,10 @@ const C11_HEADERS: &[(&str, Disposition)] = &[
         "stdnoreturn.h",
         Disposition::Shipped(include_str!("../include/stdnoreturn.h")),
     ),
+    (
+        "threads.h",
+        Disposition::Shipped(include_str!("../include/threads.h")),
+    ),
 ];
 
 const C99_HEADERS: &[(&str, Disposition)] = &[
@@ -285,7 +289,7 @@ mod tests {
     /// them.
     #[test]
     fn the_readme_counts_the_headers_that_ship() {
-        const NUMERALS: [&str; 28] = [
+        const NUMERALS: [&str; 29] = [
             "",
             "one",
             "two",
@@ -314,6 +318,7 @@ mod tests {
             "twenty-five",
             "twenty-six",
             "twenty-seven",
+            "twenty-eight",
         ];
         let readme = include_str!("../../../README.md");
         let line = readme
