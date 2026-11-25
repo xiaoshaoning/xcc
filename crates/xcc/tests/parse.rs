@@ -179,6 +179,26 @@ fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
 }
 
 #[test]
+fn a_diagnostic_about_a_macro_body_says_which_use_it_came_from() {
+    // Every expansion of one macro produces tokens with the *same* body spans, so a diagnostic that
+    // points into the body cannot say which use is at fault - and `sqlite3.c`'s remaining errors are
+    // exactly that: `SQLITE_INT_TO_PTR` defined once, used seventeen times, and a caret under the
+    // definition. The token carries the invocation it came from, and the diagnostic adds it.
+    let source = "#define W(X) (X + undeclared_thing)
+int main(void) { return W(1); }
+";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("it names nothing");
+    let notes: Vec<&str> = error
+        .items()
+        .iter()
+        .flat_map(|diagnostic| diagnostic.notes.iter().map(String::as_str))
+        .collect();
+    assert!(notes.contains(&"in `W`, used at t.c:2:25"), "{notes:?}");
+}
+
+#[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a
     // hexadecimal constant takes an unsigned type where a decimal one would be too large -

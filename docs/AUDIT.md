@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M15 - 2026-11-25 - the first use is not the right use
+
+A diagnostic about a token from a macro has nowhere to point but the macro's *body* - which is where the token was
+written, and which cannot say which of seventeen uses is at fault. `sqlite3.c` is the case: `SQLITE_INT_TO_PTR` is
+defined once at 14617 and used seventeen times, two of those uses fail, and the caret went to the definition twice with
+nothing to tell them apart.
+
+`PpToken::expansion` is now an index into a table of invocations, stamped as a token leaves an expansion, and the parser
+adds `in `MACRO`, used at file:line:col` where every diagnostic passes. **The first version keyed the table by span and
+was wrong in the way that matters**: every expansion of one macro produces tokens carrying the same body spans, so the
+lookup answered with the first use for all of them - and the measurement showed it, both errors reported at use number
+one. The key had to be the token, because the token is the only thing that knows which expansion made it.
+
+**And it does not reach the case that started it, which is measured rather than assumed.** The note attaches when the
+diagnostic's span belongs to the token just consumed or the one under the cursor - two candidates, which is enough for
+"`undeclared_thing` is not declared" inside a macro body, and not enough for the `&` refusal: `&((char*)0)[X]` is
+refused by the `&` after `X` has been read, so the caret is on the `&` and the cursor is two tokens past it. A wider
+search would be a guess; the honest fix is for the *site* to travel with the span, which is a location type and a
+refactor of every `error(span, ..)` call. That is the next step, and it is written down instead of approximated - the
+seventeen uses cost a wrong answer once already.
+
+206 unit, 41 parser, 30 CLI, 5 invalid, 34 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M14 reviewed - 2026-11-25 - the addend that reached the linker and not the object
 
 The addend went in and the review found that it went in **one of two places**. `GlobalRelocation`'s doc says the object

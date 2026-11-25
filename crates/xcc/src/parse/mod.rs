@@ -521,8 +521,37 @@ impl Parser<'_> {
             .get(file as usize)
             .map(|source| source.name().to_owned())
             .unwrap_or_default();
-        self.diagnostics
-            .push(diagnostic.with_file(name).with_span(span));
+        // A diagnostic about a token a macro produced points at the macro's *body* - which is right,
+        // because that is where the token was written - and the body cannot say which use it came
+        // from. This does: `14617:40` in sqlite3.c is the definition of `SQLITE_INT_TO_PTR`, and two
+        // of its seventeen uses fail, which the diagnostic could not say until now.
+        let mut diagnostic = diagnostic.with_file(name).with_span(span);
+        // The token that *had* this span, and it is one of two: the one just consumed (most
+        // diagnostics are reported after the token was read, which is when the name is known) or the
+        // one under the cursor. A span alone cannot identify it - every expansion of one macro
+        // produces tokens with the same body spans - so the site is read from a token rather than
+        // looked up by span, and two candidates is enough because they are the two the parser can be
+        // standing on.
+        let site = [self.at.checked_sub(1), Some(self.at)]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.tokens().get(index))
+            .find(|token| token.span == span)
+            .and_then(|token| self.preprocessed.site(token));
+        if let Some(site) = site {
+            let used = self
+                .preprocessed
+                .files
+                .get(site.file as usize)
+                .map(|source| {
+                    let at = source.position(site.span.start);
+                    format!("{}:{}:{}", source.name(), at.line, at.column)
+                })
+                .unwrap_or_default();
+            let macro_name = self.spell_of(site.name).to_owned();
+            diagnostic = diagnostic.with_note(format!("in `{macro_name}`, used at {used}"));
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     // ---- the grammar ----------------------------------------------------------

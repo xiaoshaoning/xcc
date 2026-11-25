@@ -1068,14 +1068,18 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       to a constant with no symbol at all - sqlite's `SQLITE_INT_TO_PTR`, whose `&((char*)0)[X]` is
       `(char*)0 + X` by C99 6.5.3.2p3. `constant_bytes` had said "only the null pointer is a constant"; it now writes
       the number, which is what a table of function pointers at file scope is made of. sqlite3.c: **7 errors to 3**.
-- [ ] **The last three of sqlite3.c**, and the first obstacle is the *diagnostic*: two of them point at the macro
-      *definition* (`14617:40`, `SQLITE_INT_TO_PTR`) and not at the use, so the measurement cannot say which of the
-      seventeen uses fails. Neutralising all seventeen removes both errors, and neutralising any one does not - so the
-      expansion is inside one of them in a shape the minimal tests (`from_call`, `from_var`, a struct member, a
-      `static` local) did not reproduce. **The next step is therefore `Raw`/`Preprocessed` carrying the expansion site
-      of every token a macro produced**, which is a real piece of work and the only thing that can name these two.
-      The third is `?:` whose arms are aggregates (`(n==0 ? tok : tok)` on a `Token`), where the result has to copy a
-      value it is given by address.
+- [x] **A diagnostic about a macro body now says which use it came from.** `PpToken::expansion` is an index into
+      `Preprocessed::sites`, stamped as a token leaves an expansion - an *index* and not a span, because every
+      expansion of one macro produces tokens with the same body spans, which is the mistake a span-keyed table made on
+      its first try (sqlite3.c's two errors were both reported at use number one). The parser adds the note where every
+      diagnostic passes, as `in `MACRO`, used at file:line:col`.
+      **Its limit, measured**: the note attaches when the diagnostic's span belongs to the token just consumed or the
+      one under the cursor. `&((char*)0)[X]` is refused by the `&` *after* `X` has been read, so the caret is on the
+      `&` and the cursor is on the `]` - no note, and the span cannot say which use either. Closing that needs the
+      site to travel *with* the span (a location type), which is the honest next step rather than a wider search.
+- [ ] **The last three of sqlite3.c**: two `&((char*)0)[X]` uses (the note above cannot name them yet) and a `?:`
+      whose arms are aggregates (`(n==0 ? tok : tok)` on a `Token`), where the result has to copy a value it is given
+      by address.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

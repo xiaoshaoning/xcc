@@ -32,6 +32,11 @@ pub struct PpToken {
     pub span: Span,
     /// Which file: an index into [`Preprocessed::files`].
     pub file: u16,
+    /// Which macro invocation produced this token: an index into [`Preprocessed::sites`], or `None`
+    /// for a token the program wrote itself. An *index* rather than a span, because every expansion
+    /// of one macro produces tokens with the same body spans - which is exactly the mistake a
+    /// span-keyed table made: sqlite3.c's two errors were both reported at use number one.
+    pub expansion: Option<u32>,
     /// Whether a newline **that survived phase 2** comes before this token.
     ///
     /// The line a token sits on is not the question a directive asks - the phase-2 splice removes a
@@ -82,6 +87,12 @@ pub struct Preprocessed {
     names: Interner,
     /// Where `#pragma pack` changed the limit: `(token index, pack)`, in order.
     pack_changes: Vec<(usize, u8)>,
+    /// The invocations every macro-produced token came from, in the order they were recorded. A
+    /// token holds an index into this (`PpToken::expansion`), because **the span cannot be the key**:
+    /// every expansion of one macro produces tokens with the *same* body spans, so a span-keyed table
+    /// answers with the first use for all of them - which is what sqlite3.c's measurement hit, two
+    /// errors both reported at use number one.
+    sites: Vec<Site>,
     /// Where the attributes that change a layout were written: `(token index, attribute)`. The
     /// *position* is the whole of it - `struct S { ... } __attribute__((packed))` is packed because
     /// the attribute sits where the declaration does - so a parser asks about the range it just
@@ -93,6 +104,14 @@ impl Preprocessed {
     /// The name table the tokens' ids are meaningful in.
     pub fn names(&self) -> &Interner {
         &self.names
+    }
+
+    /// The invocation a token came from, when it came from one: the macro's name and where it was
+    /// used. `None` for a token the program wrote itself - a diagnostic about a token in a macro
+    /// *body* points at the body, which is where it was written, and this is what lets it add the
+    /// one thing the body cannot say: which use it came from.
+    pub fn site(&self, token: &PpToken) -> Option<&Site> {
+        token.expansion.and_then(|at| self.sites.get(at as usize))
     }
 
     /// The `#pragma pack` limit in force at token `index`: the limit a record whose body ends
@@ -285,6 +304,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         pack_stack: Vec::new(),
         pack_changes: Vec::new(),
         layout_attributes: Vec::new(),
+        sites: Vec::new(),
         in_command_line: false,
     };
     preprocessor.read_root();
@@ -313,6 +333,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
     let tokens = std::mem::take(&mut preprocessor.out);
     let pack_changes = std::mem::take(&mut preprocessor.pack_changes);
     let layout_attributes = std::mem::take(&mut preprocessor.layout_attributes);
+    let sites = std::mem::take(&mut preprocessor.sites);
     drop(preprocessor);
     Preprocessed {
         tokens,
@@ -322,6 +343,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         names: interner,
         pack_changes,
         layout_attributes,
+        sites,
     }
 }
 
@@ -363,11 +385,15 @@ impl FileEntry {
 /// A type rather than a tuple because the two halves are read apart (`site.file` names the file
 /// `__FILE__` reports, `site.span` the line `__LINE__` does), and `(u16, Span)` reads as neither.
 #[derive(Debug, Clone, Copy)]
-struct Site {
+pub struct Site {
     /// Which file the invocation is in.
-    file: u16,
+    pub file: u16,
     /// Where in it.
-    span: Span,
+    pub span: Span,
+    /// The macro that was invoked. A diagnostic about a token from an expansion points at the macro
+    /// *body* - which is right, because that is where the token was written - and this is what lets
+    /// it add the one thing the body cannot say: which use it came from.
+    pub name: Symbol,
 }
 
 /// A working token: what the parser will see, plus the names that may not expand it.
@@ -464,6 +490,8 @@ struct Preprocessor<'a> {
     pack_changes: Vec<(usize, u8)>,
     /// Where the attributes that change a layout were written, as `(token index, attribute)`.
     layout_attributes: Vec<(usize, crate::types::LayoutAttribute)>,
+    /// The invocations macro-produced tokens came from.
+    sites: Vec<Site>,
     /// Whether the tokens being read are a `-D` from the command line, whose spans point into
     /// text the user never wrote.
     in_command_line: bool,
@@ -521,6 +549,7 @@ impl Preprocessor<'_> {
                     // The lexer is the only thing that knows: a newline it spliced away does not end
                     // the logical line a directive is read from.
                     starts_line: token.starts_line,
+                    expansion: None,
                 },
                 hide: Vec::new(),
                 spliced: false,
@@ -549,6 +578,7 @@ impl Preprocessor<'_> {
                     span: token.span,
                     file: 0,
                     starts_line: token.starts_line,
+                    expansion: None,
                 },
                 hide: Vec::new(),
                 spliced: false,
@@ -772,7 +802,14 @@ impl Preprocessor<'_> {
         }
         match self.expansion_of(&raw) {
             Some(expansion) => self.splice_front(expansion),
-            None => self.out.push(raw.token),
+            None => {
+                let mut token = raw.token;
+                if let Some(site) = raw.invoked_at {
+                    token.expansion = Some(self.sites.len() as u32);
+                    self.sites.push(site);
+                }
+                self.out.push(token);
+            }
         }
     }
 
@@ -1047,6 +1084,7 @@ impl Preprocessor<'_> {
                     span: raw.token.span,
                     file: raw.token.file,
                     starts_line: false,
+                    expansion: None,
                 });
             } else {
                 tokens.push(raw.token);
@@ -1108,6 +1146,7 @@ impl Preprocessor<'_> {
                 span: token.span,
                 file: token.file,
                 starts_line: false,
+                expansion: None,
             });
         }
         Some(out)
@@ -1401,6 +1440,7 @@ impl Preprocessor<'_> {
         // macro was invoked - not where its body was written. Without this a program's `assert(e)`
         // reported line 28 of `assert.h` and the file `"assert.h"`.
         let site = raw.invoked_at.unwrap_or(Site {
+            name: raw.token.text,
             file: raw.token.file,
             span: raw.token.span,
         });
@@ -1425,6 +1465,7 @@ impl Preprocessor<'_> {
                 span: raw.token.span,
                 file: raw.token.file,
                 starts_line: false,
+                expansion: None,
             },
             hide: Vec::new(),
             spliced: true,
@@ -1441,6 +1482,7 @@ impl Preprocessor<'_> {
         let invoked_at = Some(raw.invoked_at.unwrap_or(Site {
             file: raw.token.file,
             span: raw.token.span,
+            name: raw.token.text,
         }));
         definition
             .body
@@ -1526,6 +1568,7 @@ impl Preprocessor<'_> {
         // cloned from `definition.body` in several branches, and one of them answered `__LINE__` with
         // the header's own line for exactly that reason.
         let invoked_at = invocation.invoked_at.unwrap_or(Site {
+            name: invocation.token.text,
             file: invocation.token.file,
             span: invocation.token.span,
         });
@@ -1549,6 +1592,7 @@ impl Preprocessor<'_> {
                                 span: token.span,
                                 file: token.file,
                                 starts_line: false,
+                                expansion: None,
                             },
                             hide: hide.clone(),
                             spliced: true,
@@ -1681,6 +1725,7 @@ impl Preprocessor<'_> {
                     span: spanned,
                     file: left.token.file,
                     starts_line: false,
+                    expansion: None,
                 },
                 hide: left.hide.clone(),
                 spliced: true,
@@ -1740,6 +1785,7 @@ impl Preprocessor<'_> {
                 span,
                 file: self.current,
                 starts_line: false,
+                expansion: None,
             };
             let mut joined = Vec::new();
             for (position, part) in arguments.iter().enumerate().skip(params.names.len()) {
