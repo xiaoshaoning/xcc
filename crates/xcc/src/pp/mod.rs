@@ -755,6 +755,21 @@ impl Preprocessor<'_> {
             self.too_many_tokens(raw.token.span);
             return;
         }
+        // A byte that is no token: reported here and not in the lexer, because this is the first
+        // layer that knows whether the text is part of the program at all. `sqlite3.c` keeps a page
+        // of Tcl inside `#if 0`, and every `$` in it is a stray byte to a lexer.
+        if raw.token.kind == TokenKind::Stray {
+            // The byte is the token's whole spelling, and it is one ASCII byte: every byte of a
+            // multi-byte character belongs to an identifier, so what reaches here is a printable
+            // character that is no token of C, or a control byte.
+            let what = match self.spell(raw.token.text).chars().next() {
+                Some(byte) if byte.is_ascii_graphic() => format!("stray `{byte}` in program"),
+                Some(byte) => format!("stray byte 0x{:02x} in program", byte as u32),
+                None => String::from("stray byte in program"),
+            };
+            self.error(raw.token.span, what);
+            return;
+        }
         match self.expansion_of(&raw) {
             Some(expansion) => self.splice_front(expansion),
             None => self.out.push(raw.token),
@@ -2400,6 +2415,25 @@ yes
         assert!(weak[0]
             .message
             .contains("`#pragma weak` makes a definition replaceable"));
+    }
+
+    #[test]
+    fn a_byte_that_is_no_token_matters_only_where_it_is_used() {
+        // Translation phase 3 produces tokens and phase 4 decides what is in the program, so a byte
+        // that is no token is only a problem where it survives. `sqlite3.c` keeps a page of Tcl
+        // inside `#if 0`, and every `$` there is a stray byte to a lexer that judges too early -
+        // which refused the file 250 000 lines before the first line that matters.
+        assert!(
+            diagnostics("#if 0\nforeach c {d s} {\n  scan $c %c x\n}\n#endif\nint x;\n").is_empty()
+        );
+        let refused = diagnostics("int x = 1 $ 2;\n");
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].message, "stray `$` in program");
+        // A byte that is not printable is named by its value rather than printed.
+        assert_eq!(
+            diagnostics("int x = 1 \u{1} 2;\n")[0].message,
+            "stray byte 0x01 in program"
+        );
     }
 
     #[test]

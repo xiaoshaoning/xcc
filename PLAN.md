@@ -1042,6 +1042,30 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       where it differs. The `inline` case needs nothing yet: `inline` is consumed and dropped, so a header's `inline`
       definition is an ordinary external one, and two of those are duplicates - which is what C99 6.7.4p6 says is
       ill-formed anyway (the program needs one external definition).
+- [x] **`sqlite3.c` is measured, and it compiles to seven errors, three classes.** 265 977 lines, 9.6 MB, the Windows
+      path, with `-I <mingw-w64 include>`: **8 errors, then 7**, where before this the file could not be read at all.
+      What it found, in the order it found them:
+      (1) **A stray byte is a token, and the preprocessor judges it.** `sqlite3.c` keeps a page of Tcl inside `#if 0`
+      - `foreach c {d s} { scan $c %c x }` - and the *lexer* reported `$` as a stray, which is translation phase 3
+      judging before phase 4 has decided the text is not part of the program. `TokenKind::Stray` now travels to the
+      preprocessor, which reports one it is about to hand on and ignores the rest. `clang` accepts the file; so do we.
+      (2) **A hexadecimal constant may be `unsigned`.** C99 6.4.4.1p5 has two axes and the *radix* is one: for hex and
+      octal the candidate list includes the unsigned types before `long long`, so `0xfffffffffc000000LL` is a
+      `unsigned long long` - and was refused as "too large for any integer type". `_Generic` on five spellings now
+      answers what `clang` answers.
+      (3) **A declarator can hold two parameter lists, and the function's own is the first.**
+      `int (*getter(vfs *p))(struct vfs *)` takes a `vfs *` and *returns* a function pointer; the group's recursive
+      declarator was read with `capture_parameters: false`, so only the return type's list was captured and `p` was
+      undeclared in the body. sqlite writes this shape for every VFS entry point.
+      (4) **One header, one struct.** Our `time.h` and the SDK's `sys/types.h` both define `struct timespec` (and
+      `struct tm`), under different guards; ours now says `_TIMESPEC_DEFINED` and `_TM_DEFINED`, so whichever is read
+      first the other stays out.
+- [ ] **The three things sqlite3.c still needs**, each with 265 977 lines of real code asking for it:
+      `&array[index]` **at file scope** (4 errors: `sqlite3aLTb = &sqlite3UpperToLower[256-OP_Ne]`) - the ADR-004
+      address-expression gap, which needs a relocation **addend**; `&((char*)0)[X]` (2 errors: sqlite's
+      `SQLITE_INT_TO_PTR` on a compiler that is neither GCC nor MSVC), which is the same gap from the other side;
+      and a **conditional expression whose arms are aggregates** (1 error: `(n==0 ? tok : tok)` on a `Token`), where
+      `?:` has to copy a value it is given by address.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

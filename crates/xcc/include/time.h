@@ -33,13 +33,20 @@ size_t strftime(char *restrict to, size_t count, const char *restrict format,
                 const struct tm *restrict broken);
 
 /* C11 7.27.1: the seconds-and-nanoseconds pair, which `thrd_sleep` and `cnd_timedwait` take.
- * It is C11's rather than C99's, and `threads.h` is the first header here to need it. */
+ * It is C11's rather than C99's, and `threads.h` is the first header here to need it.
+ *
+ * `_TIMESPEC_DEFINED` is the Windows SDK's guard for this same structure (`sys/types.h` defines it
+ * under that name). One of our headers and one of the SDK's describing one type means only one of
+ * them may define it, whichever is read first. */
+#ifndef _TIMESPEC_DEFINED
+#define _TIMESPEC_DEFINED
 struct timespec {
     /* `time_t` and not the type it happens to be: 7.27.1p3 names the typedef, and a header that
      * writes through to the underlying type breaks the day `time_t` changes width. */
     time_t tv_sec;
     long tv_nsec;
 };
+#endif
 
 /* C11 7.27.2.5: the clock a `timespec` is read from. `TIME_UTC` is the only base the standard
  * requires, and its value is this implementation's. */

@@ -2136,17 +2136,22 @@ impl Parser<'_> {
         longs: usize,
         decimal: bool,
     ) -> Option<TypeId> {
-        let candidates: &[(bool, u8)] = match (unsigned, longs) {
-            (false, 0) if decimal => &[(true, 32), (true, 64)],
-            (false, 0) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
-            (true, 0) => &[(false, 32), (false, 64)],
-            // `long` is 32 bits on this target, so `L` and no suffix have the same shape; `LL`
-            // is the 64-bit one. A `u` suffix means the 64-bit candidate is `unsigned` too:
-            // `18446744073709551615u` is a `unsigned long long`, not too large.
-            (false, 1) => &[(true, 32), (true, 64)],
-            (true, 1) => &[(false, 32), (false, 64)],
-            (false, _) => &[(true, 64)],
-            (true, _) => &[(false, 64)],
+        // The table of C99 6.4.4.1p5, and the *radix* is one of its two axes: a decimal constant
+        // never takes an unsigned type, and a hexadecimal or octal one does - so
+        // `0xfffffffffc000000LL` is a `unsigned long long`, where the same digits in decimal would
+        // be too large for any type. `long` is 32 bits on this target, so `L` and no suffix have the
+        // same shape and `LL` is the 64-bit one; `u` makes the 64-bit candidate unsigned too, which
+        // is why `18446744073709551615u` is a `unsigned long long` and not too large.
+        let candidates: &[(bool, u8)] = match (unsigned, longs, decimal) {
+            (false, 0, true) => &[(true, 32), (true, 64)],
+            (false, 0, false) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
+            (true, 0, _) => &[(false, 32), (false, 64)],
+            (false, 1, true) => &[(true, 32), (true, 64)],
+            (false, 1, false) => &[(true, 32), (false, 32), (true, 64), (false, 64)],
+            (true, 1, _) => &[(false, 32), (false, 64)],
+            (false, _, true) => &[(true, 64)],
+            (false, _, false) => &[(true, 64), (false, 64)],
+            (true, _, _) => &[(false, 64)],
         };
         let fits = |signed: bool, width: u8| -> bool {
             if width == 64 {
@@ -2325,6 +2330,7 @@ impl Parser<'_> {
         self.blocks_reported.clear();
         let span = self.span();
         let params = std::mem::take(&mut self.last_parameters);
+        self.captured_parameters = false;
         // Which slot each parameter of *this* function lives in, for `va_start(ap, last)`: it is
         // per function, and it was never cleared - so in a file with two variadic functions the
         // second one's `last` was found at twice its position, and `va_start` pointed past the

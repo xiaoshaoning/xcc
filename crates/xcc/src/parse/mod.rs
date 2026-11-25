@@ -64,6 +64,7 @@ pub(crate) fn parse(preprocessed: &Preprocessed, budgets: &Budgets) -> Parsed {
         label_blocks: HashMap::new(),
         gotos: Vec::new(),
         last_parameters: Vec::new(),
+        captured_parameters: false,
         last_variadic: false,
         function_params: Vec::new(),
         funcs: Vec::new(),
@@ -322,6 +323,13 @@ struct Parser<'a> {
     /// The parameter names of the last function declarator, which a definition declares in its
     /// body's scope.
     last_parameters: Vec<(Option<Symbol>, TypeId, Span)>,
+    /// Whether the declarator being read has already handed its parameters over. A declarator can
+    /// hold *two* parameter lists - `int (*getter(vfs *p))(struct vfs *)` is a function taking one
+    /// `vfs *` and returning a function pointer taking `struct vfs *` - and the one that belongs to
+    /// the name being declared is the **first**, the one inside the parentheses. Reading the second
+    /// into `last_parameters` too replaced the function's own parameters with its *return type's*,
+    /// so `p` was not declared in the body.
+    captured_parameters: bool,
     /// Whether the parameter list just read ended in `...`, for the definition that follows.
     last_variadic: bool,
     /// The place of each parameter of the function being defined, in order: what `va_start` needs to
@@ -1926,6 +1934,10 @@ impl Parser<'_> {
         if !self.enter_nesting() {
             return None;
         }
+        // A new declaration is a new question about which list is the function's own.
+        if capture_parameters {
+            self.captured_parameters = false;
+        }
         let mut wrappers = Vec::new();
         // A convention may stand on either side of the `*`s - `char * __stdcall f` and
         // `__cdecl * p` are both written in the wild - so it is skipped before the run and after
@@ -1953,7 +1965,12 @@ impl Parser<'_> {
         }
         let inner = if self.eat("(") {
             let before = self.at;
-            let Some(inner) = self.declarator(false) else {
+            // The group carries the name being declared, so its parameter list is the function's
+            // own: `int (*getter(vfs *p))(struct vfs *)` takes a `vfs *` and *returns* a function
+            // pointer - and passing `false` here captured only the return type's list, so `p` was
+            // not declared in the body. `captured_parameters` keeps the second list from being
+            // taken for the first.
+            let Some(inner) = self.declarator(capture_parameters) else {
                 // The recursion gave up without reading anything, which is the same no-progress
                 // hole as the missing `)` below: the caller's loop would re-read this `(` for ever.
                 if self.at == before {
@@ -2051,9 +2068,12 @@ impl Parser<'_> {
     /// an error and why these names are gone afterwards.
     fn parameter_list(&mut self, capture_names: bool) -> (Vec<TypeId>, bool) {
         let mut params = Vec::new();
-        if capture_names {
+        // Only the *first* list a declarator meets is the function's own; a second is the return
+        // type's (see `captured_parameters`).
+        if capture_names && !self.captured_parameters {
             self.last_parameters.clear();
             self.last_variadic = false;
+            self.captured_parameters = true;
         }
         let mut variadic = false;
         self.symbols.push();

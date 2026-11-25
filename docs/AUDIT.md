@@ -786,6 +786,43 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M13 - 2026-11-25 - sqlite3.c, and the three things it asked for in the first ten minutes
+
+265 977 lines of SQLite, the Windows path, through the SDK headers: **8 errors, then 7** once the fourth was fixed -
+where before this it could not be read at all. Each error was a fact about C this compiler had wrong, and the first
+three took less than an hour between them.
+
+**A stray byte is a token.** `sqlite3.c` keeps a page of Tcl inside `#if 0` - `foreach c {d s} { scan $c %c x }` - and
+the lexer reported every `$` as a stray, 250 000 lines before the first line that mattered. That is translation phase 3
+judging before phase 4 has decided what is in the program: the lexer now makes a `TokenKind::Stray` and keeps travelling,
+and the preprocessor reports one it is about to hand on. `clang` accepts the file, and so do we. It is the same mistake
+in miniature as every "the check lives in the wrong layer" bug in this codebase: the judgement was attached to the
+cheapest place to make it, not the place that knows.
+
+**The radix is part of the type of a constant.** C99 6.4.4.1p5's table has two axes and only one of them was implemented:
+a *decimal* constant never takes an unsigned type, and a hexadecimal or octal one does - so
+`0xfffffffffc000000LL` is an `unsigned long long`, and was refused as "too large for any integer type". The `decimal`
+flag was already computed and already used for the no-suffix row; the `L` and `LL` rows ignored it.
+
+**A declarator can hold two parameter lists.** `int (*getter(vfs *p))(struct vfs *)` takes a `vfs *` and *returns* a
+function pointer. The group's recursive declarator was read with `capture_parameters: false`, so the function's own list
+was never captured and only the return type's was - leaving `p` undeclared in the body, which is what the error said.
+sqlite writes that shape for every VFS entry point. The fix is two lines and a flag: the group keeps capturing, and the
+*first* list a declarator meets is the function's own.
+
+**And one header, one struct.** Our `time.h` defines `struct timespec` and `struct tm`; the SDK's `sys/types.h` and
+`time.h` define the same two under `_TIMESPEC_DEFINED` and `_TM_DEFINED`. Ours now says those words, so whichever is read
+first, the other stays out - the same bridge idea as `vadefs.h`, in the other direction.
+
+What is left is three, and they are the *address* and the *conditional*: `&array[index]` at file scope (sqlite's four
+`sqlite3aLTb`-style tables), `&((char*)0)[X]` (its `SQLITE_INT_TO_PTR` for a compiler that is neither GCC nor MSVC), and
+`?:` whose arms are aggregates (its parser's token select). All three are named in PLAN with their counts; the first two
+need a relocation *addend*, which is the one thing ADR-004's design has never had.
+
+205 unit, 40 parser, 30 CLI, 5 invalid, 33 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M12 reviewed - 2026-11-25 - the reason that stopped being true in one commit
 
 The intrinsics went in and the review measured something uncomfortable: **with `__NO_INLINE__` defined, no SDK intrinsic

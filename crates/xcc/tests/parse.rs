@@ -179,6 +179,47 @@ fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
 }
 
 #[test]
+fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
+    // C99 6.4.4.1p5 has two axes, and the *radix* is one of them: a hexadecimal constant takes an
+    // unsigned type where a decimal one would be too large. `sqlite3.c` writes
+    // `0xfffffffffc000000LL`, which is a `unsigned long long` and was refused as "too large".
+    let c11 = Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    };
+    let complaints = check_with(
+        c11.clone(),
+        r#"
+#define T(x) _Generic((x), int: 1, unsigned int: 2, long: 3, unsigned long: 4, long long: 5, unsigned long long: 6)
+enum {
+  hex_ll = T(0xfffffffffc000000LL),
+  hex_int = T(0xffffffff),
+  decimal = T(4294967295),
+  suffixed = T(0xffffffffU)
+};
+_Static_assert(hex_ll == 6, "a hexadecimal `LL` takes `unsigned long long`");
+_Static_assert(hex_int == 2, "and so does one with no suffix");
+_Static_assert(decimal == 5, "a decimal one never takes an unsigned type");
+_Static_assert(suffixed == 2, "a `U` suffix means what it says");
+"#,
+    );
+    assert!(complaints.is_empty(), "{complaints:?}");
+
+    // A declarator can hold *two* parameter lists, and the function's own is the first: the second
+    // is its return type's. Taking the second for the first left `p` undeclared in this body.
+    assert!(parses(
+        "typedef struct vfs { int (*close)(struct vfs *); } vfs;\n\
+         int (*getter(vfs *p)) (struct vfs *) { return p->close; }\n\
+         void (*nothing(vfs *p, void *handle))(void) { (void)p; (void)handle; return 0; }"
+    ));
+    // ...and a parameter list inside a *group* is the function's own, which is the case sqlite
+    // writes: `void (*f(vfs *pVfs, ...))(void)`.
+    assert!(parses(
+        "typedef struct vfs { int x; } vfs;\nvoid (*f(vfs *p))(void) { return (void (*)(void))0; }"
+    ));
+}
+
+#[test]
 fn the_spellings_a_windows_sdk_writes_are_read_as_what_they_mean() {
     // None of this is C99. All of it is in `windows.h`, and each one is read as the thing it means
     // rather than refused: a header written for another compiler asks for a type, a qualifier or an

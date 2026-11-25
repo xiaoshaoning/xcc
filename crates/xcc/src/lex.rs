@@ -132,6 +132,11 @@ pub enum TokenKind {
     Chr,
     /// A punctuator; digraphs are spelled as their primary form.
     Punct,
+    /// A byte that is no token at all. Kept as a token rather than refused here because this layer
+    /// runs *before* conditional inclusion: `sqlite3.c` has a page of Tcl inside `#if 0`, where `$`
+    /// is not C and does not matter, and a lexer that judged it would refuse the file. The
+    /// preprocessor reports one it is about to hand on, which is where the standard puts it.
+    Stray,
     /// The end of the file.
     Eof,
 }
@@ -234,13 +239,10 @@ impl Lexer<'_> {
                 let end = self.at;
                 self.push(TokenKind::Punct, spelling, start, end);
             } else {
-                let what = if byte.is_ascii_graphic() {
-                    format!("stray `{}` in program", byte as char)
-                } else {
-                    format!("stray byte 0x{byte:02x} in program")
-                };
-                self.error(start, 1, what);
+                // One byte, one token; the diagnostic is the preprocessor's (`pp/mod.rs`), because a
+                // group `#if 0` is skipping is not part of the program.
                 self.at += 1;
+                self.push_scanned(TokenKind::Stray, start);
             }
         }
     }
@@ -739,11 +741,18 @@ int x;
     }
 
     #[test]
-    fn a_stray_byte_is_reported_and_skipped() {
+    fn a_stray_byte_is_a_token_and_not_a_diagnostic() {
+        // Phase 3 makes tokens; phase 4 decides what is in the program, so a byte that is no
+        // token is kept as one and reported by the preprocessor only where it survives - a page
+        // of Tcl inside `#if 0` is the case (`sqlite3.c`).
         let (lexed, _) = lexed("a \u{7f} b");
-        assert!(lexed.has_errors());
-        assert_eq!(lexed.diagnostics[0].message, "stray byte 0x7f in program");
-        assert_eq!(lexed.tokens.len(), 3, "the tokens either side survive");
+        assert!(!lexed.has_errors(), "the lexer does not judge");
+        assert_eq!(
+            lexed.tokens.len(),
+            4,
+            "the tokens either side survive, and the byte between"
+        );
+        assert_eq!(lexed.tokens[1].kind, TokenKind::Stray);
     }
 
     #[test]
