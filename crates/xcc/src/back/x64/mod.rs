@@ -195,12 +195,9 @@ pub(crate) enum Op {
     /// The address of a *thread-local* object: not a `lea`, because there is no single address to
     /// load. The runtime keeps one block per thread and hands out this object's cell in it; the
     /// linker decides where in that block the object sits, and writes that offset into a word the
-    /// sequence below reads.
-    ThreadAddress {
-        dst: VReg,
-        symbol: String,
-        size: u32,
-    },
+    /// sequence below reads. Nothing here sizes the object: the block's template does, once, for
+    /// all of them.
+    ThreadAddress { dst: VReg, symbol: String },
     /// Read eight bytes of a frame slot, which is how a block parameter arrives.
     LoadLocal { dst: VReg, offset: i32 },
     /// Write eight bytes of a frame slot, which is how an edge passes them.

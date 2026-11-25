@@ -173,8 +173,9 @@ pub(crate) const CRT_SOURCE: &str = include_str!("../../../xcc-crt/src/main.c");
 /// which is also why a `clang`-built program imports `_time64` from the time api-set rather than
 /// `time` from `ucrtbase`. This function is the only place that knows the difference, so no caller
 /// and no part of the runtime has to spell a library's own name.
-/// Whether the *linker* makes this name, rather than a unit or a library: the two words the
-/// thread-local lookup reads, one per object and one for the block's size.
+/// Whether the *linker* makes this name, rather than a unit or a library: the three things the
+/// thread-local lookup reads - one offset word per object, the block's size, and the template every
+/// thread's copy starts from.
 ///
 /// They exist because a `_Thread_local` object's place in a thread's block is a fact only the
 /// linker has - it is the one that lays the block out, after every unit is compiled - so the code

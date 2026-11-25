@@ -474,8 +474,8 @@ impl Encoder<'_> {
                     }
                 }
             }
-            Op::ThreadAddress { dst, symbol, size } => {
-                self.thread_address(*dst, symbol, *size);
+            Op::ThreadAddress { dst, symbol } => {
+                self.thread_address(*dst, symbol);
             }
             Op::SymbolAddress { dst, symbol } => {
                 // `lea dst, [rip + disp32]`: the displacement is a relocation, because the linker
@@ -1595,7 +1595,7 @@ impl Encoder<'_> {
     /// a program that touches a `_Thread_local` object in a loop pays them every time: the fast
     /// route is the PE TLS directory, which the loader fills and which this linker does not write
     /// yet (PLAN.md says so where the choice is made).
-    fn thread_address(&mut self, dst: VReg, symbol: &str, _size: u32) {
+    fn thread_address(&mut self, dst: VReg, symbol: &str) {
         // rcx = this object's offset in the block
         self.mov_reg_from_memory_with_relocation(Reg::RCX, format!("__xcc_tls_offset_{symbol}"));
         // rdx = the block's size, which is how much the runtime copies when a thread first asks

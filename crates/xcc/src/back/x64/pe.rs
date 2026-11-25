@@ -273,15 +273,18 @@ impl<'a> Program<'a> {
                 }
                 let align = u64::from(object.align.max(1));
                 block = (u64::from(block).div_ceil(align) * align) as u32;
+                let offset = block;
                 let start = object.offset as usize;
                 let end = start + object.size as usize;
-                template.resize(block as usize, 0);
-                template.extend_from_slice(unit.data.bytes.get(start..end).unwrap_or(&[]));
+                // The template grows to the object's *whole* size before its bytes go in: an object
+                // with no initialiser has no bytes in `.data` at all, and a template shorter than
+                // the block would have the runtime copy past the end of it.
+                template.resize(offset as usize + object.size as usize, 0);
+                let bytes = unit.data.bytes.get(start..end).unwrap_or(&[]);
+                template[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
                 block += object.size.max(1);
                 let offset_word = program.data.len() as u32;
-                program
-                    .data
-                    .extend_from_slice(&block.wrapping_sub(object.size.max(1)).to_le_bytes());
+                program.data.extend_from_slice(&offset.to_le_bytes());
                 program
                     .objects
                     .insert(format!("__xcc_tls_offset_{}", object.name), offset_word);

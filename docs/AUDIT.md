@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - two things clang refused and this compiler did not
+
+The `_Thread_local` commit, reviewed. The thread test still passes, and the review found one out-of-bounds read, two
+programs this compiler accepted that clang refuses, a race in the runtime, and three small pieces of my own sloppiness.
+
+**The template could be shorter than the block the runtime copies from it.** The linker grew the template with
+`resize(block, 0)` and then appended an object's bytes if `.data` had any - but an object with *no initialiser* has no
+bytes in `.data` at all (`_Thread_local int z;` is the common case), so the template stayed short and `memcpy(block,
+initial, total)` read past its end. It is grown to each object's whole size now, and the bytes are copied into the
+slice that size reserved.
+
+**`a member cannot be `_Thread_local``, and neither can a parameter** - C11 6.7.3p2, in clang's own words. Both were
+accepted silently, which for the member meant a `_Thread_local` member behaving as an ordinary one: a storage class
+promised and not delivered. The two refusals are where the two lists are read, and each says what clang says.
+
+**And the runtime's `TlsAlloc` key was allocated lazily**, which is a race two threads can lose: each allocates a key,
+one overwrites the other's, and the loser's block - already filled - is unreachable from then on, so its
+`_Thread_local` objects silently reset. The key is made in `mainCRTStartup`, where there is exactly one thread. The
+same edit moved the three kernel declarations to the top of the file, where the reason they are there is written down.
+
+**Three smaller ones.** `Op::ThreadAddress` carried a `size` nothing read; the offset word was computed by adding the
+size and subtracting it back; and the comment on `made_by_the_linker` said "the two words" when the lookup reads three.
+The first is deleted, the second is one `let` before the increment, and the third counts to three.
+
+201 unit, 32 parser, 30 CLI, 4 invalid, 21 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs (3.490x the local clang over the 420 both accept); four fixtures byte-identical
+to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - `_Thread_local`, and the register the allocator did not know about
 
 The last C11 storage class ships. `_Thread_local` (C11 6.7.3) gives an object thread storage duration: one copy per

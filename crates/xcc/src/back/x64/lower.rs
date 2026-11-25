@@ -366,10 +366,9 @@ impl FunctionLowering<'_> {
             // A thread-local object has no address to `lea`: the runtime owns the block and only it
             // knows where this thread's copy begins.
             Address::Symbol(symbol) => match self.thread_locals.get(symbol) {
-                Some(size) => Op::ThreadAddress {
+                Some(_) => Op::ThreadAddress {
                     dst,
                     symbol: symbol.clone(),
-                    size: *size,
                 },
                 None => Op::SymbolAddress {
                     dst,

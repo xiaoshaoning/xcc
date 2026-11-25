@@ -1652,6 +1652,12 @@ impl Parser<'_> {
         }
         while !self.at_punct("}") && !self.at_eof() {
             let specs = self.declaration_specifiers();
+            // C11 6.7.3p2 asks for a *variable* declaration, and a member is not one: clang's own
+            // words are "type name does not allow storage class to be specified".
+            if specs.is_thread_local {
+                let span = self.span();
+                self.error(span, "a member cannot be `_Thread_local`");
+            }
             let Some(base) = specs.ty else {
                 let span = self.span();
                 self.error(span, "expected a member type");
@@ -1861,6 +1867,14 @@ impl Parser<'_> {
                 break;
             }
             let specs = self.declaration_specifiers();
+            // 6.7.3p2 again, and clang's wording: "only allowed on variable declarations".
+            if specs.is_thread_local {
+                let span = self.span();
+                self.error(
+                    span,
+                    "`_Thread_local` is only allowed on variable declarations",
+                );
+            }
             let base = specs.ty.unwrap_or_else(|| self.types.error());
             let ty = match self.declarator(false) {
                 Some(tree) => {

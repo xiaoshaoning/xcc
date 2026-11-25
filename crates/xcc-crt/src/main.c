@@ -21,6 +21,16 @@
 #include <wchar.h>
 #include <stdio.h>
 
+/* `TlsAlloc` and the two accessors are the universal runtime's, and `TlsAlloc` in particular is the
+ * *kernel's*: it appears in `ucrtbase.dll`'s dump as one of that library's own imports, so the
+ * linker asks `kernel32.dll` for it. This compiler ships no `windows.h`, which is why the three are
+ * declared here. */
+unsigned long TlsAlloc(void);
+void *TlsGetValue(unsigned long index);
+int TlsSetValue(unsigned long index, void *value);
+static unsigned long __xcc_tls_key;
+static int __xcc_tls_key_made;
+
 void exit(int code);
 int main(int argc, char **argv);
 
@@ -35,6 +45,11 @@ char ***__p___argv(void);
 
 void mainCRTStartup(void) {
     _configure_narrow_argv(ARGV_UNEXPANDED);
+    // The thread-local storage key, made here for the one reason there is only one *thread* here:
+    // made lazily instead, two threads could each allocate a key and one of them would lose the
+    // block it had already filled.
+    __xcc_tls_key = TlsAlloc();
+    __xcc_tls_key_made = __xcc_tls_key != (unsigned long)-1;
     // The default floating-point environment, captured while it still is one: `fesetenv(FE_DFL_ENV)`
     // restores whatever this holds, and the process starts in the default.
     fegetenv(&_Fenv_default);
@@ -627,23 +642,10 @@ float _Complex catanhf(float _Complex z) { return XCC_NARROW(catanh(XCC_PAIR(z))
  * a loop leaks one block per thread), and its destructors - which C does not have for this storage
  * duration - are not run on thread exit.
  */
-/* `TlsAlloc` and the two accessors are the universal runtime's, so the linker imports them; this
- * compiler ships no `windows.h`, which is why they are declared here rather than included. */
-unsigned long TlsAlloc(void);
-void *TlsGetValue(unsigned long index);
-int TlsSetValue(unsigned long index, void *value);
-
-static unsigned long __xcc_tls_key;
-static int __xcc_tls_key_made;
-
 void *__xcc_tls(unsigned offset, unsigned total, const void *initial) {
     char *block;
     if (!__xcc_tls_key_made) {
-        __xcc_tls_key = TlsAlloc();
-        if (__xcc_tls_key == (unsigned long)-1) {
-            return 0;
-        }
-        __xcc_tls_key_made = 1;
+        return 0;
     }
     block = (char *)TlsGetValue(__xcc_tls_key);
     if (block == 0) {
