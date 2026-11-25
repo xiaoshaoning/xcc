@@ -550,6 +550,38 @@ impl FunctionLowering<'_> {
     fn lower_inst(&mut self, func: &Func, inst: &Inst, ops: &mut Vec<Op>) -> Result<(), NotYet> {
         let span = inst.span();
         match inst {
+            Inst::AtomicCas {
+                result,
+                pointer,
+                expected,
+                desired,
+                ty,
+                ..
+            } => {
+                // 32 or 64 bits, and an integer either way: `_Atomic` of a float is not something
+                // this compiler accepts, because a float swap is not one instruction.
+                let (size, _, class) = self.scalar(*ty, span)?;
+                if class != Class::Integer || !(size == 4 || size == 8) {
+                    return Err(NotYet {
+                        message:
+                            "an atomic operation on this type: it needs a 32- or 64-bit integer"
+                                .into(),
+                        span,
+                    });
+                }
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                let pointer = Operand::Value(self.reg_for(*pointer));
+                let expected = self.operand(*expected);
+                let desired = self.operand(*desired);
+                ops.push(Op::AtomicCas {
+                    dst,
+                    pointer,
+                    expected,
+                    desired,
+                    size,
+                });
+            }
             Inst::Const {
                 result, ty, bits, ..
             } => {

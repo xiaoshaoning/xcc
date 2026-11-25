@@ -192,6 +192,17 @@ pub(crate) enum Op {
     /// relocation fills in. A string literal, a global object and - since function pointers - a
     /// function are all a name the linker resolves to an address.
     SymbolAddress { dst: VReg, symbol: String },
+    /// A compare-and-swap at `[pointer]`, of `size` bytes: if the object equals `expected` it
+    /// becomes `desired`, and `dst` is the value read - which equals `expected` exactly when the
+    /// swap happened. The one machine operation atomic arithmetic is built from; everything else is
+    /// a loop of these in C (`crates/xcc-crt/src/main.c`).
+    AtomicCas {
+        dst: VReg,
+        pointer: Operand,
+        expected: Operand,
+        desired: Operand,
+        size: u8,
+    },
     /// The address of a *thread-local* object: not a `lea`, because there is no single address to
     /// load. The runtime keeps one block per thread and hands out this object's cell in it; the
     /// linker decides where in that block the object sits, and writes that offset into a word the
@@ -394,6 +405,7 @@ impl Op {
             | Op::LocalAddress { dst, .. }
             | Op::SymbolAddress { dst, .. }
             | Op::ThreadAddress { dst, .. }
+            | Op::AtomicCas { dst, .. }
             | Op::LoadLocal { dst, .. }
             | Op::LoadMemory { dst, .. }
             | Op::Binary { dst, .. }
@@ -423,6 +435,23 @@ impl Op {
             | Op::SymbolAddress { .. }
             | Op::ThreadAddress { .. }
             | Op::LoadLocal { .. } => Vec::new(),
+            Op::AtomicCas {
+                pointer,
+                expected,
+                desired,
+                ..
+            } => {
+                // All three, and `expected` is the one that is easy to forget: leaving it out ended
+                // its live range here, so the allocator handed its frame slot to another value - and
+                // the loop compared the value it had just read with itself, which always looked like
+                // a successful swap. Single-threaded that is invisible, because the first swap *does*
+                // succeed; two threads lost half their increments.
+                let mut read = vec![];
+                read.extend(pointer.register());
+                read.extend(expected.register());
+                read.extend(desired.register());
+                read
+            }
             Op::StoreLocal { src, .. } => vec![*src],
             Op::LoadMemory { base, .. } => vec![*base],
             Op::StoreMemory { base, src, .. } => vec![*base, *src],

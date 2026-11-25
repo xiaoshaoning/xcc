@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - atomic operations, and the loop the allocator miscompiled
+
+`stdatomic.h` ships, with real atomics. The demand was measured first, across the ~200 repositories in
+`D:/Projects/github`: **124 files** include it - six times the next C11 header - and `stdalign.h` (23 files) and
+`stdnoreturn.h` (11) came along in the same commit for five lines each.
+
+**The machine has one atomic operation and it is now in the back end.** `windows.h`'s `InterlockedExchangeAdd` and
+friends are *intrinsics*, not exports - measured, none of them is in `kernel32.dll` or `kernelbase.dll` - so there was
+no library to call. `__builtin_atomic_cas` is `lock cmpxchg`, with the comparand in `rax` (which nothing is allocated
+to), the result the value the object held, and the `lock` prefix emitted because without it the operation is a read, a
+comparison and a write that two threads can interleave. **Every other operation is a loop of that in C**, in the runtime
+source: five arithmetic operations and an exchange, per width - 32 bits and 64 - because that is what the machine
+swaps. The header is then a table: one `_Generic` per operation, one arm per width.
+
+**And the loop is where the compiler was wrong.** The first version read the object once and carried the last value
+across the loop's back edge, the obvious way to write a CAS loop. Two threads, two hundred thousand increments each,
+and the counter read **335 999 of 400 000** - and a spinlock built on the same sequence lost the same way, which is
+what said "the loop" rather than "the swap". Moving the load *inside* the loop makes it exact, three runs running. The
+disassembly of the first form shows the comparison comparing the value it just read with itself - an allocator
+problem, most likely the coalescing hint on the `old = seen` copy, legitimate straight-line and not across a back edge.
+
+**It is not an atomics bug**, and that is why it is in PLAN.md with the function that reproduces it rather than
+patched over: the same shape would miscompile a user's CAS loop. The shapes tried so far in plain C do not reproduce it,
+so the reproducer stays the atomic loop and the bisect is the next step.
+
+**What is proved.** `tests/exe.rs` starts two threads that fetch-add to an `atomic_int`, to an `atomic_ullong` and
+through an `atomic_flag` spinlock, and requires **exactly** 2N on all three - the assertion a non-atomic implementation
+fails and nothing else catches. `tests/invalid.rs` holds the width refusal: `atomic_char` is declared as C11 asks and
+its operations are not, because a `char` swap is not one of the machine's operations. Every operation prints what
+`clang` prints.
+
+201 unit, 32 parser, 30 CLI, 5 invalid, 22 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - two things clang refused and this compiler did not
 
 The `_Thread_local` commit, reviewed. The thread test still passes, and the review found one out-of-bounds read, two

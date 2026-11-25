@@ -21,6 +21,16 @@ fn refused(source: &str) -> bool {
     !compiles(source)
 }
 
+/// The same question in C11, which is the dialect `stdatomic.h` belongs to.
+fn compiles_in_c11(source: &str) -> bool {
+    Compile::new(Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    })
+    .compile("t.c", source)
+    .is_ok()
+}
+
 #[test]
 fn a_const_object_cannot_be_written() {
     // C99 6.3.2.1p1: a *modifiable* lvalue is one that is not const-qualified. Every way of writing
@@ -124,6 +134,25 @@ fn a_complex_value_has_no_order_and_is_not_an_integer() {
     ));
     assert!(compiles(
         "int f(void) { float _Complex f = { 1.0F, 2.0F }; double _Complex z = f; return (int)z; }"
+    ));
+}
+
+#[test]
+fn an_atomic_operation_needs_a_width_the_machine_has() {
+    // The header's tables have one arm per width the machine can swap: 32 bits and 64. A `char` or
+    // a `double` has none, so the generic selection has nothing to pick and says so at the call -
+    // which is the honest answer, and the alternative is a swap of the wrong number of bytes.
+    assert!(!compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { atomic_char c = 1; return atomic_fetch_add(&c, 1); }"
+    ));
+    assert!(!compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { _Atomic double d = 1.0; return (int)atomic_fetch_add(&d, 1.0); }"
+    ));
+    assert!(compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { atomic_int i = 1; return atomic_fetch_add(&i, 1); }"
+    ));
+    assert!(compiles_in_c11(
+        "#include <stdatomic.h>\nint f(void) { atomic_ullong l = 1; return (int)atomic_fetch_add(&l, 1); }"
     ));
 }
 

@@ -236,6 +236,26 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
+    /// A compare-and-swap: the one machine operation atomic arithmetic is built from.
+    ///
+    /// `pointer` is the address of an object of `ty`; if its value equals `expected` it becomes
+    /// `desired`, and the value *read* is the result - which is `expected` when the swap happened.
+    /// Every other atomic operation is a loop of these, written in C, so this is the only place the
+    /// machine has to be asked for something atomic.
+    AtomicCas {
+        /// The old value of the object.
+        result: Value,
+        /// Where the object is.
+        pointer: Value,
+        /// What it is expected to hold.
+        expected: Value,
+        /// What it should hold afterwards.
+        desired: Value,
+        /// The type of the object, which is what width the operation has.
+        ty: TypeId,
+        /// Where in the source.
+        span: Span,
+    },
     /// One value, one operation.
     Unary {
         /// The value produced.
@@ -370,6 +390,16 @@ impl Inst {
                 *left = rewrite(*left);
                 *right = rewrite(*right);
             }
+            Inst::AtomicCas {
+                pointer,
+                expected,
+                desired,
+                ..
+            } => {
+                *pointer = rewrite(*pointer);
+                *expected = rewrite(*expected);
+                *desired = rewrite(*desired);
+            }
             Inst::Unary { value, .. } | Inst::Convert { value, .. } => *value = rewrite(*value),
             Inst::Call { callee, args, .. } => {
                 *callee = rewrite(*callee);
@@ -391,6 +421,7 @@ impl Inst {
             Inst::Load { result, .. }
             | Inst::Binary { result, .. }
             | Inst::Compare { result, .. }
+            | Inst::AtomicCas { result, .. }
             | Inst::Unary { result, .. }
             | Inst::Convert { result, .. }
             | Inst::Slot { result, .. }
@@ -410,6 +441,7 @@ impl Inst {
             | Inst::Store { span, .. }
             | Inst::Binary { span, .. }
             | Inst::Compare { span, .. }
+            | Inst::AtomicCas { span, .. }
             | Inst::Unary { span, .. }
             | Inst::Convert { span, .. }
             | Inst::Slot { span, .. }
@@ -763,6 +795,27 @@ impl<'a> Builder<'a> {
             ty,
             left,
             right,
+            span,
+        });
+        value
+    }
+
+    /// A compare-and-swap, giving the value it read. See [`Inst::AtomicCas`].
+    pub fn atomic_cas(
+        &mut self,
+        pointer: Value,
+        expected: Value,
+        desired: Value,
+        ty: TypeId,
+        span: Span,
+    ) -> Value {
+        let value = self.func.mint(ty, self.current);
+        self.push(Inst::AtomicCas {
+            result: value,
+            pointer,
+            expected,
+            desired,
+            ty,
             span,
         });
         value
@@ -1134,6 +1187,33 @@ impl Func {
         // Every type comparison here is structural, as the arena's identity is: the same C type
         // may be two `TypeId`s, and `==` would reject correct code (ADR-004's corollary).
         match inst {
+            Inst::AtomicCas {
+                result,
+                pointer,
+                expected,
+                desired,
+                ty,
+                ..
+            } => {
+                if self.value(*result).block != here {
+                    return wrong(format!("v{} is not defined where it is used", result.0));
+                }
+                if !types.same(self.value(*result).ty, *ty) {
+                    return wrong(format!("v{} is not the type it was swapped as", result.0));
+                }
+                for operand in [expected, desired] {
+                    if !types.same(self.value(*operand).ty, *ty) {
+                        return wrong(format!(
+                            "v{} is swapped into an object of another type",
+                            operand.0
+                        ));
+                    }
+                }
+                if !types.is_pointer(self.value(*pointer).ty) {
+                    return wrong(format!("v{} is not a pointer to swap through", pointer.0));
+                }
+                Ok(())
+            }
             Inst::VaStart { result, .. } | Inst::VaArg { result, .. } => {
                 // The same rule every other defining instruction answers: the value is defined here,
                 // and it is of the type the instruction names.
@@ -1520,6 +1600,12 @@ fn used_values(inst: &Inst) -> Vec<Value> {
         Inst::Store { address, value, .. } => vec![*address, *value],
         Inst::Binary { left, right, .. } => vec![*left, *right],
         Inst::Compare { left, right, .. } => vec![*left, *right],
+        Inst::AtomicCas {
+            pointer,
+            expected,
+            desired,
+            ..
+        } => vec![*pointer, *expected, *desired],
         Inst::Unary { value, .. } => vec![*value],
         Inst::Convert { value, .. } => vec![*value],
         Inst::Call { callee, args, .. } => {

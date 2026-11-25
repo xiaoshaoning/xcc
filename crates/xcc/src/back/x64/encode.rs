@@ -474,6 +474,13 @@ impl Encoder<'_> {
                     }
                 }
             }
+            Op::AtomicCas {
+                dst,
+                pointer,
+                expected,
+                desired,
+                size,
+            } => self.atomic_cas(*dst, pointer, expected, desired, *size),
             Op::ThreadAddress { dst, symbol } => {
                 self.thread_address(*dst, symbol);
             }
@@ -1612,6 +1619,53 @@ impl Encoder<'_> {
         self.call("__xcc_tls");
         // The call returns `block + offset` in `rax` already; the value goes where it lives.
         self.write(dst, Reg::RAX);
+        self.release();
+    }
+
+    /// `lock cmpxchg [pointer], desired`, with `expected` in `rax` - which is where the instruction
+    /// demands the comparand, and which nothing is allocated to, so no live value is disturbed. The
+    /// value read comes back in `rax`.
+    ///
+    /// The `lock` prefix is not decoration: without it the operation is a read, a comparison and a
+    /// write that two threads can interleave, which is the one thing this exists to prevent.
+    fn atomic_cas(
+        &mut self,
+        dst: VReg,
+        pointer: &Operand,
+        expected: &Operand,
+        desired: &Operand,
+        size: u8,
+    ) {
+        let address = self.scratch();
+        if let Operand::Immediate(bits) = pointer {
+            self.mov_imm(address, *bits);
+        } else if let Operand::Value(value) = pointer {
+            self.read_into(*value, address);
+        }
+        let value = self.scratch();
+        if let Operand::Immediate(bits) = desired {
+            self.mov_imm(value, *bits);
+        } else if let Operand::Value(register) = desired {
+            self.read_into(*register, value);
+        }
+        if let Operand::Immediate(bits) = expected {
+            self.mov_imm(Reg::RAX, *bits);
+        } else if let Operand::Value(register) = expected {
+            self.read_into(*register, Reg::RAX);
+        }
+        // `lock cmpxchg [r/m], r64` (`F0 REX.W 0F B1 /r`) or the 32-bit form without the REX.W.
+        self.byte(0xF0);
+        if size == 8 {
+            self.prefix_w(value, address);
+        } else {
+            self.prefix(value, address);
+        }
+        self.bytes(&[0x0F, 0xB1]);
+        self.modrm(0, value.0, address);
+        // The old value is in `rax`, which is where the result goes too.
+        if self.allocation.location(dst) != Location::Register(Reg::RAX) {
+            self.write(dst, Reg::RAX);
+        }
         self.release();
     }
 

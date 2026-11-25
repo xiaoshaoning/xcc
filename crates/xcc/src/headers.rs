@@ -34,8 +34,31 @@ pub(crate) enum Disposition {
 /// The distinction a build system needs: a file inside the binary cannot be rebuilt, so it is not a
 /// dependency - and a depfile that names `stdio.h` sends `make` looking for one.
 pub(crate) fn is_shipped(name: &str) -> bool {
-    C99_HEADERS.iter().any(|(shipped, _)| *shipped == name)
+    C99_HEADERS
+        .iter()
+        .chain(C11_HEADERS)
+        .any(|(shipped, _)| *shipped == name)
 }
+
+/// The three headers C11 adds that this compiler ships. C11 adds five, and two are absent on
+/// purpose: `threads.h` would be a second threading interface over the same `_beginthreadex`, and
+/// `uchar.h` needs `u"..."` and `U"..."` literals, which are a compiler feature rather than a
+/// header. The ledger test checks C99's table against the standard and this one against its own
+/// list, so neither can grow a member that the other's test does not know about.
+const C11_HEADERS: &[(&str, Disposition)] = &[
+    (
+        "stdalign.h",
+        Disposition::Shipped(include_str!("../include/stdalign.h")),
+    ),
+    (
+        "stdatomic.h",
+        Disposition::Shipped(include_str!("../include/stdatomic.h")),
+    ),
+    (
+        "stdnoreturn.h",
+        Disposition::Shipped(include_str!("../include/stdnoreturn.h")),
+    ),
+];
 
 const C99_HEADERS: &[(&str, Disposition)] = &[
     (
@@ -165,6 +188,7 @@ pub(crate) fn refusal(name: &str) -> Option<&'static str> {
 fn disposition(name: &str) -> Option<&Disposition> {
     C99_HEADERS
         .iter()
+        .chain(C11_HEADERS)
         .find(|(header, _)| *header == name)
         .map(|(_, disposition)| disposition)
 }
@@ -261,7 +285,7 @@ mod tests {
     /// them.
     #[test]
     fn the_readme_counts_the_headers_that_ship() {
-        const NUMERALS: [&str; 25] = [
+        const NUMERALS: [&str; 28] = [
             "",
             "one",
             "two",
@@ -287,6 +311,9 @@ mod tests {
             "twenty-two",
             "twenty-three",
             "twenty-four",
+            "twenty-five",
+            "twenty-six",
+            "twenty-seven",
         ];
         let readme = include_str!("../../../README.md");
         let line = readme
@@ -299,6 +326,7 @@ mod tests {
             .expect("a number word");
         let shipped = C99_HEADERS
             .iter()
+            .chain(C11_HEADERS)
             .filter(|(_, disposition)| matches!(disposition, Disposition::Shipped(_)))
             .count();
         let counted = NUMERALS

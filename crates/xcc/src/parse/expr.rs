@@ -992,6 +992,10 @@ impl Parser<'_> {
             }
             // The infinities and the quiet NaN, which is how `<math.h>` spells `INFINITY` and
             // `NAN` on every compiler that has them (C99 7.12p4).
+            "__builtin_atomic_cas" => {
+                self.bump();
+                Some(self.atomic_cas_expression(span))
+            }
             "__builtin_inf" | "__builtin_inff" | "__builtin_nan" | "__builtin_nanf" => {
                 self.bump();
                 Some(self.float_builtin(&operator, span))
@@ -1105,6 +1109,70 @@ impl Parser<'_> {
         // Through the same door as every other constant: inside a body that is an instruction, and
         // in an initialiser that writes bytes it is the bits themselves.
         self.constant_of(ty, names.1 as i64, span)
+    }
+
+    /// `__builtin_atomic_cas(pointer, expected, desired)`: swap `*pointer` from `expected` to
+    /// `desired` if it holds `expected`, and give the value that was there - which is `expected`
+    /// exactly when the swap happened.
+    ///
+    /// `_Atomic` is a language feature and the *machine* has one operation for it, so this is the
+    /// one builtin `stdatomic.h` is written on: every other atomic operation in the header is a loop
+    /// of these, in C, which is where the reasoning about them can be read.
+    fn atomic_cas_expression(&mut self, span: Span) -> Value {
+        if !self.eat("(") {
+            self.error_at_current("`__builtin_atomic_cas` needs `(`");
+            return Value::temporary(self.types.error());
+        }
+        let Some(pointer) = self.assignment_expression() else {
+            return Value::temporary(self.types.error());
+        };
+        let pointer = self.decay(pointer);
+        if !self.eat(",") {
+            self.error_at_current("expected `,` after the address");
+        }
+        let expected = self
+            .assignment_expression()
+            .unwrap_or_else(|| Value::temporary(self.types.error()));
+        if !self.eat(",") {
+            self.error_at_current("expected `,` after the expected value");
+        }
+        let desired = self
+            .assignment_expression()
+            .unwrap_or_else(|| Value::temporary(self.types.error()));
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the three arguments");
+        }
+        if !self.types.is_pointer(pointer.ty) {
+            let ty = self.describe(pointer.ty);
+            self.error(
+                span,
+                format!("an atomic operation needs an address, not {ty}"),
+            );
+            return Value::temporary(self.types.error());
+        }
+        let object = self.types.pointee(pointer.ty);
+        // The machine swaps 32 or 64 bits and nothing else: a `char` swap is not one instruction,
+        // so it is refused here rather than done as the wrong width.
+        let integer = matches!(self.types.kind(object), Type::Int { bits: 32 | 64, .. });
+        if !integer {
+            let ty = self.describe(object);
+            self.error(
+                span,
+                format!("an atomic operation needs a 32- or 64-bit integer, not {ty}"),
+            );
+            return Value::temporary(self.types.error());
+        }
+        let expected = self.convert(expected, object, span);
+        let desired = self.convert(desired, object, span);
+        let (Some(address), Some(expected), Some(desired)) =
+            (pointer.cir, expected.cir, desired.cir)
+        else {
+            return Value::new(object, None, false);
+        };
+        match self.emit(|builder| builder.atomic_cas(address, expected, desired, object, span)) {
+            Some(value) => Value::code(object, value),
+            None => Value::new(object, None, false),
+        }
     }
 
     /// `__builtin_offsetof(type-name, member.designator)`: the byte offset of a member.

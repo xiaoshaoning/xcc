@@ -673,6 +673,16 @@ impl<M: Module> Lowerer<'_, M> {
                     *span,
                 ))
             }
+            // Nothing in Cranelift's instruction set is a compare-and-swap at a *chosen* encoding,
+            // and atomics have to be exact: they are what two threads agree by.
+            Inst::AtomicCas { span, .. } => {
+                return Err(LoweringError::not_lowered(
+                    "`_Atomic` in the Cranelift back end: the loop back ends need a `lock cmpxgh` \
+                     this compiler writes itself, and it writes one at level 2"
+                        .into(),
+                    *span,
+                ))
+            }
             Inst::Const {
                 result, ty, bits, ..
             } => {

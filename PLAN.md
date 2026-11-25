@@ -247,8 +247,22 @@ The first thing worth showing, and the reason the project exists.
       24-byte directory with three relocated addresses and a data-directory entry. Measured after the
       fact, a tight loop over a `_Thread_local` counter runs 1.34x a plain static's (clang 1.17x), so
       the directory had 0.17x to win and does not exist.**
-      Still missing from C11: the five headers it adds (`stdalign.h`, `stdatomic.h`,
-      `stdnoreturn.h`, `threads.h`, `uchar.h`).
+      Three of the five headers C11 adds ship: `stdalign.h`, `stdnoreturn.h`, and `stdatomic.h` with real atomics -
+      one `lock cmpxchg` in the back end (`__builtin_atomic_cas`) and every other operation a loop of it in C. Still
+      missing: `threads.h` (a second threading interface over the same `_beginthreadex`, worth doing after atomics
+      settle) and `uchar.h` (which needs `u"..."` and `U"..."` literals - a compiler feature, not a header).
+
+- [ ] **A CAS loop written with a *loop-carried* value loses its increments, and the workaround is in the runtime.**
+      The atomic loops were first written the obvious way - read once, then carry the last value across the back edge
+      (`T old = *object; for (;;) { T seen = cas(object, old, ...); if (seen == old) return old; old = seen; }`) - and
+      with two threads the counter came out at 335 999 of 400 000. Moving the load inside the loop -
+      `for (;;) { T old = *object; T seen = cas(...); if (seen == old) return old; }` - is exact three runs running.
+      The disassembly of the first form compares the value it just read with *itself* (`cmp %rax,%r10` where both are
+      the compare-and-swap's result), so the loop exits on the first attempt whether or not the swap happened: an
+      allocator problem, most likely the coalescing hint on the `old = seen` copy, which is legitimate for a straight
+      line and not for a back edge. **It is not an atomics bug** - the same shape would miscompile a user's CAS loop -
+      and the shapes tried so far in plain C do not reproduce it, so the reproducer is the atomic loop itself.
+      Next: bisect it from that function
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are
       refused (`#pragma pack`), which is "only where the ABI allows" and this ABI allows none.
 - [x] `printf`-style calls with integer, character, string and pointer arguments: the call site's

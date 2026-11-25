@@ -103,6 +103,22 @@ pub(crate) fn instruction(
         } => {
             format!("{} = const {} {bits}", v(*result), ty(*of))
         }
+        Inst::AtomicCas {
+            result,
+            pointer,
+            expected,
+            desired,
+            ..
+        } => format!(
+            "{} = atomic_cas {} {} {} {}",
+            v(*result),
+            v(*pointer),
+            v(*expected),
+            v(*desired),
+            ""
+        )
+        .trim_end()
+        .to_string(),
         Inst::Slot { result, ty: of, .. } => {
             format!("{} = slot {}", v(*result), ty(*of))
         }

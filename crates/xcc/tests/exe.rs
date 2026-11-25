@@ -463,6 +463,55 @@ int main(void) {
 }
 "#;
 
+/// The program the atomic test below compiles, as a raw Rust string.
+const ATOMIC_PROGRAM: &str = r#"
+#include <stdio.h>
+#include <stdatomic.h>
+
+unsigned long long _beginthreadex(void *security, unsigned stack, unsigned (*start)(void *),
+                                  void *argument, unsigned flags, unsigned *id);
+unsigned long WaitForSingleObject(void *handle, unsigned long milliseconds);
+int CloseHandle(void *handle);
+
+#define ROUNDS 100000
+
+static atomic_int counter;
+static atomic_ullong wide;
+static atomic_flag lock = ATOMIC_FLAG_INIT;
+static int guarded;
+
+static unsigned worker(void *argument) {
+    int i;
+    (void)argument;
+    for (i = 0; i < ROUNDS; i++) {
+        atomic_fetch_add(&counter, 1);
+        atomic_fetch_add(&wide, 1);
+        /* A spinlock over the same operations, which is the standard's own use of a flag. */
+        while (atomic_flag_test_and_set(&lock)) {
+        }
+        guarded = guarded + 1;
+        atomic_flag_clear(&lock);
+    }
+    return 0;
+}
+
+int main(void) {
+    void *threads[2] = { 0, 0 };
+    int i;
+    for (i = 0; i < 2; i++) {
+        threads[i] = (void *)_beginthreadex(0, 0, worker, 0, 0, 0);
+    }
+    for (i = 0; i < 2; i++) {
+        WaitForSingleObject(threads[i], 0xFFFFFFFFul);
+        CloseHandle(threads[i]);
+    }
+    /* Three exact numbers, and each of them loses some to a non-atomic implementation. */
+    printf("counters %d %d %d, expected %d\n", atomic_load(&counter), (int)atomic_load(&wide),
+           guarded, 2 * ROUNDS);
+    return 0;
+}
+"#;
+
 /// The program the thread-local test below compiles, as a raw Rust string.
 const THREAD_LOCAL_PROGRAM: &str = r#"
 #include <stdio.h>
@@ -1106,5 +1155,18 @@ fn a_thread_local_object_has_one_copy_per_thread() {
     let out = String::from_utf8_lossy(&run.stdout);
     let expected =
         "before: main 100 hidden 7@@threads saw 101 102, main still 100@@after: main 42 hidden 1@@";
+    assert_eq!(out, expected.replace("@@", "\r\n"));
+}
+
+/// `stdatomic.h` (C11 7.17), proved where it matters: two threads hammer a counter and a spinlock,
+/// and the totals must be *exact*. A non-atomic implementation loses increments and nothing else in
+/// a test would notice - which is why this is the assertion.
+#[test]
+#[cfg(target_os = "windows")]
+fn atomic_counters_lose_nothing_across_two_threads() {
+    let run = run_linked_with("c11", "atomic", ATOMIC_PROGRAM, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    let out = String::from_utf8_lossy(&run.stdout);
+    let expected = "counters 200000 200000 200000, expected 200000@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
