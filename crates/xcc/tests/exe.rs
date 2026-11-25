@@ -1347,6 +1347,8 @@ fn uchar_types_conversions_and_the_three_literal_families() {
 #[test]
 #[cfg(target_os = "windows")]
 fn a_universal_character_name_in_an_identifier_links() {
+    // The escape is a Rust *raw* string: `"\u00e9"` in an ordinary one is a Rust character, and the
+    // compiler would never see the six bytes that spell it.
     let source = concat!(
         "int caf",
         r"\u00e9",

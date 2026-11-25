@@ -220,7 +220,7 @@ impl Lexer<'_> {
             if self.is_literal_start() {
                 let kind = self.literal();
                 self.push_scanned(kind, start);
-            } else if is_ident_start(byte) || byte == b'\\' || byte >= 0x80 {
+            } else if starts_identifier(byte) {
                 if let Some(decoded) = self.identifier(start) {
                     let end = self.at;
                     self.push(TokenKind::Ident, &decoded, start, end);
@@ -317,7 +317,7 @@ impl Lexer<'_> {
                     while self
                         .bytes
                         .get(self.at)
-                        .is_some_and(|&b| is_ident_continue(b) || b >= 0x80)
+                        .is_some_and(|&b| starts_identifier(b) || b.is_ascii_digit())
                     {
                         self.at += 1;
                     }
@@ -327,13 +327,10 @@ impl Lexer<'_> {
                     Some(text) => text,
                     None => decoded.insert(self.prepared.text[start..from].to_string()),
                 };
-                let mut encoded = [0u8; 4];
-                text.push_str(
-                    char::from_u32(character).map_or("", |c| c.encode_utf8(&mut encoded)),
-                );
+                text.push(character);
                 continue;
             }
-            if is_ident_continue(byte) || byte >= 0x80 {
+            if starts_identifier(byte) || byte.is_ascii_digit() {
                 let from = self.at;
                 self.at += 1;
                 // The rest of a UTF-8 sequence travels with its first byte: the prepared text is
@@ -354,7 +351,7 @@ impl Lexer<'_> {
 
     /// Read a universal character name where the cursor is, advancing past it, and say what
     /// character it names. `None` means it is not one and the error says which rule it broke.
-    fn universal_character_name(&mut self) -> Option<u32> {
+    fn universal_character_name(&mut self) -> Option<char> {
         let start = self.at;
         self.at += 1;
         let digits = match self.bytes.get(self.at) {
@@ -369,8 +366,10 @@ impl Lexer<'_> {
         let from = self.at;
         let character = crate::literal::universal_character_name(self.bytes, &mut self.at, digits);
         let Some(character) = character else {
-            // The reader took the digits there were; a name that is not one gets one diagnostic
-            // naming the rule, which is the standard's and not this compiler's.
+            // One diagnostic, naming the rule - which is the standard's, not this compiler's. Its
+            // span is what the reader got through: all four digits when they were hex and wrong,
+            // and only `\u` when a digit was not one, because the reader stops at the first it
+            // would have had to read.
             let end = self.at.max(from);
             self.error(
                 start,
@@ -381,8 +380,7 @@ impl Lexer<'_> {
         };
         // `$`, `@` and the backtick are the three below `0xA0` a universal character name may name,
         // and none of them is part of an identifier.
-        if character < 0xA0 {
-            let character = char::from_u32(character).unwrap_or_default();
+        if character < '\u{a0}' {
             self.error(
                 start,
                 self.at - start,
@@ -564,12 +562,12 @@ fn primary(spelling: &'static str) -> &'static str {
     }
 }
 
-fn is_ident_start(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphabetic()
-}
-
-fn is_ident_continue(byte: u8) -> bool {
-    is_ident_start(byte) || byte.is_ascii_digit()
+/// Whether a byte can begin an identifier: a letter or `_`, a character outside ASCII - which is
+/// one of the bytes of its UTF-8 sequence - or the backslash of a universal character name
+/// (C99 6.4.2.1). The continuation rule is this one with digits, in `identifier`, which is the only
+/// place that asks: a second list would have to be told what `\\` and `>= 0x80` mean all over again.
+fn starts_identifier(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic() || byte == b'\\' || byte >= 0x80
 }
 
 #[cfg(test)]

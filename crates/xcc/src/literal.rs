@@ -33,7 +33,7 @@ fn escape_value(escape: &str) -> Option<i64> {
     let first = *bytes.first()?;
     if let Some(value) = named_escape(first) {
         return if bytes.len() == 1 {
-            Some(i64::from(value))
+            Some(i64::from(u32::from(value)))
         } else {
             None
         };
@@ -45,7 +45,7 @@ fn escape_value(escape: &str) -> Option<i64> {
         let mut at = 1;
         let value = universal_character_name(bytes, &mut at, digits)?;
         return if at == bytes.len() {
-            Some(i64::from(value))
+            Some(i64::from(u32::from(value)))
         } else {
             None
         };
@@ -124,8 +124,8 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
             }
             // A universal character name is a *character* in a narrow literal too, so it takes the
             // bytes its UTF-8 form has rather than one byte of it.
-            b'u' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 4)?)?,
-            b'U' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 8)?)?,
+            b'u' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 4)?),
+            b'U' => push_utf8(&mut out, universal_character_name(bytes, &mut at, 8)?),
             other => out.push(named_escape(other)?),
         }
     }
@@ -134,9 +134,14 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
 
 /// A universal character name (C99 6.4.3p2): exactly `digits` hex digits, naming a character.
 ///
-/// `None` for a value that is not one - a surrogate, or past the last code point - because a
-/// character that is not a character must not silently become something else.
-pub(crate) fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usize) -> Option<u32> {
+/// The answer is a `char`, not a number, because that is the whole rule: a surrogate and a value
+/// past the last code point are not characters, and `char` is where the standard library already
+/// says so - one rejection instead of two written out here.
+pub(crate) fn universal_character_name(
+    bytes: &[u8],
+    at: &mut usize,
+    digits: usize,
+) -> Option<char> {
     let end = *at + digits;
     let text = std::str::from_utf8(bytes.get(*at..end)?).ok()?;
     if !text.bytes().all(|byte| (byte as char).is_ascii_hexdigit()) {
@@ -145,25 +150,19 @@ pub(crate) fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usi
     *at = end;
     let value = u32::from_str_radix(text, 16).ok()?;
     // C99 6.4.3p2, and C11 kept it: a character whose short identifier is below `0xA0` is written as
-    // itself, except the three the standard names - `$`, `@` and the backtick - so those, a
-    // surrogate and anything past the last code point are not a universal character name at all.
-    // `clang` says the same thing about `"\u0041"`: "character 'A' cannot be specified by a
-    // universal character name".
+    // itself - `clang` says "character 'A' cannot be specified by a universal character name" about
+    // `"\u0041"` - except the three the standard names, which a *literal* may hold. The other two
+    // rules, the surrogate and the last code point, are `char::from_u32` below.
     if value < 0xA0 && !matches!(value, 0x24 | 0x40 | 0x60) {
         return None;
     }
-    if (0xD800..=0xDFFF).contains(&value) || value > 0x10FFFF {
-        return None;
-    }
-    Some(value)
+    char::from_u32(value)
 }
 
-/// One code point as UTF-8 bytes, which is what a narrow literal holds.
-fn push_utf8(out: &mut Vec<u8>, at: u32) -> Option<()> {
-    let character = char::from_u32(at)?;
+/// One character as UTF-8 bytes, which is what a narrow literal holds.
+fn push_utf8(out: &mut Vec<u8>, character: char) {
     let mut encoded = [0u8; 4];
     out.extend_from_slice(character.encode_utf8(&mut encoded).as_bytes());
-    Some(())
 }
 
 /// Whether a literal carries the `L` prefix. Its characters are `wchar_t`s - two bytes here -
@@ -273,8 +272,8 @@ fn utf32_bytes(spelling: &str) -> Option<Vec<u8>> {
                 at -= 1;
                 numeric_escape_utf32(bytes, &mut at, 8)?
             }
-            b'u' => universal_character_name(bytes, &mut at, 4)?,
-            b'U' => universal_character_name(bytes, &mut at, 8)?,
+            b'u' => u32::from(universal_character_name(bytes, &mut at, 4)?),
+            b'U' => u32::from(universal_character_name(bytes, &mut at, 8)?),
             other => u32::from(named_escape(other)?),
         };
         out.extend_from_slice(&value.to_le_bytes());
@@ -329,8 +328,8 @@ pub fn wide_bytes(spelling: &str) -> Option<Vec<u8>> {
                 at -= 1;
                 numeric_escape_wide(bytes, &mut at, 8)?
             }
-            b'u' => universal_character_name(bytes, &mut at, 4)?,
-            b'U' => universal_character_name(bytes, &mut at, 8)?,
+            b'u' => u32::from(universal_character_name(bytes, &mut at, 4)?),
+            b'U' => u32::from(universal_character_name(bytes, &mut at, 8)?),
             other => u32::from(named_escape(other)?),
         };
         push_code_point(&mut out, value)?;

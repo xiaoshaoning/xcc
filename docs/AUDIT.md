@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 reviewed - 2026-11-25 - the predicate twice, and the number that was already a character
+
+Reading the identifier scanner a second time found two design smells and no bugs - and one of the two smells was the
+kind this codebase keeps finding.
+
+**"Can begin an identifier" was written twice.** The token loop said `is_ident_start(byte) || byte == b'\\' || byte
+>= 0x80`, and the scanner said `is_ident_continue(byte) || byte >= 0x80` - the same three ideas, one with digits, and
+the high-byte clause stated in both. There is one predicate now, `starts_identifier`, and the continuation rule is
+`starts_identifier(byte) || byte.is_ascii_digit()`, which is the only place that asks. A second list would have had to
+be told what `\` and `>= 0x80` mean all over again.
+
+**The reader answered a number and the caller kept asking whether it was a character.** `universal_character_name`
+returned `u32`, checked against a surrogate range and `0x10FFFF` by hand, and then every caller asked
+`char::from_u32` anyway - one caller with `map_or("", ..)`, which is a *silent skip* of a character if the range check
+ever disagreed with the library. It returns `char` now: the two clamps are gone because `char::from_u32` is the
+rejection, and one impossible branch went with them. The function is named `universal_character_name`; its type now
+says the same thing.
+
+**Two comments described checks the code does not make.** The diagnostic's span covers four digits when they were hex
+and wrong, and only `\u` when a digit was not one - the reader stops at the first digit it would have had to read -
+and the comment claimed it covered the digits. The literal reader's comment listed all three rules under a check that
+makes one of them. Both say what is true now.
+
+What the review also measured, and found sound: an identifier with a UCN works as a macro name, as both halves of a
+`##` paste, as a struct tag, as a label, and as a `static` name long enough to reach the COFF string table - 13 bytes
+of `caf` and four `é` - with the same output as `clang`. And the diagnostic that says a UCN may not spell `$` cites
+the standard, not this compiler.
+
+201 unit, 36 parser, 30 CLI, 5 invalid, 26 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 - 2026-11-25 - the name that decodes, and the bytes after it
 
 C99 6.4.2.1 puts a universal character name inside an identifier and 6.4.3p2 makes it the *same* identifier as the
