@@ -240,10 +240,13 @@ The first thing worth showing, and the reason the project exists.
       borrows (C11 6.7.2.1p13, done - tinyexpr found them); `_Noreturn` is consumed like `inline`;
       `_Complex` is C99 6.2.5p11 and its arithmetic is the parser's; `_Thread_local` (C11 6.7.3) has
       thread storage duration - one block per thread, allocated on first use over the runtime's
-      `TlsAlloc`, with the offsets decided by the linker and an access that is a call. **The trade,
-      recorded where it was made: the PE TLS directory is the fast route - four instructions, no call -
-      and the loader fills it. It needs a `.tls` section, a 24-byte directory with three relocated
-      addresses and a data-directory entry; a call per access was one afternoon against that.**
+      `TlsAlloc`, with the offsets decided by the linker and an access that is a call **the first time in
+      each block** - the address is a register after that, because `address_of` caches per block.
+      **The trade, recorded where it was made and then measured: the PE TLS directory is the faster
+      route - four instructions, no call - and the loader fills it, but it needs a `.tls` section, a
+      24-byte directory with three relocated addresses and a data-directory entry. Measured after the
+      fact, a tight loop over a `_Thread_local` counter runs 1.34x a plain static's (clang 1.17x), so
+      the directory had 0.17x to win and does not exist.**
       Still missing from C11: the five headers it adds (`stdalign.h`, `stdatomic.h`,
       `stdnoreturn.h`, `threads.h`, `uchar.h`).
 - [x] Bitfields with C's layout rules - read, written, stepped, initialised; packed structs are

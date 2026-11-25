@@ -827,10 +827,12 @@ after joining.
 a computation. The linker lays out one block per thread - it is the only place every unit's objects are in one place -
 and writes each object's offset, the block's size and a dense template into `.data`. The compiler emits
 `__xcc_tls(offset, total, template)`, which allocates this thread's block on first use, copies the template into it and
-returns the object's cell. Five instructions and three relocations per access, with a call in them: **the PE TLS
-directory is the fast route - four instructions, no call - and the loader fills it. It needs a `.tls` section, a
-24-byte directory with three relocated addresses and a data-directory entry, which is a bigger piece of the image
-writer than this took on.** The trade is in PLAN.md, where the choice is.
+returns the object's cell. Five instructions and three relocations the first time a block touches the object, and a
+register after that: **the PE TLS directory is the fast route - four instructions, no call - and the loader fills it.
+It needs a `.tls` section, a 24-byte directory with three relocated addresses and a data-directory entry, which is a
+bigger piece of the image writer than this took on.** It was measured afterwards, which the claim deserved: a tight
+loop over a `_Thread_local` counter runs **1.34x** a plain static's, against clang's 1.17x - so the directory had
+0.17x to win, and the call was the right trade rather than merely the quick one.
 
 **Then the crash, and it is the same class as two before it.** The first thread test segfaulted inside a *worker*: the
 sequence writes its arguments into `rcx`, `rdx` and `r8`, and `r8` and `r9` are *allocatable* - the allocator's
