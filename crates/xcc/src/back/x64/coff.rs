@@ -295,10 +295,21 @@ fn write_object(image: &Image) -> Vec<u8> {
             .collect(),
     }];
     if has_data {
+        // Every relocation's addend is written into the field it belongs to, because that is what an
+        // `ADDR64` *means*: the linker's answer is `S + A` and `A` is what the bytes already hold.
+        // The struct carries it as well, for this compiler's own linker; leaving it out of the
+        // object made every address written into an object file that of the symbol's *start*.
+        let mut bytes = data.bytes.clone();
+        for relocation in &data.relocations {
+            let at = relocation.offset as usize;
+            if at + 8 <= bytes.len() {
+                bytes[at..at + 8].copy_from_slice(&(relocation.addend as u64).to_le_bytes());
+            }
+        }
         sections.push(SectionOut {
             name: ".data",
             flags: DATA_FLAGS,
-            bytes: data.bytes.clone(),
+            bytes,
             symbols: data
                 .symbols
                 .iter()
@@ -494,6 +505,45 @@ mod tests {
             data: Data::default(),
             unwind: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_data_relocation_puts_its_addend_in_the_field() {
+        // `ADDR64` means `S + A`, and `A` is what the bytes already hold. An object that wrote zero
+        // there would resolve every `&table[4]` to the start of `table` for any linker but this
+        // compiler's own - which is what happened until this was fixed, and `clang` linking that
+        // object printed `0 a 0 000` where its own build prints `4 a 10 def`.
+        let mut data = Data {
+            bytes: vec![0u8; 16],
+            ..Data::default()
+        };
+        data.symbols.push(DataSymbol {
+            size: 16,
+            align: 1,
+            thread: false,
+            name: "table".into(),
+            offset: 0,
+            external: true,
+            tentative: false,
+        });
+        data.relocations.push(DataRelocation {
+            offset: 8,
+            symbol: "table".into(),
+            addend: 4,
+        });
+        let object = write_object(&Image {
+            text: vec![0x90],
+            functions: Vec::new(),
+            data,
+            unwind: Vec::new(),
+        });
+        // The `.data` section's bytes are the second section's, and its contents start after the
+        // headers; the field at offset 8 holds the addend, little-endian.
+        let field = [4u8, 0, 0, 0, 0, 0, 0, 0];
+        assert!(
+            object.windows(8).any(|window| window == field),
+            "the addend is in the field the relocation names"
+        );
     }
 
     #[test]

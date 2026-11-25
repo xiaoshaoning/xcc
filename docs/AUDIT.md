@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M14 reviewed - 2026-11-25 - the addend that reached the linker and not the object
+
+The addend went in and the review found that it went in **one of two places**. `GlobalRelocation`'s doc says the object
+writer puts `A` in the field "because that is what an `IMAGE_REL_AMD64_ADDR64` means" - and nothing did. This compiler's
+own linker read the struct and was right; every other linker read the bytes and got `S + 0`, which resolves `&table[4]` to
+the *start* of `table`. The proof is a one-line experiment the review ran and the tests did not: `clang at.o -o x.exe`,
+linking this compiler's object with clang's CRT. It printed `4 a 10 def` - the same as clang's own build - and with the
+field at zero it would have printed `0 a 0 000`. **A feature that is only exercised by its own consumer is a feature
+tested against itself**, and the test is now a unit test on the object bytes, so the two consumers cannot disagree again.
+
+**And a silent wrong answer next to it.** `pointer_walk`'s constant branch folded a *non-constant* index to zero -
+`index.constant.unwrap_or(0)` - so `void *p = &((char *)0)[f()];` at file scope compiled and wrote a null pointer where
+the program meant an address. `clang` refuses it ("initializer element is not a compile-time constant"). The fold now
+needs both halves to be constants, and the refusal comes from the initialiser, which is where the standard puts it. That
+is the second time in two commits that an `unwrap_or` in a new branch turned "cannot know" into a value.
+
+Checked and found sound: the negative addend path (`wrapping_add` of a negative `i64` as `u64`) is what `arr - n` needs
+and wraps correctly; `member_access`'s new branch is behind `base.cir == None` so a body's member access is untouched;
+`decay` keeps the constant only when the value had one, so an array's normal decay is unchanged; and sqlite3.c is still
+3 errors - the addend work did not move it further, because the three left are the diagnostic problem named in PLAN.
+
+206 unit, 40 parser, 30 CLI, 5 invalid, 34 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M14 - 2026-11-25 - the addend, and the two halves of an address
 
 The relocation had one thing to say about an address: the symbol. That is enough for `&x` and for `char *p = "hi"`,

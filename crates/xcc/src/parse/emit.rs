@@ -372,8 +372,12 @@ impl Parser<'_> {
             // A base that is a *constant* - `(char*)0` - makes the walk a constant too, which is
             // what `SQLITE_INT_TO_PTR(5)` is: an integer that has been made a pointer, in a table of
             // them at file scope. It needs no relocation because there is nothing to relocate.
-            if let Some(base) = pointer.constant {
-                let walked = index.constant.unwrap_or(0).wrapping_mul(size);
+            // ...and a *constant* base makes the walk a constant only when the index is one too. A
+            // base of `(char*)0` with a runtime index is not a constant expression at all - `clang`
+            // says "initializer element is not a compile-time constant" - and folding the index to
+            // zero would have written a null pointer where the program meant an address.
+            if let (Some(base), Some(index)) = (pointer.constant, index.constant) {
+                let walked = index.wrapping_mul(size);
                 let at = if add {
                     base.wrapping_add(walked)
                 } else {
