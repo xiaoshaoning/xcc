@@ -10,21 +10,6 @@
 //! are the two names the C runtime's own `printf` front ends call. A name the library does not
 //! export is left out rather than faked, which is why the list is a search rather than an assertion.
 
-/// Every function the C headers declare. `stdarg`'s macros are not functions and are absent;
-/// everything variadic is here, because a *call* to one is lowered as an indirect call and only a
-/// floating-point argument is refused (ADR-006).
-/// The runtime names this compiler links that **no shipped header declares**, each with the reason.
-///
-/// One entry, and the reason is a fact about the headers rather than a shortcut: `_beginthreadex` is
-/// the C runtime's own thread entry point - it runs the per-thread runtime setup before calling the
-/// function, which is what makes a thread started through it have a `_Thread_local` block like any
-/// other - and it is declared in `process.h`, a header this compiler does not ship. Kept out of
-/// `C_RUNTIME` so that list stays "what the headers declare", which is what its own test checks.
-pub(crate) const BEYOND_THE_HEADERS: &[(&str, &str)] = &[(
-    "_beginthreadex",
-    "the C runtime's thread entry point; declared in `process.h`, which this compiler does not ship",
-)];
-
 pub(crate) const C_RUNTIME: &[&str] = &[
     // The three the C runtime source's `_Thread_local` support calls: the universal runtime's own
     // thread-local storage, which is how a program's thread-local block is kept per thread.

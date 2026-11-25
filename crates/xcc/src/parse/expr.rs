@@ -975,6 +975,15 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.atomic_cas_expression(span))
             }
+            // The SDK's segment reads: `__readgsqword(0x30)` is `NtCurrentTeb()`, and half of
+            // `winnt.h`'s inline functions are a field of it. Recognised by name because that is
+            // what they *are* - one instruction each, with a constant offset, which is why the SDK
+            // declares them rather than writing them.
+            "__readfsbyte" | "__readfsword" | "__readfsdword" | "__readfsqword"
+            | "__readgsbyte" | "__readgsword" | "__readgsdword" | "__readgsqword" => {
+                self.bump();
+                Some(self.segment_read(&operator, span))
+            }
             "__builtin_inf" | "__builtin_inff" | "__builtin_nan" | "__builtin_nanf" => {
                 self.bump();
                 Some(self.float_builtin(&operator, span))
@@ -1148,6 +1157,59 @@ impl Parser<'_> {
     /// `_Atomic` is a language feature and the *machine* has one operation for it, so this is the
     /// one builtin `stdatomic.h` is written on: every other atomic operation in the header is a loop
     /// of these, in C, which is where the reasoning about them can be read.
+    /// `__readgsqword(offset)`: the SDK's segment-relative read.
+    ///
+    /// The offset has to be a constant, and both SDKs require one - it is a displacement in the
+    /// instruction, not an address. A read the compiler cannot place is refused rather than called,
+    /// because a call would be a *function* this compiler does not have.
+    fn segment_read(&mut self, name: &str, span: Span) -> Value {
+        // The result types are the SDK's own declarations of these: `__int64` is `long long` here,
+        // and `__LONG32` is `long` - the *spelling* matters because the header declared them that
+        // way, and a program that passes the result to `printf("%ld")` is relying on it.
+        let (segment, ty) = match name {
+            "__readfsbyte" => (cir::Segment::Fs, "unsigned char"),
+            "__readfsword" => (cir::Segment::Fs, "unsigned short"),
+            "__readfsdword" => (cir::Segment::Fs, "unsigned long"),
+            "__readfsqword" => (cir::Segment::Fs, "unsigned long long"),
+            "__readgsbyte" => (cir::Segment::Gs, "unsigned char"),
+            "__readgsword" => (cir::Segment::Gs, "unsigned short"),
+            "__readgsdword" => (cir::Segment::Gs, "unsigned long"),
+            _ => (cir::Segment::Gs, "unsigned long long"),
+        };
+        let result_ty = self
+            .types
+            .fundamental(ty)
+            .unwrap_or_else(|| self.types.error());
+        if !self.eat("(") {
+            self.error_at_current(format!("`{name}` needs `(`"));
+            return Value::temporary(result_ty);
+        }
+        let offset = match self.constant_expression() {
+            Some(offset) if (0..=u32::MAX as i64).contains(&offset) => offset as u32,
+            Some(_) => {
+                self.error(
+                    span,
+                    format!("`{name}` reads at an offset of at most 4 gigabytes"),
+                );
+                return Value::temporary(result_ty);
+            }
+            None => {
+                self.error(
+                    span,
+                    format!("`{name}` reads at a constant offset: it is a displacement in one instruction, not an address"),
+                );
+                return Value::temporary(result_ty);
+            }
+        };
+        if !self.eat(")") {
+            self.error_at_current(format!("expected `)` after the offset of `{name}`"));
+        }
+        match self.emit(|builder| builder.segment_read(segment, offset, result_ty, span)) {
+            Some(value) => Value::code(result_ty, value),
+            None => Value::temporary(result_ty),
+        }
+    }
+
     fn atomic_cas_expression(&mut self, span: Span) -> Value {
         if !self.eat("(") {
             self.error_at_current("`__builtin_atomic_cas` needs `(`");

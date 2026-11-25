@@ -1045,9 +1045,29 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.
-- [ ] **`windows.h`.** sqlite3.c now takes its Windows path and asks for the Win32 SDK. That is a boundary, not a
-      bug: this compiler ships C99's headers, and the SDK is a different library of declarations. Crossing it
-      would mean vendoring the SDK, which is a product decision and not a next step.
+- [x] **`windows.h`, and the boundary it turned out not to be.** It is *read*, not vendored:
+      `xcc -I <mingw-w64 include>` compiles a program that includes it, with zero errors - it was 86, and every step
+      down was a fact about C this compiler had wrong rather than a compromise. The empty declaration `;` a macro
+      leaves behind (which every SDK header is made of), `unsigned __int64` and its three siblings, the other
+      compilers' spellings of `inline` and of the alignment qualifiers (`__inline__`, `__forceinline`, `__unaligned`,
+      `__ptr32`/`__ptr64`/`__w64`, `__extension__`), a pragma's arguments expanded like any other directive's
+      (`#pragma pack(push, _CRT_PACKING)`), the *architecture* macros an SDK selects on (`winnt.h` tests `__x86_64`,
+      without the trailing underscores, for its `CONTEXT`), and two **bridge headers** that answer what an SDK asks a
+      compiler about itself - `vadefs.h` (`va_list` is `char *` here; mingw's says `#error VARARGS not implemented`
+      about anything that is not GCC, clang or MSVC) and the empty `emmintrin.h`/`x86intrin.h`. The compiler's own
+      headers are read *before* the host's `-I` directories, which is the standard's reading of `<...>` and what makes
+      one SDK directory usable beside one runtime.
+      The libraries are captured the way `ucrtbase` was - nine of them, 6 364 names - and the linker asks the export
+      tables **first**, which is the `TlsAlloc` lesson twice: `C_RUNTIME` lists the names the runtime *calls*, so
+      answering "which library" from it sent `TlsAlloc` to `ucrtbase` and every linked program failed to load.
+      The segment read is a real instruction: `__readgsqword(0x30)` is `NtCurrentTeb()`, and a program that declares
+      it by hand can prove it - the TEB's client id, 0x48 bytes in, equals `GetCurrentThreadId()`.
+- [ ] **`windows.h` compiles but does not yet *link*.** One symbol: `__shiftright128`, called by an SDK inline function
+      nothing reaches. The compiler emits every `extern __inline__` definition a header contains, so a link requires
+      every intrinsic any of them mentions. The fix is the one a linker with whole-program vision should have:
+      **require an import only for a name reachable from the entry point** - a call graph over the relocations the
+      linker already resolves, marked from `mainCRTStartup`, and unreachable functions either dropped or their
+      references resolved to a trap. One piece of work, and it kills the whole class.
 - [x] **`wchar.h`.** Closed: fifty-seven of its seventy-five C99 names were already exported, and the eighteen that
       were not are the runtime source's - the twelve wide `stdio` front ends over `__stdio_common_vfwprintf` and its
       three siblings, four `wmem*`, `wmemset` and `mbsinit`. `fwide` is the platform's stub: this runtime tracks no

@@ -187,82 +187,71 @@ pub(crate) fn made_by_the_linker(name: &str) -> bool {
         || name.starts_with("__xcc_tls_offset_")
 }
 
-/// Every name `ucrtbase.dll` exports, as the library itself lists them.
+/// The libraries a Windows program imports from, and the names each exports, in the order a name is
+/// looked for.
 ///
-/// This file is a *capture*, not a list: `ucrtbase.dll` version 10.0.26100.9711 on this machine,
-/// read by `tools/pe_exports.py` and checked in verbatim, because a link must not depend on reading
-/// a DLL - the point of this linker is that it needs no library files at all. Regenerate with
+/// The C runtime first - that is where a C program's own names are - then the kernel, then what is
+/// built on it. A name in two of them resolves to the earlier one, which is why the order is
+/// written down here rather than derived.
+///
+/// Every file is a *capture*, not a list: `tools/pe_exports.py` read the DLL on this machine once
+/// and its answer was checked in, because a link must not depend on reading a DLL - the point of
+/// this linker is that it needs no library files at all. Regenerate one with
 ///
 /// ```text
-/// python3 crates/xcc/tools/pe_exports.py C:/Windows/System32/ucrtbase.dll \
-///     > crates/xcc/src/back/ucrtbase-exports.txt
+/// python3 crates/xcc/tools/pe_exports.py C:/Windows/System32/kernel32.dll \
+///     > crates/xcc/src/back/kernel32-exports.txt
 /// ```
-///
-/// It is the *fallback* below the headers' own list, and it exists because `C_RUNTIME` is what the
-/// shipped headers declare, not what the runtime has: `strnlen` is an export that C99's `<string.h>`
-/// does not declare, and toml-c - which declares it itself - was told "undefined symbol" by a
-/// compiler that could have linked it.
-const UCRTBASE_EXPORTS: &str = include_str!("ucrtbase-exports.txt");
+const SDK_LIBRARIES: &[(&str, &str)] = &[
+    ("ucrtbase.dll", include_str!("ucrtbase-exports.txt")),
+    ("kernel32.dll", include_str!("kernel32-exports.txt")),
+    ("user32.dll", include_str!("user32-exports.txt")),
+    ("gdi32.dll", include_str!("gdi32-exports.txt")),
+    ("advapi32.dll", include_str!("advapi32-exports.txt")),
+    ("shell32.dll", include_str!("shell32-exports.txt")),
+    ("ole32.dll", include_str!("ole32-exports.txt")),
+    ("oleaut32.dll", include_str!("oleaut32-exports.txt")),
+    ("comctl32.dll", include_str!("comctl32-exports.txt")),
+    ("ws2_32.dll", include_str!("ws2_32-exports.txt")),
+];
 
-/// Whether `ucrtbase.dll` exports `name`. Built on the first link and kept.
-fn ucrtbase_exports(name: &str) -> bool {
-    static EXPORTS: std::sync::OnceLock<std::collections::HashSet<&'static str>> =
-        std::sync::OnceLock::new();
-    EXPORTS
-        .get_or_init(|| {
-            UCRTBASE_EXPORTS
-                .lines()
-                .filter(|line| !line.is_empty())
-                .collect()
-        })
-        .contains(name)
+/// Which library exports `name`, and nothing else: the captures, built once.
+fn sdk_exports() -> &'static [(&'static str, std::collections::HashSet<&'static str>)] {
+    static EXPORTS: std::sync::OnceLock<
+        Vec<(&'static str, std::collections::HashSet<&'static str>)>,
+    > = std::sync::OnceLock::new();
+    EXPORTS.get_or_init(|| {
+        SDK_LIBRARIES
+            .iter()
+            .map(|(library, names)| {
+                (
+                    *library,
+                    names
+                        .lines()
+                        .filter(|line| !line.is_empty())
+                        .collect::<std::collections::HashSet<&str>>(),
+                )
+            })
+            .collect()
+    })
 }
 
 pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
-    // The four the kernel exports rather than the C runtime. `TlsAlloc` is the trap: it appears in
-    // `ucrtbase.dll`'s dump, but as an *import* of the kernel's, not as one of its own exports - the
-    // loader said so with `0xC0000139` on every program that linked, which is how it was found.
-    const KERNEL32: [&str; 20] = [
-        "ExitProcess",
-        "TlsAlloc",
-        "TlsGetValue",
-        "TlsSetValue",
-        // `threads.h`'s primitives, all of them the kernel's: waiting on and ending a thread, a
-        // critical section for a mutex, a condition variable, and the runtime's TLS slot.
-        "WaitForSingleObject",
-        "CloseHandle",
-        "Sleep",
-        "GetCurrentThreadId",
-        "GetExitCodeThread",
-        "InitializeCriticalSection",
-        "DeleteCriticalSection",
-        "EnterCriticalSection",
-        "LeaveCriticalSection",
-        "TryEnterCriticalSection",
-        "InitializeConditionVariable",
-        "SleepConditionVariableCS",
-        "WakeConditionVariable",
-        "WakeAllConditionVariable",
-        "TlsFree",
-        // `timespec_get`, C11 7.27.2.5, which the condition variable's timeout needs.
-        "GetSystemTimeAsFileTime",
-    ];
-    if let Some(name) = KERNEL32.iter().find(|kernel| **kernel == name) {
-        return Some(("kernel32.dll", (*name).to_owned()));
+    // Which library a name comes from is a fact the DLLs own, so the export tables are asked first -
+    // `TlsAlloc` is the lesson in both directions: it is in `ucrtbase`'s *dump* as an import of the
+    // kernel's, and it is in `C_RUNTIME` because this compiler's own thread support calls it, and
+    // answering `ucrtbase` for it made every linked program fail to load with `0xC0000139`.
+    for (library, names) in sdk_exports() {
+        if names.contains(name) {
+            return Some((library, exported_as(name).to_owned()));
+        }
     }
-    if let Some((name, _)) = crt::BEYOND_THE_HEADERS
-        .iter()
-        .find(|(known, _)| *known == name)
-    {
-        return Some(("ucrtbase.dll", (*name).to_owned()));
+    // Then the headers this compiler ships: a name they declare that no export table has is one the
+    // *runtime* calls, and its ABI's renames (`time` is `_time64`) are what the library knows it by.
+    if crt::C_RUNTIME.contains(&name) {
+        return Some(("ucrtbase.dll", exported_as(name).to_owned()));
     }
-    // Two answers, in order of authority: the headers this compiler ships, whose names its runtime
-    // and JIT also know; and then the library's own export table, for a name a *program* declared
-    // itself - a POSIX or C23 function, or one of the runtime's that C99's headers do not list.
-    if !crt::C_RUNTIME.contains(&name) && !ucrtbase_exports(name) {
-        return None;
-    }
-    Some(("ucrtbase.dll", exported_as(name).to_owned()))
+    None
 }
 
 /// The names the C runtime exports under a spelling of its own: the 64-bit `time_t` ABI.
@@ -729,6 +718,14 @@ impl<M: Module> Lowerer<'_, M> {
                 return Err(LoweringError::not_lowered(
                     "`va_arg` in the Cranelift back end: its arguments are in registers it chose, and \
                      there is no home area to walk. Level 2 lowers it"
+                        .into(),
+                    *span,
+                ))
+            }
+            // `gs:[0x30]` is a `mov` with a segment prefix, which Cranelift has no instruction for.
+            Inst::SegmentRead { span, .. } => {
+                return Err(LoweringError::not_lowered(
+                    "a segment-relative read in the Cranelift back end: `gs:` and `fs:` are                      prefixes on a `mov` that Cranelift cannot write. Level 2 lowers it"
                         .into(),
                     *span,
                 ))

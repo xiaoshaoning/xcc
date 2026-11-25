@@ -242,6 +242,20 @@ const SPECIFIERS: &[&str] = &[
     "_Atomic",
     "_Alignas",
     "_Complex",
+    "__int8",
+    "__int16",
+    "__int32",
+    "__int64",
+    "__extension__",
+    "__inline",
+    "__inline__",
+    "__forceinline",
+    "_forceinline",
+    "__restrict",
+    "__unaligned",
+    "__ptr32",
+    "__ptr64",
+    "__w64",
     // Refused where the specifiers are read, and it must still be *here*: this list is what decides
     // whether a statement at block scope is a declaration, so a word the reader accepts and this
     // list does not is a word that only works at file scope. `_Imaginary float z;` in a function
@@ -782,6 +796,14 @@ impl Parser<'_> {
     /// One declaration: specifiers, then one or more declarators. Returns the last type it
     /// declared, which is what tells a definition from a declaration.
     fn declaration(&mut self) -> Option<TypeId> {
+        // An empty declaration: `;` where a declaration would stand. C99's grammar has no such
+        // production, and every Windows SDK header is made of them - `DEFINE_ENUM_FLAG_OPERATORS(X);`
+        // is a macro that expands to nothing for a C compiler, leaving its semicolon behind. `clang`
+        // accepts it silently (and warns only under `-pedantic`), so refusing it refuses the SDK
+        // over punctuation.
+        if self.eat(";") {
+            return None;
+        }
         // C11 6.7.10: a declaration that declares nothing, and says what it checked. It belongs to
         // the declaration grammar rather than the statement grammar, which is why file scope and
         // block scope both reach it here.
@@ -1376,6 +1398,33 @@ impl Parser<'_> {
                     specs.has_type_specifier = true;
                     self.at += 1;
                 }
+                // Microsoft's fixed-width spellings, which the Windows SDK writes a thousand times:
+                // `__int64` is `long long`, `__int32` is `int`, and `unsigned` goes in front of
+                // them (`unsigned __int64`) as it does in front of the standard ones. They are not
+                // C99 and are consumed as what they mean, which is all a program can observe.
+                "__int8" | "__int16" | "__int32" | "__int64" => {
+                    spelled.push(word);
+                    specs.has_type_specifier = true;
+                    self.at += 1;
+                }
+                // GCC's "this is an extension, do not warn about it" marker, which mingw's headers
+                // put before declarations a strict C99 compiler would refuse. Nothing follows it
+                // that is not already this compiler's business.
+                "_" | "__extension__" if word == "__extension__" => {
+                    self.at += 1;
+                }
+                // The *other* compilers' spellings of qualifiers and of `inline`, which a header
+                // written for them puts on a declaration this compiler reads the same way. They
+                // mean nothing here that the standard word does not: `__inline` is `inline`,
+                // `__restrict` is `restrict`, and `__unaligned`/`__ptr32`/`__ptr64`/`__w64` are
+                // promises about a *placement* that x86-64 does not need - `UNALIGNED` in `winnt.h`
+                // is this word on the target whose pointers are already aligned.
+                "__inline" | "__inline__" | "_inline" | "__forceinline" | "_forceinline"
+                | "__restrict" | "__restrict__" | "__unaligned" | "__ptr32" | "__ptr64"
+                | "__w64" | "__sptr" | "__uptr" => {
+                    self.at += 1;
+                }
+
                 // C99 6.2.5p11's three imaginary types, refused by name and here, where the word is:
                 // C11 removed them, `clang` says "imaginary types are not supported" in every
                 // dialect, and a program that asked for one wants a `_Complex` value whose real part
@@ -1513,6 +1562,32 @@ impl Parser<'_> {
             // No type specifier at all. Whether that is an error depends on who asked: a
             // declaration must have one, a `sizeof (` may be the start of an expression.
             return specs;
+        }
+        // Microsoft's fixed-width spellings, before the standard ones: `unsigned __int64` is
+        // `unsigned long long` and `__int32` is `int`, and a `short` or `char` in the same
+        // declaration is not a spelling C99 has, so the table below is not asked about them.
+        for (word, name) in [
+            ("__int8", "signed char"),
+            ("__int16", "short"),
+            ("__int32", "int"),
+            ("__int64", "long long"),
+        ] {
+            if count(word) > 0 {
+                let any = if signed { name } else { "" };
+                let unsigned_name = match name {
+                    "signed char" => "unsigned char",
+                    "short" => "unsigned short",
+                    "int" => "unsigned int",
+                    _ => "unsigned long long",
+                };
+                specs.ty =
+                    self.types
+                        .fundamental(if any.is_empty() { unsigned_name } else { name });
+                if specs.is_const {
+                    specs.ty = specs.ty.map(|ty| self.types.constant(ty));
+                }
+                return specs;
+            }
         }
         // The *spelling* picks the type, not the size. `int` and `long` are both thirty-two bits on
         // this target (LLP64), and they are two types (C99 6.2.5p4) - which `_Generic` asks about
@@ -1730,6 +1805,11 @@ impl Parser<'_> {
             return members;
         }
         while !self.at_punct("}") && !self.at_eof() {
+            // The same empty declaration, in a member list: `int a; MACRO_EXPANDING_TO_NOTHING; int b;`
+            // leaves a `;` with no member in front of it, and `winnt.h` writes dozens.
+            if self.eat(";") {
+                continue;
+            }
             // Where this member's declaration starts, so its own attributes can be found by the
             // range it covers - before the type (`__attribute__((aligned(8))) int i`) as well as
             // after the declarator (`int i __attribute__((packed))`).
@@ -1853,10 +1933,20 @@ impl Parser<'_> {
         self.skip_calling_convention();
         while self.eat("*") {
             wrappers.push(Wrapper::Pointer);
-            while self
-                .peek()
-                .is_some_and(|token| matches!(self.spell(token), "const" | "volatile" | "restrict"))
-            {
+            while self.peek().is_some_and(|token| {
+                matches!(
+                    self.spell(token),
+                    "const"
+                        | "volatile"
+                        | "restrict"
+                        | "__restrict"
+                        | "__unaligned"
+                        | "__ptr32"
+                        | "__ptr64"
+                        | "__sptr"
+                        | "__uptr"
+                )
+            }) {
                 self.bump();
             }
             self.skip_calling_convention();
@@ -2042,11 +2132,24 @@ impl Parser<'_> {
 
     /// The calling-convention words, which on x86-64 are spelling and nothing else: there is one
     /// convention, and Microsoft's own documentation of `__stdcall` for this target says so.
+    /// Skip what may stand where a declarator begins and changes nothing this compiler decides: a
+    /// calling convention (there is one on this target) and the alignment promises `winnt.h` writes
+    /// between a type and its `*` - `} IMAGE_SYMBOL_EX, UNALIGNED *PIMAGE_SYMBOL_EX;`.
     fn skip_calling_convention(&mut self) {
         while self.peek().is_some_and(|token| {
             matches!(
                 self.spell(token),
-                "__cdecl" | "__stdcall" | "__fastcall" | "__thiscall" | "__vectorcall"
+                "__cdecl"
+                    | "__stdcall"
+                    | "__fastcall"
+                    | "__thiscall"
+                    | "__vectorcall"
+                    | "__unaligned"
+                    | "__ptr32"
+                    | "__ptr64"
+                    | "__w64"
+                    | "__sptr"
+                    | "__uptr"
             )
         }) {
             self.at += 1;

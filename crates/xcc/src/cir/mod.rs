@@ -48,6 +48,13 @@ pub struct BlockData {
     pub span: Span,
 }
 
+/// Which segment a segment-relative read comes from: the SDK's `__readfs*` and `__readgs*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Segment {
+    Fs,
+    Gs,
+}
+
 /// A block handle: an index into [`Func::blocks`]. Only a builder makes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Block(pub(crate) u32);
@@ -236,6 +243,14 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
+    /// A read of a segment-relative word: `mov rax, gs:[offset]`. See [`Builder::segment_read`].
+    SegmentRead {
+        result: Value,
+        segment: Segment,
+        offset: u32,
+        ty: TypeId,
+        span: Span,
+    },
     /// A compare-and-swap: the one machine operation atomic arithmetic is built from.
     ///
     /// `pointer` is the address of an object of `ty`; if its value equals `expected` it becomes
@@ -390,6 +405,8 @@ impl Inst {
                 *left = rewrite(*left);
                 *right = rewrite(*right);
             }
+            // A segment read names an *offset*, not a value, so there is nothing to rewrite.
+            Inst::SegmentRead { .. } => {}
             Inst::AtomicCas {
                 pointer,
                 expected,
@@ -422,6 +439,7 @@ impl Inst {
             | Inst::Binary { result, .. }
             | Inst::Compare { result, .. }
             | Inst::AtomicCas { result, .. }
+            | Inst::SegmentRead { result, .. }
             | Inst::Unary { result, .. }
             | Inst::Convert { result, .. }
             | Inst::Slot { result, .. }
@@ -442,6 +460,7 @@ impl Inst {
             | Inst::Binary { span, .. }
             | Inst::Compare { span, .. }
             | Inst::AtomicCas { span, .. }
+            | Inst::SegmentRead { span, .. }
             | Inst::Unary { span, .. }
             | Inst::Convert { span, .. }
             | Inst::Slot { span, .. }
@@ -795,6 +814,24 @@ impl<'a> Builder<'a> {
             ty,
             left,
             right,
+            span,
+        });
+        value
+    }
+
+    /// A read of a segment-relative word: `mov rax, gs:[offset]`.
+    ///
+    /// This is how a Windows SDK reaches the thread environment block - `__readgsqword(0x30)` is
+    /// `NtCurrentTeb()`, and `GetLastError` is a field of it. The offset must be a constant, which
+    /// both SDKs require of these intrinsics; `size` is how many bytes are read, 1, 2, 4 or 8, and
+    /// is the size of the result's type.
+    pub fn segment_read(&mut self, segment: Segment, offset: u32, ty: TypeId, span: Span) -> Value {
+        let value = self.func.mint(ty, self.current);
+        self.push(Inst::SegmentRead {
+            result: value,
+            segment,
+            offset,
+            ty,
             span,
         });
         value
@@ -1187,6 +1224,29 @@ impl Func {
         // Every type comparison here is structural, as the arena's identity is: the same C type
         // may be two `TypeId`s, and `==` would reject correct code (ADR-004's corollary).
         match inst {
+            Inst::SegmentRead { result, ty, .. } => {
+                // The same rule every other defining instruction answers: the value is defined here,
+                // and it is of the type the instruction names.
+                if self.value(*result).block != here {
+                    return wrong(format!("v{} is not defined where it is used", result.0));
+                }
+                if !types.same(self.value(*result).ty, *ty) {
+                    return wrong(format!("v{} is not read as its own type", result.0));
+                }
+                if !matches!(
+                    types.kind(*ty),
+                    crate::types::Type::Int {
+                        bits: 8 | 16 | 32 | 64,
+                        ..
+                    }
+                ) {
+                    return wrong(format!(
+                        "v{} is a segment read of something not an integer",
+                        result.0
+                    ));
+                }
+                Ok(())
+            }
             Inst::AtomicCas {
                 result,
                 pointer,
@@ -1616,6 +1676,7 @@ fn used_values(inst: &Inst) -> Vec<Value> {
             desired,
             ..
         } => vec![*pointer, *expected, *desired],
+        Inst::SegmentRead { .. } => Vec::new(),
         Inst::Unary { value, .. } => vec![*value],
         Inst::Convert { value, .. } => vec![*value],
         Inst::Call { callee, args, .. } => {

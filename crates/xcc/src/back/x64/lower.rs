@@ -550,6 +550,40 @@ impl FunctionLowering<'_> {
     fn lower_inst(&mut self, func: &Func, inst: &Inst, ops: &mut Vec<Op>) -> Result<(), NotYet> {
         let span = inst.span();
         match inst {
+            Inst::SegmentRead {
+                result,
+                segment,
+                offset,
+                ty,
+                ..
+            } => {
+                let (size, signed, class) = self.scalar(*ty, span)?;
+                if class != Class::Integer || !matches!(size, 1 | 2 | 4 | 8) {
+                    return Err(NotYet {
+                        message: "a segment read of something that is not an integer of 1, 2, 4 or 8                                   bytes"
+                            .into(),
+                        span,
+                    });
+                }
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                ops.push(Op::SegmentRead {
+                    dst,
+                    segment: *segment,
+                    offset: *offset,
+                    size,
+                });
+                if size < 4 {
+                    // The read leaves the rest of `rax` as it was, exactly as `cmpxchg` does.
+                    ops.push(Op::Canonical {
+                        dst,
+                        src: dst,
+                        size,
+                        signed,
+                    });
+                }
+                return Ok(());
+            }
             Inst::AtomicCas {
                 result,
                 pointer,

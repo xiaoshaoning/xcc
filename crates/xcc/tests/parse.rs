@@ -179,6 +179,38 @@ fn a_non_void_function_that_falls_off_its_end_is_warned_about() {
 }
 
 #[test]
+fn the_spellings_a_windows_sdk_writes_are_read_as_what_they_mean() {
+    // None of this is C99. All of it is in `windows.h`, and each one is read as the thing it means
+    // rather than refused: a header written for another compiler asks for a type, a qualifier or an
+    // empty declaration, and there is worth knowing about the program in none of those.
+    //
+    // `__int64` and its three siblings, with `unsigned` in front as the SDK writes it.
+    assert!(parses("int f(void) { unsigned __int64 a = 1; __int32 b = 2; __int16 c = 3; __int8 d = 4; return (int)(a + b + c + d); }"));
+    // `__inline`, `__forceinline`, `__restrict` and the alignment promises: no-ops here.
+    assert!(parses("static __inline int g(void) { return 1; }"));
+    assert!(parses("__forceinline int h(void) { return 2; }"));
+    assert!(parses("int *__restrict p; int f(void) { return p == 0; }"));
+    assert!(parses(
+        // `UNALIGNED` in `winnt.h` is `#define UNALIGNED __unaligned`; the word itself is the no-op.
+        "#define UNALIGNED __unaligned\ntypedef unsigned short WCHAR; typedef WCHAR UNALIGNED *LPUWSTR;"
+    ));
+    // `__extension__`, GCC's marker: it says the next declaration uses an extension.
+    assert!(parses("__extension__ typedef unsigned long long ULL;"));
+    // An empty declaration, which every macro that expands to nothing leaves behind.
+    assert!(parses(";"));
+    assert!(parses(
+        "struct S { int a; ; int b; }; int f(void) { return (int)sizeof(struct S); }"
+    ));
+    // `#pragma pack(_CRT_PACKING)` - the argument is a macro, and it is expanded like any other.
+    assert!(parses(
+        "#define _CRT_PACKING 8
+#pragma pack(push,_CRT_PACKING)
+struct S { char c; int i; };
+#pragma pack(pop)"
+    ));
+}
+
+#[test]
 fn a_pack_pragma_inside_a_body_is_refused_and_outside_it_is_laid_out() {
     // A record gets one layout, so it gets one limit - the one in force where its body ends. A
     // pragma *inside* the body would give different members different limits, which this compiler's

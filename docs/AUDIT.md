@@ -786,6 +786,64 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M12 - 2026-11-25 - the SDK's headers, read as C
+
+`#include <windows.h>` compiles. It was 86 errors, then 66, then 14, then 5, then 2, then none - and **every step was a
+fact about C this compiler had wrong**, not a compromise with the SDK:
+
+| what the SDK writes | what it is | what this compiler did |
+|---|---|---|
+| `MACRO_EXPANDS_TO_NOTHING;` | an empty declaration | refused it: `expected a type specifier` |
+| `unsigned __int64` | `unsigned long long` | did not know the word |
+| `extern __inline__` | `extern inline` | did not know the word |
+| `struct DECLSPEC_ALIGN(16) _M128A` | a 16-aligned struct | the attribute was already dropped; the spacing was fine |
+| `#pragma pack(push, _CRT_PACKING)` | `pack(push, 8)` | read the *name* as the limit |
+| `__attribute__((__returns_twice__))` | a promise about control flow | refused it by name |
+| `winnt.h`'s `#if defined(__x86_64)` | which architecture | we define `__x86_64__`, and it asks the other spelling |
+
+That last one is why the list is worth reading twice: an SDK picks its `CONTEXT` definition by testing a macro
+*spelling*, `__x86_64` without the trailing underscores that GCC and clang use, and a target that answers only the GCC
+spelling gets no `CONTEXT` - and then a hundred declarations that name it fail, which is what "86 errors" partly was.
+
+**Two bridge headers.** A system SDK has to know how the compiler spells `va_list` before it can declare a variadic
+function, and mingw-w64's `vadefs.h` asks whether it is GCC, clang or MSVC and says `#error VARARGS not implemented for
+this compiler` about anything else. Neither answer is true, so this compiler ships a `vadefs.h` of its own - which
+shadows the SDK's, because its include guard *is* the SDK's - that says what is true: `va_list` is a `char *` on this
+target, and the SDK's four `_crt_va_*` names are this compiler's `stdarg.h` macros. The empty `emmintrin.h` and
+`x86intrin.h` are the same idea with a duller edge: `winnt.h` includes them to spell two macros, this compiler declares
+no intrinsics, and an empty header means a program that *writes* one is told the name is not declared rather than being
+refused for a header it never used.
+
+**And the include order, which had to change.** The compiler's own headers are now read *before* the host's `-I`
+directories. That is the opposite of what a C++ compiler does, and it is the standard's reading of `<...>` - the places
+the *implementation* defines, then any the programmer adds. Without it, `-I <the SDK's include directory>` shadows
+`string.h` and `stdarg.h` with mingw's own, which are written for a compiler with a CRT it does not have; with it, one
+directory of SDK headers is usable beside one runtime.
+
+**Linking to the SDK is capturing and asking.** Nine libraries (`kernel32`, `user32`, `gdi32`, `advapi32`, `shell32`,
+`ole32`, `oleaut32`, `comctl32`, `ws2_32`) are captured the way `ucrtbase` was - 6 364 names - and the linker asks the
+export tables **first**. That order is the `TlsAlloc` lesson twice over: `C_RUNTIME` lists the names this compiler's own
+runtime *calls*, so answering "which library exports this" from it sent `TlsAlloc` to `ucrtbase`, and every linked
+program failed to load with `0xC0000139` until the tables were asked first. A name and a library are two facts, and only
+the DLL owns the second.
+
+**The segment read is an instruction, so it got an instruction.** `__readgsqword(0x30)` is `NtCurrentTeb()`, and half of
+`winnt.h`'s inline functions are a field of it, so the eight spellings are one CIR instruction, one `Op`, four widths in
+the encoder (`mov rax, gs:[offset]`), and the narrow ones canonicalised exactly as a `cmpxchg`'s result is. The proof
+has an oracle instead of a plausible number: the TEB's client id, 0x48 bytes into what `gs:0x30` points at, equals the
+thread id `GetCurrentThreadId` returns - and that function is imported from `kernel32` through the captured exports by a
+program that declared it by hand, so the test needs no SDK and no machine-specific path.
+
+**What is left is one symbol and one idea.** `windows.h` compiles but does not link: `__shiftright128` is called by an
+SDK inline function nothing reaches, because this compiler emits every `extern __inline__` definition a header contains
+and a link then requires every intrinsic any of them mentions. The fix is the one a linker with whole-program vision
+should have - require an import only for a name reachable from the entry point - and it is named in PLAN rather than
+papered over.
+
+204 unit, 39 parser, 30 CLI, 5 invalid, 32 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 reviewed - 2026-11-25 - the object two units agree about, and the one they do not
 
 The duplicate check went in and the review found the case it had left open: **two tentative definitions of different

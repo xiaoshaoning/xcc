@@ -26,6 +26,7 @@
 
 use super::regalloc::{Allocation, Location, Reg};
 use super::{BinOp, BlockTerm, MachineFunction, Op, Operand, VReg};
+use crate::cir::Segment;
 
 /// Whether an operation gives the same answer with its operands swapped, which is what lets the
 /// destination's register hold either one.
@@ -474,6 +475,12 @@ impl Encoder<'_> {
                     }
                 }
             }
+            Op::SegmentRead {
+                dst,
+                segment,
+                offset,
+                size,
+            } => self.segment_read(*dst, *segment, *offset, *size),
             Op::AtomicCas {
                 dst,
                 pointer,
@@ -1628,6 +1635,34 @@ impl Encoder<'_> {
     ///
     /// The `lock` prefix is not decoration: without it the operation is a read, a comparison and a
     /// write that two threads can interleave, which is the one thing this exists to prevent.
+    /// `mov rax, gs:[offset]`: a segment prefix, then an absolute displacement.
+    ///
+    /// `8B 04 25 <disp32>` is `mov eax, [disp32]` - `04` is the modrm for "register 0, a SIB byte
+    /// follows" and `25` is the SIB for "no index, no base, an absolute address" - and a REX.W makes
+    /// it 64 bits. The byte and word forms read with `movzx`, so the value arrives zero-extended and
+    /// the lowering's `Canonical` puts the type's own sign on it, exactly as a narrow `cmpxchg`'s
+    /// result gets it.
+    fn segment_read(&mut self, dst: VReg, segment: Segment, offset: u32, size: u8) {
+        self.byte(match segment {
+            Segment::Fs => 0x64,
+            Segment::Gs => 0x65,
+        });
+        match size {
+            1 => self.bytes(&[0x0F, 0xB6]),
+            2 => self.bytes(&[0x0F, 0xB7]),
+            4 => self.byte(0x8B),
+            _ => {
+                self.byte(0x48);
+                self.byte(0x8B);
+            }
+        }
+        self.bytes(&[0x04, 0x25]);
+        self.bytes(&offset.to_le_bytes());
+        if self.allocation.location(dst) != Location::Register(Reg::RAX) {
+            self.write(dst, Reg::RAX);
+        }
+    }
+
     fn atomic_cas(
         &mut self,
         dst: VReg,

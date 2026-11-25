@@ -202,10 +202,35 @@ pub(crate) fn refusal(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The headers no standard requires and this compiler ships anyway: the names a *system* SDK's
+/// headers use to ask the compiler what it is.
+///
+/// They are read before the host's include directories, so one of these shadows the SDK's own file
+/// of the same name - which is the point, and why each one's include guard is the SDK's. `vadefs.h`
+/// is `mingw-w64`'s: it asks whether the compiler is GCC, `clang` or MSVC, and refuses everything
+/// else by name before any Win32 declaration has been reached.
+const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
+    (
+        "vadefs.h",
+        Disposition::Shipped(include_str!("../include/vadefs.h")),
+    ),
+    // The SSE intrinsic headers `winnt.h` includes for two macros it never expands at file scope.
+    // Empty, so that a program which *uses* an intrinsic is told the name is not declared.
+    (
+        "emmintrin.h",
+        Disposition::Shipped(include_str!("../include/emmintrin.h")),
+    ),
+    (
+        "x86intrin.h",
+        Disposition::Shipped(include_str!("../include/x86intrin.h")),
+    ),
+];
+
 fn disposition(name: &str) -> Option<&Disposition> {
     C99_HEADERS
         .iter()
         .chain(C11_HEADERS)
+        .chain(BRIDGE_HEADERS)
         .find(|(header, _)| *header == name)
         .map(|(_, disposition)| disposition)
 }
@@ -228,10 +253,19 @@ impl Headers {
 }
 
 impl Includes for Headers {
+    /// The compiler's own headers first, then what the host's `-I` directories have.
+    ///
+    /// That is the opposite of the order a C++ compiler uses for `-I`, and it is what makes a
+    /// *system* header directory usable at all: mingw-w64's `windows.h` lives beside its own
+    /// `string.h`, `stdarg.h` and `stdint.h`, and those are written for a compiler that has
+    /// `vadefs.h` and its whole CRT. Reading the compiler's own first means `#include <windows.h>`
+    /// pulls in the SDK while `#include <string.h>` stays the runtime this linker links against -
+    /// which is also the standard's reading of `<...>`: the places the *implementation* defines,
+    /// then any the programmer adds.
     fn read(&self, path: &str) -> Option<String> {
-        self.host
-            .read(path)
-            .or_else(|| builtin(path).map(str::to_owned))
+        builtin(path)
+            .map(str::to_owned)
+            .or_else(|| self.host.read(path))
     }
 }
 
@@ -464,15 +498,39 @@ mod tests {
     }
 
     #[test]
-    fn a_header_the_host_has_wins() {
+    fn the_compilers_own_headers_win_and_the_hosts_fill_the_gaps() {
+        // The order `Headers::read` documents, and it is the opposite of the one a C++ compiler uses
+        // for `-I` because these *are* the implementation's headers: `#include <windows.h>` must
+        // reach the SDK while `#include <string.h>` stays the runtime this linker links against.
         #[derive(Debug)]
-        struct Mine;
-        impl Includes for Mine {
+        struct Sdk;
+        impl Includes for Sdk {
             fn read(&self, path: &str) -> Option<String> {
-                (path == "stddef.h").then(|| String::from("/* mine */\n"))
+                match path {
+                    "stddef.h" | "windows.h" => Some(String::from(
+                        "/* the SDK's */
+",
+                    )),
+                    _ => None,
+                }
             }
         }
-        let headers = Headers::new(Box::new(Mine));
-        assert_eq!(headers.read("stddef.h").as_deref(), Some("/* mine */\n"));
+        let headers = Headers::new(Box::new(Sdk));
+        assert_ne!(
+            headers.read("stddef.h").as_deref(),
+            Some(
+                "/* the SDK's */
+"
+            ),
+            "a header this compiler ships is the one that is read"
+        );
+        assert_eq!(
+            headers.read("windows.h").as_deref(),
+            Some(
+                "/* the SDK's */
+"
+            ),
+            "and one it does not ship comes from the host"
+        );
     }
 }

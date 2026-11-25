@@ -1610,6 +1610,35 @@ fn packed_and_aligned_decide_offsets_the_way_clang_does() {
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
+/// The segment-relative read, which the Windows SDK's `__readgsqword` family is: `mov rax,
+/// gs:[offset]`. The proof is not that the number looks plausible - it is that the TEB's client id,
+/// 0x48 bytes into what `gs:0x30` points at, is the thread id `GetCurrentThreadId` returns.
+///
+/// That second half is the import search: `GetCurrentThreadId` is a `kernel32` export the program
+/// declares itself, found through the captured export tables rather than a curated list.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_segment_read_reaches_the_thread_environment_block() {
+    let source = r#"
+#include <stdio.h>
+
+unsigned long long __readgsqword(unsigned long offset);
+unsigned long __readgsdword(unsigned long offset);
+unsigned long GetCurrentThreadId(void);
+
+int main(void) {
+  unsigned long long teb = __readgsqword(0x30);
+  unsigned long *client = (unsigned long *)(teb + 0x48);
+  printf("%d %d %d\n", (int)(*client == GetCurrentThreadId()),
+         (int)(__readgsdword(0x30) != 0), (int)(__readgsqword(0x30) == teb));
+  return 0;
+}
+"#;
+    let run = run_linked_with("c99", "segment-read", source, &[]);
+    assert_eq!(run.status.code(), Some(0), "it ran to completion");
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "1 1 1");
+}
+
 /// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
 /// name, and an object written with one links against a use written with the other. That exercises
 /// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes

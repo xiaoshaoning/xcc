@@ -30,6 +30,7 @@ pub(crate) mod regalloc;
 
 use crate::cir::BinOp;
 use crate::cir::CmpOp;
+use crate::cir::Segment;
 use crate::diag::Span;
 
 use regalloc::Reg;
@@ -192,6 +193,15 @@ pub(crate) enum Op {
     /// relocation fills in. A string literal, a global object and - since function pointers - a
     /// function are all a name the linker resolves to an address.
     SymbolAddress { dst: VReg, symbol: String },
+    /// A read of a segment-relative word: `mov rax, gs:[offset]`. The machine has one instruction
+    /// for it, and the SDK's `__readgsqword` family is that instruction - which is how the thread
+    /// environment block is reached, and therefore how `GetLastError` and `NtCurrentTeb` work.
+    SegmentRead {
+        dst: VReg,
+        segment: Segment,
+        offset: u32,
+        size: u8,
+    },
     /// A compare-and-swap at `[pointer]`, of `size` bytes: if the object equals `expected` it
     /// becomes `desired`, and `dst` is the value read - which equals `expected` exactly when the
     /// swap happened. The one machine operation atomic arithmetic is built from; everything else is
@@ -406,6 +416,7 @@ impl Op {
             | Op::SymbolAddress { dst, .. }
             | Op::ThreadAddress { dst, .. }
             | Op::AtomicCas { dst, .. }
+            | Op::SegmentRead { dst, .. }
             | Op::LoadLocal { dst, .. }
             | Op::LoadMemory { dst, .. }
             | Op::Binary { dst, .. }
@@ -434,6 +445,7 @@ impl Op {
             | Op::LocalAddress { .. }
             | Op::SymbolAddress { .. }
             | Op::ThreadAddress { .. }
+            | Op::SegmentRead { .. }
             | Op::LoadLocal { .. } => Vec::new(),
             Op::AtomicCas {
                 pointer,
@@ -489,10 +501,11 @@ fn writes_rax(op: &Op) -> bool {
         op,
         // The four that need the accumulator by the instruction set's choice...
         Op::Compare { .. } | Op::Divide { .. } | Op::Call { .. } | Op::CallIndirect { .. }
-        // ...and the two that need it because this compiler wrote them:
-        // `lock cmpxchg` compares against `rax` and leaves the value it read there, and the
-        // thread-local lookup is a call this back end emits itself rather than an `Op::Call`.
+        // ...and the three that need it because this compiler wrote them: `lock cmpxchg` compares
+        // against `rax` and leaves the value it read there; a segment read is `mov rax, gs:[..]`;
+        // and the thread-local lookup is a call this back end emits rather than an `Op::Call`.
         | Op::AtomicCas { .. }
+        | Op::SegmentRead { .. }
         | Op::ThreadAddress { .. }
     )
 }

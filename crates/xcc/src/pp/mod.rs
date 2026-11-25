@@ -186,6 +186,15 @@ fn pack_limit(number: &str) -> Option<u8> {
 /// whether a definition wins - and not noticing is silent. `packed` and `aligned` are named
 /// separately only because their diagnostic says what the program would have got wrong.
 const HARMLESS_ATTRIBUTES: &[&str] = &[
+    // A promise about control flow this compiler does not analyse, and the two attributes that ask
+    // for a diagnostic: `returns_twice` is `setjmp`'s and `minwindef.h` writes it on Win32's
+    // callback entry points.
+    "returns_twice",
+    "__returns_twice__",
+    "naked",
+    "__warning__",
+    "error",
+    "warning",
     // What a diagnostic would say, in a compiler that does not say it.
     "unused",
     "__unused__",
@@ -237,8 +246,14 @@ const PREDEFINED: &[(&str, &str)] = &[
     // `__STDC_VERSION__` is the dialect's, so it is installed from the dialect and not from here.
     ("_WIN32", "1"),
     ("_WIN64", "1"),
+    // The architecture, under every name a Windows SDK asks. MSVC's are `_M_X64` and `_M_AMD64`;
+    // `mingw-w64`'s `winnt.h` picks its `CONTEXT` definition by testing `__x86_64` - without the
+    // trailing underscores `clang` and GCC use - and a target that answers only the GCC spelling
+    // gets no `CONTEXT` at all, and then a hundred declarations that name it fail.
     ("__x86_64__", "1"),
+    ("__x86_64", "1"),
     ("_M_X64", "100"),
+    ("_M_AMD64", "100"),
     ("__XCC__", "1"),
 ];
 
@@ -1213,6 +1228,10 @@ impl Preprocessor<'_> {
     }
 
     fn pragma(&mut self, rest: &[Raw], span: Span) {
+        // A pragma's arguments are macros like any other directive's: `#pragma pack(push,
+        // _CRT_PACKING)` is `pack(push, 8)` once `_CRT_PACKING` has been replaced, and reading the
+        // name as if it were the number refused six headers of the Windows SDK by name.
+        let rest = &self.expand_tokens(rest);
         match rest.first() {
             Some(once) if self.is_spelled(&once.token, "once") => {
                 let physical = self.file().physical.clone();

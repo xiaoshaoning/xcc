@@ -103,6 +103,20 @@ pub(crate) fn instruction(
         } => {
             format!("{} = const {} {bits}", v(*result), ty(*of))
         }
+        Inst::SegmentRead {
+            result,
+            segment,
+            offset,
+            ..
+        } => format!(
+            "{} = read_{} [{:#x}]",
+            v(*result),
+            match segment {
+                crate::cir::Segment::Fs => "fs",
+                crate::cir::Segment::Gs => "gs",
+            },
+            offset
+        ),
         Inst::AtomicCas {
             result,
             pointer,
