@@ -1713,7 +1713,25 @@ fn a_name_defined_in_two_units_is_refused_unless_both_definitions_are_tentative(
         "clash",
     );
 
-    // Two tentatives are one object, and the program links and runs.
+    // Two tentatives are one object only if they agree about how big it is: the merged object is
+    // the first one's bytes, so a unit that declared the name larger would write past its end into
+    // whatever `.data` put next.
+    let error = compiler
+        .link(&[
+            ("a.c", "char buf[8];"),
+            (
+                "b.c",
+                "char buf[64];
+int main(void) { buf[0] = 1; return 0; }",
+            ),
+        ])
+        .expect_err("the sizes disagree");
+    assert!(
+        format!("{error:?}").contains("`buf` is 8 bytes in one translation unit and 64 in another"),
+        "{error:?}"
+    );
+
+    // Two tentatives of one size are one object, and the program links and runs.
     let run = run_units(
         "c99",
         "tentative",

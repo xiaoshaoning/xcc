@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M11 reviewed - 2026-11-25 - the object two units agree about, and the one they do not
+
+The duplicate check went in and the review found the case it had left open: **two tentative definitions of different
+sizes**. C99 6.9.2p2 lets `char buf[8];` appear in every unit, and the one object they mean has one size - so a unit
+that declared `char buf[64];` writes 64 bytes into an 8-byte object. The linker kept the first one's bytes and said
+nothing, and `clang -fcommon` (the behaviour the standard describes) resizes the object to the largest, which is the one
+thing this linker cannot do: the address is already placed against the first unit's bytes.
+
+Whether such a write lands on another object is a *layout* question - the two attempts to demonstrate corruption on a
+neighbouring global both landed on bytes nothing used, because `.data` order is not declaration order - which is exactly
+why it must be refused rather than measured: a program whose correctness depends on where the linker put an object is
+one this compiler must not build. Two tentatives are one object only when they agree about its size, and disagreeing is
+now a diagnostic naming both sizes.
+
+That is also the difference between the two exemptions, and it took the review to see it: a tentative may appear in
+every unit *because* the standard says the units describe one object; they cannot describe two different ones. The
+merge stays, and it got stricter in the only place where merging is a lie.
+
+Checked and found sound: the same-size merge still links and runs (`shared` written in one unit, read in another), the
+order-independence of the four duplicate cases is untouched, `tentative` is still derived rather than stored (`external
+&& init.is_none()`), and nothing about it reaches the JIT or `-c`.
+
+201 unit, 38 parser, 30 CLI, 5 invalid, 31 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M11 - 2026-11-25 - the first body wins, and the two cases that are not duplicates
 
 The linker kept the first of two definitions and said nothing. `clang` says "multiple definition of `f`" and refuses,

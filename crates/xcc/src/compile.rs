@@ -324,6 +324,11 @@ impl Compile {
                     LinkError::Duplicate { name } => format!(
                         "`{name}` is defined in more than one translation unit: a program has one external definition of each name (C99 6.9p5). A definition in a header, or a `.c` file compiled beside a unit that already includes it, is the usual cause"
                     ),
+                    // One name, two sizes: the tentatives C99 6.9.2p2 allows in every unit still
+                    // have to agree about the object they mean, or one of the units writes past it.
+                    LinkError::Mismatched { name, here, there } => format!(
+                        "`{name}` is {here} bytes in one translation unit and {there} in another: a definition with no initialiser may appear in every unit, but they have to be the same size"
+                    ),
                 };
                 Err(Diagnostics::new(
                     vec![Diagnostic::error(message)

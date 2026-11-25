@@ -88,6 +88,11 @@ pub(crate) struct Linked {
 pub(crate) enum LinkError {
     /// A name nothing defines and no library exports.
     Undefined { name: String },
+    /// Two *tentative* definitions of one name that are not the same size. C99 6.9.2p2 lets a
+    /// program write `int shared;` in every unit, and the one object they mean has one size - so
+    /// keeping the first and dropping the second would leave the larger unit writing past the end of
+    /// the object, into whatever `.data` put next.
+    Mismatched { name: String, here: u32, there: u32 },
     /// A name more than one unit *defines*. C99 6.9p5 wants exactly one external definition of each
     /// name in a program, and a linker that takes the first of two silently builds whichever unit
     /// came first - a wrong program whenever the two are not identical, which is what `clang`'s
@@ -211,7 +216,9 @@ impl<'a> Program<'a> {
         // The state lives outside the loops because every unit's functions are gathered before any
         // unit's objects, and a name checked against half of them would be checked wrongly.
         let mut real: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut tentative: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        // The names defined tentatively, and how big the object they mean is: two tentatives are one
+        // object only if they agree about that.
+        let mut tentative: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
         for (index, unit) in units.iter().enumerate() {
             let base = program.text.len() as u32;
             // A unit's functions are placed relative to its own code, and its relocations are
@@ -223,7 +230,7 @@ impl<'a> Program<'a> {
                     // duplicate whatever the bodies say - and so is a function beside an object of
                     // the same name, which no declaration could have made one name.
                     let name = function.name.as_str();
-                    if real.contains(name) || tentative.contains(name) || !real.insert(name) {
+                    if real.contains(name) || tentative.contains_key(name) || !real.insert(name) {
                         return Err(LinkError::Duplicate {
                             name: function.name.clone(),
                         });
@@ -275,12 +282,24 @@ impl<'a> Program<'a> {
                     let repeated = if object.tentative {
                         if real.contains(name) {
                             true
+                        } else if let Some(&earlier) = tentative.get(name) {
+                            // One object, so one size: two units that disagree about it are a
+                            // program error this link can see, and merging them silently would give
+                            // the larger one an object it can write past.
+                            if earlier != object.size {
+                                return Err(LinkError::Mismatched {
+                                    name: object.name.clone(),
+                                    here: earlier,
+                                    there: object.size,
+                                });
+                            }
+                            false
                         } else {
-                            tentative.insert(name);
+                            tentative.insert(name, object.size);
                             false
                         }
                     } else {
-                        real.contains(name) || tentative.contains(name) || !real.insert(name)
+                        real.contains(name) || tentative.contains_key(name) || !real.insert(name)
                     };
                     if repeated {
                         return Err(LinkError::Duplicate {
