@@ -160,6 +160,24 @@ struct Program<'a> {
     thread_block: u32,
 }
 
+/// One entry of the image's symbol table: a name, the section it lives in, and where it starts in it.
+///
+/// The table is not a section. Nothing maps it, the loader never reads it, and it sits after the last
+/// section's bytes where only a tool looks - but it is the difference between "the program faulted at
+/// `.text+0x129e2d`" and "the program faulted in `sqlite3_open`", which is the whole reason it exists.
+struct Symbol {
+    name: String,
+    /// One-based, as a section number is: `.text` is 1 unless a program has no data, which moves it.
+    section: u16,
+    /// From that section's start, which is what a COFF symbol's value means.
+    value: u32,
+    /// Type 0x20 is a function and 0 is not, which is what tells a debugger a name is a place to stop.
+    function: bool,
+    /// Storage class 2 is external and 3 is static. Two `static` functions of one name in two units
+    /// are legal and are two symbols; two external ones are impossible - the linker refused the link.
+    external: bool,
+}
+
 /// The names a unit keeps to itself: its `static` functions and objects, and the literals and other
 /// compiler-made objects that are local by construction.
 #[derive(Default)]
@@ -635,6 +653,47 @@ fn import_table_size(libraries: &[Library<'_>]) -> u32 {
     descriptors + lookups + names + libraries_named
 }
 
+/// Where the sections' bytes end in the file: where the symbol table starts, since nothing maps it.
+fn end_of_sections(list: &[Section], headers: u32) -> u32 {
+    list.last().map_or(headers, |section| {
+        section.place.file + align(section.content.len() as u32, FILE_ALIGNMENT)
+    })
+}
+
+/// The COFF symbol table and its string table, which is where a name longer than eight bytes lives.
+///
+/// Eighteen bytes per symbol - an eight-byte name, a value, a section, a type, a storage class and an
+/// auxiliary-record count this never uses - and then a string table whose first four bytes are its own
+/// length, including themselves. A name of eight bytes or fewer is stored in the record and needs no
+/// null; anything longer puts four zero bytes in the name field and its offset in the last four. One
+/// record per symbol, which is the number the file header promises.
+fn symbol_table(symbols: &[Symbol]) -> Vec<u8> {
+    let mut records = Vec::with_capacity(symbols.len() * 18);
+    let mut strings: Vec<u8> = vec![0, 0, 0, 0];
+    for symbol in symbols {
+        let mut name = [0u8; 8];
+        if symbol.name.len() <= 8 {
+            name[..symbol.name.len()].copy_from_slice(symbol.name.as_bytes());
+        } else {
+            let offset = strings.len() as u32;
+            name[4..].copy_from_slice(&offset.to_le_bytes());
+            strings.extend_from_slice(symbol.name.as_bytes());
+            strings.push(0);
+        }
+        records.extend_from_slice(&name);
+        records.extend_from_slice(&symbol.value.to_le_bytes());
+        records.extend_from_slice(&symbol.section.to_le_bytes());
+        let kind: u16 = if symbol.function { 0x20 } else { 0 };
+        records.extend_from_slice(&kind.to_le_bytes());
+        records.push(if symbol.external { 2 } else { 3 });
+        records.push(0); // no auxiliary records
+    }
+    let size = strings.len() as u32;
+    strings[..4].copy_from_slice(&size.to_le_bytes());
+    records.extend_from_slice(&strings);
+    records
+}
+
 /// `.rdata`'s import table, and what `.data`'s address table must hold before the loader runs.
 #[derive(Default)]
 struct ImportTables {
@@ -674,7 +733,8 @@ impl<'a> Writer<'a> {
             .iter()
             .find(|section| section.name == ".reloc")
             .map_or(0, |section| section.content.len() as u32);
-        let mut bytes = self.headers(&sections, reloc_size);
+        let symbols = self.symbols(&sections);
+        let mut bytes = self.headers(&sections, reloc_size, &symbols);
         for section in &sections {
             bytes.resize(section.place.file as usize, 0);
             bytes.extend_from_slice(&section.content);
@@ -685,7 +745,68 @@ impl<'a> Writer<'a> {
                 + align(section.content.len() as u32, FILE_ALIGNMENT) as usize;
             bytes.resize(end, 0);
         }
+        // The symbol table goes where the sections' bytes end, which is the offset the header named -
+        // so this assertion is the only thing keeping a pointer and a position from disagreeing.
+        debug_assert_eq!(
+            bytes.len() as u32,
+            end_of_sections(&sections, self.sections.headers)
+        );
+        bytes.extend_from_slice(&symbol_table(&symbols));
         bytes
+    }
+
+    /// Every name the program has, and where it went. Derived, never stored: `Program` already holds
+    /// each name against the place it was given, and a second list would be a second thing to keep
+    /// right. Local names count - `sqlite3.c`'s functions are almost all `static`, so a table of the
+    /// external ones alone would name almost nothing in the program this exists for.
+    fn symbols(&self, list: &[Section]) -> Vec<Symbol> {
+        let number = |name: &str| list.iter().position(|one| one.name == name);
+        let (Some(text), Some(data)) = (number(".text"), number(".data")) else {
+            return Vec::new();
+        };
+        let (text, data) = (text as u16 + 1, data as u16 + 1);
+        let mut symbols = Vec::new();
+        let add = |symbols: &mut Vec<Symbol>,
+                   name: &str,
+                   section: u16,
+                   value: u32,
+                   function,
+                   external| {
+            // A name the compiler made up for itself - `.str0` and the rest of the assembler's
+            // dotted names - is bookkeeping, not a name the program has. Three thousand `.strN`
+            // entries bury the functions this table is for.
+            if name.starts_with('.') {
+                return;
+            }
+            symbols.push(Symbol {
+                name: name.to_owned(),
+                section,
+                value,
+                function,
+                external,
+            });
+        };
+        for (name, at) in &self.program.functions {
+            add(&mut symbols, name, text, *at, true, true);
+        }
+        for (name, at) in &self.program.objects {
+            add(&mut symbols, name, data, *at, false, true);
+        }
+        for unit in &self.program.local {
+            for (name, at) in &unit.functions {
+                add(&mut symbols, name, text, *at, true, false);
+            }
+            for (name, at) in &unit.objects {
+                add(&mut symbols, name, data, *at, false, false);
+            }
+        }
+        // In address order, so `objdump -t` prints a list a reader can bisect and a debugger can
+        // walk - and so a name's *end* is the next symbol's start, which is the only size a COFF
+        // symbol has.
+        symbols.sort_by(|one, two| {
+            (one.section, one.value, &one.name).cmp(&(two.section, two.value, &two.name))
+        });
+        symbols
     }
 
     /// The sections this program has, in file order: **one list**, read by the header writer and by
@@ -741,7 +862,7 @@ impl<'a> Writer<'a> {
     }
 
     /// The DOS stub, the PE signature, the COFF header, the optional header and the section table.
-    fn headers(&self, list: &[Section], reloc_size: u32) -> Vec<u8> {
+    fn headers(&self, list: &[Section], reloc_size: u32, symbols: &[Symbol]) -> Vec<u8> {
         let sections = self.sections;
         let code = align(self.program.text.len() as u32, FILE_ALIGNMENT);
         let initialised = list
@@ -769,8 +890,10 @@ impl<'a> Writer<'a> {
         bytes.extend_from_slice(&0x8664u16.to_le_bytes()); // AMD64
         bytes.extend_from_slice(&(list.len() as u16).to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes()); // no timestamp: the same input is the same file
-        bytes.extend_from_slice(&0u32.to_le_bytes()); // no symbol table
-        bytes.extend_from_slice(&0u32.to_le_bytes()); // no symbols
+                                                      // Where the symbol table is in the file and how many 18-byte records it has. An image with
+                                                      // names in it is one a debugger can stop in and a crash address can be looked up against.
+        bytes.extend_from_slice(&end_of_sections(list, sections.headers).to_le_bytes());
+        bytes.extend_from_slice(&(symbols.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&(OPTIONAL_HEADER as u16).to_le_bytes());
         bytes.extend_from_slice(&CHARACTERISTICS.to_le_bytes());
         // The optional header, PE32+.

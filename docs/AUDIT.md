@@ -786,6 +786,52 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M17 - 2026-11-25 - the image names its own functions
+
+`sqlite3_open` faulted at `.text+0x129e2d` and there was no way to say which function that is: the linked image had no
+symbol table, so naming one function took `objdump -t`, arithmetic, and a guess. A compiler whose output cannot be
+debugged is one whose bugs cannot be found, and this project had spent a milestone chasing a fault it could not name.
+
+So the image now carries a COFF symbol table: `PointerToSymbolTable` and `NumberOfSymbols` in the file header, eighteen
+bytes a record, a string table for names longer than eight, and every function and object the program holds, in address
+order. Nothing maps it, the loader never reads it - it sits after the last section's bytes, which is why the header's
+pointer and the writer's position are held together by one `debug_assert`.
+
+Four decisions, once each:
+
+**Derived, never stored.** `Program` already holds every name against the place it was given - `functions`, `objects`,
+and each unit's `local` - so `Writer::symbols` reads those three and stores nothing. A second list would be a second
+thing to keep right, and this project has already paid for that (the `&(f)` token range, the two ways of reaching an
+offset).
+
+**Local names count.** Almost every function in `sqlite3.c` is `static`. A table of external names alone would have
+named almost nothing in the program this exists for. Two `static` functions of one name in two units are two symbols
+with the same name at different addresses, which the format allows and which `objdump -t` prints.
+
+**The compiler's own names do not.** `.str0` and the rest of the assembler's dotted names are bookkeeping: a table of
+three thousand `.strN` entries buries the two thousand functions it was built for.
+
+**No `--map`.** A text map would be the same fact in a second rendering, and its only consumer would be these eyes.
+`objdump -t` reads the table and `gdb` uses it - an outside reader, which is this project's whole testing philosophy -
+and both were checked on a real program before this entry was written.
+
+The first use paid for it. On a 2.4 MB image of `sqlite3.c`, `gdb` said:
+
+```
+#0  sqlite3InsertBuiltinFuncs + 163
+#1  sqlite3RegisterJsonFunctions ()
+#2  sqlite3RegisterBuiltinFunctions ()
+#3  sqlite3_initialize ()
+#4  openDatabase ()
+```
+
+which is a call chain, not an offset. The test links a program with a `static` function whose name is longer than eight
+bytes, a global object, and `main`, and reads the image's table back: section, type and storage class for each, the
+string table's second case, and the address order the reader relies on.
+
+206 unit, 35 exe (one more), 4 real, 1 crt, 30 CLI, 5 hostile, 8 C API, 41 parser, 5 invalid, 4 bcc20-sys; fmt and
+clippy clean.
+
 ### M16 reviewed - 2026-11-25 - the warning on every link, and the lvalue that was not one
 
 The aggregate `?:` landed and the review found two things, and the second is older than the feature that exposed it.

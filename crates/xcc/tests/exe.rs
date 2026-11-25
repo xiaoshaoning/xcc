@@ -377,6 +377,106 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// The image names its own functions. A COFF symbol table sits after the last section's bytes -
+/// nothing maps it and the loader never reads it - and `objdump -t` and `gdb` do: it is the
+/// difference between "the program faulted at `.text+0x129e2d`" and "the program faulted in
+/// `sqlite3InsertBuiltinFuncs`", which is how the fault inside `sqlite3_open` was finally named.
+///
+/// Local names count. Almost every function in `sqlite3.c` is `static`, so a table of the external
+/// ones alone would name almost nothing in the program this exists for.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_linked_image_names_its_own_functions() {
+    let source = r#"
+static int a_long_static_name(int x) { return x + 1; }
+static int helper(int x) { return a_long_static_name(x) * 2; }
+long a_global_object = 3;
+int main(void) { return helper(a_global_object); }
+"#;
+    let mut compiler = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    });
+    let image = compiler.link(&[("t.c", source)]).expect("it links");
+    let bytes = image.bytes();
+    let word = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    // The COFF header: `Machine`, `NumberOfSections`, `TimeDateStamp`, then the two fields this is
+    // about - where the table is in the file, and how many 18-byte records it has.
+    let header = word(0x3C) as usize + 4;
+    let table = word(header + 8) as usize;
+    let count = word(header + 12) as usize;
+    assert!(
+        count > 3,
+        "the table has {count} symbols, which is not a program"
+    );
+    assert!(table < bytes.len(), "the table starts inside the file");
+    assert_eq!(
+        table % 0x200,
+        0,
+        "it starts where the last section's bytes end"
+    );
+    // Eighteen bytes a record, then a string table whose first word is its own length: a name of
+    // more than eight bytes lives there and the record holds its offset instead.
+    let strings = table + count * 18;
+    let mut symbols = Vec::new();
+    for index in 0..count {
+        let record = table + index * 18;
+        let raw = &bytes[record..record + 8];
+        let offset = u32::from_le_bytes(raw[4..8].try_into().unwrap()) as usize;
+        let inline = raw.iter().position(|byte| *byte == 0).unwrap_or(8);
+        let name = if raw[..4] == [0, 0, 0, 0] && offset != 0 {
+            let start = strings + offset;
+            let length = bytes[start..].iter().position(|byte| *byte == 0).unwrap();
+            String::from_utf8_lossy(&bytes[start..start + length]).into_owned()
+        } else {
+            String::from_utf8_lossy(&raw[..inline]).into_owned()
+        };
+        symbols.push((
+            name,
+            word(record + 8),
+            u16::from_le_bytes(bytes[record + 12..record + 14].try_into().unwrap()),
+            u16::from_le_bytes(bytes[record + 14..record + 16].try_into().unwrap()),
+            bytes[record + 16],
+        ));
+    }
+    let find = |name: &str| {
+        symbols
+            .iter()
+            .find(|symbol| symbol.0 == name)
+            .unwrap_or_else(|| {
+                panic!("`{name}` is not in the symbol table: {symbols:?}");
+            })
+    };
+    // `.text` is section 1, a function has type 0x20, and `main` is an external definition. The
+    // record is (name, value, section, type, storage class), so the value is where it starts.
+    let main = find("main");
+    assert_eq!((main.2, main.3, main.4), (1, 0x20, 2));
+    assert!(main.1 > 0, "`main` is not at `.text`'s zero");
+    // A `static` keeps its name and says so: storage class 3, and a name longer than eight bytes,
+    // which is the string table working rather than a truncated record.
+    let helper = find("a_long_static_name");
+    assert_eq!((helper.2, helper.3, helper.4), (1, 0x20, 3));
+    assert!(helper.1 > 0, "a static function is inside `.text`");
+    // An object is in `.data` (section 2), is not a function, and is external.
+    let object = find("a_global_object");
+    assert_eq!((object.2, object.3, object.4), (2, 0, 2));
+    // The runtime is compiled into every link, so a name from it is here too - and it is longer
+    // than eight bytes, which is the second case the string table exists for.
+    assert!(symbols
+        .iter()
+        .any(|symbol| symbol.0 == "_InterlockedCompareExchange"));
+    // In address order, so a reader can bisect and a name's end is the next name's start.
+    let text: Vec<u32> = symbols
+        .iter()
+        .filter(|symbol| symbol.2 == 1)
+        .map(|symbol| symbol.1)
+        .collect();
+    assert!(
+        text.windows(2).all(|pair| pair[0] <= pair[1]),
+        "sorted by address"
+    );
+}
+
 /// `argc`/`argv` come from the runtime the link compiles in, so this is the test that a linked
 /// program can be a command-line tool: a quoted argument stays one argument, and `main`'s return
 /// value is the exit status.
