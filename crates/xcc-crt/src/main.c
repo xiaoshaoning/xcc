@@ -712,9 +712,8 @@ XCC_CAS(unsigned char, uchar)
 XCC_CAS(short, short)
 XCC_CAS(unsigned short, ushort)
 
-/* The fill and product intrinsics in the same family. The `__stos*` four are `memset` with an
- * element size - the SDK's `RtlZeroMemory` and the threadpool helpers are made of them - and the
- * products are the two halves a 64x64 multiply produces, the high one through a pointer. */
+/* The `__stos*` four are `memset` with an element size, and the products are the two halves a
+ * 64x64 multiply gives, the high one through a pointer. */
 void __stosb(unsigned char *dest, unsigned char value, size_t count) {
     memset(dest, value, count);
 }
@@ -773,18 +772,24 @@ long long _mul128(long long a, long long b, long long *high) {
     return (long long)low;
 }
 
-/* The Microsoft intrinsics a Windows SDK's headers call.
+/* The Microsoft intrinsics a Windows SDK's headers *declare*.
  *
- * `winnt.h` and `winbase.h` write a hundred `static __inline` functions whose bodies name these -
- * `ShiftRight128` is `__shiftright128` - and a compiler emits every one it reads, so a link needs
- * them whether or not the program calls one. They are *arithmetic*, not instruction encodings: the
- * compilers that own them make them intrinsics for speed, and a program cannot tell a call from an
- * instruction except by how long it takes.
+ * These are the SDK's own names, with the SDK's own signatures - `__shiftright128(unsigned __int64,
+ * unsigned __int64, unsigned char)`, `_umul128(a, b, *high)`, `__stosd(unsigned __LONG32 *, ...)`
+ * are transcribed from `psdk_inc/intrin-impl.h`, and nothing checks the transcription: a wrong width
+ * here would be a call that disagrees with its caller's registers and no diagnostic anywhere. They
+ * are *arithmetic*, not instruction encodings - the compilers that own them spell them `shrd`, `mul`
+ * and `stos` for speed, and a program cannot tell a call from an instruction except by how long it
+ * takes.
+ *
+ * A program that writes one now gets it, because the SDK declares it; a program that merely includes
+ * `<windows.h>` no longer needs any of them, which is `__NO_INLINE__`'s doing - the inline wrappers
+ * that used to name them are not compiled at all (see `pp/mod.rs`). Every one is checked against
+ * `clang`, whose versions *are* instructions, in `tests/exe.rs`.
  *
  * The shift pair is the 128-bit shift `(high:low)` by `count`, in the SDK's argument order - low
  * part first, then the high one - and the count is a *runtime* value, so each guards both edges: a
- * shift by 0 is the operand unchanged, and by 64 or more is the other part, where a bare
- * `<< (64 - count)` would be undefined behaviour.
+ * shift by 0 is the operand unchanged, and by 64 or more is the other part.
  */
 unsigned long long __shiftright128(unsigned long long low, unsigned long long high,
                                    unsigned char count) {

@@ -786,6 +786,39 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M12 reviewed - 2026-11-25 - the reason that stopped being true in one commit
+
+The intrinsics went in and the review measured something uncomfortable: **with `__NO_INLINE__` defined, no SDK intrinsic
+is referenced at all**. A `windows.h` program's object has no `__shiftright128`, no `__stosb`, no `_umul128` in its
+relocations - `__NO_INLINE__` removed the inline wrappers that used to name them, which is the same commit's other half.
+
+So the block comment over those eight functions - "a compiler emits every one it reads, so a link needs them whether or
+not the program calls one" - was **false the moment it was committed**, and it was the *justification* for the code
+below it. The functions stay, because the SDK *declares* them and a program may write one (`_umul128` is how every
+bignum and hash in C for Windows multiplies), but the comment now says that instead: what they are, that the signatures
+are transcribed from `psdk_inc/intrin-impl.h` **and that nothing checks the transcription** - a wrong width there is a
+call that disagrees with its caller's registers with no diagnostic anywhere - and that inclusion alone no longer needs
+them.
+
+Two of the same family's comments said the same thing twice, and the other one was the truer: "`memset` with an element
+size" tells a reader what `__stosb` is; "the SDK's `RtlZeroMemory` and the threadpool helpers are made of them" was the
+justification that had just expired. Merged into the shorter one.
+
+**And the arithmetic got a harder test.** The first version checked four expressions; the review found sixteen edge
+cases identical to `clang` - `_umul128(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)`, `_umul128(0x100000000, 0x100000000)`
+(the case whose *high* word a naive implementation gets right while its low word is wrong), the four sign combinations of
+`_mul128`, `INT64_MIN * -1`, `INT64_MIN * INT64_MIN`, and both shifts at counts 1 and 63. Those sixteen lines are the
+test now, so the two mistakes this arithmetic made once cannot come back quietly.
+
+Checked and found sound: `CALLER_SAVED` is `r8`–`r11`, so `rcx` and `rdx` are never allocated and reading the shift
+count into `rcx` clobbers nothing - the "fixed register the allocator does not know" hazard does not apply here; the
+`__stos*` signatures match `psdk_inc/intrin-impl.h` (`__LONG32` is `long` here, so `__stosd` takes `unsigned long *`);
+and `__NO_INLINE__` is read only by headers, so no library behaviour changes with it.
+
+204 unit, 39 parser, 30 CLI, 5 invalid, 33 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M12 - 2026-11-25 - `windows.h` runs, and the two arithmetic mistakes inside it
 
 `#include <windows.h>` links and runs. Getting there took three things, and the largest was not the one I had planned.

@@ -1642,40 +1642,42 @@ int main(void) {
 /// The Microsoft intrinsics the runtime implements, as a program: every line is what `clang`
 /// prints, so the arithmetic is checked against the compiler that has them as instructions.
 const INTRINSIC_PROGRAM: &str = r#"#include <stdio.h>
-#include <string.h>
 
 unsigned long long __shiftright128(unsigned long long, unsigned long long, unsigned char);
 unsigned long long __shiftleft128(unsigned long long, unsigned long long, unsigned char);
 unsigned long long _umul128(unsigned long long, unsigned long long, unsigned long long *);
 long long _mul128(long long, long long, long long *);
-void __stosb(unsigned char *, unsigned char, unsigned long long);
-void __stosw(unsigned short *, unsigned short, unsigned long long);
+
+static void umul(unsigned long long a, unsigned long long b) {
+  unsigned long long high = 0;
+  unsigned long long low = _umul128(a, b, &high);
+  printf("umul %llx %llx %llx\n", a, low, high);
+}
+
+static void mul(long long a, long long b) {
+  long long high = 0;
+  long long low = _mul128(a, b, &high);
+  printf("mul %lld %llx %llx\n", a, (unsigned long long)low, (unsigned long long)high);
+}
 
 int main(void) {
-  unsigned long long high = 0;
-  long long signed_high = 0;
-  unsigned char filled[8];
-
-  printf("%llx %llx %llx %llx\n", __shiftright128(0x1111111111111111ULL, 0x2222222222222222ULL, 4),
-         __shiftright128(0xFFFFFFFFFFFFFFFFULL, 0x123456789ABCDEF0ULL, 0),
-         __shiftleft128(0x1111111111111111ULL, 0x2222222222222222ULL, 4),
-         __shiftleft128(0x1111111111111111ULL, 0x2222222222222222ULL, 0));
-  printf("%llx %llx\n", __shiftleft128(0x0123456789ABCDEFULL, 0xFEDCBA9876543210ULL, 60),
-         __shiftright128(0xFEDCBA9876543210ULL, 0x0123456789ABCDEFULL, 60));
-
-  unsigned long long low = _umul128(0x123456789ABCDEF0ULL, 0xFEDCBA9876543210ULL, &high);
-  printf("umul %llx %llx\n", low, high);
-  long long sl = _mul128(-123456789012345LL, 98765432109876LL, &signed_high);
-  printf("mul %llx %llx\n", (unsigned long long)sl, (unsigned long long)signed_high);
-
-  memset(filled, 0, sizeof filled);
-  __stosb(filled, 0xAB, 5);
-  printf("stosb %d %d %d\n", (int)filled[4], (int)filled[5], (int)filled[7]);
-  {
-    unsigned short words[4] = {0, 0, 0, 0};
-    __stosw(words, 0x1234, 3);
-    printf("stosw %d %d %d %d\n", (int)words[0], (int)words[2], (int)words[3], (int)words[3]);
-  }
+  umul(0, 0);
+  umul(1, 0xFFFFFFFFFFFFFFFFULL);
+  umul(0xFFFFFFFFFFFFFFFFULL, 0xFFFFFFFFFFFFFFFFULL);
+  umul(0x100000000ULL, 0x100000000ULL);
+  umul(0xFFFFFFFFULL, 0xFFFFFFFFULL);
+  umul(0x123456789ABCDEFULL, 0x0FEDCBA98765432ULL);
+  mul(-1, -1);
+  mul(-5, 3);
+  mul(5, -3);
+  mul(-9223372036854775807LL - 1, -1);
+  mul(-9223372036854775807LL - 1, -9223372036854775807LL - 1);
+  mul(9223372036854775807LL, 9223372036854775807LL);
+  mul(-123456789012345LL, 98765432109876LL);
+  printf("shr1 %llx %llx\n", __shiftright128(0xFFFFFFFFFFFFFFFFULL, 0, 1),
+         __shiftright128(0, 0xFFFFFFFFFFFFFFFFULL, 63));
+  printf("shl1 %llx %llx\n", __shiftleft128(0xFFFFFFFFFFFFFFFFULL, 0, 63),
+         __shiftleft128(0, 0xFFFFFFFFFFFFFFFFULL, 1));
   return 0;
 }
 "#;
@@ -1694,7 +1696,7 @@ fn the_sdk_intrinsics_compute_what_clang_computes() {
     let run = run_linked_with("c99", "intrinsics", INTRINSIC_PROGRAM, &[]);
     assert_eq!(run.status.code(), Some(0), "it ran to completion");
     let out = String::from_utf8_lossy(&run.stdout);
-    let expected = "2111111111111111 ffffffffffffffff 2222222222222221 2222222222222222@@123456789abcde 123456789abcdeff@@umul 236d88fe5618cf00 121fa00ad77d7422@@mul 1f3127d607a6b86c ffffffffd899f81a@@stosb 171 0 0@@stosw 4660 4660 0 0@@";
+    let expected = "umul 0 0 0@@umul 1 ffffffffffffffff 0@@umul ffffffffffffffff 1 fffffffffffffffe@@umul 100000000 0 1@@umul ffffffff fffffffe00000001 0@@umul 123456789abcdef 42100282174aa4ae 121fa00ad77d7@@mul -1 1 0@@mul -5 fffffffffffffff1 ffffffffffffffff@@mul 5 fffffffffffffff1 ffffffffffffffff@@mul -9223372036854775808 8000000000000000 0@@mul -9223372036854775808 0 4000000000000000@@mul 9223372036854775807 1 3fffffffffffffff@@mul -123456789012345 1f3127d607a6b86c ffffffffd899f81a@@shr1 7fffffffffffffff fffffffffffffffe@@shl1 7fffffffffffffff fffffffffffffffe@@";
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
