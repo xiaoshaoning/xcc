@@ -220,9 +220,13 @@ impl Lexer<'_> {
             if self.is_literal_start() {
                 let kind = self.literal();
                 self.push_scanned(kind, start);
-            } else if is_ident_start(byte) {
-                self.identifier();
-                self.push_scanned(TokenKind::Ident, start);
+            } else if is_ident_start(byte) || byte == b'\\' || byte >= 0x80 {
+                if let Some(decoded) = self.identifier(start) {
+                    let end = self.at;
+                    self.push(TokenKind::Ident, &decoded, start, end);
+                } else {
+                    self.push_scanned(TokenKind::Ident, start);
+                }
             } else if byte.is_ascii_digit() || (byte == b'.' && self.digits_follow()) {
                 self.number();
                 self.push_scanned(TokenKind::Number, start);
@@ -288,15 +292,105 @@ impl Lexer<'_> {
         }
     }
 
-    /// Scan an identifier: a letter or `_`, then letters, digits and `_`.
-    fn identifier(&mut self) {
-        while self
-            .bytes
-            .get(self.at)
-            .is_some_and(|&b| is_ident_continue(b))
-        {
-            self.at += 1;
+    /// Scan an identifier and answer the spelling it *decodes* to when a universal character name
+    /// was met, or `None` when the token is the run of bytes in the prepared text.
+    ///
+    /// C99 6.4.2.1 puts a universal character name inside an identifier, and 6.4.3p2's rules make it
+    /// the *same* identifier as the character it names - so the token's spelling is the character,
+    /// not the six bytes of the escape, and `\u00e9` and `é` intern to one symbol. That is also why
+    /// a keyword cannot be smuggled in: a character below `0xA0` is not a universal character name
+    /// at all, unless it is `$`, `@` or the backtick, and none of those is an identifier character.
+    ///
+    /// A character outside ASCII travels as the bytes it is written in: the source is valid UTF-8 by
+    /// the time it arrives, so its bytes are the spelling.
+    fn identifier(&mut self, start: usize) -> Option<String> {
+        let mut decoded: Option<String> = None;
+        loop {
+            let Some(&byte) = self.bytes.get(self.at) else {
+                return decoded;
+            };
+            if byte == b'\\' {
+                let from = self.at;
+                let Some(character) = self.universal_character_name() else {
+                    // Not a universal character name, and the error is reported: the rest of the
+                    // token is skipped so the next one begins after it.
+                    while self
+                        .bytes
+                        .get(self.at)
+                        .is_some_and(|&b| is_ident_continue(b) || b >= 0x80)
+                    {
+                        self.at += 1;
+                    }
+                    return decoded;
+                };
+                let text = match &mut decoded {
+                    Some(text) => text,
+                    None => decoded.insert(self.prepared.text[start..from].to_string()),
+                };
+                let mut encoded = [0u8; 4];
+                text.push_str(
+                    char::from_u32(character).map_or("", |c| c.encode_utf8(&mut encoded)),
+                );
+                continue;
+            }
+            if is_ident_continue(byte) || byte >= 0x80 {
+                let from = self.at;
+                self.at += 1;
+                // The rest of a UTF-8 sequence travels with its first byte: the prepared text is
+                // valid UTF-8, so those bytes are the spelling.
+                while self.bytes.get(self.at).is_some_and(|&b| b & 0xC0 == 0x80) {
+                    self.at += 1;
+                }
+                if let Some(text) = &mut decoded {
+                    // Bytes after a decoded name are part of the same identifier: `a\u00e9b` is
+                    // three characters, and stopping at two was a symbol nothing could find.
+                    text.push_str(&self.prepared.text[from..self.at]);
+                }
+                continue;
+            }
+            return decoded;
         }
+    }
+
+    /// Read a universal character name where the cursor is, advancing past it, and say what
+    /// character it names. `None` means it is not one and the error says which rule it broke.
+    fn universal_character_name(&mut self) -> Option<u32> {
+        let start = self.at;
+        self.at += 1;
+        let digits = match self.bytes.get(self.at) {
+            Some(b'u') => 4,
+            Some(b'U') => 8,
+            _ => {
+                self.error(start, self.at - start, "stray `\\` in program");
+                return None;
+            }
+        };
+        self.at += 1;
+        let from = self.at;
+        let character = crate::literal::universal_character_name(self.bytes, &mut self.at, digits);
+        let Some(character) = character else {
+            // The reader took the digits there were; a name that is not one gets one diagnostic
+            // naming the rule, which is the standard's and not this compiler's.
+            let end = self.at.max(from);
+            self.error(
+                start,
+                end - start,
+                "a universal character name is four hex digits after `\\u` or eight after `\\U`, naming a character at or above `0xA0` that is not a surrogate (C99 6.4.3p2)",
+            );
+            return None;
+        };
+        // `$`, `@` and the backtick are the three below `0xA0` a universal character name may name,
+        // and none of them is part of an identifier.
+        if character < 0xA0 {
+            let character = char::from_u32(character).unwrap_or_default();
+            self.error(
+                start,
+                self.at - start,
+                format!("`{character}` is not part of an identifier, so a universal character name may not spell it"),
+            );
+            return None;
+        }
+        Some(character)
     }
 
     /// A pp-number: it starts a number and then takes almost anything, which is what lets the

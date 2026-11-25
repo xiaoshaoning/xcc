@@ -33,7 +33,7 @@ may not ask the program to change its standard.
 |---|---|
 | translation phases 1-2: trigraphs, line splicing, CRLF | `sound` - in `lex.rs`, which is where a later trigraph warning would come from |
 | comments, `//` and `/* */` | `sound` |
-| identifiers, keywords, punctuators | `planned` - a universal character name in an *identifier* is refused by name (PLAN) |
+| identifiers, keywords, punctuators | `sound` - a universal character name in an identifier is the character it names (C99 6.4.3p2), so `caf\u00e9` and `café` are one name; a character outside ASCII travels as its UTF-8 bytes; a keyword cannot be spelled this way, because a character below `0xA0` is not a universal character name |
 | integer constants (decimal, octal, hex, suffixes `u`/`l`/`ll` in any order) | `partial` - lexed as pp-numbers; classifying and evaluating them is M3 |
 | character constants, every escape C99 has (simple, octal, `\x`), wide `L'x'` | `sound` - a multi-character constant is refused rather than given an implementation-defined value; wide characters are `unsigned short`, as the target has no `wchar_t` of its own |
 | string literals and `L"x"` | `partial` - a literal has the `char[n]` type C gives it, adjacent literals concatenate, and its length counts escapes as the bytes they are; the bytes themselves are lowered at M4. A string too long for its array, or for an `int` array, is refused |

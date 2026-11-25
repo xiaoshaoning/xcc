@@ -63,7 +63,18 @@ fn warnings(source: &str) -> Vec<String> {
 }
 
 fn refuses(source: &str, expected: &str) {
-    let complaints = check(source);
+    // Not `check`: its first assertion is that the source reaches the parser at all, and a lexical
+    // refusal - "stray `\` in program", a universal character name that is not one - is reported
+    // before the parser runs. The question here is only what the compiler said.
+    let complaints: Vec<String> = match xcc::Compile::new(Options::default()).compile("t.c", source)
+    {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics
+            .items()
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect(),
+    };
     assert!(
         complaints.iter().any(|message| message.contains(expected)),
         "{source:?} should be refused with {expected:?}, got {complaints:?}"
@@ -147,6 +158,46 @@ fn imaginary_types_are_refused_by_name() {
     assert!(parses(
         "int f(void) { double _Complex z = { 1.0, 0.0 }; return (int)z; }"
     ));
+}
+
+#[test]
+fn a_universal_character_name_in_an_identifier_is_that_identifier() {
+    // C99 6.4.2.1 lets a universal character name stand for a letter of an identifier, and 6.4.3p2
+    // makes it the *same* identifier as the character it names - so the two spellings collide.
+    // Asserting a redefinition is the strong form of "they are one name": a program that merely
+    // compiled could have two symbols with one meaning. The sources are Rust *raw* strings, because
+    // a `\u` in an ordinary one is a Rust escape and never reaches the compiler.
+    refuses(
+        r#"int caf\u00e9 = 1;
+int café = 2;"#,
+        "redefinition of `café`",
+    );
+    refuses(
+        r#"int f(void) { int a\u00e9 = 1; return aéb; }"#,
+        "`aéb` is not declared",
+    );
+    assert!(parses(
+        r#"int f(void) { int a\u00e9b = 1; return a\u00e9b + aéb; }"#
+    ));
+    // A character below `0xA0` cannot be spelled this way - the rule that also stops `\u0069nt`
+    // from being the keyword `int` - and the three exceptions are not identifier characters.
+    refuses(
+        r#"int \u0041 = 1;"#,
+        "a universal character name is four hex digits",
+    );
+    refuses(r#"int \u0024x = 1;"#, "`$` is not part of an identifier");
+    refuses(
+        r#"int a\u00 = 1;"#,
+        "a universal character name is four hex digits",
+    );
+    refuses(
+        r#"int a\uD800 = 1;"#,
+        "a universal character name is four hex digits",
+    );
+    // A code point outside ASCII is an identifier character here whatever it is: completeness would
+    // be Unicode's XID tables, and `clang` - which has them - refuses an emoji. Accepting a name
+    // `clang` would refuse is a portability trap worth a line of documentation, not a table.
+    assert!(parses(r#"int \U0001F600x = 1;"#));
 }
 
 #[test]

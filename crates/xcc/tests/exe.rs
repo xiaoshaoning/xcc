@@ -1340,6 +1340,22 @@ fn uchar_types_conversions_and_the_three_literal_families() {
     assert_eq!(out, expected.replace("@@", "\r\n"));
 }
 
+/// A universal character name in an identifier (C99 6.4.2.1): `caf\u00e9` and `café` are one
+/// name, and an object written with one links against a use written with the other. That exercises
+/// the interning of a spelling which is not a slice of the source, the COFF symbol table with bytes
+/// outside ASCII in a name, and the linker's copy of that name.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_universal_character_name_in_an_identifier_links() {
+    let source = concat!(
+        "int caf",
+        r"\u00e9",
+        " = 7;\nint f(void) { return café; }\nint main(void) { return f() - 7; }\n",
+    );
+    let run = run_linked_with("c99", "ucn-identifier", source, &[]);
+    assert_eq!(run.status.code(), Some(0), "the two spellings are one name");
+}
+
 /// The narrow atomics: `_Atomic char` and `_Atomic short`, signed ones included. The signed cases
 /// are the point - `cmpxchg` writes one byte or two and leaves the rest of `rax` as it was, so a
 /// result that is not extended back to its type reads as a large positive number. Every line is

@@ -136,7 +136,7 @@ pub fn string_bytes(spelling: &str) -> Option<Vec<u8>> {
 ///
 /// `None` for a value that is not one - a surrogate, or past the last code point - because a
 /// character that is not a character must not silently become something else.
-fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usize) -> Option<u32> {
+pub(crate) fn universal_character_name(bytes: &[u8], at: &mut usize, digits: usize) -> Option<u32> {
     let end = *at + digits;
     let text = std::str::from_utf8(bytes.get(*at..end)?).ok()?;
     if !text.bytes().all(|byte| (byte as char).is_ascii_hexdigit()) {

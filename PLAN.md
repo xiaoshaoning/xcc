@@ -976,12 +976,14 @@ ambition. Nothing here starts before M6 is solid, and nothing here may change th
       (open parens, a function's name, the matching closes, nothing after), not about the token in front of it.
       The second half is the one that was learned twice - a range check with no "nothing follows" clause accepts
       `&mk` in `&mk(1)->d` and reproduces the lz4frame.c bug - and both halves are in `operand_is_a_function_designator`.
-- [ ] **A universal character name in an *identifier* is refused.** `int \u00e9 = 1;` is C99 6.4.2.1's spelling of
-      `int é = 1;` and `clang` accepts it; this compiler says "stray `\` in program", which is at least not a silent
-      wrong answer. The literal half is done - `\u`/`\U` are read in all four kinds of literal, with C99 6.4.3p2's
-      rules (a surrogate, a value past `0x10FFFF`, and a character below `0xA0` other than `$`, `@` and the backtick
-      are not one) - so what is missing is the lexer turning one into a name, and the answer that suggests the
-      non-escaped spelling.
+- [x] **A universal character name in an identifier.** The lexer decodes it, so the token's spelling *is* the character:
+      `caf\u00e9` and `café` intern to one symbol (asserted as a redefinition, and linked end to end), and a raw
+      character outside ASCII travels as the bytes it is written in. C99 6.4.3p2's rules are the literal ones, plus
+      the three characters below `0xA0` a name may spell - `$`, `@`, the backtick - which are refused as not part of
+      an identifier. One divergence from `clang`, deliberate: a code point at or above `0xA0` is an identifier
+      character here whatever it is, where `clang` asks Unicode's XID tables and so refuses an emoji. The complete
+      rule is a table of several thousand ranges; accepting a name `clang` would refuse is a portability trap worth a
+      sentence, not a dependency.
 - [ ] **A nameless struct member is accepted.** `struct H { void * ( __cdecl * ) ( unsigned long long ) ; };`
       compiles silently; C99 6.7.2.1p1 wants a declarator with an identifier. Found while bisecting the
       eleven-gigabyte member loop, which is fixed - this is the diagnostic that was missing beside it.

@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M10 - 2026-11-25 - the name that decodes, and the bytes after it
+
+C99 6.4.2.1 puts a universal character name inside an identifier and 6.4.3p2 makes it the *same* identifier as the
+character it names. So the lexer decodes one: the token's spelling becomes the character rather than the six bytes of
+the escape, which is why `caf\u00e9` and `café` intern to one symbol. The literal reader is shared, so the four rules -
+four or eight hex digits, at or above `0xA0`, not a surrogate, inside the code space - are in one place; the three
+characters below `0xA0` that a name *may* spell (`$`, `@`, the backtick) are refused here as not part of an identifier.
+
+Three things came out of writing it.
+
+**A decoded name stopped at the escape.** `caf\u00e9` worked, so the first measurement looked like success - and it is
+the shape that hides the bug, because nothing follows the name. `a\u00e9b` declared `aé` and then looked for `aéb`, so
+the two spellings disagreed and the *declaration* was the one that lost bytes. The scanner appended the decoded character
+and then kept advancing `self.at` without appending what it passed.
+
+**A lexical refusal could not be tested.** `refuses` went through `check`, whose first assertion is that the source
+*reaches the parser* - which a lexer error never does. The helper now asks the compiler directly, because the question
+is what it said, not how far it got.
+
+**And the guard was worth keeping**: a source that does not preprocess is a test that is wrong, and that assertion is
+still there for `parses`.
+
+Honest about the one divergence: any code point at or above `0xA0` is an identifier character here, where `clang` asks
+Unicode's XID tables and refuses an emoji. The complete rule is several thousand ranges; a name `clang` would refuse is a
+portability trap worth a sentence in PLAN, not a dependency. The *reverse* - refusing a valid name - would be a gap, and
+that is why the boundary went where it did.
+
+201 unit, 36 parser, 30 CLI, 5 invalid, 26 exe, 4 real, 1 crt, 6 x64, 5 hostile, 8 C API, 4 bcc20-sys, differential
+(415 ran, 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong;
+`.text` 80 336 bytes over 444 programs; four fixtures byte-identical to `clang`; fmt and clippy clean.
+
 ### M10 reviewed - 2026-11-25 - the rule the standard has three times, and the list that decides what a declaration is
 
 The four gaps were closed with a full gate behind them and four findings came out of reading the diff.
