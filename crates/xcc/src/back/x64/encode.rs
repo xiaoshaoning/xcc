@@ -189,6 +189,8 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         fixups: Vec::new(),
         labels: Vec::new(),
         allocation,
+        operands: Vec::new(),
+        encoded: String::new(),
         body_base,
         spill_base,
         outgoing_base,
@@ -211,6 +213,13 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         for op in &block.ops {
             encoder.op(op);
         }
+        // A terminator reads registers too, and the check in `read` asks the *operation* what it
+        // declared - so the terminator has to be the thing being asked, not the last instruction.
+        // The first version of this guard did not, and reported a `Call` "reading its own
+        // destination" three times over: the branch after it was reading the call's result, which is
+        // exactly right and was being blamed on the call.
+        encoder.operands = block.term.operands();
+        encoder.encoded = format!("{:?}", block.term);
         match &block.term {
             BlockTerm::Return(value) => {
                 if let Some(value) = value {
@@ -305,6 +314,14 @@ struct Encoder<'a> {
     fixups: Vec<Fixup>,
     labels: Vec<Option<usize>>,
     allocation: &'a Allocation,
+    /// The operation being encoded and the registers it *declared* it reads, so `read` can check
+    /// itself against what the operation said. An operand left out of `Op::operands` ends its live
+    /// range at the instruction, so the allocator may hand its register to the destination - the
+    /// instruction then reads from wherever the destination landed. Five times in this back end, and
+    /// every time found by reading code rather than by a test.
+    operands: Vec<VReg>,
+    /// The same operation, printed, so a failure says which one lied.
+    encoded: String,
     /// Where the outgoing argument slots start, from `rsp`: above the shadow space, where a callee
     /// reads its fifth argument.
     outgoing_base: i32,
@@ -426,6 +443,8 @@ impl Encoder<'_> {
     // ---------------------------------------------------------------- operations
 
     fn op(&mut self, op: &Op) {
+        self.operands = op.operands();
+        self.encoded = format!("{op:?}");
         match op {
             Op::Const { dst, value } => {
                 let register = self.destination(*dst);
@@ -1325,6 +1344,16 @@ impl Encoder<'_> {
 
     /// Where a value lives, in a register: a spilled one is loaded into a scratch for this use.
     fn read(&mut self, value: VReg) -> Reg {
+        // Every register this operation reads must be one it *declared*: an operand left out of
+        // `Op::operands` ends its live range here, the allocator is free to hand its register to the
+        // destination, and the instruction reads from wherever the destination landed. Five times in
+        // this back end, every time found by reading code - this makes it a test's job instead.
+        debug_assert!(
+            self.operands.contains(&value),
+            "an operation reads v{} and did not declare it in `Op::operands`: {}",
+            value.0,
+            self.encoded
+        );
         match self.allocation.location(value) {
             Location::Register(register) => register,
             Location::Float(_) => unreachable!("a floating-point value read as an integer"),

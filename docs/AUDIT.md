@@ -786,6 +786,28 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M32 - 2026-11-25 - the guard lands, and blames the wrong instruction for three runs
+
+The operand guard from M31 is in: the encoder remembers what the operation being encoded *declared* it reads, and `read`
+asserts membership. It fired on the first three tests with three different messages, and every one of them was wrong -
+about *my* guard, not about the back end.
+
+`LoadLocal { dst: VReg(6), offset: 16 }` reads `v4`. A load from the frame reads no register at all, so the message was
+nonsense - and nonsense with a shape: the operation named was always the *last instruction of the block*, and the read
+always belonged to the terminator after it. The branch after a call reads the call's result; that is exactly right, and
+it was being blamed on the call. `encoder.operands` was set per *instruction* and never per *terminator*, so every
+terminator was checked against the previous instruction's list.
+
+The fix is one line - `encoder.operands = block.term.operands()` before the terminator is encoded - and it makes the
+guard cover both halves of a block. Green everywhere.
+
+Two things this leaves: the invariant is now checked on **every test run**, which is what the five-times class needed; and
+the first version of the check reported three failures and none of them was real, which is the second time this session
+that a diagnostic's own bug was mistaken for a compiler's (the false `_Bool -> unsigned char` from comparing type *ids*
+was the first). A check that shouts must be as testable as the code it checks.
+
+209 unit, 40 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy clean.
+
 ### M31 - 2026-11-25 - the sweep of the operand lists, and the guard that found something it cannot yet explain
 
 The review of `8cb4833` had nothing unreviewed to read - the tree is clean and every commit before it has had a pass -
