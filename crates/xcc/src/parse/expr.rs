@@ -1856,7 +1856,7 @@ impl Parser<'_> {
                 // A string literal has an array type of its own (C99 6.2.5p20), which is what
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
                 let (ty, name, _) = self.string_literal();
-                Some(self.literal_of(ty, name, span))
+                Some(self.literal_value(ty, name, span))
             }
             crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
                 // `(int)x` is a cast; `(x)` groups.
@@ -1894,24 +1894,29 @@ impl Parser<'_> {
         let function = self.current_function.expect("a function is being read");
         if let Some((ty, name)) = self.func_literals.get(&function) {
             let (ty, name) = (*ty, name.clone());
-            return self.literal_of(ty, name, span);
+            return self.literal_value(ty, name, span);
         }
         let spelled = self.spell_of(function).to_owned();
         let mut bytes = spelled.into_bytes();
         bytes.push(0);
+        // `static const char __func__[]` (C99 6.4.2.2p1): the qualifier is on the *element*, so
+        // `__func__[0] = 'x'` is a write to a `const` object and is refused. A string literal is
+        // not const-qualified in C - it is the program's business whether to write to one - and
+        // that difference is the reason this is not simply "a literal with a name".
         let character = self
             .types
             .fundamental("char")
+            .map(|character| self.types.constant(character))
             .unwrap_or_else(|| self.types.error());
         let ty = self.types.array(character, Some(bytes.len() as u64));
         let name = self.literal_object(ty, &bytes, span);
         self.func_literals.insert(function, (ty, name.clone()));
-        self.literal_of(ty, name, span)
+        self.literal_value(ty, name, span)
     }
 
     /// The value of a literal object: its type is the array, its value is the address of the object
     /// (ADR-004), and it is an lvalue because a literal is an object the program may look at.
-    fn literal_of(&mut self, ty: TypeId, name: String, span: Span) -> Value {
+    fn literal_value(&mut self, ty: TypeId, name: String, span: Span) -> Value {
         let pointer = self.types.pointer(ty);
         let symbol = self.preprocessed.intern(&name);
         let mut value = Value::new(ty, None, true).with_address(Some((symbol, 0)));

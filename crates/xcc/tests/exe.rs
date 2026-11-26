@@ -404,6 +404,15 @@ int main(void) {
     assert_eq!(run.status.code(), Some(0), "{out}");
     // `main` is four characters, `where` is five, and `sizeof` of the array counts its terminator.
     assert_eq!(out.trim_end(), "main where 4 5 8");
+
+    // C99 6.4.2.2p1 declares it `static const char[]`, so a program cannot write to it - and this
+    // compiled and *wrote* until this test existed, which is the wrong kind of silence.
+    let refused = Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    })
+    .compile("t.c", "int main(void) { __func__[0] = 'x'; return 0; }");
+    assert!(refused.is_err(), "writing to `__func__` must be refused");
 }
 
 /// A `_Bool` that came from a comparison, and then converted: the shape `yyjson` wrote as

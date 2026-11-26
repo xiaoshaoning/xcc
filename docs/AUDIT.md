@@ -786,6 +786,29 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M28 - 2026-11-25 - the review of mimalloc's three, and the one that was still wrong
+
+Reviewing `89ff054` found one real bug in what it added, and one name that said the wrong thing.
+
+**`__func__` was writable.** C99 6.4.2.2p1 declares it `static const char __func__[] = "the name";` - the qualifier is
+on the *element* - and the version this session added built a plain `char[]`, so `__func__[0] = 'x'` compiled and wrote
+into it. clang refuses that, and a compiler that accepts it is the "accepted and dropped" mistake in its purest form:
+nothing warns, and the program has written to an object the standard says is read-only. The element is `const char` now,
+and the test asserts the refusal as well as the answers, because the refusal is the half a program could get wrong
+silently.
+
+**Two helpers whose names were one word apart.** `literal_object` creates the object; `literal_of` returns the value of
+one that exists. They read as one thing and are two, so the second is `literal_value` - the object and the value of it,
+which is the distinction ADR-004 makes everywhere else.
+
+What was reviewed and found sound: the `#include` verbatim rule (only p2's written names are unexpanded, p4's `#include
+MACRO` still is, and the tests name both), the `__thread` spelling (it joins `_Thread_local` in the storage-class group,
+so `static __thread` is one declaration and not two), and the memo of `__func__` objects - one per function, because a
+logging macro expands it a dozen times in one body.
+
+209 unit, 41 parser, 39 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0
+mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M27 - 2026-11-25 - mimalloc, and the three things it asked for before it could be measured
 
 `mimalloc` is 21 units in `src/` plus an amalgamation (`static.c`) that is the whole library in one object. It compiled
