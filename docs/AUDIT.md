@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M40 - 2026-11-25 - the gate that runs anywhere, and the five files that could not
+
+The question was whether this work could move to a Linux host (WSL2 is on this machine). The answer splits, and both
+halves are now facts rather than intentions.
+
+**The compiler builds on Linux, today**: `cargo check --workspace --all-targets --target
+x86_64-unknown-linux-musl` reports **no errors**. The preprocessor, the parser, the type system, `cir`, the passes and the
+x86-64 encoder are host-agnostic, and they always were - nobody had checked.
+
+**What it compiles does not run there**, because the target is Windows x86-64: PE32+, `ucrtbase`, and a C runtime this
+compiler writes. Six test files act on that - they link an image and *execute* it - and only two of them said so. The
+other four had no `cfg` at all and would have failed on a Linux host rather than skipped:
+
+| file | what it does | was |
+|---|---|---|
+| `x64.rs` | links and runs the corpus through both back ends | no gate |
+| `cli.rs` | compiles, links, runs | no gate |
+| `differential.rs` | `--run` in process, and clang's executable | no gate |
+| `hostile.rs` | refuses, then builds and runs what survives | no gate |
+| `exe.rs`, `real.rs` | links and runs | thirty-seven and eight per-test `cfg`s |
+
+The four are now `#![cfg(target_os = "windows")]` as whole files, each with a doc comment saying *why* - the target cannot
+run here, which is a fact about the target and not about the test - so on another host they are empty rather than red. The
+README says the same thing next to the commands, with the `cargo check --target` line that verifies the portable half.
+
+One thing deliberately not done: a *Linux target* - ELF, the System V ABI, a libc, a linker for it. That is what tinyhttpd
+would need and it is a different project, not a different host.
+
+209 unit, 42 parser, 6 invalid, 1 preprocessing gate, 2 fuzz, 1 crt; `cargo check --all-targets` for
+`x86_64-unknown-linux-musl` clean; fmt and clippy clean.
+
 ### M39 - 2026-11-25 - tinyhttpd, and the answer that is "wrong program for this target"
 
 `D:/Projects/github/tinyhttpd` was the next candidate: 549 lines, one file, a real program by anyone's definition. It does

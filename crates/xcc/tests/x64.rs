@@ -7,6 +7,12 @@
 //! run, and compared, so a construct that is subtly wrong shows up as a different exit code instead
 //! of as an object nobody ran. The count is printed even when it passes, so a shrinking subset is
 //! visible, and the programs it cannot compile yet are named rather than left to be guessed at.
+//!
+//! **Windows only, and not for want of a `cfg`.** These tests link the images this compiler
+//! writes - PE32+ for Windows x86-64 - and *run* them: a corpus program that agrees with clang
+//! has to be executed to say so. On another host the file has no tests rather than failing
+//! ones, which is the honest way to say "the target this compiler has cannot run here".
+#![cfg(target_os = "windows")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

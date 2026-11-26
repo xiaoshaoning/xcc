@@ -22,6 +22,11 @@
 //! deliberately not C99, and this test is about the ones both compilers claim.
 //!
 //! The count is printed even when the test passes, so a shrinking subset is visible.
+//!
+//! **Windows only.** The program is compiled by xcc and run in-process (`--run`), and by clang
+//! and run as an executable; both halves need this machine's C runtime, and the JIT calls its
+//! symbols directly.
+#![cfg(target_os = "windows")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};

@@ -133,11 +133,24 @@ Decisions that were expensive to get wrong are recorded as they were made:
 
 ```
 cargo build --workspace          # library and the `xcc` binary
-cargo test --workspace           # 135 unit, 17 parser, 11 CLI, preprocessing gate, fuzz, exe
+cargo test --workspace           # unit, parser, CLI, preprocessing gate, fuzz, exe, the fixtures
 cargo test -- --ignored          # the tests that state what is not built yet
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
+
+**The compiler builds on a Linux host; what it compiles does not run there.** The target is Windows
+x86-64 - PE32+, `ucrtbase`, and a C runtime this compiler writes - so the test files that *run* what
+they build are `#![cfg(target_os = "windows")]` as a whole: `x64`, `cli`, `differential`, `hostile`,
+and the `exe` and `real` tests that run a program. On another host those files have no tests rather
+than failing ones, and
+
+```
+cargo check --workspace --all-targets --target x86_64-unknown-linux-musl
+```
+
+is the check that the rest - the preprocessor, the parser, the type system, `cir`, the passes and the
+x86-64 encoder - is host-agnostic. It reports no errors.
 
 Requires Rust 1.82 or newer. `tests/corpus/` holds 464 C programs used as a gate; their
 provenance is in [tests/corpus/README.md](tests/corpus/README.md).

@@ -13,6 +13,10 @@
 //! The compiler is run as a child process on purpose: a regression in the nesting budget ends in
 //! a stack overflow, and a test that runs the compiler in-process would take the test harness with
 //! it instead of failing here with the case's name.
+//!
+//! **Windows only.** A refusal is a diagnostic and would run anywhere, but some of these build
+//! and run what survives, so the file is gated as a whole.
+#![cfg(target_os = "windows")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

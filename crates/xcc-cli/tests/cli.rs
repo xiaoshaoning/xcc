@@ -1,4 +1,9 @@
 //! What the command line does, end to end: exit codes, streams and formats.
+//!
+//! **Windows only.** Half of it compiles a program, links it and runs it, and the image is a
+//! Windows one. The diagnostics half would run anywhere; it is gated with the rest because a
+//! file that is half-skipped is a file whose green means two different things.
+#![cfg(target_os = "windows")]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
