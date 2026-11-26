@@ -786,6 +786,27 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M43 - 2026-11-25 - the feature that was tested on one back end, and the corpus that fixed that
+
+Reviewing `419782b` found the fix correct and its **test in the wrong place**. The exe test runs level 2 - the own back
+end - while a *language feature* has two back ends to satisfy, and the corpus is where they meet: level 2 through this
+one, levels 0 and 1 through Cranelift, in one gate that compares the answers.
+
+`cc52_ptrtoint.c` is that test now, and it measures more than the cast the exe test made:
+
+- the four widths (`unsigned`, `unsigned short`, `unsigned char`, `unsigned long long`) of one non-null pointer;
+- the two that are **not** truncations - `_Bool` from a pointer is a truth test, and a *signed* narrow type sign-extends
+  the bits it kept (`(short)0x7f3a5c10` is 23568, not 0x5c10);
+- a null pointer through every one of them, which is the case a truth test and a truncation happen to agree about and
+  therefore says nothing about either;
+- the round trip, integer cast to pointer and back, is the same number.
+
+All three levels print what `clang -O0` prints. That is the measurement the review was missing: Cranelift's `ireduce` on a
+pointer-typed value was assumed to work and now is known to. The differential went from 416 to 417 programs, and the
+corpus ratchet from 444 to 445 agreeing - both by exactly one, which is the new program.
+
+209 unit, 42 parser, 41 exe, 10 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy clean.
+
 ### M42 - 2026-11-25 - `tre`, and the cast that was one line of the standard
 
 The next real program was `tre` - a POSIX regex library, 9 041 lines in an amalgamation, with its own DFA builder, its
