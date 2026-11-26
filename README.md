@@ -143,14 +143,12 @@ cargo fmt --all -- --check
 x86-64 - PE32+, `ucrtbase`, and a C runtime this compiler writes - so the test files that *run* what
 they build are `#![cfg(target_os = "windows")]` as a whole: `x64`, `cli`, `differential`, `hostile`,
 and the `exe` and `real` tests that run a program. On another host those files have no tests rather
-than failing ones, and
+than failing ones. The half that *is* host-agnostic - the preprocessor, the parser, the type system,
+`cir`, the passes and the x86-64 encoder - is checked by pointing cargo at another target:
 
 ```
-cargo check --workspace --all-targets --target x86_64-unknown-linux-musl
+cargo check --workspace --all-targets --target x86_64-unknown-linux-musl   # reports no errors
 ```
-
-is the check that the rest - the preprocessor, the parser, the type system, `cir`, the passes and the
-x86-64 encoder - is host-agnostic. It reports no errors.
 
 Requires Rust 1.82 or newer. `tests/corpus/` holds 464 C programs used as a gate; their
 provenance is in [tests/corpus/README.md](tests/corpus/README.md).

@@ -14,9 +14,8 @@
 //! a stack overflow, and a test that runs the compiler in-process would take the test harness with
 //! it instead of failing here with the case's name.
 //!
-//! **Windows only.** A refusal is a diagnostic and would run anywhere, but some of these build
-//! and run what survives, so the file is gated as a whole.
-#![cfg(target_os = "windows")]
+//! **Not gated on a target**: every case here compiles with `-c` and reads what came back, and
+//! nothing in this file links or runs an image - so it is a front-end gate on any host.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

@@ -786,7 +786,26 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
-### M40 - 2026-11-25 - the gate that runs anywhere, and the five files that could not
+### M41 - 2026-11-25 - the file that was gated for nothing, and the sentence nobody read twice
+
+Reviewing `544a9e5` found one wrong claim and one sentence that did not parse.
+
+**`hostile.rs` did not need gating, and its new comment said it did.** I wrote that "some of these build and run what
+survives" and gated the file on Windows. It never links and never executes: every case spawns `xcc -c` and reads the
+stderr. So the file was a front-end gate all along - the gate removed coverage on any other host and the comment
+justified it with something untrue, which is the worse half. Un-gated; the comment now says what is true
+(`-c` only, so it runs anywhere). `cli.rs` was checked the same way and *does* run images (`.exe` at four sites), so
+its gate stands, and so do `x64.rs`'s and `differential.rs`'s.
+
+**And the README sentence was broken**: "…have no tests rather than failing ones, and `<code block>` is the check
+that…" - a sentence with a code block in the middle of it, which reads as two fragments. Rewritten as one statement
+with the command as an example.
+
+Verified while here: the gated files still **have** their tests on this host - `x64` 6, `cli` 30, `differential` 1,
+`hostile` 5 - because `--list` counts them without running, and a `#![cfg]` typo would have made all four silently
+empty. That is the check the previous commit should have included.
+
+### M40 - 2026-11-25 - the gate that runs anywhere, and the three files that could not
 
 The question was whether this work could move to a Linux host (WSL2 is on this machine). The answer splits, and both
 halves are now facts rather than intentions.
@@ -797,17 +816,16 @@ x86-64 encoder are host-agnostic, and they always were - nobody had checked.
 
 **What it compiles does not run there**, because the target is Windows x86-64: PE32+, `ucrtbase`, and a C runtime this
 compiler writes. Six test files act on that - they link an image and *execute* it - and only two of them said so. The
-other four had no `cfg` at all and would have failed on a Linux host rather than skipped:
+other three had no `cfg` at all and would have failed on a Linux host rather than skipped:
 
 | file | what it does | was |
 |---|---|---|
 | `x64.rs` | links and runs the corpus through both back ends | no gate |
 | `cli.rs` | compiles, links, runs | no gate |
 | `differential.rs` | `--run` in process, and clang's executable | no gate |
-| `hostile.rs` | refuses, then builds and runs what survives | no gate |
 | `exe.rs`, `real.rs` | links and runs | thirty-seven and eight per-test `cfg`s |
 
-The four are now `#![cfg(target_os = "windows")]` as whole files, each with a doc comment saying *why* - the target cannot
+The three are now `#![cfg(target_os = "windows")]` as whole files, each with a doc comment saying *why* - the target cannot
 run here, which is a fact about the target and not about the test - so on another host they are empty rather than red. The
 README says the same thing next to the commands, with the `cargo check --target` line that verifies the portable half.
 
