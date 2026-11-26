@@ -786,6 +786,18 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M26 - 2026-11-25 - the review of the paste and the pass, and two things under them
+
+Reviewing `d27ffbc` found the two bugs it fixed were fixed correctly, and two things *around* them were not.
+
+**A comment that said the opposite of the code.** `Func::verify`'s interface comment said it "runs in debug builds and in tests, never on a compilation's path". `optimise` calls it after every pass, on every compilation, release included - and has since the verifier existed. The comment is the wrong side, so the code stays and the comment now says what is true, with the cost measured: `-c sqlite3.c` at `--opt-level=2` takes 12.4 seconds with the verifier and 10.0 without, so a fifth of a large compilation buys a wrong program turned into a diagnostic that names the pass. That is the trade this compiler makes everywhere else.
+
+**Six copies of one error-propagation shape.** Naming the pass in each verifier message (`"after fold: ..."`) had been written as six `if let Err(broken) = verified(...) { return Err((func.name, broken)); }` blocks, which is one fact - "run this pass, then check it under its name" - written six times and a seventh waiting. One `checked` helper and one `fail` closure make it a line per pass, and the pass's name is written once instead of twice.
+
+What was reviewed and found sound: the `##` chain loop's index arithmetic (after the first pair, `at` walks the `##`s themselves, which is the mistake the first attempt made and the test `a_chain_of_pastes` now holds), the type check in `truth` (a comparison's result is `int` or `_Bool`, both fundamental, so comparing ids is exact - and the comment says why), and the `debug_assert` that moved from the builder to the front end, where it asks `types.same` instead of comparing ids that ADR-004 says may differ.
+
+208 unit, 41 parser, 38 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M25 - 2026-11-25 - the paste that pasted once, and the pass that changed a type
 
 Two real programs, two bugs, both found in the first ten minutes - which is the argument for real programs over

@@ -16,7 +16,8 @@ pub mod mem2reg;
 pub mod prune;
 pub mod truth;
 
-use super::{Broken, Module};
+use super::{Broken, Func, Module};
+use crate::types::Types;
 
 /// What the passes changed. The tests read it; nothing on the command line prints it, which this
 /// comment claimed `--explain` did for as long as the field existed.
@@ -43,11 +44,7 @@ impl Changes {
 
 /// The verifier, with the name of whoever should have been the last to touch the function: a pass
 /// that breaks a function is a compiler bug, and "a pass broke it" without the pass is a search.
-fn verified(
-    func: &super::Func,
-    types: &crate::types::Types,
-    by: &str,
-) -> Result<(), super::Broken> {
+fn verified(func: &super::Func, types: &Types, by: &str) -> Result<(), super::Broken> {
     func.verify(types).map_err(|broken| super::Broken {
         message: format!("after {by}: {}", broken.message),
     })
@@ -63,46 +60,52 @@ fn verified(
 pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, Broken)> {
     let mut changes = Changes::default();
     for func in &mut module.funcs {
+        // A pass that breaks a function is a compiler bug, so each one is verified under its own
+        // name: the message says "after `fold`: ..." rather than "a pass broke it", which was a
+        // search through five passes every time. One `fail` closure, because every one of them
+        // reports the same way afterwards.
+        let name = func.name;
+        let fail = |broken: Broken| (name, broken);
         // First, the cir the *front end* wrote. A function that is already ill-typed here has a
         // front-end bug, and verifying before the first pass is what tells the two layers apart:
         // without it, a `switch` on an `unsigned char` that compared itself with `int` case labels
         // was reported as "a pass broke `parse_number`", and the pass had done nothing wrong.
-        if let Err(broken) = verified(func, &module.types, "the front end") {
-            return Err((func.name, broken));
-        }
-        // Dead first: `dce` would otherwise remove a definition in one dead block and leave its
-        // use in another, which is a broken function by the verifier's lights and nobody's fault.
-        if prune::run(func) > 0 {
-            if let Err(broken) = verified(func, &module.types, "prune") {
-                return Err((func.name, broken));
-            }
-        }
+        verified(func, &module.types, "the front end").map_err(fail)?;
+        // Dead first: `dce` would otherwise remove a definition in one dead block and leave its use
+        // in another, which is a broken function by the verifier's lights and nobody's fault.
+        checked(func, &module.types, "prune", prune::run).map_err(fail)?;
         let before = mem2reg::count_memory(func);
-        changes.slots += mem2reg::run(func, &module.types);
+        changes.slots += checked(func, &module.types, "mem2reg", |func| {
+            mem2reg::run(func, &module.types)
+        })
+        .map_err(fail)?;
         let after = mem2reg::count_memory(func);
         changes.memory += before.saturating_sub(after);
-        if let Err(broken) = verified(func, &module.types, "mem2reg") {
-            return Err((func.name, broken));
-        }
         // A condition's truth test goes first: it is the one pass that *removes* a comparison rather
         // than folding it, and what it leaves is what the branch can carry.
-        changes.simplified += truth::run(func);
-        if let Err(broken) = verified(func, &module.types, "truth") {
-            return Err((func.name, broken));
-        }
+        changes.simplified += checked(func, &module.types, "truth", truth::run).map_err(fail)?;
         // Folding runs after `mem2reg`, because promotion is what turns a local's value into a
         // constant in the first place.
-        changes.folded += fold::run(func, &module.types);
-        if let Err(broken) = verified(func, &module.types, "fold") {
-            return Err((func.name, broken));
-        }
+        changes.folded += checked(func, &module.types, "fold", |func| {
+            fold::run(func, &module.types)
+        })
+        .map_err(fail)?;
         // Folding is what makes instructions dead, so this runs last and to a fixpoint of its own.
-        changes.dead += dce::run(func);
-        if let Err(broken) = verified(func, &module.types, "dce") {
-            return Err((func.name, broken));
-        }
+        changes.dead += checked(func, &module.types, "dce", dce::run).map_err(fail)?;
     }
     Ok(changes)
+}
+
+/// Run one pass, then verify what it left, with the pass's name for the message.
+fn checked(
+    func: &mut Func,
+    types: &crate::types::Types,
+    by: &str,
+    run: impl FnOnce(&mut Func) -> usize,
+) -> Result<usize, Broken> {
+    let changed = run(func);
+    verified(func, types, by)?;
+    Ok(changed)
 }
 
 #[cfg(test)]
