@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M38 - 2026-11-25 - the sweep for the second diagnostic, and the two negatives that close it
+
+Reviewing `f9669bf` asked the question that commit answered for one path: **where else does a poisoned expression get a
+second complaint?** Eight sites say "not lowered yet" in the parser; three checked for poison before `f9669bf`, and the
+one on the initialiser path was the fourth.
+
+The other five, site by site:
+
+- `assign`'s "this kind of assignment" already refuses when the *target* is the error type, which is the same fact for
+  this purpose.
+- A conditional expression of a type nothing lowers: a `?:` whose arms are poisoned has the error type, and `lowerable`
+  answers for that type like any other - so the site is not reached.
+- **`&` of a poisoned expression: tested, and it reports once.** `int *p = &(*1);` gives `* needs a pointer, not int` and
+  nothing else, because the `&` path asks what the operand *is* before asking where it lives.
+- The two `va_list` sites are about a list that is not a local and about `va_arg` outside a function - neither is a
+  question about the type of an expression.
+
+**So the poison sweep is closed**: one path needed the guard, and the rest cannot be reached with a poisoned value. That
+is a negative result and it is written down as one, because the next reader's question ("did anyone check the others?")
+has an answer now.
+
+`168ae73` was reviewed too: the fixture's include roots are the fixture's own directory, then `include/`, then the SDK -
+in that order, which is what makes `#include <mimalloc.h>` resolve; the `standard` parameter is passed **explicitly** at
+all four call sites rather than defaulted inside the helper, so a fixture cannot silently change dialect; and the four
+older fixtures still compile as C99, which is what they were written as.
+
+209 unit, 42 parser, 40 exe, 10 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy clean.
+
 ### M37 - 2026-11-25 - mimalloc becomes a fixture, and it is the first one CI cannot see
 
 `tests/fixtures/mimalloc/` is `src/` and `include/` from Microsoft's allocator, unmodified, with a driver: `mi_malloc`, a
