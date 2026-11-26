@@ -786,6 +786,33 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M44 - 2026-11-25 - line numbers, scoped and not started
+
+`v0.1.6` gave a fault a **name**: the symbol table turns `.text+0x129e2d` into `sqlite3InsertBuiltinFuncs`. The next
+step gives it a **location**, and the design is five touch points rather than a search. Written down because the work is
+bigger than the session that found it, and a scope note is what the next one needs.
+
+1. **`Op` does not carry a span, and it does not have to.** `lower_inst` opens with `let span = inst.span()`, so the span
+   is in hand exactly where each operation is pushed - `MachineBlock { ops: Vec<Op> }` gains a parallel `spans: Vec<Span>`
+   of the same length, one per op, and no `Op` variant changes. (A parallel vector is a fact written twice; the
+   alternative is wrapping every variant in `(Span, Op)`, which touches sixty match arms to save one invariant. The
+   invariant is checkable in one `debug_assert_eq!(ops.len(), spans.len())`.)
+2. **The encoder knows the offset as it goes**: `Encoder::op` is called in a loop over the block's ops, and `code.len()`
+   before each call is that operation's address. `Encoded` gains `lines: Vec<(u32, Span)>`, relative to the function's
+   start, which is the same shape `relocations` already has.
+3. **The object** - `coff::Image` - gains `lines: Vec<(u32, Span)>` in section-relative addresses, beside its
+   `functions`, exactly as its symbols are.
+4. **The linker** carries them through: `pe::Program` gains them, `Linked` gains them, and they become a section the way
+   the symbol table became bytes after the last section - a **`.xccmap`** with one line per operation is the smallest
+   thing a reader can use, and nothing maps it.
+5. **The CLI renders it**, because that is where the *sources* are: a `Span` is (offset, length) and only `SourceFile`
+   knows the lines. `--map` prints `rva  file.c:42` for the linked image, which is what turns a crash address into a
+   line.
+
+What is deliberately *not* in that list: DWARF or CodeView. A debugger reading `.debug_line` would be better, and gdb
+does read DWARF in a PE - but the address-to-line mapping has to be *collected* first (points 1-3), and that work is the
+same either way. Do the collection, look at the map, and only then decide whether a real `.debug_line` is worth writing.
+
 ### M43 - 2026-11-25 - the feature that was tested on one back end, and the corpus that fixed that
 
 Reviewing `419782b` found the fix correct and its **test in the wrong place**. The exe test runs level 2 - the own back
