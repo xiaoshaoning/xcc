@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M34 - 2026-11-25 - the queue, measured, and the one that should not be fixed
+
+The three loose ends, taken in order and each answered with a number or a reason rather than a plan.
+
+**`snprintf` under `--run` cannot be fixed cheaply, and the reason is a decision worth keeping.** The JIT resolves a name
+in **one** C runtime: `msvcrt.dll` first, because that is the one that exports `printf` and its family under their own
+names, and only that one for the life of the process - two CRTs in one process keep two heaps and two sets of stdio
+buffers, so a block from one `malloc` freed by the other's `free`, or a `FILE *` from one handed to the other's
+`fprintf`, is the corruption that gives a C runtime its reputation. `snprintf` is C99, so `msvcrt` has it as `_snprintf`
+- which does not null-terminate on truncation and returns a negative number instead of the length - and the version the
+headers declare is `ucrtbase`'s. A JIT that answered `snprintf` would therefore be mixing two runtimes to save the reader
+a linker. The refusal says so, in the words the reader needs: *"link the program instead of running it"*.
+
+The one honest way to have both is to choose the runtime by **what the program calls**, before the first allocation and
+never mid-run: a program that needs `snprintf` and nothing from msvcrt's own names could be given `ucrtbase` alone. That
+is a real piece of work - the `printf` front ends differ between the two, and the linker already shims them for programs
+- and it is written down here rather than done, because a JIT that changes runtimes halfway through is the bug the rule
+exists to prevent.
+
+**The remaining refusals are measured, over the 67 181 C files on this machine**: a VLA-shaped declarator in 705,
+`__asm__` in 585, a statement expression `({ ... })` in 417, `typeof` in 230, `alloca(` in 138, a computed `goto *` in
+36. Those are counts of files that *mention* the construct, not of programs that need it - many sit inside
+`#ifdef __GNUC__` - so the next one to implement is still a question for a real program to answer, exactly as mimalloc
+answered five of them this week.
+
+**The note-vs-location refactor is not done**: a diagnostic about a macro body carries the invocation index (M15) and
+attaches the note when the caret is the token just consumed or the cursor, not when it sits on a `&` three tokens back.
+
 ### M33 - 2026-11-25 - the atomics that read the type, and mimalloc runs
 
 **`__builtin_atomic_exchange` and `__builtin_atomic_compare_exchange`**, as designed in M29. The object's *type* is what
