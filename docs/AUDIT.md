@@ -786,6 +786,29 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M47 - 2026-11-25 - the regression that was my own background jobs, and the trap waiting at step four
+
+Reviewing `ae18a33` started with a scare and ended with a warning.
+
+**The scare**: `-c sqlite3.c` measured **28 and 60 seconds** where the baseline is 12. I nearly went looking for a
+regression in the line table. Three runs on a quiet machine: 10.8, 12.4, 11.1 - the baseline. The two outliers were the
+test suites I had left running in the background plus a virus scanner reading a 3.3 MB object. That is the *third* time
+this session a timing has lied (2194 s and 1518 s before it), and the lesson is now a rule: **a timing taken while
+something else is running is not a measurement**, and `time`on this machine reports the shell's own CPU as `user`, so the
+number that matters is `real` alone and it must be repeated.
+
+**The warning**: file indices are **per translation unit**. `Preprocessed::files` numbers the files of one compilation
+from zero, so unit A's `h.h` and unit B's `h.h` are both index 1 - and when the linker merges two units' line tables
+(step 4 of M46), it must rebase each unit's indices by the number of files before it. Otherwise a record says "file 1" and
+the reader picks the wrong file, silently and plausibly. This is the same class as the `.str0` collision that cost a
+milestone in M9: a per-unit name space meeting a program-wide one. It is written down here because step 4 is where it
+bites, and nothing in the code says it yet.
+
+**And the number to watch**: `.xccmap` on `sqlite3.c` is 625 272 bytes against 2 137 464 of `.text` - **28 %**, where
+`tre` was 19.5 %. A bigger share on code with more header-origin lines, which is the code the map is most valuable for.
+
+210 unit, 41 exe, 10 real, 1 crt, 30 CLI, 5 hostile; fmt and clippy clean.
+
 ### M46 - 2026-11-25 - the line number that would have been a lie
 
 Points 4 and 5 of M44 - carry the map through the linker, let the CLI print `file.c:42` - are **blocked on a fact, not on
