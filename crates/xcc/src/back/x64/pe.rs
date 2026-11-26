@@ -761,10 +761,11 @@ impl<'a> Writer<'a> {
     /// external ones alone would name almost nothing in the program this exists for.
     fn symbols(&self, list: &[Section]) -> Vec<Symbol> {
         let number = |name: &str| list.iter().position(|one| one.name == name);
-        let (Some(text), Some(data)) = (number(".text"), number(".data")) else {
-            return Vec::new();
-        };
-        let (text, data) = (text as u16 + 1, data as u16 + 1);
+        // The two sections are two facts, not one: a program with no data still has functions to
+        // name, and `.data` is only there when something is in it. Asking for both at once blanked
+        // the whole table for a program whose objects happened to be empty.
+        let text = number(".text").map(|at| at as u16 + 1);
+        let data = number(".data").map(|at| at as u16 + 1);
         let mut symbols = Vec::new();
         let add = |symbols: &mut Vec<Symbol>,
                    name: &str,
@@ -786,18 +787,24 @@ impl<'a> Writer<'a> {
                 external,
             });
         };
-        for (name, at) in &self.program.functions {
-            add(&mut symbols, name, text, *at, true, true);
-        }
-        for (name, at) in &self.program.objects {
-            add(&mut symbols, name, data, *at, false, true);
-        }
-        for unit in &self.program.local {
-            for (name, at) in &unit.functions {
-                add(&mut symbols, name, text, *at, true, false);
+        if let Some(text) = text {
+            for (name, at) in &self.program.functions {
+                add(&mut symbols, name, text, *at, true, true);
             }
-            for (name, at) in &unit.objects {
-                add(&mut symbols, name, data, *at, false, false);
+            for unit in &self.program.local {
+                for (name, at) in &unit.functions {
+                    add(&mut symbols, name, text, *at, true, false);
+                }
+            }
+        }
+        if let Some(data) = data {
+            for (name, at) in &self.program.objects {
+                add(&mut symbols, name, data, *at, false, true);
+            }
+            for unit in &self.program.local {
+                for (name, at) in &unit.objects {
+                    add(&mut symbols, name, data, *at, false, false);
+                }
             }
         }
         // In address order, so `objdump -t` prints a list a reader can bisect and a debugger can

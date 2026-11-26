@@ -73,9 +73,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         globals_by_name: HashMap::new(),
         body: None,
         last_declared: None,
-        last_declared_static: false,
-        last_declared_inline: false,
-        last_declared_extern: false,
+        last_linkage: Linkage::External,
         function_buffer: None,
         bytes: None,
         init_relocations: Vec::new(),
@@ -357,13 +355,12 @@ struct Parser<'a> {
     body: Option<Body>,
     /// The name the last declarator declared, for a definition that follows it.
     last_declared: Option<Symbol>,
-    /// Whether the declaration just read said `static`. The name beside it is `last_declared`, and
-    /// the linkage of that name is this: a file-scope `static` is internal (C99 6.2.2p3).
-    last_declared_static: bool,
-    /// Whether the declaration that just ended said `inline`, for the same reason.
-    last_declared_inline: bool,
-    /// And whether it said `extern`, which is the other half of C99 6.7.4p6's rule.
-    last_declared_extern: bool,
+    /// What the declaration just read said about the linkage of `last_declared`.
+    ///
+    /// One value, because `static`, `extern` and `inline` are three spellings of one question, and
+    /// they were three bools read together in one place - which is a fact written down three times
+    /// and waiting for a fourth.
+    last_linkage: Linkage,
     /// The buffer a record-returning function was handed by its caller, while its body is being
     /// read (Win64: the caller owns the result, and the callee returns its address).
     function_buffer: Option<cir::Value>,
@@ -828,17 +825,8 @@ impl Parser<'_> {
                     if let Some(entry) = name.and_then(|name| self.symbols.here_mut(name)) {
                         entry.defined = true;
                     }
-                    // C99 6.7.4p6: `inline` with neither `static` nor `extern` is an *inline
-                    // definition*, and "does not provide an external definition for the function".
-                    // mingw-w64 defines every FORCEINLINE helper in `winnt.h` that way, so emitting
-                    // one as external made two units that include `windows.h` a duplicate at link
-                    // time - which is how Lua 5.5.1 failed after the parser had accepted everything.
-                    let inline_definition = self.last_declared_inline && !self.last_declared_extern;
-                    self.function_body(
-                        name,
-                        result,
-                        !self.last_declared_static && !inline_definition,
-                    );
+                    let external = self.last_linkage.is_external();
+                    self.function_body(name, result, external);
                 }
                 _ => {
                     self.error_at_current("expected `;`");
@@ -1102,9 +1090,7 @@ impl Parser<'_> {
             }
             last = Some(ty);
             self.last_declared = name;
-            self.last_declared_static = specs.is_static;
-            self.last_declared_inline = specs.is_inline;
-            self.last_declared_extern = specs.is_extern;
+            self.last_linkage = Linkage::of(&specs);
             if !self.eat(",") {
                 return last;
             }
@@ -1439,6 +1425,12 @@ impl Parser<'_> {
         let linked = String::from_utf8_lossy(&bytes)
             .trim_end_matches('\0')
             .to_owned();
+        // An empty name is not a name: passing it on would reach the linker as a symbol called
+        // nothing, which is a stranger diagnostic than this one.
+        if linked.is_empty() {
+            self.error(span, "`__asm__(\"\")` names nothing to link by");
+            return;
+        }
         let Some(name) = name else {
             return;
         };
@@ -2435,6 +2427,44 @@ impl Parser<'_> {
         let value = parse(self);
         self.leave_nesting();
         value
+    }
+}
+
+/// What a declaration says about the linkage of the name it declares. C99 6.2.2 has three kinds and
+/// this compiler emits two: a definition in this unit is either visible to the other units
+/// (external) or private to this one (internal).
+///
+/// The third is the reason this is a type and not a bool. C99 6.7.4p6: a function *defined* here and
+/// declared `inline` but neither `static` nor `extern` is an **inline definition**, which "does not
+/// provide an external definition" - so the copy this compiler emits is private to the unit, and the
+/// program must have an external definition somewhere else if it calls the function across units.
+/// mingw-w64 defines every `FORCEINLINE` helper in `winnt.h` that way, which is how Lua 5.5.1 failed
+/// to link before this existed.
+#[derive(Clone, Copy, Default)]
+enum Linkage {
+    /// Visible to the other translation units.
+    #[default]
+    External,
+    /// `static`: private to this one.
+    Internal,
+    /// `inline` alone: a definition that provides no external one.
+    InlineDefinition,
+}
+
+impl Linkage {
+    fn of(specs: &Specifiers) -> Self {
+        if specs.is_static {
+            Linkage::Internal
+        } else if specs.is_inline && !specs.is_extern {
+            Linkage::InlineDefinition
+        } else {
+            Linkage::External
+        }
+    }
+
+    /// Whether a definition with this linkage is a symbol the linker should see.
+    fn is_external(self) -> bool {
+        matches!(self, Linkage::External)
     }
 }
 

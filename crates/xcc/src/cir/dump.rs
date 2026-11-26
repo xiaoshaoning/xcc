@@ -70,7 +70,7 @@ pub fn dump_func(out: &mut String, types: &crate::types::Types, names: &Interner
             let _ = writeln!(out, "  {}", instruction(types, names, func, inst));
         }
         if let Some(term) = &block.term {
-            let _ = writeln!(out, "  {}", terminator(names, func, term));
+            let _ = writeln!(out, "  {}", terminator(term));
         }
     }
 }
@@ -230,7 +230,7 @@ pub(crate) fn instruction(
     }
 }
 
-fn terminator(_names: &Interner, _func: &Func, term: &Term) -> String {
+fn terminator(term: &Term) -> String {
     let v = |value: Value| format!("v{}", value.0);
     let args = |args: &[Value]| -> String {
         if args.is_empty() {

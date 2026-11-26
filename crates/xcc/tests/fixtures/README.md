@@ -45,9 +45,10 @@ newest things in the language - integer division, bitwise operators, `goto`, int
 `clang -O2` build of the same sources printed. It touches the whole language, and one of the lines it
 prints is `string.dump`'s bytecode read back by `load`, so the dumper is covered too.
 
-Two of the 34 units read `windows.h` - `loadlib.c` loads DLLs, `lua.c` asks whether stdin is a
+Two of its 34 units read `windows.h` - `loadlib.c` loads DLLs, `lua.c` asks whether stdin is a
 terminal - and `luaconf.h` defines `LUA_USE_WINDOWS` for `_WIN32` whatever a program wants, so the
-compile-only test leaves those two out and runs everywhere while the run test needs the SDK.
+compile-only test compiles the other 32 - `luac.c` among them, the bytecode compiler the release
+ships - on every machine, while the run test needs the SDK and says so when it is not there.
 
 ## sqlite
 

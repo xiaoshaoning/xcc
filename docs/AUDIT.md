@@ -786,6 +786,42 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M24 - 2026-11-25 - the review of seven commits, and the five things it found
+
+The unreviewed stretch was `a8485b5` (the symbol table) through `8914a53` (the Lua fixture). Five findings, and two of
+them are the kind this project keeps rediscovering.
+
+**One missing section blanked the whole symbol table.** `symbols()` asked for `.text` *and* `.data` at once and returned
+nothing if either was absent - two independent facts answered by one `else`. A program whose objects happen to be empty
+would have had no names at all. The two families are now added independently.
+
+**Three bools answering one question.** `inline` linkage was implemented by threading `last_declared_static`,
+`last_declared_inline` and `last_declared_extern` from the declaration loop to the body - three copies of one fact, read
+together in one place, waiting for a fourth (`_Thread_local` will be next). They are one `Linkage` value now, with
+`Linkage::of(&specs)` and one call to `is_external()`, which is also where C99 6.7.4p6's rule can be read in one piece.
+
+**An empty name is not a name.** `__asm__("")` was recorded as a link name, and would have reached the linker as a symbol
+called nothing. Refused at the word, in the same breath as the rest of that check.
+
+**`?` where `continue` belonged.** `windows_sdk()`'s Visual Studio branch used `read_dir(..).ok()?` inside a loop over
+candidate roots: a directory that could not be listed ended the search instead of moving to the next candidate. That is
+the "an unwrap turns cannot-know into a value" mistake wearing a ticket to the same place.
+
+**A counter nothing reads, and a comment that named a caller that does not exist.** `Changes` said "for a caller that
+wants to print it (`--explain`, the tests)" - and `--explain` has never printed one - and the `dead_blocks` field added
+this session had no reader at all. The field is gone, and the comment says what is true.
+
+Two smaller ones: `dump::terminator` kept two parameters it stopped using when the dumper gained `trap` (removed), and
+Lua's `luac.c` was shipped in the fixture but never compiled - it is now in the compile-only set, so the bytecode
+compiler the release ships is covered by a test rather than by a measurement made once by hand.
+
+**A measurement worth recording, because it was wrong.** The hostile suite was reported at 2194 seconds against its usual
+twenty, and no code had changed: two of my own test runs were overlapping on one machine. The suite is 19.9 seconds when
+it runs alone. A gate whose result depends on the machine is not a gate, and neither is a measurement.
+
+207 unit, 41 parser, 37 exe, 8 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0
+mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M23 - 2026-11-25 - Lua becomes a gate too
 
 The other half of the same argument: `tests/fixtures/lua/` is `src/` from the 5.5.1 release tarball - 34 files,

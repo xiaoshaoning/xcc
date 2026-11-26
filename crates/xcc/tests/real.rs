@@ -246,7 +246,12 @@ fn lua_compiles_without_a_windows_sdk() {
         .filter_map(|entry| entry.ok()?.file_name().to_str().map(str::to_owned))
         .filter(|name| name.ends_with(".c") && name != "loadlib.c" && name != "lua.c")
         .collect();
-    assert!(files.len() >= 30, "the fixture lost files: {files:?}");
+    // 34 units in the release's `src/`, two of which read `windows.h`.
+    assert_eq!(
+        files.len(),
+        32,
+        "the fixture lost or gained files: {files:?}"
+    );
     let units: Vec<(String, String)> = files.iter().map(|file| source("lua", file)).collect();
     let options = Options {
         opt_level: 2,
@@ -445,12 +450,15 @@ fn windows_sdk() -> Option<PathBuf> {
         }
         // A Visual Studio SDK keeps `windows.h` in `shared/`, three directories down from the
         // toolset version - which is a directory name nobody should have to spell.
-        if path.is_dir() {
-            for toolset in std::fs::read_dir(&path).ok()? {
-                let shared = toolset.ok()?.path().join("include/shared");
-                if shared.join("windows.h").is_file() {
-                    return Some(shared);
-                }
+        // A directory that cannot be listed is not a machine that has no SDK: try the next
+        // candidate, which is what `?` here was not doing.
+        let Ok(entries) = std::fs::read_dir(&path) else {
+            continue;
+        };
+        for toolset in entries.flatten() {
+            let shared = toolset.path().join("include/shared");
+            if shared.join("windows.h").is_file() {
+                return Some(shared);
             }
         }
     }

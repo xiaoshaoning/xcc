@@ -18,7 +18,8 @@ pub mod truth;
 
 use super::{Broken, Module};
 
-/// What the passes changed, for a caller that wants to print it (`--explain`, the tests).
+/// What the passes changed. The tests read it; nothing on the command line prints it, which this
+/// comment claimed `--explain` did for as long as the field existed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Changes {
     /// Loads and stores removed because their slot became values.
@@ -31,8 +32,6 @@ pub struct Changes {
     pub dead: usize,
     /// Truth tests removed because the value they tested was already 0 or 1.
     pub simplified: usize,
-    /// Blocks emptied because nothing could reach them.
-    pub dead_blocks: usize,
 }
 
 impl Changes {
@@ -61,9 +60,7 @@ pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, 
         }
         // Dead first: `dce` would otherwise remove a definition in one dead block and leave its
         // use in another, which is a broken function by the verifier's lights and nobody's fault.
-        let pruned = prune::run(func);
-        changes.dead_blocks += pruned;
-        if pruned > 0 {
+        if prune::run(func) > 0 {
             if let Err(broken) = func.verify(&module.types) {
                 return Err((func.name, broken));
             }
