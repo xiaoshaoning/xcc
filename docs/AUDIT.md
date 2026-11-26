@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M20 - 2026-11-25 - the pragma that saved a definition, and the intrinsics that had no declaration
+
+With the loop bugs fixed, `sqlite3.c` ran - and printed the right answer while printing *warnings* on every line of
+every `windows.h` build. Both kinds were the same class: something this compiler ignored that changes what a program
+means.
+
+**`#pragma push_macro` / `pop_macro`.** mingw-w64 wraps every Windows declaration in them: save the name, redefine it,
+put it back. They were in the "unknown pragma, ignored" bucket, so the redefinition stayed - which is a wrong program, not
+just a warning, and the warning was on every line of every build that read `winnt.h`. They are now implemented: a stack
+of saved definitions per name, `None` for "this was not a macro then" (which is what `minwindef.h` relies on when it
+pushes `min` and `max`), and a `pop` with nothing pushed is refused rather than guessed at. The name is a string literal,
+because that is how both compilers spell it.
+
+**The intrinsics had no declarations.** `winnt.h` spells `MemoryBarrier` as `_mm_mfence`, `UnsignedMultiply128` as
+`_umul128`, `InterlockedCompareExchange` as `_InterlockedCompareExchange`, and their prototypes live in mingw's
+`intrin.h` behind `__MINGW_EXTENSION` and a compiler identification this compiler does not claim - so every use was
+"not declared, taken to be a function returning `int`". The runtime implements fifteen of them; the bridge header
+`x86intrin.h` now declares those fifteen, with signatures transcribed from `psdk_inc/intrin-impl.h` and `intrin.h` of
+mingw-w64 12.0, the library the Windows SDK ships. Everything else stays undeclared and refused at the line it is
+written, which is the `emmintrin.h` argument unchanged.
+
+Measured: `xcc --std=c11 --opt-level=2 sqlite_driver.c sqlite3.c -o sq.exe` with `-I` on the SDK's headers now produces
+**no output at all** - 265 977 lines compiled in 7 seconds with nothing to say - and the image prints
+`6 one,two,three 3.51.3`, byte for byte what `clang -O2` prints.
+
+207 unit (one more), 41 parser, 36 exe, 4 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential
+**416** ran (cc51_loops.c), 0 mismatched; 444 corpus programs agree through the own back end, 0 wrong; `.text` 80 288
+bytes over 445 programs; fmt and clippy clean.
+
 ### M19 - 2026-11-25 - sqlite3.c runs, and the four bugs between the symbol table and the answer
 
 The symbol table named `sqlite3InsertBuiltinFuncs + 163`, the two initialiser bugs under it were fixed, and the fault came

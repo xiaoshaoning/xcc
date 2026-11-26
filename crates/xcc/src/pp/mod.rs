@@ -320,6 +320,7 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         conditionals: Vec::new(),
         pack: crate::types::Types::DEFAULT_PACK,
         pack_stack: Vec::new(),
+        saved_macros: HashMap::new(),
         pack_changes: Vec::new(),
         layout_attributes: Vec::new(),
         sites: Vec::new(),
@@ -501,6 +502,9 @@ struct Preprocessor<'a> {
     /// and never sees a `push`.
     pack: u8,
     pack_stack: Vec<u8>,
+    /// What `#pragma push_macro` saved, by name: `None` is "the name was not a macro then". A stack
+    /// per name, because `pop_macro` restores the last `push_macro` for *that* name and nothing else.
+    saved_macros: HashMap<Symbol, Vec<Option<Macro>>>,
     /// Where the limit changed, as `(token index, pack)`: from that token on, records are laid out
     /// with it. That is what `#pragma pack` is - a fact about a *position* in the token stream, not
     /// about a declaration - so the parser reads it by the position it has reached, and no loop that
@@ -1328,12 +1332,86 @@ impl Preprocessor<'_> {
                     "`#pragma weak` makes a definition replaceable, and this compiler has no weak symbols: ignoring it would give the definition here as the one that wins, so it is refused by name",
                 );
             }
+            // The other pragma that changes what the rest of the file *means*: `push_macro` and
+            // `pop_macro` save and restore a definition, and mingw-w64's headers wrap every
+            // Windows declaration in them. Ignoring them was a warning on every line of every
+            // `windows.h` build, and a program that pushed, redefined and popped got the
+            // redefinition kept - a wrong program, not a quieter one.
+            Some(push) if self.is_spelled(&push.token, "push_macro") => {
+                self.macro_pragma(rest, span, true)
+            }
+            Some(pop) if self.is_spelled(&pop.token, "pop_macro") => {
+                self.macro_pragma(rest, span, false)
+            }
             Some(known) => {
                 let name = self.spell(known.token.text).to_owned();
                 self.warning(span, format!("unknown `#pragma {name}` ignored"));
             }
             None => self.warning(span, "empty `#pragma` ignored"),
         }
+    }
+
+    /// `#pragma push_macro("NAME")` and `#pragma pop_macro("NAME")`: save a definition and restore
+    /// it. The name is a string *literal* in the source - MSVC and GCC both spell it that way, and
+    /// the quotes are part of the token - so it is decoded here like any other literal.
+    ///
+    /// A `pop` with nothing pushed is refused rather than ignored: a stack underflow means the
+    /// header and this compiler disagree about what the program has seen, and guessing which
+    /// definition to restore is guessing a program.
+    fn macro_pragma(&mut self, rest: &[Raw], span: Span, push: bool) {
+        let verb = if push { "push_macro" } else { "pop_macro" };
+        // The parentheses are the form, not the content - `push_macro("min")` is three tokens after
+        // the verb - so the name is the first non-punctuation token, and it must be a string.
+        let literal = rest
+            .iter()
+            .skip(1)
+            .find(|raw| raw.token.kind != TokenKind::Punct);
+        let name = match literal {
+            Some(raw) if raw.token.kind == TokenKind::Str => {
+                let spelled = self.spell(raw.token.text).to_owned();
+                crate::literal::bytes_of(&spelled).map(|bytes| {
+                    let text = String::from_utf8_lossy(&bytes);
+                    let text = text.trim_end_matches('\0').to_owned();
+                    self.intern_name(&text)
+                })
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            self.error(
+                span,
+                format!("`#pragma {verb}` takes one macro name in quotes, as in `#pragma {verb}(\"min\")`"),
+            );
+            return;
+        };
+        if push {
+            let current = self.macros.get(&name).cloned();
+            self.saved_macros.entry(name).or_default().push(current);
+            return;
+        }
+        match self.saved_macros.get_mut(&name).and_then(Vec::pop) {
+            Some(saved) => match saved {
+                Some(definition) => {
+                    self.macros.insert(name, definition);
+                }
+                // The name was not a macro when it was pushed, so it is not one again.
+                None => {
+                    self.macros.remove(&name);
+                }
+            },
+            None => {
+                let spelled = self.spell(name).to_owned();
+                self.error(
+                    span,
+                    format!("`#pragma pop_macro(\"{spelled}\")` without a `push_macro` for that name: the stack is empty, and which definition to restore is not something this compiler can guess"),
+                );
+            }
+        }
+    }
+
+    /// The symbol for a name this layer is being told about, which may not be in the source at all.
+    fn intern_name(&mut self, name: &str) -> Symbol {
+        self.interner.intern(name)
     }
 
     /// `#pragma pack(...)`: the five forms MSVC documents.
@@ -2419,6 +2497,81 @@ yes
         let warnings = diagnostics("#warning this is odd\n");
         assert_eq!(warnings[0].severity, Severity::Warning);
         assert_eq!(warnings[0].message, "this is odd");
+    }
+
+    #[test]
+    fn push_macro_and_pop_macro_restore_the_definition_that_was_there() {
+        // What mingw-w64's headers do to every Windows declaration: save the name, redefine it,
+        // put it back. Ignoring the pragmas kept the *redefinition*, which is a wrong program.
+        assert_eq!(
+            spelled(
+                "#define V 1
+#pragma push_macro(\"V\")
+#undef V
+#define V 2
+int a = V;
+#pragma pop_macro(\"V\")
+int b = V;"
+            ),
+            ["int", "a", "=", "2", ";", "int", "b", "=", "1", ";"]
+        );
+        // A name that was not a macro when it was pushed is not one after the pop, so the `#ifdef`
+        // below takes the `else` - which is what `minwindef.h` relies on (`min` and `max` exist as
+        // macros on some compilers and not on others).
+        assert_eq!(
+            spelled(
+                "#pragma push_macro(\"NOPE\")
+#define NOPE 1
+#pragma pop_macro(\"NOPE\")
+#ifdef NOPE
+yes
+#else
+no
+#endif"
+            ),
+            ["no"]
+        );
+        // The stack is per name, and nested: two pushes of one name restore in order.
+        assert_eq!(
+            spelled(
+                "#define V 1
+#pragma push_macro(\"V\")
+#undef V
+#define V 2
+#pragma push_macro(\"V\")
+#undef V
+#define V 3
+int a = V;
+#pragma pop_macro(\"V\")
+int b = V;
+#pragma pop_macro(\"V\")
+int c = V;"
+            ),
+            ["int", "a", "=", "3", ";", "int", "b", "=", "2", ";", "int", "c", "=", "1", ";"]
+        );
+        assert!(diagnostics(
+            "#pragma push_macro(\"V\")
+#pragma pop_macro(\"V\")
+"
+        )
+        .is_empty());
+        // Popping what was never pushed is refused: which definition to restore is not a guess this
+        // compiler gets to make.
+        let empty = diagnostics(
+            "#pragma pop_macro(\"V\")
+",
+        );
+        assert_eq!(empty[0].severity, Severity::Error);
+        assert!(empty[0].message.contains("the stack is empty"));
+        // And a pragma that forgot the quotes says so instead of silently doing nothing.
+        assert_eq!(
+            diagnostics(
+                "#pragma push_macro(V)
+"
+            )[0]
+            .severity,
+            Severity::Error
+        );
     }
 
     #[test]
