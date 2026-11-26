@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M46 - 2026-11-25 - the line number that would have been a lie
+
+Points 4 and 5 of M44 - carry the map through the linker, let the CLI print `file.c:42` - are **blocked on a fact, not on
+effort**, and the fact is worth more than the half-feature would have been.
+
+**A `Span` does not say which file it is in.** It is `{ start, len }`: a byte offset and a length, with no file. That is
+enough for a diagnostic, because a diagnostic is rendered while the token that produced it still carries `file: u16`
+(which is an index into `Preprocessed::files`) - but the `cir` does not keep the token, only the span. So two files that
+both have a byte at offset 100 produce spans that cannot be told apart, and a line number computed from a span alone
+would be **right for the main file and wrong for every byte that came from a header** - which is most of the interesting
+code in the fixtures: `sqlite3.h`, `windows.h`, `mimalloc/internal.h`.
+
+`sqlite3.c` is the case in point: 265 977 lines, of which a large fraction of the *compiled* operations come from
+headers. A map that says `sqlite3.c:130549` for an operation that came from `winnt.h` is worse than no map, because it
+reads as an answer.
+
+**The fix is cheap and the shape is clear**, which is why this is a note rather than a shrug:
+
+1. `Span` gains `file: u16`, defaulting to 0. There are **8 construction sites** for the struct and 30 for its helpers,
+   so the field is a morning's work, not a refactor - and the alternative (a side table keyed by offset) is the same
+   information written where nothing can check it.
+2. Every site that has a token takes the file from it; a synthesized span keeps 0, which is honest: "this compiler made
+   this up, and it belongs to the file being compiled".
+3. The file **names and line starts** have to travel with the artifact - `Preprocessed::files` is where they live, and
+   `Artifact` does not carry them yet. That is the second half, and it is what makes `--map` render a line instead of a
+   number.
+
+Until then the object carries a `.xccmap` whose records are *correct as offsets* and whose rendering would not be, and
+the map is deliberately not wired to anything that prints a line.
+
 ### M45 - 2026-11-25 - the map that was bigger than the code
 
 Reviewing `fdff9fc` found the section correct in shape and **absurd in size**, and shipped it as a measurement instead of
