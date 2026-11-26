@@ -501,7 +501,7 @@ impl Term {
                     *arg = rewrite(*arg);
                 }
             }
-            Term::Unreachable { .. } => {}
+            Term::Unreachable { .. } | Term::Trap { .. } => {}
         }
     }
 }
@@ -537,8 +537,20 @@ pub enum Term {
         /// Where in the source.
         span: Span,
     },
-    /// Nothing follows; the front end uses this where C says the behaviour is undefined.
+    /// Nothing follows: no path leads here. A block the front end opened and did not fill - the
+    /// code after an `if` whose every arm returned - ends this way.
+    ///
+    /// This and [`Term::Trap`] both encode as `ud2`, and they are not the same fact. `Unreachable`
+    /// says *nothing can arrive*; `Trap` says *arriving is undefined behaviour*, and it is meant to
+    /// be reached - falling off the end of a non-void function is the case. So the verifier holds
+    /// the first to "the entry cannot reach it" and asks the second for nothing.
     Unreachable {
+        /// Where in the source.
+        span: Span,
+    },
+    /// C says the behaviour is undefined here, so the program stops: a trap rather than a number
+    /// that looks like an answer.
+    Trap {
         /// Where in the source.
         span: Span,
     },
@@ -1012,9 +1024,14 @@ impl<'a> Builder<'a> {
         self.set_term(Term::Return { value, span });
     }
 
-    /// End without a successor.
+    /// End without a successor, because nothing can arrive.
     pub fn unreachable(&mut self, span: Span) {
         self.set_term(Term::Unreachable { span });
+    }
+
+    /// End in a trap, because arriving here is undefined behaviour.
+    pub fn trap(&mut self, span: Span) {
+        self.set_term(Term::Trap { span });
     }
 }
 
@@ -1169,25 +1186,28 @@ impl Func {
             }
         }
         // Dominance: a value must be defined in a block that every path to the use goes
-        // through. The tree is computed once for the whole function and walked by each check.
+        // through. The tree is computed once for the whole function and walked by each check - and
+        // so is reachability, which `check_dominates` asks about on every operand. Asking per use
+        // was a depth-first walk per use: 7 seconds of `sqlite3.c` became 40.
         let idom = self.dominator_tree();
+        let live = self.reachable_blocks();
         for (index, block) in self.blocks.iter().enumerate() {
             let here = Block(index as u32);
             for inst in &block.insts {
                 for used in used_values(inst) {
-                    self.check_dominates(&idom, here, used, types)?;
+                    self.check_dominates(&idom, &live, here, used, types)?;
                 }
             }
             match block.term.as_ref().expect("checked above") {
                 Term::Return { value, .. } => {
                     if let Some(value) = value {
-                        self.check_dominates(&idom, here, *value, types)?;
+                        self.check_dominates(&idom, &live, here, *value, types)?;
                     }
                 }
                 Term::Jump { target, args, .. } => {
                     self.check_arguments(*target, args, types)?;
                     for arg in args {
-                        self.check_dominates(&idom, here, *arg, types)?;
+                        self.check_dominates(&idom, &live, here, *arg, types)?;
                     }
                 }
                 Term::Branch {
@@ -1196,7 +1216,7 @@ impl Func {
                     otherwise,
                     ..
                 } => {
-                    self.check_dominates(&idom, here, *condition, types)?;
+                    self.check_dominates(&idom, &live, here, *condition, types)?;
                     if !types.is_integer(self.value(*condition).ty)
                         && !types.is_pointer(self.value(*condition).ty)
                     {
@@ -1207,11 +1227,30 @@ impl Func {
                     for (target, args) in [then, otherwise] {
                         self.check_arguments(*target, args, types)?;
                         for arg in args {
-                            self.check_dominates(&idom, here, *arg, types)?;
+                            self.check_dominates(&idom, &live, here, *arg, types)?;
                         }
                     }
                 }
-                Term::Unreachable { .. } => {}
+                // `unreachable` is not an instruction that traps on purpose: it is the terminator a
+                // block gets when the *front end* believes nothing can arrive at it. A branch into
+                // one is therefore a front-end bug that a program finds by executing the trap - which
+                // is how `sqlite3.c` died of a `ud2` inside the query planner with no span to point
+                // at.
+                //
+                // The invariant is reachability, not "has no edges": a dead arm that jumped to a
+                // dead join is an edge nobody follows, and asking it that way failed `sqlite3.c` on
+                // a block no path leads to.
+                Term::Unreachable { span } => {
+                    if live[index] {
+                        return Err(Broken::new(format!(
+                            "block {index} is unreachable (at byte {}) and the entry reaches it",
+                            span.start
+                        )));
+                    }
+                }
+                // A trap is *meant* to be reached - that is what makes it a trap - so it is the one
+                // terminator with no reachability to check.
+                Term::Trap { .. } => {}
             }
         }
         Ok(())
@@ -1538,6 +1577,21 @@ impl Func {
         self.reverse_postorder().contains(&block)
     }
 
+    /// Every block the entry can reach, one depth-first walk. The verifier asks this about every
+    /// operand it checks, so the walk happens once and the answer is a lookup.
+    pub(crate) fn reachable_blocks(&self) -> Vec<bool> {
+        let mut live = vec![false; self.blocks.len()];
+        let mut stack = vec![self.entry];
+        while let Some(block) = stack.pop() {
+            if live[block.0 as usize] {
+                continue;
+            }
+            live[block.0 as usize] = true;
+            stack.extend(self.successors(block));
+        }
+        live
+    }
+
     /// Every block reachable from the entry, in an order where each comes after the blocks that
     /// dominate it.
     fn reverse_postorder(&self) -> Vec<Block> {
@@ -1582,19 +1636,22 @@ impl Func {
         found
     }
 
-    fn successors(&self, block: Block) -> Vec<Block> {
+    pub(crate) fn successors(&self, block: Block) -> Vec<Block> {
         match self.blocks[block.0 as usize].term.as_ref() {
             Some(Term::Jump { target, .. }) => vec![*target],
             Some(Term::Branch {
                 then, otherwise, ..
             }) => vec![then.0, otherwise.0],
-            _ => Vec::new(),
+            Some(Term::Return { .. } | Term::Unreachable { .. } | Term::Trap { .. }) | None => {
+                Vec::new()
+            }
         }
     }
 
     fn check_dominates(
         &self,
         idom: &[Option<Block>],
+        live: &[bool],
         here: Block,
         value: Value,
         types: &Types,
@@ -1604,6 +1661,13 @@ impl Func {
                 "v{} is used but never defined",
                 value.0
             )));
+        }
+        // Dominance is a statement about *paths*, and a block the entry cannot reach has none: C
+        // code after an `if` whose every arm returned is emitted - the statements are there to be
+        // checked - and nothing can arrive at it. Asking for dominance there refuses a legal
+        // program, and refusing to emit dead code is not this compiler's business.
+        if !live[here.0 as usize] {
+            return Ok(());
         }
         let definition = self.value(value).block;
         if !self.dominates_with(idom, definition, here) {
@@ -1662,7 +1726,7 @@ pub(crate) fn term_operands(term: &Term) -> Vec<Value> {
             values.extend(otherwise.1.iter().copied());
             values
         }
-        Term::Unreachable { .. } => Vec::new(),
+        Term::Unreachable { .. } | Term::Trap { .. } => Vec::new(),
     }
 }
 

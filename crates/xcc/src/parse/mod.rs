@@ -2392,28 +2392,114 @@ fn arguments(count: usize) -> String {
 
 /// Fold one binary operation on two constants. `None` when it cannot be folded - a division by
 /// zero, or a shift C leaves undefined, is not folded rather than guessed.
-fn fold(operator: &str, left: i64, right: i64) -> Option<i64> {
-    Some(match operator {
+/// Fold a binary operation on two integer constants, **in the type the operation is done in**.
+///
+/// C99 6.3.1.8 puts the usual arithmetic conversions before the operator, and this compared the two
+/// spellings instead: `-1 > 0u` was `-1 > 0`, which is false, where C converts -1 to 4294967295 and
+/// the answer is true. The `cir` folder had the rule and this copy did not - one fact written down
+/// twice, disagreeing - and the corpus says so: `-1 / 2u` is 2147483647, not 0.
+///
+/// So the operands arrive already converted to `ty` (that is `fold_conversion`'s job at the call
+/// site), and what is left here is the *width and sign* of `ty`: an unsigned shift is logical, an
+/// unsigned division is unsigned, and comparisons see numbers rather than bit patterns.
+fn fold(types: &Types, ty: TypeId, operator: &str, left: i64, right: i64) -> Option<i64> {
+    // The type's own width and sign, which is what decides how each operation behaves. A pointer or
+    // anything else that reaches this is not a constant expression.
+    let (bits, signed) = match types.kind(ty) {
+        Type::Int { bits, signed } => (*bits, *signed),
+        Type::Bool => (8, false),
+        _ => return None,
+    };
+    let widen = |value: i64| -> i64 {
+        if bits >= 64 {
+            return value;
+        }
+        let mask = (1i64 << bits) - 1;
+        let narrowed = value & mask;
+        if signed && narrowed >> (bits - 1) != 0 {
+            narrowed | !mask
+        } else {
+            narrowed
+        }
+    };
+    // The same value seen as an unsigned number of `bits` bits, which is what an unsigned
+    // comparison, division or shift asks about.
+    let unsigned = |value: i64| -> u64 {
+        if bits >= 64 {
+            value as u64
+        } else {
+            (value as u64) & ((1u64 << bits) - 1)
+        }
+    };
+    let answer = match operator {
+        // Comparisons see numbers: two different bit patterns of `-1` and `4294967295` are one
+        // number in an unsigned type, and the conversion at the call site already made them one.
+        "<" | ">" | "<=" | ">=" | "==" | "!=" => {
+            let (a, b) = if signed {
+                (left, right)
+            } else {
+                // Both are already non-negative after the conversion, but a 64-bit unsigned value
+                // is negative as `i64` and must compare as the larger number it is.
+                let (a, b) = (unsigned(left), unsigned(right));
+                return Some(match operator {
+                    "<" => i64::from(a < b),
+                    ">" => i64::from(a > b),
+                    "<=" => i64::from(a <= b),
+                    ">=" => i64::from(a >= b),
+                    "==" => i64::from(a == b),
+                    _ => i64::from(a != b),
+                });
+            };
+            return Some(match operator {
+                "<" => i64::from(a < b),
+                ">" => i64::from(a > b),
+                "<=" => i64::from(a <= b),
+                ">=" => i64::from(a >= b),
+                "==" => i64::from(a == b),
+                _ => i64::from(a != b),
+            });
+        }
+        "/" if right != 0 => {
+            if signed {
+                left.wrapping_div(right)
+            } else {
+                (unsigned(left) / unsigned(right)) as i64
+            }
+        }
+        "%" if right != 0 => {
+            if signed {
+                left.wrapping_rem(right)
+            } else {
+                (unsigned(left) % unsigned(right)) as i64
+            }
+        }
+        // A shift is logical on an unsigned type and arithmetic on a signed one, and it is done in
+        // the type's width - which is the one operation where the *sign* alone is not enough.
+        ">>" if (0..bits as i64).contains(&right) => {
+            if signed {
+                return Some(widen(left >> right));
+            }
+            return Some((unsigned(left) >> right) as i64);
+        }
+        "<<" if (0..bits as i64).contains(&right) => {
+            let shifted = unsigned(left) << right;
+            return Some(widen(if bits >= 64 {
+                shifted as i64
+            } else {
+                (shifted & ((1u64 << bits) - 1)) as i64
+            }));
+        }
         "+" => left.wrapping_add(right),
         "-" => left.wrapping_sub(right),
         "*" => left.wrapping_mul(right),
-        "/" if right != 0 => left.wrapping_div(right),
-        "%" if right != 0 => left.wrapping_rem(right),
-        "<<" if (0..64).contains(&right) => left.wrapping_shl(right as u32),
-        ">>" if (0..64).contains(&right) => left.wrapping_shr(right as u32),
         "&" => left & right,
         "|" => left | right,
         "^" => left ^ right,
-        "==" => i64::from(left == right),
-        "!=" => i64::from(left != right),
-        "<" => i64::from(left < right),
-        ">" => i64::from(left > right),
-        "<=" => i64::from(left <= right),
-        ">=" => i64::from(left >= right),
         "&&" => i64::from(left != 0 && right != 0),
         "||" => i64::from(left != 0 || right != 0),
         _ => return None,
-    })
+    };
+    Some(widen(answer))
 }
 
 #[cfg(test)]

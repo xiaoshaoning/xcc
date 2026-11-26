@@ -13,6 +13,7 @@
 pub mod dce;
 pub mod fold;
 pub mod mem2reg;
+pub mod prune;
 pub mod truth;
 
 use super::{Broken, Module};
@@ -30,6 +31,8 @@ pub struct Changes {
     pub dead: usize,
     /// Truth tests removed because the value they tested was already 0 or 1.
     pub simplified: usize,
+    /// Blocks emptied because nothing could reach them.
+    pub dead_blocks: usize,
 }
 
 impl Changes {
@@ -55,6 +58,15 @@ pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, 
         // was reported as "a pass broke `parse_number`", and the pass had done nothing wrong.
         if let Err(broken) = func.verify(&module.types) {
             return Err((func.name, broken));
+        }
+        // Dead first: `dce` would otherwise remove a definition in one dead block and leave its
+        // use in another, which is a broken function by the verifier's lights and nobody's fault.
+        let pruned = prune::run(func);
+        changes.dead_blocks += pruned;
+        if pruned > 0 {
+            if let Err(broken) = func.verify(&module.types) {
+                return Err((func.name, broken));
+            }
         }
         let before = mem2reg::count_memory(func);
         changes.slots += mem2reg::run(func, &module.types);

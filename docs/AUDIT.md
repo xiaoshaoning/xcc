@@ -786,6 +786,54 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M19 - 2026-11-25 - sqlite3.c runs, and the four bugs between the symbol table and the answer
+
+The symbol table named `sqlite3InsertBuiltinFuncs + 163`, the two initialiser bugs under it were fixed, and the fault came
+back *named*: a `ud2` in `whereLoopAddBtree`. What follows is that chase, and the four bugs it found - one of them a
+miscompiled loop, and three of them things this compiler had been doing wrong all along, hidden because a wrong constant
+was branched on rather than believed.
+
+**A `for` loop whose update ends in a join lost its way back.** `p = c ? 0 : p->pNext` is sqlite's loop over indices.
+The update is read starting in the step block, and a conditional leaves the cursor in *its own* join block - so the step
+block ends (in the branch into the arms) while the cursor is elsewhere. `for_statement` asked `terminated(step)` and got
+"already ended", emitted no jump back to the test, and the join ended in a trap: the loop ran once and then `ud2`. It was
+the only one of six loop questions in `stmt.rs` that asked about a named block instead of the cursor; every other one
+already asked `current_is_open`.
+
+**A block nothing can reach is not a block that traps on purpose.** `Term::Unreachable` meant both "the front end
+abandoned this block" and "arriving here is undefined behaviour" (the fall-off of a non-void function), so no rule could
+hold one without forbidding the other. They are now `Unreachable` and `Trap`, both encoded `ud2`, and the verifier holds
+the first to "the entry cannot reach it" - which is the invariant that makes a reachable trap a compiler bug instead of a
+crash. It found the `for` bug above by itself, with a span.
+
+**Dead code is emptied by its own pass.** C code after an `if` whose every arm returned is legal, is read, and cannot
+run; `dce` could then remove a definition in one dead block and leave its use in another, which the verifier refuses as
+"used but no instruction defines it". `cir::pass::prune` empties unreachable blocks first - no instructions, one trap -
+and the dominance check skips dead blocks, because dominance is a statement about paths and a dead block has none. Measured
+side effect: `.text` over the 444 corpus programs fell from 80 336 bytes to 79 032.
+
+**A constant condition has one side, and saying so removed a lie.** `do { } while(1)` branched to an exit no path takes,
+which made the exit *reachable* to every reader of the graph - including the "control reaches the end of ..." warning,
+which fired on `yy_find_shift_action` in `sqlite3.c`, a function that cannot reach its end. `constant_truth` decides one
+branch at compile time; `1` jumps to the body, `0` to the exit. Two warnings from that build became none.
+
+**And the fold that decided wrongly.** C99 6.3.1.8 puts the usual arithmetic conversions *before* the operator; the front
+end's constant folder compared the two spellings instead, so `-1 > 0u` folded to false. That was invisible while a wrong
+constant was branched on and the back end's own (correct) folder answered the runtime comparison - and it became a wrong
+*answer* the moment a constant condition decided the branch. The fold now converts both operands to the common type
+(`fold_conversion`, the same function that folds a cast) and does the operation in that type's width and sign: an unsigned
+division is unsigned, an unsigned shift is logical, and a comparison sees numbers. The corpus had the cases - `-1 / 2u`
+is 2147483647 - and cc50_corners.c failed on one of them, which is how this was found rather than argued.
+
+**sqlite3.c, measured.** 265 977 lines, `xcc --std=c11 --opt-level=2 sqlite_driver.c sqlite3.c -o sq.exe` takes 7 seconds
+and writes a 2.4 MB image; it opens an in-memory database, creates a table, inserts three rows, prepares a query with
+`sum`, `group_concat` and `sqlite_version`, and prints `6 one,two,three 3.51.3` - byte for byte what `clang -O2`'s build of
+the same two files prints.
+
+206 unit, 41 parser, 36 exe, 4 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 415 ran, 0
+mismatched (cc51_loops.c is new); 443 corpus programs agree through the own back end, 0 wrong; `.text` 79 032 bytes over
+444 programs; fmt and clippy clean.
+
 ### M18 - 2026-11-25 - the initialiser that was a constant, and the one that was zeroes
 
 The symbol table named the fault: `sqlite3InsertBuiltinFuncs + 163`, a `movsbq` of `zName[0]` where `zName` was NULL. Its

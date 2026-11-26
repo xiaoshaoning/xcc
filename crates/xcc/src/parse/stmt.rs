@@ -203,14 +203,20 @@ impl Parser<'_> {
             _ => (None, None, None),
         };
         if let (Some(test), Some(then_block), Some(else_block)) = (test, then_block, else_block) {
-            self.emit(|builder| {
-                builder.branch(
-                    test,
-                    (then_block, Vec::new()),
-                    (else_block, Vec::new()),
-                    span,
-                )
-            });
+            match condition.and_then(|condition| self.constant_truth(&condition)) {
+                Some(true) => self.jump(then_block, span),
+                Some(false) => self.jump(else_block, span),
+                None => {
+                    self.emit(|builder| {
+                        builder.branch(
+                            test,
+                            (then_block, Vec::new()),
+                            (else_block, Vec::new()),
+                            span,
+                        );
+                    });
+                }
+            }
             self.switch_to(then_block);
         }
         self.statement();
@@ -247,15 +253,21 @@ impl Parser<'_> {
         if let Some(condition) = self.parenthesised_condition("`while`") {
             self.require_scalar(&condition, "the condition of `while`");
             let test = self.compare_to_zero(condition, cir::CmpOp::Ne, span);
-            if let (Some(condition), Some(body_block), Some(exit)) = (test, body_block, exit) {
-                self.emit(|builder| {
-                    builder.branch(
-                        condition,
-                        (body_block, Vec::new()),
-                        (exit, Vec::new()),
-                        span,
-                    )
-                });
+            if let (Some(test), Some(body_block), Some(exit)) = (test, body_block, exit) {
+                match self.constant_truth(&condition) {
+                    Some(true) => self.jump(body_block, span),
+                    Some(false) => self.jump(exit, span),
+                    None => {
+                        self.emit(|builder| {
+                            builder.branch(
+                                test,
+                                (body_block, Vec::new()),
+                                (exit, Vec::new()),
+                                span,
+                            );
+                        });
+                    }
+                }
             }
         }
         let (Some(body_block), Some(test), Some(exit)) = (body_block, test, exit) else {
@@ -305,16 +317,15 @@ impl Parser<'_> {
         self.switch_to(test);
         let condition = self.do_tail();
         match condition {
-            Some(condition) => {
-                self.emit(|builder| {
-                    builder.branch(
-                        condition,
-                        (body_block, Vec::new()),
-                        (exit, Vec::new()),
-                        span,
-                    )
-                });
-            }
+            Some((condition, test)) => match self.constant_truth(&condition) {
+                Some(true) => self.jump(body_block, span),
+                Some(false) => self.jump(exit, span),
+                None => {
+                    self.emit(|builder| {
+                        builder.branch(test, (body_block, Vec::new()), (exit, Vec::new()), span)
+                    });
+                }
+            },
             // Nothing to test: the test block leaves the loop. A condition that emitted no
             // value has a diagnostic of its own, and the function is dropped.
             None => self.jump(exit, span),
@@ -323,7 +334,7 @@ impl Parser<'_> {
     }
 
     /// The `while (condition);` half of a `do`, read after the body because that is where it is.
-    fn do_tail(&mut self) -> Option<cir::Value> {
+    fn do_tail(&mut self) -> Option<(Value, cir::Value)> {
         if !self.at_word("while") {
             self.error_at_current("expected `while` after the body of `do`");
             return None;
@@ -337,7 +348,12 @@ impl Parser<'_> {
             self.error_at_current("expected `;` after `do ... while`");
         }
         let span = self.span();
-        condition.and_then(|condition| self.compare_to_zero(condition, cir::CmpOp::Ne, span))
+        // The condition and its test: the *value* is what says a constant has only one side, and
+        // `do { } while(1)` is the loop that has one.
+        condition.and_then(|condition| {
+            let test = self.compare_to_zero(condition, cir::CmpOp::Ne, span)?;
+            Some((condition, test))
+        })
     }
 
     /// `for`: the increment lives in a block of its own, which is parsed (and filled) before the
@@ -373,15 +389,21 @@ impl Parser<'_> {
             if let Some(condition) = self.expression() {
                 self.require_scalar(&condition, "the condition of `for`");
                 let test = self.compare_to_zero(condition, cir::CmpOp::Ne, span);
-                if let (Some(condition), Some(body_block), Some(exit)) = (test, body_block, exit) {
-                    self.emit(|builder| {
-                        builder.branch(
-                            condition,
-                            (body_block, Vec::new()),
-                            (exit, Vec::new()),
-                            span,
-                        )
-                    });
+                if let (Some(test), Some(body_block), Some(exit)) = (test, body_block, exit) {
+                    match self.constant_truth(&condition) {
+                        Some(true) => self.jump(body_block, span),
+                        Some(false) => self.jump(exit, span),
+                        None => {
+                            self.emit(|builder| {
+                                builder.branch(
+                                    test,
+                                    (body_block, Vec::new()),
+                                    (exit, Vec::new()),
+                                    span,
+                                );
+                            });
+                        }
+                    }
                 }
             }
         } else if let Some(body_block) = body_block {
@@ -409,7 +431,14 @@ impl Parser<'_> {
             self.symbols.pop();
             return;
         };
-        if !self.terminated(step) {
+        // **The cursor, not the block the update started in.** An update expression that ends in a
+        // join - `p = c ? 0 : p->pNext` is sqlite's loop over indices - leaves the cursor in the
+        // ternary's join block, and the step block is terminated by the branch into the arms. Asking
+        // about `step` answered "already ended" and left the join with no way back to the test: the
+        // loop ran once and then fell into a trap, which is a `ud2` inside `whereLoopAddBtree` with
+        // nothing to say which line it was. Every other loop asks `current_is_open`, and so does this
+        // one now.
+        if self.current_is_open() {
             self.jump(test, span);
         }
         self.switch_to(body_block);
@@ -476,8 +505,8 @@ impl Parser<'_> {
                     format!("this function returns {ty}, so `return` needs a value"),
                 );
                 // Something has to end the block, and the diagnostic has already said the program is
-                // wrong: `unreachable` keeps the rest of the function checking.
-                self.emit(|builder| builder.unreachable(span));
+                // wrong: a trap keeps the rest of the function checking.
+                self.emit(|builder| builder.trap(span));
             }
             return;
         }

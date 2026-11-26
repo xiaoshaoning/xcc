@@ -474,8 +474,15 @@ impl Parser<'_> {
         let arithmetic = self.types.is_arithmetic(left.ty) && self.types.is_arithmetic(right.ty);
         let integer = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
         let integral = self.types.is_integer(left.ty) && self.types.is_integer(right.ty);
-        let folded = |left: Value, right: Value| match (left.constant, right.constant) {
-            (Some(a), Some(b)) if integral => fold(operator, a, b),
+        // C99 6.3.1.8 first, then the operator: both constants convert to the type the operation
+        // is done in, so the fold sees the numbers C sees. `fold_conversion` is the same function
+        // that folds a cast, because the conversion is the same one.
+        let folded = |ty: TypeId, left: Value, right: Value| match (left.constant, right.constant) {
+            (Some(a), Some(b)) if integral => {
+                let a = self.fold_conversion(left.ty, ty, a)?;
+                let b = self.fold_conversion(right.ty, ty, b)?;
+                fold(&self.types, ty, operator, a, b)
+            }
             _ => None,
         };
         let common = || self.types.usual_arithmetic(left.ty, right.ty);
@@ -492,7 +499,7 @@ impl Parser<'_> {
                     let folded = if self.types.is_float(ty) {
                         self.fold_float(operator, ty, left, right)
                     } else {
-                        folded(left, right)
+                        folded(ty, left, right)
                     };
                     return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
@@ -573,7 +580,7 @@ impl Parser<'_> {
                     let folded = if self.types.is_float(ty) {
                         self.fold_float(operator, ty, left, right)
                     } else {
-                        folded(left, right)
+                        folded(ty, left, right)
                     };
                     return self.emit_binary(op, ty, ty, [left, right], folded, span);
                 }
@@ -601,7 +608,7 @@ impl Parser<'_> {
                     } else {
                         ty
                     };
-                    let folded = folded(left, right);
+                    let folded = folded(operands, left, right);
                     return self.emit_binary(op, operands, ty, [left, right], folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
@@ -628,7 +635,7 @@ impl Parser<'_> {
                     } else {
                         right.ty
                     };
-                    let folded = folded(left, right);
+                    let folded = folded(operands, left, right);
                     return self.emit_compare(op, operands, [left, right], int, folded, span);
                 }
                 self.bad_operands(operator, left.ty, right.ty, span)
@@ -2563,7 +2570,10 @@ impl Parser<'_> {
                         self.describe(result)
                     ),
                 );
-                self.emit(|builder| builder.unreachable(span));
+                // Undefined behaviour, and the program is meant to stop here: a trap says so, and
+                // `unreachable` would have said nothing can arrive - which is a different claim, and
+                // one the verifier holds the first to.
+                self.emit(|builder| builder.trap(span));
             }
         }
         let gotos = std::mem::take(&mut self.gotos);

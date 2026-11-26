@@ -1160,7 +1160,7 @@ impl<M: Module> Lowerer<'_, M> {
                     &else_args,
                 );
             }
-            Term::Unreachable { .. } => {
+            Term::Unreachable { .. } | Term::Trap { .. } => {
                 builder.ins().trap(ir::TrapCode::unwrap_user(1_u8));
             }
         }

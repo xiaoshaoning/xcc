@@ -1124,7 +1124,7 @@ impl FunctionLowering<'_> {
                     otherwise,
                 }
             }
-            Term::Unreachable { .. } => BlockTerm::Unreachable,
+            Term::Unreachable { .. } | Term::Trap { .. } => BlockTerm::Unreachable,
         })
     }
 

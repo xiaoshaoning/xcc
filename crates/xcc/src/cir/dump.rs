@@ -230,7 +230,7 @@ pub(crate) fn instruction(
     }
 }
 
-fn terminator(names: &Interner, func: &Func, term: &Term) -> String {
+fn terminator(_names: &Interner, _func: &Func, term: &Term) -> String {
     let v = |value: Value| format!("v{}", value.0);
     let args = |args: &[Value]| -> String {
         if args.is_empty() {
@@ -263,10 +263,9 @@ fn terminator(names: &Interner, func: &Func, term: &Term) -> String {
             otherwise.0 .0,
             args(&otherwise.1)
         ),
-        Term::Unreachable { .. } => {
-            let _ = names;
-            let _ = func;
-            "unreachable".to_owned()
-        }
+        // Two words for two facts, because a reader of the dump needs to tell "nothing arrives
+        // here" from "arriving here is undefined behaviour".
+        Term::Trap { .. } => "trap".to_owned(),
+        Term::Unreachable { .. } => "unreachable".to_owned(),
     }
 }

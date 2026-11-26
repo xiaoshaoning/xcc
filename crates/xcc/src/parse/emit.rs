@@ -117,6 +117,18 @@ impl Parser<'_> {
         self.types.constant_is_zero(value.ty, bits)
     }
 
+    /// Where a constant condition sends control, or `None` when the condition is not a constant.
+    ///
+    /// Every condition C has - `if`, `while`, `for`, `do`, `?:`, `&&`, `||`, `!` - goes through a
+    /// branch, and `do { } while(1)` has only one side. Branching anyway says the exit *can* be
+    /// reached, which is what the verifier, the passes and the "control reaches the end of ..."
+    /// warning all read: `yy_find_shift_action` in `sqlite3.c` is a `do { } while(1)`, and it was
+    /// warned about falling off its own end - a warning that was not merely noise but untrue.
+    pub(super) fn constant_truth(&self, condition: &Value) -> Option<bool> {
+        condition.constant?;
+        Some(!self.constant_is_zero(condition))
+    }
+
     /// Whether a value is a *null pointer constant*: an *integer* constant expression with the
     /// value zero (C99 6.3.2.3p3). A float `0.0` is zero and is not one, which is why this is
     /// not `constant_is_zero`.
