@@ -456,6 +456,31 @@ int main(void) {
     assert!(refused.is_err(), "writing to `__func__` must be refused");
 }
 
+/// A pointer narrowed to an integer: C99 6.3.2.3p6 makes the result implementation-defined, and the
+/// machine's answer is the low bits - the same truncation an integer of that width gives. `tre` hashes
+/// a pointer with `(int)p`, and this compiler refused the cast.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_pointer_narrows_to_an_integer_the_way_the_machine_does() {
+    let source = r#"
+#include <stdio.h>
+
+int main(void) {
+    char *p = (char *)0x7f3a5c10;
+    printf("%x %x %x %llx %d %d\n", (unsigned)p, (unsigned short)(unsigned)p,
+           (unsigned char)(unsigned)p, (unsigned long long)p, (int)(p != 0),
+           (int)(short)(unsigned)p);
+    return 0;
+}
+"#;
+    let run = run_linked("ptrtoint", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // What a `clang -O2` build of the same program prints: the low 32, 16 and 8 bits, the full
+    // 64, a `_Bool` that is still a truth test rather than a truncation, and the sign of a `short`.
+    assert_eq!(out.trim_end(), "7f3a5c10 5c10 10 7f3a5c10 1 23568");
+}
+
 /// A `_Bool` that came from a comparison, and then converted: the shape `yyjson` wrote as
 /// `(u8)(sign)` where `sign = (*cur == '-')`.
 ///

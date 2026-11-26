@@ -786,6 +786,29 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M42 - 2026-11-25 - `tre`, and the cast that was one line of the standard
+
+The next real program was `tre` - a POSIX regex library, 9 041 lines in an amalgamation, with its own DFA builder, its
+own allocator and its own stack. It is the most macro-heavy code this compiler has met, and it did not compile.
+
+**One gap, and it is spelled out in C99 6.3.2.3p6**: a pointer may be converted to an *integer narrower than itself*, and
+the result is implementation-defined. `conversion` covered pointer-to-pointer, pointer-to-64-bit-integer and
+narrow-integer-to-pointer - the three cases where the value is bit-for-bit - and refused the fourth. `tre` hashes a
+pointer with `(int)p`, which is exactly that case, and the diagnostic was honest: *"this compiler cannot convert pointer
+to char to int yet"*. It is a truncation now, which is what the machine does.
+
+Checked against clang rather than argued: `(unsigned)p`, `(unsigned short)(unsigned)p`, `(unsigned char)(unsigned)p`,
+`(unsigned long long)p`, `(int)(p != 0)` and `(int)(short)(unsigned)p` - six answers, identical, including the two that
+show the conversion is *not* a truth test: `_Bool` from a pointer is still "is it null", which `convert` answers with a
+comparison before `conversion` is ever asked.
+
+`tre` then compiles to a 196 KB object in silence. It is not a fixture yet - it needs a driver and its Windows branch
+reads `basetsd.h`, so like mimalloc it would have no SDK-free half - but it is the ninth program this compiler has
+compiled and the sixth to name a bug.
+
+209 unit, 42 parser, 41 exe (one more), 10 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys;
+differential 416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M41 - 2026-11-25 - the file that was gated for nothing, and the sentence nobody read twice
 
 Reviewing `544a9e5` found one wrong claim and one sentence that did not parse.

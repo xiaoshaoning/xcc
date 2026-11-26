@@ -694,6 +694,18 @@ impl Parser<'_> {
                 }
             }
         }
+        // A pointer to an integer *narrower* than itself: C99 6.3.2.3p6 makes the result
+        // implementation-defined, and the machine has one answer - the low bits, which is the same
+        // truncation an integer of that width gives. `tre` hashes a pointer with `(int)p`, and this
+        // refused it. A `_Bool` never reaches here: converting a pointer to `_Bool` is the question
+        // "is it null", which `convert` answers with a comparison.
+        if self.types.is_pointer(from) {
+            if let Some(to_bits) = width(to) {
+                if to_bits < 64 && !matches!(self.types.kind(to), Type::Bool) {
+                    return Some(cir::ConvertOp::Truncate);
+                }
+            }
+        }
         if let (Some(from_bits), Some(to_bits)) = (width(from), width(to)) {
             return Some(if to_bits == from_bits {
                 cir::ConvertOp::Bitcast
