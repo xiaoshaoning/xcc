@@ -15,14 +15,17 @@ use std::process::Command;
 
 use xcc::{Compile, Includes, Options};
 
-/// The fixture directory, as `#include "..."` sees it: the one thing a host has to give a
-/// compilation that is not a string. The compiler never touches a filesystem itself.
+/// The directories `#include "..."` may read, in order: the fixture's own, then - for the one
+/// fixture that names a header no C library has - the host's Windows SDK. The compiler never
+/// touches a filesystem itself; this is the whole of what a host has to give it that is not text.
 #[derive(Debug)]
-struct Fixtures(PathBuf);
+struct Fixtures(Vec<PathBuf>);
 
 impl Includes for Fixtures {
     fn read(&self, path: &str) -> Option<String> {
-        std::fs::read_to_string(self.0.join(path)).ok()
+        self.0
+            .iter()
+            .find_map(|root| std::fs::read_to_string(root.join(path)).ok())
     }
 }
 
@@ -49,6 +52,18 @@ fn run_fixture(
     files: &[&str],
     defines: &[&str],
 ) -> std::process::Output {
+    run_fixture_with(test, library, files, defines, &[])
+}
+
+/// The same, with directories to search after the fixture's own: SQLite's Windows layer includes
+/// `windows.h`, which is the host's SDK and not something a fixture may carry.
+fn run_fixture_with(
+    test: &str,
+    library: &str,
+    files: &[&str],
+    defines: &[&str],
+    more: &[PathBuf],
+) -> std::process::Output {
     let units: Vec<(String, String)> = files.iter().map(|file| source(library, file)).collect();
     let borrowed: Vec<(&str, &str)> = units
         .iter()
@@ -57,9 +72,14 @@ fn run_fixture(
     let options = Options {
         opt_level: 2,
         defines: defines.iter().map(|define| (*define).to_owned()).collect(),
+        // A fixture is real code and this is a compiler: the library's own budgets are sized for
+        // an embedder handing over a snippet, and SQLite's amalgamation is nine megabytes.
+        budgets: xcc::Budgets::for_a_compiler(),
         ..Options::default()
     };
-    let includes = Box::new(Fixtures(root(library)));
+    let mut roots = vec![root(library)];
+    roots.extend_from_slice(more);
+    let includes = Box::new(Fixtures(roots));
     let image = Compile::with_includes(options, includes)
         .link(&borrowed)
         .unwrap_or_else(|diagnostics| {
@@ -205,4 +225,83 @@ compiled x*y+1 -> 43.0 (err 0)
 with x=2 -> 15.0
 "#
     );
+}
+/// `SQLite`: the amalgamation every application vendors - 265 977 lines, 9.6 MB, one translation
+/// unit - compiled by this compiler with its own back end. `SQLITE_OS_OTHER=1` takes out the OS
+/// layer, which is the only part that needs `windows.h`, so this is checked on **every** machine:
+/// it is the front end and the object writer against the largest single file of real C there is.
+///
+/// What it cost when it was added: three bugs in the type of an integer constant, two in the
+/// initialiser that a static object holds, a `for` loop whose update ended in a conditional, and
+/// the constant folder that compared two operands before converting them. None of them was visible
+/// in a corpus of 464 small programs.
+#[test]
+fn sqlite_compiles_without_a_windows_sdk() {
+    let unit = source("sqlite", "sqlite3.c");
+    let options = Options {
+        opt_level: 2,
+        defines: vec!["SQLITE_OS_OTHER=1".to_owned()],
+        budgets: xcc::Budgets::for_a_compiler(),
+        ..Options::default()
+    };
+    let artifact = Compile::new(options)
+        .compile("sqlite3.c", &unit.1)
+        .unwrap_or_else(|diagnostics| {
+            panic!(
+                "sqlite3.c does not compile: {}",
+                diagnostics.render(xcc::Format::Human)
+            )
+        });
+    // A 2.6 MB object is what 265 977 lines of SQLite come to. The number is here to catch a
+    // compilation that stopped early and called it success, not to be tight.
+    assert!(
+        artifact.bytes().len() > 2_000_000,
+        "the object is {} bytes, which is not the whole amalgamation",
+        artifact.bytes().len()
+    );
+}
+
+/// The same file with its Windows layer on: a real database, opened in memory, with a table, a
+/// multi-row `INSERT`, an aggregate, and a prepared statement - the whole library, not just its
+/// parser. Compared byte for byte with what a `clang` build printed when the fixture was added.
+///
+/// Windows headers are the host's: this machine has them and CI does not, so the test says which
+/// it is rather than passing quietly. The compile-only test above is the one that never skips.
+#[test]
+#[cfg(target_os = "windows")]
+fn sqlite_runs_a_query_through_its_windows_layer() {
+    let Some(sdk) = windows_sdk() else {
+        eprintln!("no Windows SDK headers on this machine: the SQLite Windows test is skipped");
+        return;
+    };
+    let run = run_fixture_with("sqlite", "sqlite", &["driver.c", "sqlite3.c"], &[], &[sdk]);
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
+}
+
+/// Where this machine keeps `windows.h`, or `None`. The three places a Windows build host puts it:
+/// MSYS2's two prefixes, and a Visual Studio installation's `ucrt` headers beside `shared`.
+fn windows_sdk() -> Option<PathBuf> {
+    for candidate in [
+        "C:/msys64/ucrt64/include",
+        "C:/msys64/mingw64/include",
+        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
+    ] {
+        let path = PathBuf::from(candidate);
+        if path.join("windows.h").is_file() {
+            return Some(path);
+        }
+        // A Visual Studio SDK keeps `windows.h` in `shared/`, three directories down from the
+        // toolset version - which is a directory name nobody should have to spell.
+        if path.is_dir() {
+            for toolset in std::fs::read_dir(&path).ok()? {
+                let shared = toolset.ok()?.path().join("include/shared");
+                if shared.join("windows.h").is_file() {
+                    return Some(shared);
+                }
+            }
+        }
+    }
+    None
 }

@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M21 - 2026-11-25 - SQLite becomes a gate
+
+A measurement that is not a test is a measurement that expires. The session's biggest result - 265 977 lines of SQLite
+compiled silently, linked and answered correctly - was a paragraph and a temp directory; it is now `sqlite3.c` in
+`tests/fixtures/sqlite/` with two tests.
+
+**Two, because the fixture needs a Windows SDK to run and this compiler's whole point is not to need one to compile.**
+`-DSQLITE_OS_OTHER=1` takes out the OS layer - the only part that includes `windows.h` - so that build compiles and
+writes a 2.6 MB object on **any** machine, and that test never skips. With its Windows layer on, the driver opens an
+in-memory database, creates a table, inserts three rows in one `INSERT`, and reads them back through a prepared
+statement: `6 one,two,three 3.51.3` and `0 -1`, byte for byte what `clang` printed when the fixture was added. That one
+says it is skipping when the host has no SDK, which is what CI is - and the compile-only test is the one that holds
+there.
+
+What the fixture cost when it arrived, over the two days it took: three bugs in the type of an integer constant and its
+two axes, the initialiser that was a constant cast to a pointer, the initialiser that became zeroes, a `for` loop whose
+update ended in a conditional, and a constant folder that compared two operands before converting them. None of the
+five was visible in a corpus of 464 small programs, and every one of them is now what a single test would catch.
+
+`run_fixture` grew a `windows_sdk()` and a list of include roots, because this is the first fixture that names a header
+nobody's C library has. `Budgets::for_a_compiler()` - whose doc comment has said "sqlite's amalgamation is one" since it
+was written - is now what the fixture tests use, which is what the command line already did.
+
+Cost: the `real` suite goes from 5 seconds to 70 in a debug build, against 8 minutes for the x64 suite. The vendored
+amalgamation is 9.9 MB.
+
+207 unit, 41 parser, 36 exe, 6 real (two more), 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy
+clean.
+
 ### M20 - 2026-11-25 - the pragma that saved a definition, and the intrinsics that had no declaration
 
 With the loop bugs fixed, `sqlite3.c` ran - and printed the right answer while printing *warnings* on every line of
