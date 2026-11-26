@@ -13,6 +13,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `cjson/` | [DaveGamble/cJSON](https://github.com/DaveGamble/cJSON), master, 2026-11-22 | MIT | the parser, the tree walk, and printing |
 | `miniz/` | [richgel999/miniz](https://github.com/richgel999/miniz), master, 2026-11-22 | MIT / public domain | `tdefl`, `tinfl`, the zip writer and the zip reader |
 | `sqlite/` | [SQLite](https://sqlite.org) 3.51.3, the amalgamation, 2026-11-22 | public domain | everything: 265 977 lines in one translation unit |
+| `lua/` | [Lua](https://lua.org) 5.5.1, `src/` of the release tarball | MIT | the interpreter, the compiler, the GC, patterns, coroutines, `string.pack` |
 
 ## cjson
 
@@ -29,6 +30,24 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## lua
+
+`src/*.c` and `src/*.h` from [Lua](https://lua.org) 5.5.1, the release tarball, unmodified. MIT; the
+notice is in `lua.h`'s header comment and in `README.upstream`, which is the tarball's own README.
+
+It is here because an interpreter is a different program from a database: one long-lived loop
+dispatching bytecode, a garbage collector that traces its own stack, a pattern matcher written in C,
+coroutines as separate machine stacks, and `string.pack`'s format compiler. Lua 5.5 also has the
+newest things in the language - integer division, bitwise operators, `goto`, integer subtypes.
+
+`driver.lua` is ours: the script a test runs the interpreter on, whose output is compared with what a
+`clang -O2` build of the same sources printed. It touches the whole language, and one of the lines it
+prints is `string.dump`'s bytecode read back by `load`, so the dumper is covered too.
+
+Two of the 34 units read `windows.h` - `loadlib.c` loads DLLs, `lua.c` asks whether stdin is a
+terminal - and `luaconf.h` defines `LUA_USE_WINDOWS` for `_WIN32` whatever a program wants, so the
+compile-only test leaves those two out and runs everywhere while the run test needs the SDK.
 
 ## sqlite
 

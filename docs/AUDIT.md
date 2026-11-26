@@ -786,6 +786,33 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M23 - 2026-11-25 - Lua becomes a gate too
+
+The other half of the same argument: `tests/fixtures/lua/` is `src/` from the 5.5.1 release tarball - 34 files,
+unmodified - with `driver.lua`, a script this project wrote, and three tests.
+
+**Why an interpreter and not just SQLite.** One is a 265 977-line parser that opens a database and runs a query; the
+other is a long-lived loop dispatching bytecode, a garbage collector that traces its own machine stack, a pattern
+matcher, coroutines as separate stacks, and `string.pack`'s format compiler. Lua 5.5 also walks the newest corner of the
+language - integer division, bitwise operators, `goto`, integer subtypes - and its driver script prints every answer, so
+two builds are compared line for line: numbers, error text, `tostring` of a metatable, `utf8.codepoint`, an `io` round
+trip, and `string.dump`'s bytecode read back by `load`.
+
+**Two of the 34 units read `windows.h`**, and `luaconf.h` defines `LUA_USE_WINDOWS` for `_WIN32` whether a program wants
+it or not - `loadlib.c` loads DLLs, `lua.c` asks whether stdin is a terminal. So the compile-only test leaves those two
+out (31 units, every machine) and the run test needs a host with an SDK and says so. The compile-only half is not a
+weaker test: it is the front end and the back end over the VM, the parser, the GC and the string library, which is where
+a miscompile shows as a refusal or a verifier failure.
+
+**What it cost, before it was a test**: `__asm__("name")` as a link name and `inline` deciding linkage (M22), both found
+by compiling it, and neither visible in a corpus of 464 small programs or in SQLite.
+
+`run_fixture_with` grew an argument list, because an interpreter is run as `lua script.lua` and a C fixture is run with
+no arguments at all. The `real` suite is now 8 tests and 122 seconds in a debug build.
+
+207 unit, 41 parser, 37 exe, **8 real** (two more), 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential
+416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M22 - 2026-11-25 - Lua 5.5.1, and the two declarations the Windows headers spell
 
 Lua 5.5.1, from the release tarball, compiled by this compiler into a 642 KB `lua.exe`: it runs a script that touches

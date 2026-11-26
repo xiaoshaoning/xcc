@@ -52,7 +52,7 @@ fn run_fixture(
     files: &[&str],
     defines: &[&str],
 ) -> std::process::Output {
-    run_fixture_with(test, library, files, defines, &[])
+    run_fixture_with(test, library, files, defines, &[], &[])
 }
 
 /// The same, with directories to search after the fixture's own: SQLite's Windows layer includes
@@ -63,6 +63,7 @@ fn run_fixture_with(
     files: &[&str],
     defines: &[&str],
     more: &[PathBuf],
+    arguments: &[&str],
 ) -> std::process::Output {
     let units: Vec<(String, String)> = files.iter().map(|file| source(library, file)).collect();
     let borrowed: Vec<(&str, &str)> = units
@@ -93,7 +94,10 @@ fn run_fixture_with(
     std::fs::create_dir_all(&dir).expect("a temporary directory");
     let exe = dir.join("fixture.exe");
     std::fs::write(&exe, image.bytes()).expect("the image is written");
-    let output = Command::new(&exe).output().expect("the fixture runs");
+    let output = Command::new(&exe)
+        .args(arguments)
+        .output()
+        .expect("the fixture runs");
     let _ = std::fs::remove_dir_all(&dir);
     output
 }
@@ -226,6 +230,146 @@ with x=2 -> 15.0
 "#
     );
 }
+
+/// `Lua`: the interpreter, the compiler, the garbage collector, the string library and its pattern
+/// matcher, coroutines, and `string.pack` - 33 files of the 5.5.1 release, unmodified.
+///
+/// Two units need the Windows headers (`loadlib.c` loads DLLs, `lua.c` asks whether stdin is a
+/// terminal) and `luaconf.h` defines `LUA_USE_WINDOWS` for `_WIN32` whether a program wants it or
+/// not - so the compile-only half leaves those two out and runs everywhere, and the run half needs
+/// a host with an SDK and says so.
+#[test]
+fn lua_compiles_without_a_windows_sdk() {
+    // Every unit but the two that read `windows.h`.
+    let files: Vec<String> = std::fs::read_dir(root("lua"))
+        .expect("the fixture directory")
+        .filter_map(|entry| entry.ok()?.file_name().to_str().map(str::to_owned))
+        .filter(|name| name.ends_with(".c") && name != "loadlib.c" && name != "lua.c")
+        .collect();
+    assert!(files.len() >= 30, "the fixture lost files: {files:?}");
+    let units: Vec<(String, String)> = files.iter().map(|file| source("lua", file)).collect();
+    let options = Options {
+        opt_level: 2,
+        budgets: xcc::Budgets::for_a_compiler(),
+        ..Options::default()
+    };
+    // One unit at a time, because this set has no `main` and no program to link: what it checks is
+    // that the front end and the back end take every one of these files, which is where a
+    // miscompile shows as a refusal or a verifier failure rather than as a wrong answer.
+    // The includes are the fixture's own directory: `lapi.c` includes `lua.h` from beside itself.
+    let mut compiler = Compile::with_includes(options, Box::new(Fixtures(vec![root("lua")])));
+    for (name, text) in &units {
+        compiler.compile(name, text).unwrap_or_else(|diagnostics| {
+            panic!(
+                "{name} does not compile: {}",
+                diagnostics.render(xcc::Format::Human)
+            )
+        });
+    }
+}
+
+/// The whole interpreter, linked and run on the driver script, compared with what a `clang -O2`
+/// build of the same files printed: integers and bitwise operators, `//`, patterns, `string.pack`,
+/// metamethods, coroutines, `pcall`/`xpcall` with table error objects, `goto`, `repeat`, a `for`
+/// with a negative step, utf8, an `io` round trip, and `load`.
+#[test]
+#[cfg(target_os = "windows")]
+fn lua_runs_its_driver_script_the_way_clang_does() {
+    let Some(sdk) = windows_sdk() else {
+        eprintln!("no Windows SDK headers on this machine: the Lua run test is skipped");
+        return;
+    };
+    let run = run_fixture_with(
+        "lua",
+        "lua",
+        &[
+            "lapi.c",
+            "lcode.c",
+            "lctype.c",
+            "ldebug.c",
+            "ldo.c",
+            "ldump.c",
+            "lfunc.c",
+            "lgc.c",
+            "llex.c",
+            "lmem.c",
+            "lobject.c",
+            "lopcodes.c",
+            "lparser.c",
+            "lstate.c",
+            "lstring.c",
+            "ltable.c",
+            "ltm.c",
+            "lundump.c",
+            "lvm.c",
+            "lzio.c",
+            "lauxlib.c",
+            "lbaselib.c",
+            "lcorolib.c",
+            "ldblib.c",
+            "liolib.c",
+            "lmathlib.c",
+            "loadlib.c",
+            "loslib.c",
+            "lstrlib.c",
+            "ltablib.c",
+            "lutf8lib.c",
+            "linit.c",
+            "lua.c",
+        ],
+        &[],
+        &[sdk],
+        // The script, by absolute path: the interpreter takes it as its one argument, which is how
+        // the command line runs a program.
+        &[&root("lua").join("driver.lua").to_string_lossy()],
+    );
+    let out = String::from_utf8_lossy(&run.stdout).replace('\r', "");
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out, LUA_EXPECTED);
+}
+
+/// What a `clang -O2` build of the fixture printed for `driver.lua` when the fixture was added.
+/// Both builds printed exactly this, line for line, which is what a differential test of an
+/// interpreter is: every number, every error message, and every metatable question answered the same.
+const LUA_EXPECTED: &str = r#"10 7 4 1 
+3 1 3.5 1024.0 1024 240 9223372036854775807
+9223372036854775807 -9223372036854775808 true
+inf -inf true integer float
+42  3.14 1e+300 ff "a\"b"
+true quick 19 5 the quick brown fox-the quick brown fox
+t q b f 4
+the quick
+120 xyz
+1 0 0 0 2 0 0 0
+7 8 9
+1,2,5,9 4 1 9
+9,5,2,1
+1,2,3 2
+10 20 30
+(3) false 1
+3
+15 5
+6765
+true 2
+true 20
+true 105
+dead
+false table 42
+false attempt to divide by zero
+handled: boom
+goto 15
+repeat 3
+97 98 99
+Hello 5 233
+123 1.5 16 12 1000.0
+-4 -3 1 -9223372036854775808
+abc|7   |+1.2e+03
+line one 42
+true 42
+3
+true
+hi true
+"#;
 /// `SQLite`: the amalgamation every application vendors - 265 977 lines, 9.6 MB, one translation
 /// unit - compiled by this compiler with its own back end. `SQLITE_OS_OTHER=1` takes out the OS
 /// layer, which is the only part that needs `windows.h`, so this is checked on **every** machine:
@@ -274,7 +418,14 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
         eprintln!("no Windows SDK headers on this machine: the SQLite Windows test is skipped");
         return;
     };
-    let run = run_fixture_with("sqlite", "sqlite", &["driver.c", "sqlite3.c"], &[], &[sdk]);
+    let run = run_fixture_with(
+        "sqlite",
+        "sqlite",
+        &["driver.c", "sqlite3.c"],
+        &[],
+        &[sdk],
+        &[],
+    );
     let out = String::from_utf8_lossy(&run.stdout).into_owned();
     assert_eq!(run.status.code(), Some(0), "{out}");
     assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
