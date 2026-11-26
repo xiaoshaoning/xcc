@@ -999,6 +999,18 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.atomic_cas_expression(span))
             }
+            // C11's generic atomics, answered from the *object's* type instead of from a `_Generic`
+            // table. `_Generic` cannot say "any pointer type": the arm would have to name the
+            // program's own - `mimalloc` exchanges a `mi_heap_t *volatile *`, and no header can know
+            // that name. The compiler can, because the object is an expression it has already typed.
+            "__builtin_atomic_exchange" => {
+                self.bump();
+                Some(self.atomic_generic(true, span))
+            }
+            "__builtin_atomic_compare_exchange" => {
+                self.bump();
+                Some(self.atomic_generic(false, span))
+            }
             // The SDK's segment reads: `__readgsqword(0x30)` is `NtCurrentTeb()`, and half of
             // `winnt.h`'s inline functions are a field of it. Recognised by name because that is
             // what they *are* - one instruction each, with a constant offset, which is why the SDK
@@ -1364,6 +1376,125 @@ impl Parser<'_> {
             None => self.not_lowered(span, "a `va_list` that is not a local"),
         }
         Value::temporary(void)
+    }
+
+    /// C11 7.17.7.3's exchange and 7.17.7.4's compare-and-exchange, for **any** object type: an
+    /// integer of 1, 2, 4 or 8 bytes, or a pointer, which is eight.
+    ///
+    /// They are here rather than in `<stdatomic.h>` because `_Generic` cannot say "any pointer type".
+    /// The object's type decides everything - the width, the signedness, and which runtime function
+    /// does the work - and the compiler is the only layer that has it. A failed compare-and-exchange
+    /// writes the value it found back through `expected`, which is the standard's own behaviour and
+    /// the runtime function's signature.
+    fn atomic_generic(&mut self, exchange: bool, span: Span) -> Value {
+        if !self.eat("(") {
+            self.error_at_current("an atomic operation needs `(`");
+            return Value::temporary(self.types.error());
+        }
+        let Some(object) = self.assignment_expression().map(|value| self.decay(value)) else {
+            return Value::temporary(self.types.error());
+        };
+        if !self.types.is_pointer(object.ty) {
+            let given = self.describe(object.ty);
+            self.error(
+                span,
+                format!("an atomic operation needs an address, not {given}"),
+            );
+            return Value::temporary(self.types.error());
+        }
+        let pointee = self.types.pointee(object.ty);
+        // `lock cmpxchg` and `xchg` have forms for 1, 2, 4 and 8 bytes, which is every integer plus
+        // a pointer; anything else is refused rather than operated on at the wrong width.
+        let Some((kind, parameter)) = self.atomic_kind(pointee) else {
+            let given = self.describe(pointee);
+            self.error(
+                span,
+                format!("an atomic operation needs an integer or a pointer, not {given}"),
+            );
+            return Value::temporary(self.types.error());
+        };
+        let mut arguments = vec![object];
+        let mut parameters = vec![object.ty];
+        if !self.eat(",") {
+            self.error_at_current("expected `,` after the address");
+        }
+        if !exchange {
+            // C11's `expected` is a pointer to what the caller believes is there.
+            match self.assignment_expression().map(|value| self.decay(value)) {
+                Some(expected) => {
+                    parameters.push(expected.ty);
+                    arguments.push(expected);
+                }
+                None => return Value::temporary(self.types.error()),
+            }
+            if !self.eat(",") {
+                self.error_at_current("expected `,` after the expected value's address");
+            }
+        }
+        match self.assignment_expression().map(|value| self.decay(value)) {
+            Some(desired) => {
+                parameters.push(parameter);
+                arguments.push(desired);
+            }
+            None => return Value::temporary(self.types.error()),
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the arguments");
+        }
+        let result = if exchange {
+            pointee
+        } else {
+            self.types
+                .fundamental("_Bool")
+                .unwrap_or_else(|| self.types.error())
+        };
+        let name = format!("__xcc_{}_{kind}", if exchange { "exchange" } else { "cas" });
+        let function = self.types.function(result, parameters.clone(), false);
+        let pointer = self.types.pointer(function);
+        let Some(callee) = self.emit(|builder| builder.global_address(name, pointer, span)) else {
+            return Value::new(result, None, false);
+        };
+        self.emit_call(
+            Value::code(pointer, callee),
+            &parameters,
+            arguments,
+            false,
+            result,
+            span,
+        )
+    }
+
+    /// The suffix of the runtime function for an object of type `ty`, and the C type its value
+    /// argument has. `None` for a type the machine has no atomic operation of that width for.
+    fn atomic_kind(&mut self, ty: TypeId) -> Option<(&'static str, TypeId)> {
+        let (kind, parameter) = match self.types.kind(ty) {
+            crate::types::Type::Int {
+                bits: 8,
+                signed: true,
+            } => ("schar", "signed char"),
+            crate::types::Type::Int { bits: 8, .. } | crate::types::Type::Bool => {
+                ("uchar", "unsigned char")
+            }
+            crate::types::Type::Int {
+                bits: 16,
+                signed: true,
+            } => ("short", "short"),
+            crate::types::Type::Int { bits: 16, .. } => ("ushort", "unsigned short"),
+            crate::types::Type::Int {
+                bits: 32,
+                signed: true,
+            } => ("int", "int"),
+            crate::types::Type::Int { bits: 32, .. } => ("uint", "unsigned int"),
+            crate::types::Type::Int {
+                bits: 64,
+                signed: true,
+            } => ("llong", "long long"),
+            crate::types::Type::Int { bits: 64, .. } => ("ullong", "unsigned long long"),
+            crate::types::Type::Pointer(_) => ("ullong", "unsigned long long"),
+            _ => return None,
+        };
+        let parameter = self.types.fundamental(parameter)?;
+        Some((kind, parameter))
     }
 
     /// `__builtin_va_arg(ap, type)`: read one argument and step the list over its slot.

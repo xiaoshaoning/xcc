@@ -780,6 +780,25 @@ long _InterlockedXor(long volatile *value, long mask) {
 
 /* The `__stos*` four are `memset` with an element size, and the products are the two halves a
  * 64x64 multiply gives, the high one through a pointer. */
+/* The `movs` family: `rep movsb` and its siblings, which the Windows headers name and a program
+ * calls. `memcpy` is the same instruction sequence with the same overlap rule (none), which is what
+ * the intrinsic promises. */
+void __movsb(unsigned char *dest, const unsigned char *src, size_t count) {
+    memcpy(dest, src, count);
+}
+
+void __movsw(unsigned short *dest, const unsigned short *src, size_t count) {
+    memcpy(dest, src, count * sizeof(unsigned short));
+}
+
+void __movsd(unsigned long *dest, const unsigned long *src, size_t count) {
+    memcpy(dest, src, count * sizeof(unsigned long));
+}
+
+void __movsq(unsigned long long *dest, const unsigned long long *src, size_t count) {
+    memcpy(dest, src, count * sizeof(unsigned long long));
+}
+
 void __stosb(unsigned char *dest, unsigned char value, size_t count) {
     memset(dest, value, count);
 }

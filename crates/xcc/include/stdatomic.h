@@ -240,19 +240,7 @@ void __xcc_atomic_fence(void);
         unsigned long long *: __xcc_xor_ullong((volatile unsigned long long *)(object), \
                                                (unsigned long long)(argument)))
 
-#define atomic_exchange(object, desired) \
-    _Generic((object), \
-        char *: __xcc_exchange_char((volatile char *)(object), (char)(desired)), \
-        signed char *: __xcc_exchange_schar((volatile signed char *)(object), (signed char)(desired)), \
-        unsigned char *: __xcc_exchange_uchar((volatile unsigned char *)(object), (unsigned char)(desired)), \
-        short *: __xcc_exchange_short((volatile short *)(object), (short)(desired)), \
-        unsigned short *: __xcc_exchange_ushort((volatile unsigned short *)(object), (unsigned short)(desired)), \
-        int *: __xcc_exchange_int((volatile int *)(object), (int)(desired)), \
-        unsigned *: __xcc_exchange_uint((volatile unsigned *)(object), (unsigned)(desired)), \
-        long *: (long)__xcc_exchange_int((volatile int *)(object), (int)(desired)), \
-        long long *: __xcc_exchange_llong((volatile long long *)(object), (long long)(desired)), \
-        unsigned long long *: __xcc_exchange_ullong((volatile unsigned long long *)(object), \
-                                                    (unsigned long long)(desired)))
+#define atomic_exchange(object, desired) __builtin_atomic_exchange((object), (desired))
 
 /* The `_explicit` forms, which C11 7.17.7 spells for **every** operation. They differ from the
  * others in one thing only - the memory order they are given - and this compiler's atomics are all
@@ -260,8 +248,8 @@ void __xcc_atomic_fence(void);
  * form with the order read and dropped. Leaving them out was not an omission with a small blast
  * radius: an undeclared function is an `int`, and `mimalloc`'s `atomic_exchange_explicit` of a
  * pointer came back as a thirty-two-bit number widened into a pointer. */
-#define atomic_exchange_explicit(object, desired, order)     ((void)(order), atomic_exchange(object, desired))
-#define atomic_compare_exchange_strong_explicit(object, expected, desired, success, failure)     ((void)(success), (void)(failure), atomic_compare_exchange_strong(object, expected, desired))
+#define atomic_exchange_explicit(object, desired, order)     ((void)(order), __builtin_atomic_exchange((object), (desired)))
+#define atomic_compare_exchange_strong_explicit(object, expected, desired, success, failure)     ((void)(success), (void)(failure), __builtin_atomic_compare_exchange((object), (expected), (desired)))
 #define atomic_compare_exchange_weak_explicit(object, expected, desired, success, failure)     atomic_compare_exchange_strong_explicit(object, expected, desired, success, failure)
 #define atomic_fetch_add_explicit(object, argument, order)     ((void)(order), atomic_fetch_add(object, argument))
 #define atomic_fetch_sub_explicit(object, argument, order)     ((void)(order), atomic_fetch_sub(object, argument))
@@ -273,21 +261,7 @@ void __xcc_atomic_fence(void);
  * be spurious. This target's cannot be, so the weak one is the strong one - which the standard
  * allows, and which makes the standard's own lock example work either way. */
 #define atomic_compare_exchange_strong(object, expected, desired) \
-    _Generic((object), \
-        char *: __xcc_cas_char((volatile char *)(object), (char *)(expected), (char)(desired)), \
-        signed char *: __xcc_cas_schar((volatile signed char *)(object), (signed char *)(expected), (signed char)(desired)), \
-        unsigned char *: __xcc_cas_uchar((volatile unsigned char *)(object), (unsigned char *)(expected), (unsigned char)(desired)), \
-        short *: __xcc_cas_short((volatile short *)(object), (short *)(expected), (short)(desired)), \
-        unsigned short *: __xcc_cas_ushort((volatile unsigned short *)(object), (unsigned short *)(expected), (unsigned short)(desired)), \
-        int *: __xcc_cas_int((volatile int *)(object), (int *)(expected), (int)(desired)), \
-        unsigned *: __xcc_cas_uint((volatile unsigned *)(object), (unsigned *)(expected), \
-                                   (unsigned)(desired)), \
-        long *: __xcc_cas_int((volatile int *)(object), (int *)(expected), (int)(desired)), \
-        long long *: __xcc_cas_llong((volatile long long *)(object), (long long *)(expected), \
-                                     (long long)(desired)), \
-        unsigned long long *: __xcc_cas_ullong((volatile unsigned long long *)(object), \
-                                               (unsigned long long *)(expected), \
-                                               (unsigned long long)(desired)))
+    __builtin_atomic_compare_exchange((object), (expected), (desired))
 #define atomic_compare_exchange_weak(object, expected, desired) \
     atomic_compare_exchange_strong(object, expected, desired)
 

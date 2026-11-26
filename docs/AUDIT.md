@@ -786,6 +786,39 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M33 - 2026-11-25 - the atomics that read the type, and mimalloc runs
+
+**`__builtin_atomic_exchange` and `__builtin_atomic_compare_exchange`**, as designed in M29. The object's *type* is what
+decides everything - width, signedness, and which runtime function does the work - and the compiler is the only layer
+that has it: `_Generic` cannot say "any pointer type", because the arm would have to name the program's own, and
+`mimalloc` exchanges a `mi_heap_t *volatile *`. `<stdatomic.h>`'s `atomic_exchange` and the two compare-and-exchanges are
+now these builtins, and the `_Generic` tables behind them are gone.
+
+Checked by hand against the standard's own rules, all seven values on one line: the exchange returns the old value and
+stores the new; a compare-and-exchange against the value actually there succeeds and leaves `expected` alone; one that
+fails does *not* store, and writes the value it found back through `expected` (C11 7.17.7.4); and all four work for a
+pointer object as readily as for an `int`.
+
+**`__movsb` and its three siblings** were the last thing in the way: the `rep movs` block copies the Windows headers
+name, and mimalloc copies its heap structure with them. They are four `memcpy` calls in the runtime, with the same
+no-overlap rule the intrinsic has.
+
+**Measured, and it is the point of the last four commits**: `mimalloc`'s amalgamation, `static.c`, links against a driver
+and runs.
+
+```
+$ xcc --std=c11 --opt-level=2 -I include -I <sdk> midrv.c static.c -o mi.exe
+$ ./mi.exe
+mimalloc under xcc 1
+1
+```
+
+`mi_malloc`, `mi_realloc` and `mi_free`, through a production allocator's own thread-local heaps. The road here was five
+conformance bugs and two intrinsics, and every one of them was found by compiling real code rather than by reading the
+standard.
+
+209 unit, 1 crt; fmt and clippy clean.
+
 ### M32 - 2026-11-25 - the guard lands, and blames the wrong instruction for three runs
 
 The operand guard from M31 is in: the encoder remembers what the operation being encoded *declared* it reads, and `read`

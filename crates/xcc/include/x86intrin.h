@@ -46,6 +46,13 @@ unsigned long long _umul128(unsigned long long Multiplier, unsigned long long Mu
                             unsigned long long *HighProduct);
 long long _mul128(long long Multiplier, long long Multiplicand, long long *HighProduct);
 
+/* The `movs` family, which they use to copy them: `__movsb` is `rep movsb`. */
+void __movsb(unsigned char *Destination, const unsigned char *Source, unsigned long long Count);
+void __movsw(unsigned short *Destination, const unsigned short *Source, unsigned long long Count);
+void __movsd(unsigned long *Destination, const unsigned long *Source, unsigned long long Count);
+void __movsq(unsigned long long *Destination, const unsigned long long *Source,
+             unsigned long long Count);
+
 /* The `stos` family, which the Windows headers use to fill and copy blocks. */
 void __stosb(unsigned char *Destination, unsigned char Value, unsigned long long Count);
 void __stosw(unsigned short *Destination, unsigned short Value, unsigned long long Count);
