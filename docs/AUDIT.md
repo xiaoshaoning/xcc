@@ -786,6 +786,28 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M39 - 2026-11-25 - tinyhttpd, and the answer that is "wrong program for this target"
+
+`D:/Projects/github/tinyhttpd` was the next candidate: 549 lines, one file, a real program by anyone's definition. It does
+not compile here, and **nothing about that is a compiler bug** - which is worth writing down, because the last five real
+programs each named one.
+
+It is a Solaris/Linux program. `<sys/socket.h>`, `<netinet/in.h>`, `<arpa/inet.h>` and `<sys/wait.h>` do not exist on this
+target at all: mingw-w64 offers `winsock2.h` instead, and there is no `fork` and no `waitpid` to call - nor any header
+that could declare them. Measured by taking the four includes out for a moment: the remaining failures are `u_short`
+(a winsock typedef that came from `netinet/in.h`) and `pthread_compat.h`, whose `WINPTHREADS_ALWAYS_INLINE` is defined
+only under `__GNUC__` or `_MSC_VER` - the third case is left undefined, so `pthread.h` uses a macro that expands to
+nothing and a declaration reads `static WINPTHREADS_ALWAYS_INLINE int ...`.
+
+So: a POSIX program needs a port, this compiler is not a port, and the useful conclusion is that **a fixture has to be a
+program written for the target** - which all eight of them are, by accident of how they were chosen rather than by rule.
+That is a rule now.
+
+The measurement does leave one thing behind. The diagnostic that started this said
+`pthread_compat.h:132:39: error: expected a type specifier`, and line 132 is a `#define`: the real mistake is a *use*
+several hundred lines later, and the reader is sent to the definition. That is the note-vs-location work (M34) with a
+concrete example to fix against, which is what it was missing.
+
 ### M38 - 2026-11-25 - the sweep for the second diagnostic, and the two negatives that close it
 
 Reviewing `f9669bf` asked the question that commit answered for one path: **where else does a poisoned expression get a
