@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M31 - 2026-11-25 - the sweep of the operand lists, and the guard that found something it cannot yet explain
+
+The review of `8cb4833` had nothing unreviewed to read - the tree is clean and every commit before it has had a pass -
+so it did the thing that commit's finding asked for: **check every operand list in the back end by hand**, because "a
+register the allocator was not told about" has now been found five times in this project and every time by reading code
+rather than by a test.
+
+`Op::operands()` swept against what each encoder arm actually reads: `Const`, `Incoming`, `LocalAddress`,
+`SymbolAddress`, `ThreadAddress`, `LoadLocal` and `VaStart` read no register; `StoreLocal`, `LoadMemory`,
+`StoreMemory`, `LoadFloat`, `StoreFloat`, `FloatConvert`, `Unary`, `Canonical`, `VaArg`, `SegmentRead` and `Call` read
+what they declare; `Compare` and `BranchCompare` take one operand that may be an immediate, which their `register()`
+handles; `AtomicCas` names all three. The CIR layer was swept the same way - `Inst`'s three match arms (`operands`,
+`rewrite_values`, and the verifier) cover the same fourteen variants, and `SegmentRead`'s address is an operand in all
+three since M29. Nothing else was wrong.
+
+**Then the sweep became a check.** The encoder now remembers the operation it is encoding and asserts in debug builds that
+every virtual register it reads was one the operation declared - which turns the class from "found by reading" into
+"found by running any test". It found one immediately: a `Call` to `__stdio_common_vfprintf` with `dst = v5` reads `v5`,
+and `v5` is its own destination. Not one of the five shapes already known, and not a case that can be left in.
+
+That is where this stops, deliberately. The assertion is three lines and it works; where the read comes from is not yet
+known - `place_arguments` reads only the arguments, `finish_call` only writes, `float_destination` and `canonicalise`
+take concrete registers - and a guard landed with an unexplained firing is a guard somebody will weaken at three in the
+morning. The change is reverted, and this is the record: **the next session lands the assertion first and lets it name
+the function**.
+
+209 unit, 41 parser, 40 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy clean.
+
 ### M30 - 2026-11-25 - the register the allocator was not told about, and a number that was noise
 
 Reviewing `a7da05e` found one real bug, and it is the fifth time this project has made the same mistake in a new place.
