@@ -377,6 +377,81 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// Two declarations that are not about this program's names: `__asm__("...")` after a declarator is
+/// the name to *link* by, and `inline` on a definition decides linkage (C99 6.7.4p6).
+///
+/// Both come from the Windows SDK, which is why they are here: mingw-w64 renames every CRT function
+/// whose wide and narrow spellings are one name here (`vsscanf` is `__mingw_vsscanf`) through
+/// `__asm__`, and defines every `FORCEINLINE` helper in `winnt.h` as an *inline definition* - which
+/// provides no external definition, so emitting one per unit made two units that include
+/// `windows.h` a duplicate at link time. Lua 5.5.1 hit both, in that order.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_declaration_can_rename_what_it_links_to_and_an_inline_definition_is_private() {
+    // `puts_` is not a function any library has: if the rename were dropped, this would not link.
+    let source = r#"
+#include <stdio.h>
+
+int emit(const char *text) __asm__("puts");
+
+int main(void) {
+    emit("renamed");
+    return 0;
+}
+"#;
+    let run = run_linked("asmlabel", source, &[]);
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim_end(), "renamed");
+    assert_eq!(run.status.code(), Some(0));
+
+    // One header, two units, one `inline` definition. It provides no external definition, so the
+    // program links; before, both units offered one and the linker said so.
+    let dir = temp_dir("inlinelink");
+    std::fs::write(
+        dir.join("h.h"),
+        "inline int twice(int x) { return x + x; }
+static inline int thrice(int x) { return x + twice(x); }
+",
+    )
+    .expect("the header is written");
+    let one = "#include \"h.h\"
+int one(int x) { return twice(x); }
+";
+    let two = "#include \"h.h\"
+int one(int x);
+int main(void) { return one(20) + thrice(0); }
+";
+    let image = Compile::with_includes(
+        Options {
+            opt_level: 2,
+            ..Options::default()
+        },
+        Box::new(FromDir(dir.clone())),
+    )
+    .link(&[("one.c", one), ("two.c", two)])
+    .unwrap_or_else(|diagnostics| {
+        panic!(
+            "two units with one inline definition do not link: {}",
+            diagnostics.render(xcc::Format::Human)
+        )
+    });
+    let exe = dir.join("t.exe");
+    std::fs::write(&exe, image.bytes()).expect("the image is written");
+    let run = Command::new(&exe).output().expect("the program runs");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(run.status.code(), Some(40), "one(20) is twice(20)");
+}
+
+/// `#include "..."` from one directory, for the test above: the header it declares is one file this
+/// test wrote a moment earlier.
+#[derive(Debug)]
+struct FromDir(std::path::PathBuf);
+
+impl xcc::Includes for FromDir {
+    fn read(&self, path: &str) -> Option<String> {
+        std::fs::read_to_string(self.0.join(path)).ok()
+    }
+}
+
 /// Three initialisers that a static object can have and this compiler once wrote as zeroes: an
 /// integer constant cast to a pointer (C99 6.6p9 - sqlite's `SQLITE_INT_TO_PTR`), a string literal
 /// cast to a pointer (`(u8*)" "`, sqlite's one-character set), and the same literal reached through

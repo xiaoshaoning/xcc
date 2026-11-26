@@ -171,6 +171,12 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "setbuf",
     "setvbuf",
     "tmpnam",
+    // The target's own additions, which `include/stdio.h` declares because it is the copy
+    // `<stdio.h>` resolves to: a program that calls one of these links through this list.
+    "_fdopen",
+    "_fileno",
+    "_pclose",
+    "_popen",
     "snprintf",
     "sprintf",
     "sscanf",

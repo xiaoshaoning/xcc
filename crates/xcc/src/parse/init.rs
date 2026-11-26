@@ -505,7 +505,7 @@ impl Parser<'_> {
         // relocation adds the symbol to it: `static hooks = { my_malloc }` is how every C program with
         // a vtable is written.
         if let Some((symbol, addend)) = value.address {
-            let name = self.spell_of(symbol).to_owned();
+            let name = self.link_name(symbol);
             let Some(out) = self.bytes.as_mut() else {
                 return;
             };

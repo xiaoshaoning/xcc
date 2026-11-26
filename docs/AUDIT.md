@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M22 - 2026-11-25 - Lua 5.5.1, and the two declarations the Windows headers spell
+
+Lua 5.5.1, from the release tarball, compiled by this compiler into a 642 KB `lua.exe`: it runs a script that touches
+the whole language - integers and bitwise operators, `//`, patterns, `string.pack`, metamethods, coroutines,
+`pcall`/`xpcall` with error objects, `goto`, `repeat`, `for` with a negative step, utf8, an `io` round trip, `load` - and
+prints **byte for byte** what a `clang -O2` build of the same 33 files prints. `luac` builds too, and the bytecode it
+writes is byte-identical to clang's.
+
+Two bugs stood in the way, and both are in the class this compiler keeps finding: something the Windows headers say that
+C99 does not.
+
+**`__asm__("name")` after a declarator is a *link* name.** mingw-w64 renames every CRT function whose wide and narrow
+spellings are one name on this target - `vsscanf` is `__mingw_vsscanf`, `_wctime` is `_wctime64`, `_fileno` on a 64-bit
+file offset is `_fileno64` - through `__MINGW_ASM_CALL`, which is `__asm__("...")` in a declaration. The parser stopped at
+the `__asm__` and said "expected `;`". It is now read where a declarator ends: the symbol keeps the name the program
+writes, and `links` records what it is linked by, asked at the two places a name becomes a symbol - a call, and a
+relocation in an object's bytes. Renaming a non-function is refused rather than half-supported: nothing in the SDK does
+it, and an object renamed would need the relocation to carry a name rather than a symbol.
+
+**`inline` decides linkage.** It was consumed and dropped, so every `FORCEINLINE` helper that `winnt.h` defines - and
+there are dozens - was emitted as an *external* definition in every unit that included `windows.h`, and the linker's
+one-definition rule (M11) refused the second unit. C99 6.7.4p6 is plain about it: a definition declared `inline` and
+neither `static` nor `extern` is an *inline definition*, which "does not provide an external definition". It is emitted
+with internal linkage now, like a `static` one, which is what a compiler that does not inline one has to do.
+
+And a third, smaller: our `stdio.h` is the copy `<stdio.h>` resolves to, so the SDK's `_fileno`, `_fdopen`, `_popen` and
+`_pclose` were never declared. An undeclared function is an `int`, and these return a `FILE *` - Lua's `_popen` came back
+as a thirty-two-bit number widened into a pointer, which works until the heap is above four gigabytes. They are declared
+in `include/stdio.h` now, in a block that says they are the target's additions and not C99's, and `C_RUNTIME` names them,
+which the header/runtime-list test found before I did.
+
+207 unit, 41 parser, 37 exe (one more: a rename that has to link, and one header with one `inline` definition in two
+units), 4 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; fmt and clippy clean.
+
 ### M21 - 2026-11-25 - SQLite becomes a gate
 
 A measurement that is not a test is a measurement that expires. The session's biggest result - 265 977 lines of SQLite

@@ -84,6 +84,17 @@ void clearerr(FILE *stream);
 int feof(FILE *stream);
 int ferror(FILE *stream);
 void perror(const char *text);
+/* **The target's own additions, which C99 does not have.** They are here because this header is
+ * the one `<stdio.h>` resolves to, so the SDK's copy - which declares them - is never read, and a
+ * program that calls one was told only that the name was undeclared. An undeclared function is an
+ * `int`, and these return a `FILE *`: Lua's `_popen` came back as a thirty-two-bit number widened
+ * into a pointer, which works until the heap is above four gigabytes. Each is a documented
+ * Microsoft form of a POSIX function, and each is what `ucrtbase` exports under that name. */
+int _fileno(FILE *stream);
+FILE *_fdopen(int descriptor, const char *mode);
+FILE *_popen(const char *command, const char *mode);
+int _pclose(FILE *stream);
+
 /* 7.19.4.4: a name for a file that did not exist a moment ago. C99 deprecated it, and C11 replaced
  * it with `tmpnam_s`; it is what real C written against C99 calls, and the declaration is the whole
  * difference between a call and an implicit `int` returned into a pointer comparison. */

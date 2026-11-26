@@ -58,6 +58,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         function_result: None,
         loops: 0,
         current_function: None,
+        links: std::collections::HashMap::new(),
         switches: Vec::new(),
         labels: HashMap::new(),
         blocks_reported: std::collections::HashSet::new(),
@@ -73,6 +74,8 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         body: None,
         last_declared: None,
         last_declared_static: false,
+        last_declared_inline: false,
+        last_declared_extern: false,
         function_buffer: None,
         bytes: None,
         init_relocations: Vec::new(),
@@ -307,6 +310,11 @@ struct Parser<'a> {
     function_result: Option<TypeId>,
     /// How many loops surround the statement being read: `continue` needs one.
     loops: usize,
+    /// The names a declaration renamed with `__asm__("...")`: what a symbol is *linked* as, when
+    /// that is not what the program calls it. mingw-w64's headers rename every CRT function whose
+    /// narrow and wide spellings are the same name here - `vsscanf` is `__mingw_vsscanf`, `_wctime`
+    /// is `_wctime64` - and the alternative is refusing the Windows SDK's `stdio.h`.
+    links: std::collections::HashMap<Symbol, String>,
     /// The function whose body is being read, for the one thing that needs its name: a `static`
     /// local's object is named for the function that declares it.
     current_function: Option<Symbol>,
@@ -352,6 +360,10 @@ struct Parser<'a> {
     /// Whether the declaration just read said `static`. The name beside it is `last_declared`, and
     /// the linkage of that name is this: a file-scope `static` is internal (C99 6.2.2p3).
     last_declared_static: bool,
+    /// Whether the declaration that just ended said `inline`, for the same reason.
+    last_declared_inline: bool,
+    /// And whether it said `extern`, which is the other half of C99 6.7.4p6's rule.
+    last_declared_extern: bool,
     /// The buffer a record-returning function was handed by its caller, while its body is being
     /// read (Win64: the caller owns the result, and the callee returns its address).
     function_buffer: Option<cir::Value>,
@@ -816,7 +828,17 @@ impl Parser<'_> {
                     if let Some(entry) = name.and_then(|name| self.symbols.here_mut(name)) {
                         entry.defined = true;
                     }
-                    self.function_body(name, result, !self.last_declared_static);
+                    // C99 6.7.4p6: `inline` with neither `static` nor `extern` is an *inline
+                    // definition*, and "does not provide an external definition for the function".
+                    // mingw-w64 defines every FORCEINLINE helper in `winnt.h` that way, so emitting
+                    // one as external made two units that include `windows.h` a duplicate at link
+                    // time - which is how Lua 5.5.1 failed after the parser had accepted everything.
+                    let inline_definition = self.last_declared_inline && !self.last_declared_extern;
+                    self.function_body(
+                        name,
+                        result,
+                        !self.last_declared_static && !inline_definition,
+                    );
                 }
                 _ => {
                     self.error_at_current("expected `;`");
@@ -888,6 +910,9 @@ impl Parser<'_> {
             };
             let name = tree.name;
             let ty = self.apply_declarator(tree, base);
+            // `int _wctime(...) __asm__("_wctime64");` - the SDK renaming a function, read here
+            // because this is where a declarator ends and `=`, `,` or `;` may follow.
+            self.asm_label(name, ty);
             // `int g __attribute__((aligned(16)))` writes the attribute after the declarator, and
             // `__attribute__((aligned(16))) int g` before the type: one question, "what alignment
             // did this declaration ask for", asked over the whole of it. An object aligned past
@@ -1078,6 +1103,8 @@ impl Parser<'_> {
             last = Some(ty);
             self.last_declared = name;
             self.last_declared_static = specs.is_static;
+            self.last_declared_inline = specs.is_inline;
+            self.last_declared_extern = specs.is_extern;
             if !self.eat(",") {
                 return last;
             }
@@ -1355,6 +1382,79 @@ impl Parser<'_> {
         self.preprocessed.spell(name)
     }
 
+    /// The name a symbol is *linked* by. Almost always the one the program wrote; `__asm__("...")`
+    /// after a declarator makes it something else, and every place a name becomes a symbol - a call,
+    /// a function used as an address, a relocation in an object's bytes - asks here, so there is one
+    /// answer.
+    fn link_name(&self, name: Symbol) -> String {
+        match self.links.get(&name) {
+            Some(renamed) => renamed.clone(),
+            None => self.spell_of(name).to_owned(),
+        }
+    }
+
+    /// `__asm__("name")` after a declarator, which is a *link* name: the name this compiler must
+    /// emit and the linker must find, whatever the program calls it. C has no such thing; GCC and
+    /// MSVC both spell it this way, and the Windows headers depend on it.
+    ///
+    /// Only a function may be renamed. GCC allows it on objects too, and nothing in the SDK does -
+    /// so an object is refused rather than half-supported.
+    fn asm_label(&mut self, name: Option<Symbol>, ty: TypeId) {
+        let Some(spelling) = self.peek().map(|token| self.spell(token).to_owned()) else {
+            return;
+        };
+        if !matches!(spelling.as_str(), "asm" | "__asm" | "__asm__") {
+            return;
+        }
+        let span = self.span();
+        self.bump();
+        if !self.eat("(") {
+            self.error(span, "`__asm__` needs a parenthesised name");
+            return;
+        }
+        let Some(literal) = self.peek().map(|token| self.spell(token).to_owned()) else {
+            return;
+        };
+        if !self
+            .peek()
+            .is_some_and(|token| token.kind == crate::lex::TokenKind::Str)
+        {
+            self.error(
+                span,
+                "`__asm__` takes one string literal: the name to link by",
+            );
+            return;
+        }
+        self.bump();
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the name in `__asm__`");
+        }
+        let Some(bytes) = crate::literal::bytes_of(&literal) else {
+            self.error(
+                span,
+                "this `__asm__` name has an escape this compiler does not read",
+            );
+            return;
+        };
+        let linked = String::from_utf8_lossy(&bytes)
+            .trim_end_matches('\0')
+            .to_owned();
+        let Some(name) = name else {
+            return;
+        };
+        if !matches!(self.types.kind(ty), Type::Function { .. }) {
+            let written = self.spell_of(name).to_owned();
+            self.error(
+                span,
+                format!("`__asm__(\"{linked}\")` renames `{written}`, which is not a function: this compiler links an object by the name it is declared with"),
+            );
+            return;
+        }
+        if linked != self.spell_of(name) {
+            self.links.insert(name, linked);
+        }
+    }
+
     /// Storage class, qualifiers and type specifiers, in any order.
     fn declaration_specifiers(&mut self) -> Specifiers {
         let mut specs = Specifiers::default();
@@ -1390,7 +1490,13 @@ impl Parser<'_> {
                 // needs the promise: a call is emitted where the program wrote it, and control
                 // falling off the end of such a function is the programmer's bug rather than the
                 // compiler's. Consumed and dropped, like the two above.
-                "volatile" | "restrict" | "inline" | "_Noreturn" => {
+                "volatile" | "restrict" | "_Noreturn" => {
+                    self.at += 1;
+                }
+                // `inline` is not dropped: it decides *linkage* (C99 6.7.4p6), so it is a fact
+                // about the declaration rather than a hint.
+                "inline" => {
+                    specs.is_inline = true;
                     self.at += 1;
                 }
                 // Microsoft's storage-class spelling, which a Windows header emits behind `_WIN32`:
@@ -1471,9 +1577,12 @@ impl Parser<'_> {
                 // `__restrict` is `restrict`, and `__unaligned`/`__ptr32`/`__ptr64`/`__w64` are
                 // promises about a *placement* that x86-64 does not need - `UNALIGNED` in `winnt.h`
                 // is this word on the target whose pointers are already aligned.
-                "__inline" | "__inline__" | "_inline" | "__forceinline" | "_forceinline"
-                | "__restrict" | "__restrict__" | "__unaligned" | "__ptr32" | "__ptr64"
-                | "__w64" | "__sptr" | "__uptr" => {
+                "__inline" | "__inline__" | "_inline" | "__forceinline" | "_forceinline" => {
+                    specs.is_inline = true;
+                    self.at += 1;
+                }
+                "__restrict" | "__restrict__" | "__unaligned" | "__ptr32" | "__ptr64" | "__w64"
+                | "__sptr" | "__uptr" => {
                     self.at += 1;
                 }
 
@@ -2341,6 +2450,10 @@ struct Specifiers {
     /// Whether `static` was one of the specifiers: inside a function that means storage duration
     /// and not linkage, which is the one place the word changes what a declaration *is*.
     is_static: bool,
+    /// Whether `inline` was one of them. C99 6.7.4p6: a function defined `inline` and neither
+    /// `static` nor `extern` is an *inline definition*, which "does not provide an external
+    /// definition" - so the copy this compiler emits is internal to the unit, like a `static` one.
+    is_inline: bool,
     /// Whether `extern` was one of them: with no initialiser that makes a declaration and not a
     /// definition (C99 6.9.2p2), so the object belongs to another translation unit and this one must
     /// not lay down bytes for it.
