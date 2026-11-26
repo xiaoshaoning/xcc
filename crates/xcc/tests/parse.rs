@@ -1313,3 +1313,21 @@ fn every_corpus_program_is_read_without_panicking_or_surprising_itself() {
     // that parse completely is a progress bar for M3.2, not a gate.
     eprintln!("parse gate: {parsed} of {files} corpus programs are read completely");
 }
+
+/// **One mistake, one diagnostic.** An expression that has been diagnosed is the error type, and
+/// the error type is compatible with everything - that is what it is for - so every later question
+/// about it ("has this a value?", "is it lowered?") has to see poison and stay quiet. It did not: a
+/// poisoned initialiser produced a second complaint about a second thing, which sends a reader
+/// looking for a second mistake.
+#[test]
+fn a_poisoned_expression_is_diagnosed_once() {
+    // `1 + "text"` is pointer arithmetic and legal C; dereferencing an integer is not.
+    let messages = check("int main(void) { int x = *1; return 0; }");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+
+    // ... and the same for an intrinsic whose argument is the wrong type.
+    let messages = check(
+        "int main(void) { int x = 1; char e = 1;         return __builtin_atomic_compare_exchange(&x, &e, 2); }",
+    );
+    assert_eq!(messages.len(), 1, "{messages:?}");
+}

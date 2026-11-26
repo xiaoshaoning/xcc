@@ -652,9 +652,12 @@ impl Parser<'_> {
             // A value with neither code nor a constant would store nothing and leave the slot
             // holding the frame's bytes. A conversion that already said why is one diagnostic,
             // and this does not add a second.
+            // A *poisoned* value is silent: the expression that produced it has been diagnosed, and
+            // converting it keeps the poison (`emit::convert` says why) so this question can see it.
             if converted.constant.is_none()
                 && self.error_count() == before
                 && !self.types.is_error(ty)
+                && !self.types.is_error(converted.ty)
             {
                 self.not_lowered(span, "this initialiser value");
             }

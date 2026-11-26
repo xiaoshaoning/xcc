@@ -1387,13 +1387,40 @@ impl Parser<'_> {
     /// writes the value it found back through `expected`, which is the standard's own behaviour and
     /// the runtime function's signature.
     fn atomic_generic(&mut self, exchange: bool, span: Span) -> Value {
+        // **Parse every argument first, then judge.** An early return from inside the list leaves
+        // the cursor between a `,` and a `)`, and the parser then complains about the *rest of the
+        // declaration* - "declaration does not declare anything" for a mistake in the call.
         if !self.eat("(") {
             self.error_at_current("an atomic operation needs `(`");
             return Value::temporary(self.types.error());
         }
-        let Some(object) = self.assignment_expression().map(|value| self.decay(value)) else {
+        let mut given: Vec<Value> = Vec::new();
+        while let Some(value) = self.assignment_expression().map(|value| self.decay(value)) {
+            given.push(value);
+            if !self.eat(",") {
+                break;
+            }
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)` after the arguments");
+        }
+        let wanted = if exchange { 2 } else { 3 };
+        if given.len() != wanted {
+            self.error(
+                span,
+                format!(
+                    "`{}` takes {wanted} arguments and was given {}",
+                    if exchange {
+                        "__builtin_atomic_exchange"
+                    } else {
+                        "__builtin_atomic_compare_exchange"
+                    },
+                    given.len()
+                ),
+            );
             return Value::temporary(self.types.error());
-        };
+        }
+        let object = given[0];
         if !self.types.is_pointer(object.ty) {
             let given = self.describe(object.ty);
             self.error(
@@ -1413,25 +1440,20 @@ impl Parser<'_> {
             );
             return Value::temporary(self.types.error());
         };
-        let mut arguments = vec![object];
         let mut parameters = vec![object.ty];
-        if !self.eat(",") {
-            self.error_at_current("expected `,` after the address");
-        }
+        let mut arguments = vec![object];
         if !exchange {
-            // C11 7.17.7.4: `expected` is a pointer to *an object of the same type*, because a
-            // failed exchange writes the value it found through it. Neither half was checked, and
-            // both were wrong programs rather than diagnostics: a `char *` where an `int *` belongs
-            // let the runtime write four bytes through a one-byte object, and something that was
-            // not a pointer at all was accepted and crashed.
-            let Some(expected) = self.assignment_expression().map(|value| self.decay(value)) else {
-                return Value::temporary(self.types.error());
-            };
+            // C11 7.17.7.4: `expected` is a pointer to *an object of the same type*, because a failed
+            // exchange writes the value it found through it. Neither half was checked, and both were
+            // wrong programs rather than diagnostics: a `char *` where an `int *` belongs let the
+            // runtime write four bytes through a one-byte object, and something that was not a
+            // pointer at all was accepted and crashed.
+            let expected = given[1];
             if !self.types.is_pointer(expected.ty) {
-                let given = self.describe(expected.ty);
+                let it = self.describe(expected.ty);
                 self.error(
                     span,
-                    format!("a compare-and-exchange needs the address of the expected value, and these arguments give it {given}"),
+                    format!("a compare-and-exchange needs the address of the expected value, and these arguments give it {it}"),
                 );
                 return Value::temporary(self.types.error());
             }
@@ -1448,20 +1470,9 @@ impl Parser<'_> {
             }
             parameters.push(expected.ty);
             arguments.push(expected);
-            if !self.eat(",") {
-                self.error_at_current("expected `,` after the expected value's address");
-            }
         }
-        match self.assignment_expression().map(|value| self.decay(value)) {
-            Some(desired) => {
-                parameters.push(parameter);
-                arguments.push(desired);
-            }
-            None => return Value::temporary(self.types.error()),
-        }
-        if !self.eat(")") {
-            self.error_at_current("expected `)` after the arguments");
-        }
+        parameters.push(parameter);
+        arguments.push(*given.last().expect("the last argument"));
         let result = if exchange {
             pointee
         } else {

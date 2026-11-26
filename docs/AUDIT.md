@@ -786,6 +786,30 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M36 - 2026-11-25 - one mistake, one diagnostic - and the parser bug that hid behind it
+
+The double diagnostic is gone, and finding it uncovered a second bug that was mine, from an hour earlier.
+
+**The poison was being laundered.** An expression that has been diagnosed is the *error type*, and the error type is
+compatible with everything - that is what it is for. But `convert` only passed poison through when the *target* was the
+error type; a poisoned value becoming an `int` came out as an `int` with no code, and the next question on that path
+("is this initialiser value lowered?") then said so - a second complaint, about a second thing, for one mistake. Poison
+stays poison now, and the initialiser path asks whether the value is poisoned before it asks anything else.
+
+**And the reason a *third* error appeared: the parse stopped mid-call.** `atomic_generic` returned early when an argument
+was wrong - between a `,` and a `)` - so the parser read the rest of the call as the rest of the *declaration* and
+reported "declaration does not declare anything" for a mistake in the argument. The function now parses every argument
+first and judges afterwards, which is the rule the rest of this parser already follows ("the parse still has to happen:
+diagnostics and folding") and the one place I had broken it.
+
+The test is the rule rather than the case: `a_poisoned_expression_is_diagnosed_once` feeds two different poisoned
+expressions - `int x = *1` and an intrinsic with a wrongly-typed `expected` - and asserts **one** diagnostic each. The
+first draft of that test used `1 + "text"`, which is pointer arithmetic and perfectly legal C: a test that asserts a
+refusal has to be a program that is wrong.
+
+209 unit, 42 parser (one more), 40 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential
+416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M35 - 2026-11-25 - the argument nobody checked, and the two ways it was wrong
 
 Reviewing `bbb8ce7` found one thing, and it was a crash rather than a report.

@@ -216,6 +216,16 @@ impl Parser<'_> {
         if self.types.is_error(wanted) {
             return Value::new(wanted, value.constant, false);
         }
+        // A value that is already the error type comes from an expression that has been diagnosed,
+        // and the error type is compatible with everything - that is what it is *for*. It stays the
+        // error type here rather than becoming the wanted one: every later question ("has this a
+        // value?", "is it lowered?") then sees poison, and the one diagnostic already reported is the
+        // only one the program gets. Converting it again made it a well-typed value with no code,
+        // and the next check on that path said "this initialiser value is not lowered yet" - a second
+        // complaint, about a second thing, for one mistake.
+        if self.types.is_error(value.ty) {
+            return Value::temporary(value.ty);
+        }
         // C99 6.3.2.3p3: the null pointer constant converts to a pointer of any type. It is a
         // property of the value, so it belongs here rather than in each caller that stores or
         // returns one.
