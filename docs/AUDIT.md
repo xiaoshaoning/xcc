@@ -786,6 +786,26 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M37 - 2026-11-25 - mimalloc becomes a fixture, and it is the first one CI cannot see
+
+`tests/fixtures/mimalloc/` is `src/` and `include/` from Microsoft's allocator, unmodified, with a driver: `mi_malloc`, a
+`strcpy` into the block, `mi_version`, `mi_realloc`. One test, and it compares the output with what a `clang -O0` build of
+the same two files printed - the two lines are all the driver prints, because a fixture's driver should not be a test
+suite of its own.
+
+**Why it took an hour and why the shape is different from the other four.** Every one of mimalloc's 21 units includes
+its own OS layer, which includes `windows.h` - so unlike SQLite, Lua and yyjson there is **no SDK-free half**: on a
+machine without the SDK there is nothing to compile, and CI is such a machine. That makes it the first fixture whose
+verdict is "not run" in CI, and the entry says so rather than pretending otherwise. Its value is where development
+happens, which is where the last five conformance bugs were found.
+
+The helper grew a `standard`: every previous fixture is C99 and mimalloc is C11 (`_Atomic`, `_Thread_local`,
+`stdatomic.h`), and a fixture that had to be compiled in a dialect it was not written for would be testing the wrong
+program. Three call sites pass the default explicitly rather than a hidden one.
+
+209 unit, 42 parser, 40 exe, **10 real** (one more), 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys;
+differential 416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; `.text` 80 288; fmt and clippy clean.
+
 ### M36 - 2026-11-25 - one mistake, one diagnostic - and the parser bug that hid behind it
 
 The double diagnostic is gone, and finding it uncovered a second bug that was mine, from an hour earlier.

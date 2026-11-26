@@ -52,7 +52,15 @@ fn run_fixture(
     files: &[&str],
     defines: &[&str],
 ) -> std::process::Output {
-    run_fixture_with(test, library, files, defines, &[], &[])
+    run_fixture_with(
+        test,
+        library,
+        files,
+        defines,
+        xcc::CStandard::default(),
+        &[],
+        &[],
+    )
 }
 
 /// The same, with directories to search after the fixture's own: SQLite's Windows layer includes
@@ -62,6 +70,7 @@ fn run_fixture_with(
     library: &str,
     files: &[&str],
     defines: &[&str],
+    standard: xcc::CStandard,
     more: &[PathBuf],
     arguments: &[&str],
 ) -> std::process::Output {
@@ -72,6 +81,7 @@ fn run_fixture_with(
         .collect();
     let options = Options {
         opt_level: 2,
+        standard,
         defines: defines.iter().map(|define| (*define).to_owned()).collect(),
         // A fixture is real code and this is a compiler: the library's own budgets are sized for
         // an embedder handing over a snippet, and SQLite's amalgamation is nine megabytes.
@@ -323,6 +333,7 @@ fn lua_runs_its_driver_script_the_way_clang_does() {
             "lua.c",
         ],
         &[],
+        xcc::CStandard::default(),
         &[sdk],
         // The script, by absolute path: the interpreter takes it as its one argument, which is how
         // the command line runs a program.
@@ -386,7 +397,15 @@ hi true
 #[test]
 #[cfg(target_os = "windows")]
 fn yyjson_reads_writes_and_agrees_with_clang() {
-    let run = run_fixture_with("yyjson", "yyjson", &["driver.c", "yyjson.c"], &[], &[], &[]);
+    let run = run_fixture_with(
+        "yyjson",
+        "yyjson",
+        &["driver.c", "yyjson.c"],
+        &[],
+        xcc::CStandard::default(),
+        &[],
+        &[],
+    );
     // Every line, not the bytes: the platform's line ending is not the library's business.
     let out: Vec<String> = String::from_utf8_lossy(&run.stdout)
         .lines()
@@ -404,6 +423,44 @@ const YYJSON_EXPECTED: &str = "\
 3 2 x array -0.50
 {\"who\":\"xcc\",\"version\":5}
 ";
+
+/// `mimalloc`: Microsoft's allocator, 21 units and an amalgamation, with its own thread-local heaps,
+/// its own atomics and its own OS layer. It is the fourth real program this compiler runs and the
+/// first that is *about* the machine - thread-local storage, `gs:` reads, `lock cmpxchg`, and the
+/// `rep movs` block copies the Windows headers name.
+///
+/// **The only fixture with no SDK-free half.** Every one of its 21 units includes the OS layer,
+/// which includes `windows.h`, so there is nothing to compile on a machine without the SDK - this
+/// test skips there, and CI is such a machine. Its value is where development happens.
+#[test]
+#[cfg(target_os = "windows")]
+fn mimalloc_allocates_through_its_own_theaps() {
+    let Some(sdk) = windows_sdk() else {
+        eprintln!("no Windows SDK headers on this machine: the mimalloc test is skipped");
+        return;
+    };
+    let run = run_fixture_with(
+        "mimalloc",
+        "mimalloc",
+        &["driver.c", "src/static.c"],
+        &[],
+        // `mimalloc` is C11: `_Atomic`, thread-local storage, and `stdatomic.h`.
+        xcc::CStandard::C11,
+        // Its own headers live in `include/`, which is not the fixture's root.
+        &[root("mimalloc").join("include"), sdk],
+        &[],
+    );
+    let out: Vec<String> = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::trim_end)
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(run.status.code(), Some(0), "{out:?}");
+    // `mi_malloc`, a `strcpy` into it, `mi_version`, and `mi_realloc` - what a `clang -O0` build of
+    // the same two files printed when the fixture was added.
+    assert_eq!(out, ["mimalloc under xcc 1", "1"]);
+}
+
 /// `SQLite`: the amalgamation every application vendors - 265 977 lines, 9.6 MB, one translation
 /// unit - compiled by this compiler with its own back end. `SQLITE_OS_OTHER=1` takes out the OS
 /// layer, which is the only part that needs `windows.h`, so this is checked on **every** machine:
@@ -457,6 +514,7 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
         "sqlite",
         &["driver.c", "sqlite3.c"],
         &[],
+        xcc::CStandard::default(),
         &[sdk],
         &[],
     );

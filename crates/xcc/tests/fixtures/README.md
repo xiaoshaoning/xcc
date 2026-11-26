@@ -15,6 +15,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `sqlite/` | [SQLite](https://sqlite.org) 3.51.3, the amalgamation, 2026-11-22 | public domain | everything: 265 977 lines in one translation unit |
 | `lua/` | [Lua](https://lua.org) 5.5.1, `src/` of the release tarball | MIT | the interpreter, the compiler, the GC, patterns, coroutines, `string.pack` |
 | `yyjson/` | [ibireme/yyjson](https://github.com/ibireme/yyjson), master, 2026-11-22 | MIT | a JSON reader and writer, its allocation strategy, and a four-way token paste |
+| `mimalloc/` | [microsoft/mimalloc](https://github.com/microsoft/mimalloc), master, 2026-11-22 | MIT | a production allocator: thread-local heaps, `gs:` reads, `lock cmpxchg`, `rep movs` |
 
 ## cjson
 
@@ -31,6 +32,24 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## mimalloc
+
+`src/` and `include/` from [microsoft/mimalloc](https://github.com/microsoft/mimalloc), master as of
+2026-11-22, MIT - the notice is in `LICENSE` and at the top of every file.
+
+It is the fourth real program this compiler runs and the first that is *about the machine*: its heaps
+are thread-local (`__thread`, `TlsAlloc`, `gs:[0x30]` for the TEB), its counters are `lock cmpxchg`
+over any object type, and its block copies are the `rep movs` intrinsics the Windows headers name.
+Reaching it cost five conformance bugs - `#include <errno.h>` being macro-expanded, `__func__`,
+`__thread`, `inline` linkage, a four-way `##` paste - and two intrinsics, every one found by compiling
+it.
+
+**It is the only fixture with no SDK-free half**: all 21 units include the OS layer, which includes
+`windows.h`, so there is nothing to compile on a machine without the SDK, and CI is such a machine.
+The test skips there and says so; its value is where development happens.
+
+`driver.c` is ours: `mi_malloc`, a `strcpy` into it, `mi_version`, and `mi_realloc`.
 
 ## yyjson
 
