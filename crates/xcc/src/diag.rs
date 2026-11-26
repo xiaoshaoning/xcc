@@ -35,17 +35,41 @@ pub struct Span {
     pub start: u32,
     /// How many bytes the span covers; zero is a point, rendered as a single caret.
     pub len: u32,
+    /// Which file those bytes are in: an index into the compilation's file table.
+    ///
+    /// It is here because an offset alone cannot say. `#include <stdio.h>` puts tokens from two
+    /// files into one translation unit, both numbered from their own first byte, so a span of
+    /// offset 100 in each is two different places - and the `cir` keeps spans and not tokens, which
+    /// is where the file used to live. A line number computed from an offset without this would be
+    /// right for the file being compiled and wrong for every byte that came from a header.
+    ///
+    /// Zero is the file the host handed over; a span this compiler synthesized carries it too,
+    /// which is the honest answer: it belongs to the file being compiled.
+    pub file: u16,
 }
 
 impl Span {
     /// A span covering `len` bytes from `start`.
     pub const fn new(start: u32, len: u32) -> Self {
-        Self { start, len }
+        Self {
+            start,
+            len,
+            file: 0,
+        }
+    }
+
+    /// The same span, in a named file of the compilation.
+    pub const fn in_file(self, file: u16) -> Self {
+        Self { file, ..self }
     }
 
     /// A span covering the single byte at `start`.
     pub const fn at(start: u32) -> Self {
-        Self { start, len: 1 }
+        Self {
+            start,
+            len: 1,
+            file: 0,
+        }
     }
 
     /// The offset one past the last byte.
@@ -185,7 +209,7 @@ mod tests {
             .with_note("add `(void)x` to say it is deliberate");
         assert_eq!(diagnostic.severity, Severity::Warning);
         assert_eq!(diagnostic.file.as_deref(), Some("t.c"));
-        assert_eq!(diagnostic.span, Some(Span { start: 10, len: 1 }));
+        assert_eq!(diagnostic.span, Some(Span::at(10)));
         assert_eq!(diagnostic.notes.len(), 1);
         assert!(!diagnostic.is_error());
     }

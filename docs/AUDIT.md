@@ -813,8 +813,18 @@ reads as an answer.
    `Artifact` does not carry them yet. That is the second half, and it is what makes `--map` render a line instead of a
    number.
 
-Until then the object carries a `.xccmap` whose records are *correct as offsets* and whose rendering would not be, and
-the map is deliberately not wired to anything that prints a line.
+**Steps 1 and 2 are in, and the fact that was missing was one line of plumbing.** `Span` has `file: u16`; the tokens the
+*lexer* makes cannot know it, so the preprocessor - the layer that decided which file it was reading - stamps it with
+`.in_file(file)` as the token is built, and everything downstream keeps the span and therefore the file. The record grew a
+fourth varint, the file delta (zigzag, because a macro body and its use are two files), and the object now says which file
+each line came from.
+
+Proved where it matters: a `static inline` function in a header, called from a `.c` file, produces code *from the header*
+- and the map says so, 6 records with file 0 and **2 with file 1**, the inlined body.
+
+Step 3 is what remains: the **file names and line starts** travel with the artifact (`Preprocessed::files` has them,
+`Artifact` does not), and `--map` renders `file.c:42` from them. Until it does, the map is correct as offsets and files
+and deliberately not wired to anything that prints a line number.
 
 ### M45 - 2026-11-25 - the map that was bigger than the code
 

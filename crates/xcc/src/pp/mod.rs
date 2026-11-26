@@ -566,7 +566,11 @@ impl Preprocessor<'_> {
                 token: PpToken {
                     kind: token.kind,
                     text: token.text,
-                    span: token.span,
+                    // The lexer numbers bytes within one file and cannot know the file; this is the
+                    // layer that does, so this is where the span learns it. Everything downstream -
+                    // the parser, `cir`, the encoder, the object - keeps the span, and so keeps the
+                    // file for free.
+                    span: token.span.in_file(file),
                     file,
                     // The lexer is the only thing that knows: a newline it spliced away does not end
                     // the logical line a directive is read from.

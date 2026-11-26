@@ -343,13 +343,15 @@ fn write_object(image: &Image) -> Vec<u8> {
         // still 122 592. So the records are deltas - each relative to the one before it, as
         // `uleb128` varints, one byte for a delta under 128:
         //
-        //     offset delta (>= 0)   span.start delta (zigzag: a loop goes backwards)   length
+        //     offset delta (>= 0)   span.start delta (zigzag: a loop goes backwards)
+        //     file delta (zigzag: a macro body and its use are two files)              length
         //
         // A reader walks them in order and accumulates; a lookup takes the last record whose
         // accumulated offset is at or below the address.
         let mut bytes = Vec::with_capacity(image.lines.len() * 4);
         let mut previous: Option<(u32, u32)> = None;
         let (mut at, mut start) = (0u32, 0i32);
+        let mut file = 0i32;
         for (offset, span) in &image.lines {
             // A span of no length names no line: `Span::at(0)` is what an instruction the front end
             // made up carries, and a record that says "somewhere, nowhere" is worse than no record.
@@ -363,9 +365,11 @@ fn write_object(image: &Image) -> Vec<u8> {
             previous = Some(line);
             varint(&mut bytes, offset - at);
             varint(&mut bytes, zigzag(span.start as i32 - start));
+            varint(&mut bytes, zigzag(i32::from(span.file) - file));
             varint(&mut bytes, span.len);
             at = *offset;
             start = span.start as i32;
+            file = i32::from(span.file);
         }
         sections.push(SectionOut {
             name: ".xccmap",
