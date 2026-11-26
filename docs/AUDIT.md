@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M30 - 2026-11-25 - the register the allocator was not told about, and a number that was noise
+
+Reviewing `a7da05e` found one real bug, and it is the fifth time this project has made the same mistake in a new place.
+
+**`Op::SegmentRead` read a register and told the allocator it read nothing.** Making the offset a *value* gave the
+operation a `base` register; `operands()` still answered `Vec::new()` - the arm written when the offset was a constant
+and there was nothing to read. So the allocator ended `base`'s live range at the read and was free to hand its register
+to `dst`: a read from wherever the destination landed. The test passed anyway, which is the worst property a bug can
+have; the measurement that showed it is the code, not a failure. It is `vec![*base]` now, with the reason written beside
+it and the `AtomicCas` note above it - which records the *same* mistake about `expected`, found the same way.
+
+The test grew the shape that would expose it: the offset in a register that is live *across* the read, with a value
+accumulating while it is - four reads in a loop. That is not a proof, and it is the only kind of guard available for an
+allocator invariant: exercise the shape that breaks.
+
+**And the encoder had two matches for one table.** The opcode and the prefix were chosen in separate `match`es, one of
+which had two arms doing the same thing (`4` and `_` both `0x8B`). One table, one prefix question, because a 64-bit read
+says so in its REX byte and the others need REX only to name an extended base register.
+
+**The 1518 second x64 suite was noise.** Re-measured on a quiet machine: 337 seconds, which is this suite's usual 300
+with the machine doing something else. The earlier 2194 was two of my own runs overlapping. Both numbers are recorded
+here because a gate whose result depends on the machine is not a gate, and neither is a timing.
+
+209 unit, 41 parser, 40 exe, 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0
+mismatched; 444 corpus programs agree, 0 wrong; `.text` 80 288 bytes; fmt and clippy clean.
+
 ### M29 - 2026-11-25 - `__readgsqword`, and the atomics that cannot be spelled in a header
 
 mimalloc's third blocker was `__readgsqword`, and the interesting part is what it was *not*: the instruction already

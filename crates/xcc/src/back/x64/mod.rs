@@ -448,8 +448,12 @@ impl Op {
             | Op::LocalAddress { .. }
             | Op::SymbolAddress { .. }
             | Op::ThreadAddress { .. }
-            | Op::SegmentRead { .. }
             | Op::LoadLocal { .. } => Vec::new(),
+            // The offset is a register the read *uses*, and leaving it out is the mistake the
+            // `AtomicCas` note below records: an operand the allocator does not know about ends its
+            // live range here, and the register is handed to `dst` - a read from wherever the
+            // destination landed.
+            Op::SegmentRead { base, .. } => vec![*base],
             Op::AtomicCas {
                 pointer,
                 expected,

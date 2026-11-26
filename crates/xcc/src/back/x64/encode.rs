@@ -1659,26 +1659,21 @@ impl Encoder<'_> {
             Segment::Fs => 0x64,
             Segment::Gs => 0x65,
         });
-        match size {
-            // `movzx rax, byte ptr [base]` and its two-byte sibling: the read is narrower than the
-            // register, and zero-extending is what an unsigned read means.
-            1 => {
-                self.prefix(Reg(0), base);
-                self.bytes(&[0x0F, 0xB6]);
-            }
-            2 => {
-                self.prefix(Reg(0), base);
-                self.bytes(&[0x0F, 0xB7]);
-            }
-            4 => self.prefix(Reg(0), base),
-            _ => self.prefix_w(Reg(0), base),
+        // `movzx rax, byte ptr [base]` for the two narrow widths - zero-extending is what an
+        // unsigned read means - and `mov eax, [base]` for four, which zeroes the upper half by
+        // itself. One opcode table, one prefix question: a 64-bit read says so in the REX byte, and
+        // the others need REX only to name an extended base register.
+        let opcode: &[u8] = match size {
+            1 => &[0x0F, 0xB6],
+            2 => &[0x0F, 0xB7],
+            _ => &[0x8B],
         };
-        match size {
-            1 => {}
-            2 => {}
-            4 => self.byte(0x8B),
-            _ => self.byte(0x8B),
+        if size == 8 {
+            self.prefix_w(Reg(0), base);
+        } else {
+            self.prefix(Reg(0), base);
         }
+        self.bytes(opcode);
         self.memory_operand(0, base, offset);
         if self.allocation.location(dst) != Location::Register(Reg::RAX) {
             self.write(dst, Reg::RAX);

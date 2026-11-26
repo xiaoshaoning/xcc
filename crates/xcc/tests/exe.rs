@@ -398,15 +398,24 @@ int main(void) {
     unsigned long long ofs = 0x48;
     unsigned long long computed = __readgsqword(ofs);
     unsigned int expected = GetCurrentThreadId();
-    printf("%d %d %d %d\n", teb != 0, (unsigned long)at_0x48 == expected,
-           dword == expected, (unsigned long)computed == expected);
+    /* The offset in a register that is live across the read, with a value accumulating while it is:
+       an operand the allocator does not know about ends its live range at the read, and the
+       destination takes its register - a read from wherever the destination landed. */
+    unsigned long long total = 0;
+    unsigned long long offset = 0x40;
+    for (int i = 0; i < 4; i++) {
+        total += __readgsqword(offset);
+        offset += 8;
+    }
+    printf("%d %d %d %d %d\n", teb != 0, (unsigned long)at_0x48 == expected,
+           dword == expected, (unsigned long)computed == expected, total != 0);
     return 0;
 }
 "#;
     let run = run_linked("teb", source, &[]);
     let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(run.status.code(), Some(0), "{out}");
-    assert_eq!(out.trim_end(), "1 1 1 1");
+    assert_eq!(out.trim_end(), "1 1 1 1 1");
 }
 
 /// Two things C99 has that mimalloc needs and this compiler did not answer: `__func__` (6.4.2.2, the
