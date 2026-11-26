@@ -1713,34 +1713,47 @@ impl Preprocessor<'_> {
             }
 
             // `left ## right`: the token on each side, pasted into one.
+            //
+            // A *chain* is the same rule applied again: `a##b##c##d` pastes `a` with `b`, then the
+            // result with `c`, and so on (C99 6.10.3.3p3 pastes every `##` in the replacement list in
+            // turn). This pasted one pair and advanced past it, so the second `##` found nothing on
+            // its left - which is `yyjson`'s `0x##d##c##b##a##UL`, twenty-eight times in one file.
             if let Some(next) = definition.body.get(at + 1) {
                 if self.is_punct(next, "##") {
-                    let mut left = self.paste_side(token, params, arguments, &hide);
-                    let right = match definition.body.get(at + 2) {
-                        Some(right) => self.paste_side(*right, params, arguments, &hide),
-                        None => {
+                    // The tokens of the chain, pasted so far: its *last* is the left operand of the
+                    // next `##`, and anything before it is already finished. `at` walks the `##`s,
+                    // starting at the first one - which is the token after this one.
+                    let mut chain = self.paste_side(token, params, arguments, &hide);
+                    at += 1;
+                    loop {
+                        let Some(right_token) = definition.body.get(at + 1) else {
                             let span = next.span;
                             self.error(span, "`##` must have a token after it");
-                            out.extend(left);
-                            at += 2;
-                            continue;
+                            at += 1;
+                            break;
+                        };
+                        let right = self.paste_side(*right_token, params, arguments, &hide);
+                        match (chain.pop(), right.first().cloned()) {
+                            (Some(last), Some(first)) => {
+                                chain.push(self.paste(&last, &first));
+                                chain.extend(right.into_iter().skip(1));
+                            }
+                            // An empty argument on the right leaves the left token alone.
+                            (Some(last), None) => chain.push(last),
+                            // A placemarker on the left leaves the right tokens alone.
+                            (None, _) => chain = right,
                         }
-                    };
-                    match (left.pop(), right.first().cloned()) {
-                        (Some(last), Some(first)) => {
-                            out.extend(left);
-                            out.push(self.paste(&last, &first));
-                            out.extend(right.into_iter().skip(1));
+                        at += 2;
+                        // Another `##` after the pair already pasted: the result is its left side.
+                        if !definition
+                            .body
+                            .get(at)
+                            .is_some_and(|one| self.is_punct(one, "##"))
+                        {
+                            break;
                         }
-                        // an empty argument on the right leaves the left token alone
-                        (Some(last), None) => {
-                            out.extend(left);
-                            out.push(last);
-                        }
-                        // a placemarker on the left leaves the right tokens alone
-                        (None, _) => out.extend(right),
                     }
-                    at += 3;
+                    out.extend(chain);
                     continue;
                 }
             }
@@ -2497,6 +2510,53 @@ yes
         let warnings = diagnostics("#warning this is odd\n");
         assert_eq!(warnings[0].severity, Severity::Warning);
         assert_eq!(warnings[0].message, "this is odd");
+    }
+
+    #[test]
+    fn a_chain_of_pastes_pastes_every_pair() {
+        // C99 6.10.3.3p3 pastes every `##` in the replacement list, in turn, with the result of one
+        // paste being a token the next paste can use. This pasted one pair and walked past the rest,
+        // so `a##b##c` failed at the second `##` - and `yyjson` writes `0x##d##c##b##a##UL`, which is
+        // a four-way paste, twenty-eight times in one file.
+        assert_eq!(
+            spelled(
+                "#define ONE(a, b) a##b
+ONE(x, y)"
+            ),
+            ["xy"]
+        );
+        assert_eq!(
+            spelled(
+                "#define TWO(a, b, c) a##b##c
+TWO(x, y, z)"
+            ),
+            ["xyz"]
+        );
+        assert_eq!(
+            spelled(
+                "#define FOUR(a, b, c, d) 0x##a##b##c##d
+FOUR(1, 2, 3, 4)"
+            ),
+            ["0x1234"]
+        );
+        // The result of a paste is a *number*, and pasting it again is not the same as pasting the
+        // pieces: `0x` with `00` is `0x00`, which is what the next paste starts from.
+        assert_eq!(
+            spelled(
+                "#define SEQ(n, a, b, c, d) n = 0x##d##c##b##a##UL;
+SEQ(x, 80, 00, 00, 00)"
+            ),
+            ["x", "=", "0x00000080UL", ";"]
+        );
+        // An empty argument is a placemarker, and a placemarker pasted with a token is that token -
+        // in the middle of a chain too.
+        assert_eq!(
+            spelled(
+                "#define M(a, b, c) a##b##c
+M(x, , y)"
+            ),
+            ["xy"]
+        );
     }
 
     #[test]

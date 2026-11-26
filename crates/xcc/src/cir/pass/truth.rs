@@ -79,6 +79,18 @@ fn truth_tests_of_truth_tests(func: &Func) -> HashMap<Value, Value> {
             let Some(inner) = comparisons.get(left).copied() else {
                 continue;
             };
+            // **A substitution must not change a value's type.** A comparison's result is `int`
+            // (C99 6.5.9p3) or `_Bool` - `truth_value` emits the second, and `mem2reg` hands the
+            // wrapper the comparison it stored - so `(_Bool)(a < b)` tested against zero used to
+            // become the bare `int` comparison, and the `convert _Bool -> unsigned char` that read
+            // it then had an operand of another type: the verifier's "says it converts _Bool ->
+            // unsigned char, and it converts int -> unsigned char", from one line of `yyjson`.
+            //
+            // Comparing the ids is enough here and not a shortcut: a comparison's result type is
+            // one of those two fundamental types, and a fundamental type has one id.
+            if func.value(*result).ty != func.value(inner).ty {
+                continue;
+            }
             substitution.insert(*result, inner);
         }
     }

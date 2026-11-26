@@ -1435,7 +1435,16 @@ impl Func {
                 if !types.same(self.value(*value).ty, *from)
                     || !types.same(self.value(*result).ty, *to)
                 {
-                    return wrong(format!("block {index} converts other types than it says"));
+                    // The types it *does* convert: "other types than it says" is not something a
+                    // reader can act on, and the four names are what tells a front-end bug from a
+                    // pass bug.
+                    return wrong(format!(
+                        "block {index} says it converts {} -> {}, and it converts {} -> {}",
+                        types.describe(*from),
+                        types.describe(*to),
+                        types.describe(self.value(*value).ty),
+                        types.describe(self.value(*result).ty)
+                    ));
                 }
                 Ok(())
             }

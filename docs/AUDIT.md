@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M25 - 2026-11-25 - the paste that pasted once, and the pass that changed a type
+
+Two real programs, two bugs, both found in the first ten minutes - which is the argument for real programs over
+invented ones, made again.
+
+**`a##b##c` pasted one pair.** C99 6.10.3.3p3 pastes *every* `##` in a replacement list, in turn, the result of one
+paste being a token the next one uses. This pasted the first pair and advanced past it, so the second `##` found nothing
+on its left and said so. `yyjson` writes `0x##d##c##b##a##UL` - a four-way paste - twenty-eight times in one file, from
+one macro; the whole library was blocked by it. The replacement list now walks its `##`s, each paste feeding the next.
+
+**A pass that changed a value's type.** `truth` removes `cmp ne v, 0` when it already knows `v` is 0 or 1, which is 45%
+of the corpus's comparisons and worth doing. But a comparison's answer is `int` (C99 6.5.9p3) *or* `_Bool` - the latter
+when `truth_value` converts to `_Bool` - and substituting one for the other changes a value's *type*. `yyjson`'s
+`val->tag = (u8)4 | (u64)((u8)sign << 3)` then read a `_Bool`-typed `convert` whose operand was an `int`, and the
+verifier said so in the only words it had: "block 15 says it converts `_Bool` -> `unsigned char`, and it converts
+`int` -> `unsigned char`". The substitution now asks whether the two values have the same type first - and comparing the
+*ids* is exact here, because a comparison's result is one of two fundamental types and a fundamental type has one id.
+
+**And two diagnostics that made the search shorter.** The verifier's message named a block and not the types, so it now
+names all four; and `optimise`'s checks said "a pass broke it" without saying which, so each now names the pass it just
+ran. Neither is a bug fixed, and both are what turned "something is wrong in 11 224 lines" into one line.
+
+A third finding came and went: a `debug_assert` I added to the builder compared *type ids* where ADR-004 says two ids
+can be one type, and fired falsely on a pointer-heavy program. The assertion moved to the front end and asks
+`types.same`, which is the question the rest of the compiler asks.
+
+**yyjson is now a fixture**: 11 224 lines, and the only one that is compiled *and run* on every machine - it needs no
+Windows SDK - with its output compared line for line against clang's. It reads a document, prints what it found, then
+builds and serialises one, which covers both allocation paths.
+
+208 unit (one more: a chain of pastes), 41 parser, 38 exe (one more: a `_Bool` from a comparison, converted), **9 real**
+(one more), 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0 mismatched; 444 corpus
+programs agree, 0 wrong; fmt and clippy clean.
+
 ### M24 - 2026-11-25 - the review of seven commits, and the five things it found
 
 The unreviewed stretch was `a8485b5` (the symbol table) through `8914a53` (the Lua fixture). Five findings, and two of

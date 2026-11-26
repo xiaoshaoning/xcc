@@ -14,6 +14,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `miniz/` | [richgel999/miniz](https://github.com/richgel999/miniz), master, 2026-11-22 | MIT / public domain | `tdefl`, `tinfl`, the zip writer and the zip reader |
 | `sqlite/` | [SQLite](https://sqlite.org) 3.51.3, the amalgamation, 2026-11-22 | public domain | everything: 265 977 lines in one translation unit |
 | `lua/` | [Lua](https://lua.org) 5.5.1, `src/` of the release tarball | MIT | the interpreter, the compiler, the GC, patterns, coroutines, `string.pack` |
+| `yyjson/` | [ibireme/yyjson](https://github.com/ibireme/yyjson), master, 2026-11-22 | MIT | a JSON reader and writer, its allocation strategy, and a four-way token paste |
 
 ## cjson
 
@@ -30,6 +31,21 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## yyjson
+
+`yyjson.c` and `yyjson.h` from [ibireme/yyjson](https://github.com/ibireme/yyjson), master as of
+2026-11-22. MIT; the notice is at the top of both files and in `LICENSE`.
+
+11 224 lines in one translation unit, and the only fixture that needs neither a Windows SDK nor a
+second program to be worth running: it reads JSON, builds a document by hand, and writes it back,
+so one test covers the parser, the number formatter, UTF-8 validation and both allocation paths.
+
+It found a preprocessor bug on its first compile: `0x##d##c##b##a##UL` is a *four-way* paste, and
+this compiler pasted one pair and walked past the rest - so `a##b##c` failed at the second `##`.
+Twenty-eight of them in one file, from one macro.
+
+`driver.c` is ours: parse a document, print what was found in it, then build and serialise one.
 
 ## lua
 

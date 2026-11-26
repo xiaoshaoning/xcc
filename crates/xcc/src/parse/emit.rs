@@ -270,6 +270,21 @@ impl Parser<'_> {
             );
             return Value::new(self.types.error(), None, false);
         };
+        // The conversion says what it converts, and the value must be what it says. A front end that
+        // types a value one way and hands the builder another is a bug no verifier message about a
+        // *block* can point at, and the two names here are what name it.
+        debug_assert!(
+            self.body
+                .as_ref()
+                .is_none_or(|body| { self.types.same(body.func.value(source).ty, value.ty) }),
+            "a conversion from {} to {} has a value of type {}",
+            self.describe(value.ty),
+            self.describe(wanted),
+            self.body
+                .as_ref()
+                .map(|body| self.describe(body.func.value(source).ty))
+                .unwrap_or_default()
+        );
         let converted = self.emit(|builder| builder.convert(op, source, value.ty, wanted, span));
         match converted {
             Some(cir) => Value::code(wanted, cir),

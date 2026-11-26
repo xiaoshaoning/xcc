@@ -375,6 +375,35 @@ true 42
 true
 hi true
 "#;
+
+/// `yyjson`: 11 224 lines in one file, a JSON reader *and* writer with its own allocation strategy,
+/// a number-to-text formatter, UTF-8 validation, and a macro layer that pastes four tokens at once
+/// (`0x##d##c##b##a##UL`) - which is the bug it found: this compiler pasted one pair and walked past
+/// the rest of a chain, so `a##b##c` failed at the second `##`.
+///
+/// It needs no Windows headers, so unlike the other two unfriendly fixtures this one is compiled and
+/// **run** on every machine, and its answer compared with clang's.
+#[test]
+#[cfg(target_os = "windows")]
+fn yyjson_reads_writes_and_agrees_with_clang() {
+    let run = run_fixture_with("yyjson", "yyjson", &["driver.c", "yyjson.c"], &[], &[], &[]);
+    // Every line, not the bytes: the platform's line ending is not the library's business.
+    let out: Vec<String> = String::from_utf8_lossy(&run.stdout)
+        .lines()
+        .map(str::trim_end)
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(run.status.code(), Some(0), "{out:?}");
+    let expected: Vec<String> = YYJSON_EXPECTED.lines().map(str::to_owned).collect();
+    assert_eq!(out, expected);
+}
+
+/// What a `clang -O0` build of the fixture printed when it was added: the reader's answers about a
+/// document, then the writer's serialisation of a document built by hand.
+const YYJSON_EXPECTED: &str = "\
+3 2 x array -0.50
+{\"who\":\"xcc\",\"version\":5}
+";
 /// `SQLite`: the amalgamation every application vendors - 265 977 lines, 9.6 MB, one translation
 /// unit - compiled by this compiler with its own back end. `SQLITE_OS_OTHER=1` takes out the OS
 /// layer, which is the only part that needs `windows.h`, so this is checked on **every** machine:

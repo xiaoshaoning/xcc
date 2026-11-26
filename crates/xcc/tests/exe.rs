@@ -377,6 +377,39 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// A `_Bool` that came from a comparison, and then converted: the shape `yyjson` wrote as
+/// `(u8)(sign)` where `sign = (*cur == '-')`.
+///
+/// The bug was in a pass, not in the front end. `truth` removes `cmp ne v, 0` when it knows `v` is
+/// already 0 or 1 - and a comparison's answer is `int` (C99 6.5.9p3) or `_Bool`, so substituting one
+/// for the other changed a value's *type*, and the `convert _Bool -> unsigned char` that read it had
+/// an operand of another type. The verifier said so; the pass now asks first.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_boolean_from_a_comparison_survives_a_conversion() {
+    let source = r#"
+#include <stdio.h>
+
+typedef unsigned char u8;
+typedef unsigned long long u64;
+
+int main(void) {
+    _Bool sign;
+    sign = (5 > 3);
+    u8 byte = (u8)sign;
+    /* the same through a field of a wider expression, which is how the fixture uses it */
+    u64 tag = ((u8)4) | (u64)((u8)sign << 3);
+    printf("%d %llu %d\n", (int)byte, tag, (int)(u8)(1 > 0));
+    return 0;
+}
+"#;
+    let run = run_linked("boolconv", source, &[]);
+    // `trim_end` takes the platform's line ending with it, so no escaping is needed here.
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out.trim_end(), "1 12 1");
+}
+
 /// Two declarations that are not about this program's names: `__asm__("...")` after a declarator is
 /// the name to *link* by, and `inline` on a definition decides linkage (C99 6.7.4p6).
 ///
