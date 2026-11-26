@@ -254,6 +254,21 @@ void __xcc_atomic_fence(void);
         unsigned long long *: __xcc_exchange_ullong((volatile unsigned long long *)(object), \
                                                     (unsigned long long)(desired)))
 
+/* The `_explicit` forms, which C11 7.17.7 spells for **every** operation. They differ from the
+ * others in one thing only - the memory order they are given - and this compiler's atomics are all
+ * sequentially consistent, the strongest order there is, so the honest answer is the non-explicit
+ * form with the order read and dropped. Leaving them out was not an omission with a small blast
+ * radius: an undeclared function is an `int`, and `mimalloc`'s `atomic_exchange_explicit` of a
+ * pointer came back as a thirty-two-bit number widened into a pointer. */
+#define atomic_exchange_explicit(object, desired, order)     ((void)(order), atomic_exchange(object, desired))
+#define atomic_compare_exchange_strong_explicit(object, expected, desired, success, failure)     ((void)(success), (void)(failure), atomic_compare_exchange_strong(object, expected, desired))
+#define atomic_compare_exchange_weak_explicit(object, expected, desired, success, failure)     atomic_compare_exchange_strong_explicit(object, expected, desired, success, failure)
+#define atomic_fetch_add_explicit(object, argument, order)     ((void)(order), atomic_fetch_add(object, argument))
+#define atomic_fetch_sub_explicit(object, argument, order)     ((void)(order), atomic_fetch_sub(object, argument))
+#define atomic_fetch_or_explicit(object, argument, order)     ((void)(order), atomic_fetch_or(object, argument))
+#define atomic_fetch_xor_explicit(object, argument, order)     ((void)(order), atomic_fetch_xor(object, argument))
+#define atomic_fetch_and_explicit(object, argument, order)     ((void)(order), atomic_fetch_and(object, argument))
+
 /* 7.17.7.4 and 7.17.7.5: the two compare-and-exchanges, which differ only in whether a failure may
  * be spurious. This target's cannot be, so the weak one is the strong one - which the standard
  * allows, and which makes the standard's own lock example work either way. */

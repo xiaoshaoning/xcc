@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M29 - 2026-11-25 - `__readgsqword`, and the atomics that cannot be spelled in a header
+
+mimalloc's third blocker was `__readgsqword`, and the interesting part is what it was *not*: the instruction already
+existed, with a constant offset, and the parser already had all eight names. What it did not have was a *variable*
+offset - and `mimalloc`'s is `slot * sizeof(void*)`, a number it computed.
+
+**An offset is an address, and an address here is a value.** `Inst::SegmentRead` took a `u32`; it takes a `Value` now,
+which is the shape `gs:[reg]` and `gs:[0x30]` share in the machine - one addressing mode, one encoding, with the constant
+folded into the displacement by the same `address()` that lowers every other load. The verifier sees the offset as an
+operand (so dominance and definedness are checked), the passes rewrite it, and the dumper prints it as a value. The
+Cranelift back end refuses it as it refused the constant form: Cranelift cannot write a segment prefix, and level 2 can.
+
+The oracle is the machine's own: `gs:[0x30]` is the TEB's self pointer and `gs:[0x48]` is `ClientId.UniqueThread`, so the
+test compares the byte it reads against `GetCurrentThreadId()` - through the constant form, the dword form, and a
+variable offset. Four answers, all `1`.
+
+**Eight `_explicit` forms were missing from `<stdatomic.h>`.** C11 7.17.7 spells every atomic operation twice, and ours
+had only the short spelling - so `atomic_exchange_explicit` was an undeclared function returning `int`, which is how
+mimalloc's pointer exchange came back as a thirty-two-bit number widened into a pointer. They are in the header now, as
+the standard's own "the others are this one with `seq_cst`", which is what this compiler's atomics are anyway.
+
+**And what is still missing, measured.** mimalloc now stops one line further: `atomic_exchange` of a
+`mi_heap_t *volatile *`. C11's generic functions are over *any* atomic type, and `_Generic` cannot say "any pointer" - the
+arm would have to name `mi_heap_t *volatile *`, which no header can know. That is why glibc and musl use `__typeof__` for
+these and why this is not a header fix: the answer is a `__builtin_atomic_exchange` (and `__builtin_atomic_load`/`store`)
+in the compiler, inferring width and sign from the object's type the way `__builtin_atomic_cas` already does, with the
+header reduced to a name. That is the next piece of work, and `mimalloc` is the gate for it.
+
+209 unit, 41 parser, 40 exe (one more: the thread environment block), 9 real, 1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C
+API, 4 bcc20-sys; differential 416 ran, 0 mismatched; 444 corpus programs agree, 0 wrong; fmt and clippy clean.
+
 ### M28 - 2026-11-25 - the review of mimalloc's three, and the one that was still wrong
 
 Reviewing `89ff054` found one real bug in what it added, and one name that said the wrong thing.

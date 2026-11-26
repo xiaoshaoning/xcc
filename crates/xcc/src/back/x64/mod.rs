@@ -199,7 +199,10 @@ pub(crate) enum Op {
     SegmentRead {
         dst: VReg,
         segment: Segment,
-        offset: u32,
+        /// The register holding the byte offset into the segment, and the constant part of it: a
+        /// constant offset folds into the displacement, which is what `gs:[0x30]` writes.
+        base: VReg,
+        offset: i32,
         size: u8,
     },
     /// A compare-and-swap at `[pointer]`, of `size` bytes: if the object equals `expected` it

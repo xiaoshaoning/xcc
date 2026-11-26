@@ -377,6 +377,38 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// `__readgsqword` and its seven siblings: `mov rax, gs:[offset]`, which is how a Windows program
+/// reaches the thread environment block. `gs:[0x30]` is the TEB's self pointer and `gs:[0x48]` is
+/// `ClientId.UniqueThread`, so the oracle is the runtime's own answer: `GetCurrentThreadId`.
+///
+/// The offset is an *address*, and an address is a value here, so `gs:[rcx]` is the same encoding as
+/// `gs:[0x30]` - which is what `mimalloc` needs, because its slot is `slot * sizeof(void*)`.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_thread_environment_block_is_one_instruction_away() {
+    let source = r#"
+#include <stdio.h>
+
+unsigned long GetCurrentThreadId(void);
+
+int main(void) {
+    unsigned long long teb = __readgsqword(0x30);
+    unsigned long long at_0x48 = __readgsqword(0x48);
+    unsigned int dword = __readgsdword(0x48);
+    unsigned long long ofs = 0x48;
+    unsigned long long computed = __readgsqword(ofs);
+    unsigned int expected = GetCurrentThreadId();
+    printf("%d %d %d %d\n", teb != 0, (unsigned long)at_0x48 == expected,
+           dword == expected, (unsigned long)computed == expected);
+    return 0;
+}
+"#;
+    let run = run_linked("teb", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out.trim_end(), "1 1 1 1");
+}
+
 /// Two things C99 has that mimalloc needs and this compiler did not answer: `__func__` (6.4.2.2, the
 /// enclosing function's name as if a `static const char[]` had been declared) and `__thread`, which
 /// is GCC's and clang's spelling of `_Thread_local` - and the one a header library uses in the branch

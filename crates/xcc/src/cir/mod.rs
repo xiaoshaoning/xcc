@@ -243,11 +243,14 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
-    /// A read of a segment-relative word: `mov rax, gs:[offset]`. See [`Builder::segment_read`].
+    /// A read of a segment-relative word: `mov rax, gs:[address]`. See [`Builder::segment_read`].
     SegmentRead {
         result: Value,
         segment: Segment,
-        offset: u32,
+        /// The byte offset from the segment's base, as an *address* - a value, not a constant,
+        /// because `gs:[reg]` is as legal as `gs:[disp32]` and a library's TLS slot is a number it
+        /// computed. A constant here becomes a displacement in the encoding.
+        address: Value,
         ty: TypeId,
         span: Span,
     },
@@ -405,8 +408,9 @@ impl Inst {
                 *left = rewrite(*left);
                 *right = rewrite(*right);
             }
-            // A segment read names an *offset*, not a value, so there is nothing to rewrite.
-            Inst::SegmentRead { .. } => {}
+            // The offset is a value: a pass that renumbers values must renumber this one too, or
+            // the read keeps an operand nothing defines any more.
+            Inst::SegmentRead { address, .. } => *address = rewrite(*address),
             Inst::AtomicCas {
                 pointer,
                 expected,
@@ -834,15 +838,21 @@ impl<'a> Builder<'a> {
     /// A read of a segment-relative word: `mov rax, gs:[offset]`.
     ///
     /// This is how a Windows SDK reaches the thread environment block - `__readgsqword(0x30)` is
-    /// `NtCurrentTeb()`, and `GetLastError` is a field of it. The offset must be a constant, which
-    /// both SDKs require of these intrinsics; `size` is how many bytes are read, 1, 2, 4 or 8, and
-    /// is the size of the result's type.
-    pub fn segment_read(&mut self, segment: Segment, offset: u32, ty: TypeId, span: Span) -> Value {
+    /// `NtCurrentTeb()`, and `GetLastError` is a field of it. `size` is how many bytes are read, 1,
+    /// 2, 4 or 8, and is the size of the result's type; `address` is the byte offset from the
+    /// segment's base, an integer rather than a pointer because that is what it is.
+    pub fn segment_read(
+        &mut self,
+        segment: Segment,
+        address: Value,
+        ty: TypeId,
+        span: Span,
+    ) -> Value {
         let value = self.func.mint(ty, self.current);
         self.push(Inst::SegmentRead {
             result: value,
             segment,
-            offset,
+            address,
             ty,
             span,
         });
@@ -1757,7 +1767,7 @@ fn used_values(inst: &Inst) -> Vec<Value> {
             desired,
             ..
         } => vec![*pointer, *expected, *desired],
-        Inst::SegmentRead { .. } => Vec::new(),
+        Inst::SegmentRead { address, .. } => vec![*address],
         Inst::Unary { value, .. } => vec![*value],
         Inst::Convert { value, .. } => vec![*value],
         Inst::Call { callee, args, .. } => {

@@ -1208,27 +1208,41 @@ impl Parser<'_> {
             self.error_at_current(format!("`{name}` needs `(`"));
             return Value::temporary(result_ty);
         }
-        let offset = match self.constant_expression() {
-            Some(offset) if (0..=u32::MAX as i64).contains(&offset) => offset as u32,
-            Some(_) => {
-                self.error(
-                    span,
-                    format!("`{name}` reads at an offset of at most 4 gigabytes"),
-                );
-                return Value::temporary(result_ty);
-            }
+        // The offset is any integer expression: `mov rax, gs:[reg]` takes a register as readily as
+        // `gs:[0x30]` takes a displacement, and a library's thread-local slot is a number it
+        // computed (`mimalloc`'s is `slot * sizeof(void*)`). It is converted to the width an
+        // address has, which is also what the SDK declared the parameter to be.
+        let argument = match self.assignment_expression() {
+            Some(argument) => argument,
             None => {
-                self.error(
-                    span,
-                    format!("`{name}` reads at a constant offset: it is a displacement in one instruction, not an address"),
-                );
+                self.error(span, format!("`{name}` needs an offset"));
                 return Value::temporary(result_ty);
             }
         };
+        if !self.types.is_integer(argument.ty) && !self.types.is_error(argument.ty) {
+            let given = self.describe(argument.ty);
+            self.error(
+                span,
+                format!("`{name}` reads at a byte offset, and {given} is not a number"),
+            );
+            return Value::temporary(result_ty);
+        }
+        let wide = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        // An offset is an address, and an address is a *value* here: a constant one is
+        // materialised, because the encoder takes a register. One `mov` buys the general form, and
+        // `gs:[reg]` is what a library's computed slot needs - `mimalloc`'s is `slot * 8`.
+        let converted = self.convert(argument, wide, span);
+        let address = self.with_code(converted, span);
         if !self.eat(")") {
             self.error_at_current(format!("expected `)` after the offset of `{name}`"));
         }
-        match self.emit(|builder| builder.segment_read(segment, offset, result_ty, span)) {
+        let Some(address) = address.cir else {
+            return Value::temporary(result_ty);
+        };
+        match self.emit(|builder| builder.segment_read(segment, address, result_ty, span)) {
             Some(value) => Value::code(result_ty, value),
             None => Value::temporary(result_ty),
         }

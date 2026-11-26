@@ -106,16 +106,16 @@ pub(crate) fn instruction(
         Inst::SegmentRead {
             result,
             segment,
-            offset,
+            address,
             ..
         } => format!(
-            "{} = read_{} [{:#x}]",
+            "{} = read_{} [{}]",
             v(*result),
             match segment {
                 crate::cir::Segment::Fs => "fs",
                 crate::cir::Segment::Gs => "gs",
             },
-            offset
+            v(*address)
         ),
         Inst::AtomicCas {
             result,

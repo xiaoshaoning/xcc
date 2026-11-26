@@ -478,9 +478,14 @@ impl Encoder<'_> {
             Op::SegmentRead {
                 dst,
                 segment,
+                base,
                 offset,
                 size,
-            } => self.segment_read(*dst, *segment, *offset, *size),
+            } => {
+                let base = self.read(*base);
+                self.segment_read(*dst, *segment, base, *offset, *size);
+                self.release();
+            }
             Op::AtomicCas {
                 dst,
                 pointer,
@@ -1646,22 +1651,35 @@ impl Encoder<'_> {
     /// it 64 bits. The byte and word forms read with `movzx`, so the value arrives zero-extended and
     /// the lowering's `Canonical` puts the type's own sign on it, exactly as a narrow `cmpxchg`'s
     /// result gets it.
-    fn segment_read(&mut self, dst: VReg, segment: Segment, offset: u32, size: u8) {
+    /// `mov rax, gs:[base + offset]`, then `rax` wherever the value was wanted: the segment prefix
+    /// applies to the address, not to the register, so the displacement form (`gs:[0x30]`) and the
+    /// computed one (`gs:[rcx]`) are one encoding with different addressing modes.
+    fn segment_read(&mut self, dst: VReg, segment: Segment, base: Reg, offset: i32, size: u8) {
         self.byte(match segment {
             Segment::Fs => 0x64,
             Segment::Gs => 0x65,
         });
         match size {
-            1 => self.bytes(&[0x0F, 0xB6]),
-            2 => self.bytes(&[0x0F, 0xB7]),
-            4 => self.byte(0x8B),
-            _ => {
-                self.byte(0x48);
-                self.byte(0x8B);
+            // `movzx rax, byte ptr [base]` and its two-byte sibling: the read is narrower than the
+            // register, and zero-extending is what an unsigned read means.
+            1 => {
+                self.prefix(Reg(0), base);
+                self.bytes(&[0x0F, 0xB6]);
             }
+            2 => {
+                self.prefix(Reg(0), base);
+                self.bytes(&[0x0F, 0xB7]);
+            }
+            4 => self.prefix(Reg(0), base),
+            _ => self.prefix_w(Reg(0), base),
+        };
+        match size {
+            1 => {}
+            2 => {}
+            4 => self.byte(0x8B),
+            _ => self.byte(0x8B),
         }
-        self.bytes(&[0x04, 0x25]);
-        self.bytes(&offset.to_le_bytes());
+        self.memory_operand(0, base, offset);
         if self.allocation.location(dst) != Location::Register(Reg::RAX) {
             self.write(dst, Reg::RAX);
         }

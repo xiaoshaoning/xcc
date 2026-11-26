@@ -553,7 +553,7 @@ impl FunctionLowering<'_> {
             Inst::SegmentRead {
                 result,
                 segment,
-                offset,
+                address,
                 ty,
                 ..
             } => {
@@ -567,10 +567,16 @@ impl FunctionLowering<'_> {
                 }
                 let dst = self.reg_for(*result);
                 self.classify(dst, Class::Integer);
+                // The offset is an address in the segment, so it lowers like one: a register, and
+                // whatever constant the front end folded into it as a displacement - which is how
+                // `gs:[0x30]` stays one instruction.
+                let (address, offset) = self.address(func, *address, ops);
+                let base = self.reg_for(address);
                 ops.push(Op::SegmentRead {
                     dst,
                     segment: *segment,
-                    offset: *offset,
+                    base,
+                    offset,
                     size,
                 });
                 if size < 4 {
