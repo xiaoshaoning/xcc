@@ -579,6 +579,13 @@ impl BlockTerm {
 pub(crate) struct MachineBlock {
     /// What happens, in order.
     pub ops: Vec<Op>,
+    /// Where in the source each of those came from, one per operation.
+    ///
+    /// A parallel vector rather than a span inside every `Op`: the alternative is wrapping sixty
+    /// variants in `(Span, Op)` to protect one invariant, and the invariant is one assertion. The
+    /// encoder turns these into a line table - the address of each operation and the line it was
+    /// written on - which is what lets a fault say `sqlite3.c:130549` instead of `+0x129e2d`.
+    pub spans: Vec<Span>,
     /// How it ends.
     pub term: BlockTerm,
 }
@@ -730,5 +737,55 @@ mod tests {
         };
         assert_eq!(store.defined(), None);
         assert_eq!(store.operands(), vec![VReg(3), VReg(4)]);
+    }
+
+    /// The address-to-line table, held to the three things a map needs: every entry points inside
+    /// the code, the offsets only ever go forward, and every line it names is a line of the source.
+    ///
+    /// It has no other reader yet - the image does not write them out - so this test is what keeps
+    /// the collection honest until it does. A table nothing reads is a table that is wrong.
+    #[test]
+    fn every_operation_records_where_it_came_from() {
+        use crate::options::Options;
+        use crate::pp::preprocess;
+        use crate::source::SourceFile;
+
+        let source = "int f(int a, int b) {
+  int c = a + b;
+  c = c * 2;
+  return c;
+}
+                      int main(void) { return f(3, 4); }
+";
+        let file = SourceFile::new("t.c", source);
+        let options = Options::default();
+        let mut preprocessed = preprocess(&file, &options, &());
+        let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        let built = image(&parsed.module, preprocessed.names()).expect("it lowers");
+        assert!(!built.lines.is_empty(), "no lines were collected at all");
+        assert!(
+            built.lines.len() >= 8,
+            "two functions of a dozen operations produced {} lines",
+            built.lines.len()
+        );
+        let mut previous = 0;
+        for (at, span) in &built.lines {
+            assert!(
+                (*at as usize) < built.text.len(),
+                "a line begins at {at}, past the end of {} bytes of code",
+                built.text.len()
+            );
+            assert!(
+                *at >= previous,
+                "the offsets are not in order: {at} after {previous}"
+            );
+            previous = *at;
+            assert!(
+                (span.start as usize) + (span.len as usize) <= source.len(),
+                "a span runs past the end of the source"
+            );
+            assert!(span.len > 0, "an empty span names no line");
+        }
     }
 }

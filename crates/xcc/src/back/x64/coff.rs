@@ -15,6 +15,9 @@ use super::MachineFunction;
 const MACHINE_AMD64: u16 = 0x8664;
 /// `IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ`.
 const TEXT_FLAGS: u32 = 0x6000_0020;
+/// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ`: what a table of numbers nobody
+/// writes is.
+const DATA_READ_ONLY_FLAGS: u32 = 0x4000_0040;
 /// `IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE`, aligned to sixteen
 /// bytes. A string literal lives here as readily as a mutable counter, so the section is writable for
 /// the second - and readable for both, which is the flag that is easy to leave out and that no test
@@ -132,6 +135,10 @@ pub(crate) struct Image {
     /// Every function whose prologue did anything, in the order the functions were placed - which is
     /// ascending address, the order `.pdata` requires.
     pub unwind: Vec<FunctionUnwind>,
+    /// Where each operation begins in `.text`, and the source it came from: the address-to-line
+    /// table a debugger or a crash lookup wants, collected where the addresses are still being
+    /// decided.
+    pub lines: Vec<(u32, crate::diag::Span)>,
 }
 
 /// `.xdata` and `.pdata`, laid out once for both consumers: the object writer turns the entries into
@@ -180,6 +187,7 @@ pub(crate) fn assemble(functions: &[MachineFunction], data: Data) -> Image {
     let mut text = Vec::new();
     let mut placed = Vec::new();
     let mut unwind = Vec::new();
+    let mut lines = Vec::new();
     for function in functions {
         let allocation = regalloc::allocate(function);
         let encoded = encode::function(function, &allocation);
@@ -197,11 +205,20 @@ pub(crate) fn assemble(functions: &[MachineFunction], data: Data) -> Image {
                 info: unwind_info(described),
             });
         }
+        // The encoder's offsets are the function's; the object's are the section's.
+        let start = text.len() as u32;
+        lines.extend(
+            encoded
+                .lines
+                .iter()
+                .map(|(offset, span)| (start + offset, *span)),
+        );
         text.extend_from_slice(&encoded.code);
     }
     Image {
         text,
         functions: placed,
+        lines,
         data,
         unwind,
     }
@@ -294,6 +311,26 @@ fn write_object(image: &Image) -> Vec<u8> {
             })
             .collect(),
     }];
+    // `.xccmap`: where each operation begins, and the source byte range it came from - one record
+    // of twelve bytes: the offset in `.text`, the span's offset, and its length. Not a debug
+    // section any tool reads yet, and the smallest thing a crash address can be looked up against.
+    // The line *number* is the CLI's to compute, because a span is an offset and only the source
+    // file knows where its lines begin.
+    if !image.lines.is_empty() {
+        let mut bytes = Vec::with_capacity(image.lines.len() * 12);
+        for (at, span) in &image.lines {
+            bytes.extend_from_slice(&at.to_le_bytes());
+            bytes.extend_from_slice(&span.start.to_le_bytes());
+            bytes.extend_from_slice(&span.len.to_le_bytes());
+        }
+        sections.push(SectionOut {
+            name: ".xccmap",
+            flags: DATA_READ_ONLY_FLAGS,
+            bytes,
+            symbols: Vec::new(),
+            relocations: Vec::new(),
+        });
+    }
     if has_data {
         // Every relocation's addend is written into the field it belongs to, because that is what an
         // `ADDR64` *means*: the linker's answer is `S + A` and `A` is what the bytes already hold.
@@ -504,6 +541,7 @@ mod tests {
             functions: Vec::new(),
             data: Data::default(),
             unwind: Vec::new(),
+            lines: Vec::new(),
         }
     }
 
@@ -536,6 +574,7 @@ mod tests {
             functions: Vec::new(),
             data,
             unwind: Vec::new(),
+            lines: Vec::new(),
         });
         // The `.data` section's bytes are the second section's, and its contents start after the
         // headers; the field at offset 8 holds the addend, little-endian.

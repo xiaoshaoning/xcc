@@ -20,6 +20,7 @@ use super::{
     BlockTerm, Class, MachineBlock, MachineFunction, NotYet, Op, Operand, VReg, ARGUMENT_COUNT,
 };
 use crate::cir::{BinOp, Block, ConvertOp, Func, Inst, Module, Term, Value};
+use crate::diag::Span;
 use crate::types::{Type, TypeId, Types};
 
 /// Lower one translation unit. A function this slice cannot lower refuses with the reason and the
@@ -248,6 +249,7 @@ impl FunctionLowering<'_> {
             } else {
                 Vec::new()
             };
+            let mut block_spans: Vec<Span> = Vec::new();
             let position = self.order[&block];
             // A block's parameters arrive in its slots: reading them here is the "phi". The entry
             // block is the exception - its parameters arrived in registers, and it has already read
@@ -281,10 +283,17 @@ impl FunctionLowering<'_> {
                     }
                 }
                 self.lower_inst(func, inst, &mut block_ops)?;
+                // Every op this instruction emitted is on this instruction's line. One instruction
+                // can be several ops - a load, a shift, a store - and all of them are the source
+                // line the program wrote.
+                block_spans.resize(block_ops.len(), inst.span());
             }
             let term = self.lower_term(func, block, &mut block_ops, fused)?;
+            block_spans.resize(block_ops.len(), func.block(block).span);
+            debug_assert_eq!(block_ops.len(), block_spans.len());
             self.blocks.push(MachineBlock {
                 ops: block_ops,
+                spans: block_spans,
                 term,
             });
         }

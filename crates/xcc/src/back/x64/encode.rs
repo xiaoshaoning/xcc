@@ -27,6 +27,7 @@
 use super::regalloc::{Allocation, Location, Reg};
 use super::{BinOp, BlockTerm, MachineFunction, Op, Operand, VReg};
 use crate::cir::Segment;
+use crate::diag::Span;
 
 /// Whether an operation gives the same answer with its operands swapped, which is what lets the
 /// destination's register hold either one.
@@ -56,6 +57,9 @@ pub(crate) struct Encoded {
     /// What the prologue did, for the unwinder. `None` when it did nothing at all: the unwinder reads
     /// a function with no `.pdata` entry as a leaf, which is what a function with no prologue is.
     pub unwind: Option<Unwind>,
+    /// Where each operation begins, from the function's first byte, and the line it was written on.
+    /// The image turns these into a map a crash address can be looked up against.
+    pub lines: Vec<(u32, Span)>,
 }
 
 /// `UWOP_PUSH_NONVOL`: `push r64`.
@@ -184,6 +188,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     };
 
     let mut encoder = Encoder {
+        lines: Vec::new(),
         code: Vec::new(),
         relocations: Vec::new(),
         fixups: Vec::new(),
@@ -210,8 +215,13 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     let last = func.blocks.len().saturating_sub(1);
     for (index, block) in func.blocks.iter().enumerate() {
         encoder.label(index);
-        for op in &block.ops {
+        for (index, op) in block.ops.iter().enumerate() {
+            // The offset *before* the operation is its address: `code.len()` is where the next byte
+            // goes, and an operation that emits nothing - a label, a marker - is a line entry with
+            // the same address as the one after it, which a lookup resolves to the later one.
+            let at = encoder.code.len() as u32;
             encoder.op(op);
+            encoder.lines.push((at, block.spans[index]));
         }
         // A terminator reads registers too, and the check in `read` asks the *operation* what it
         // declared - so the terminator has to be the thing being asked, not the last instruction.
@@ -294,6 +304,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         })
     };
     Encoded {
+        lines: encoder.lines,
         code: encoder.code,
         relocations: encoder.relocations,
         unwind,
@@ -313,6 +324,8 @@ struct Encoder<'a> {
     relocations: Vec<Relocation>,
     fixups: Vec<Fixup>,
     labels: Vec<Option<usize>>,
+    /// Where each operation began, and the line it came from.
+    lines: Vec<(u32, Span)>,
     allocation: &'a Allocation,
     /// The operation being encoded and the registers it *declared* it reads, so `read` can check
     /// itself against what the operation said. An operand left out of `Op::operands` ends its live

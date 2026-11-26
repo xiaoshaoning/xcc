@@ -809,6 +809,17 @@ bigger than the session that found it, and a scope note is what the next one nee
    knows the lines. `--map` prints `rva  file.c:42` for the linked image, which is what turns a crash address into a
    line.
 
+**Points 1 to 3 are in, with one thing more than the list said.** The spans go into `MachineBlock` beside its ops
+(one `debug_assert_eq!(ops.len(), spans.len())`), the encoder records `(offset, span)` per op as `code.len()` before it,
+`coff::Image` carries them section-relative - and the object *writes them out*, as a `.xccmap` section of twelve bytes a
+record: the offset in `.text`, the span's offset, its length. That was not in the list because the list assumed the table
+could sit unread until point 4; it cannot, because a field nothing reads is dead code and a warning on every build. The
+object writer is a reader, `objdump -h` shows the section, and a unit test holds the table to its three invariants: every
+offset inside `.text`, offsets only increasing, every span inside the source.
+
+Points 4 and 5 are what remains: carry it through the linker, and let the CLI turn a span into `file.c:42` - which is
+where the line *number* comes from, because a span is an offset and only the source knows where its lines begin.
+
 What is deliberately *not* in that list: DWARF or CodeView. A debugger reading `.debug_line` would be better, and gdb
 does read DWARF in a PE - but the address-to-line mapping has to be *collected* first (points 1-3), and that work is the
 same either way. Do the collection, look at the map, and only then decide whether a real `.debug_line` is worth writing.

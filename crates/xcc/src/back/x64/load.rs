@@ -143,6 +143,9 @@ pub(crate) fn load(
         functions,
         data,
         unwind,
+        // A JIT'ed image has no file to put a line table in; the symbols and the lines are the
+        // *object* writer's business.
+        lines: _,
     } = image;
     // The unwinder's tables go into the same allocation as the code, for one reason: `.pdata` holds
     // *image-relative* addresses, so `RtlAddFunctionTable` reads them against this base and every
