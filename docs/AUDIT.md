@@ -786,6 +786,47 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M45 - 2026-11-25 - the map that was bigger than the code
+
+Reviewing `fdff9fc` found the section correct in shape and **absurd in size**, and shipped it as a measurement instead of
+an opinion.
+
+**The numbers, on `tre`** (177 436 bytes of `.text`):
+
+| encoding | `.xccmap` | share of the code |
+|---|---|---|
+| one record per operation | 207 148 | 117 % |
+| one record per *line* | 122 592 | 69 % |
+| deltas as varints | **34 652** | **19.5 %** |
+
+The first was what landed. A map bigger than the code it describes, in *every* object, for a table nothing can read yet -
+which is the definition of a cost with no user. The middle one is what a lookup actually needs: consecutive operations of
+one instruction share a line, and a lookup wants the greatest offset at or below the address, so a repeat adds nothing.
+The last is the record itself: an offset delta (always forward, one byte under 128), a zigzag span delta (a loop goes
+backwards, and zigzag makes a small negative as short as a small positive), and a length.
+
+**Verified by decoding it**, because the reader's algorithm is the only thing that proves an encoding. Six records from a
+three-line source, each landing on a real token of the right line:
+
+```
+code+0   byte 12  line 1 '{'      code+19  byte 39  line 2 '+'
+code+6   byte 26  line 1 '3'      code+35  byte 71  line 3 '4'
+code+12  byte 24  line 1 '*'      code+40  byte 70  line 3 '('
+```
+
+And two findings that came out of the review rather than the writing:
+
+**The entry block's argument moves were labelled with the wrong line.** A block's ops are built in two places - the
+entry's parameter moves arrive before the loop - and `resize` gave every pre-existing op the *first instruction's* span.
+They now start at the block's own span, which is the function's opening line.
+
+**A span of length zero names no line**, and one was recorded: `Span::at(0)` is what an instruction the front end made up
+carries. Skipped now, with the reason beside it.
+
+Points 4 and 5 of M44 still stand: carry the table through the linker, and let the CLI turn a span into `file.c:42`.
+
+210 unit, 41 exe, 30 CLI; fmt and clippy clean.
+
 ### M44 - 2026-11-25 - line numbers, scoped and not started
 
 `v0.1.6` gave a fault a **name**: the symbol table turns `.text+0x129e2d` into `sqlite3InsertBuiltinFuncs`. The next

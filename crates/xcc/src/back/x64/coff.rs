@@ -261,6 +261,27 @@ pub(crate) fn write_image(image: &Image) -> Vec<u8> {
     write_object(image)
 }
 
+/// `value` in base 128, low group first, the high bit set on every group but the last: one byte for
+/// anything under 128, which is what a delta between two operations is.
+fn varint(out: &mut Vec<u8>, value: u32) {
+    let mut left = value;
+    loop {
+        let group = (left & 0x7f) as u8;
+        left >>= 7;
+        if left == 0 {
+            out.push(group);
+            return;
+        }
+        out.push(group | 0x80);
+    }
+}
+
+/// A signed number as an unsigned one that zigzags - `0, -1, 1, -2` become `0, 1, 2, 3` - so a small
+/// negative delta is as short as a small positive one. A loop's back edge is the case.
+fn zigzag(value: i32) -> u32 {
+    ((value << 1) ^ (value >> 31)) as u32
+}
+
 /// One section of the object: its bytes, the names inside it, and the places that need the linker.
 struct SectionOut {
     name: &'static str,
@@ -317,11 +338,34 @@ fn write_object(image: &Image) -> Vec<u8> {
     // The line *number* is the CLI's to compute, because a span is an offset and only the source
     // file knows where its lines begin.
     if !image.lines.is_empty() {
-        let mut bytes = Vec::with_capacity(image.lines.len() * 12);
-        for (at, span) in &image.lines {
-            bytes.extend_from_slice(&at.to_le_bytes());
-            bytes.extend_from_slice(&span.start.to_le_bytes());
-            bytes.extend_from_slice(&span.len.to_le_bytes());
+        // **Twelve bytes a record is too many**, and this is in every object: measured on `tre`,
+        // one record per operation was 207 148 bytes against 177 436 of code, and one per *line*
+        // still 122 592. So the records are deltas - each relative to the one before it, as
+        // `uleb128` varints, one byte for a delta under 128:
+        //
+        //     offset delta (>= 0)   span.start delta (zigzag: a loop goes backwards)   length
+        //
+        // A reader walks them in order and accumulates; a lookup takes the last record whose
+        // accumulated offset is at or below the address.
+        let mut bytes = Vec::with_capacity(image.lines.len() * 4);
+        let mut previous: Option<(u32, u32)> = None;
+        let (mut at, mut start) = (0u32, 0i32);
+        for (offset, span) in &image.lines {
+            // A span of no length names no line: `Span::at(0)` is what an instruction the front end
+            // made up carries, and a record that says "somewhere, nowhere" is worse than no record.
+            if span.len == 0 {
+                continue;
+            }
+            let line = (span.start, span.len);
+            if previous == Some(line) {
+                continue;
+            }
+            previous = Some(line);
+            varint(&mut bytes, offset - at);
+            varint(&mut bytes, zigzag(span.start as i32 - start));
+            varint(&mut bytes, span.len);
+            at = *offset;
+            start = span.start as i32;
         }
         sections.push(SectionOut {
             name: ".xccmap",

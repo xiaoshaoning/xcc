@@ -249,7 +249,10 @@ impl FunctionLowering<'_> {
             } else {
                 Vec::new()
             };
-            let mut block_spans: Vec<Span> = Vec::new();
+            // The entry block arrives with its arguments already moved into slots, and those ops
+            // were pushed before this loop: their line is the function's, not the first
+            // instruction's. `resize` below would have said otherwise.
+            let mut block_spans: Vec<Span> = vec![func.block(block).span; block_ops.len()];
             let position = self.order[&block];
             // A block's parameters arrive in its slots: reading them here is the "phi". The entry
             // block is the exception - its parameters arrived in registers, and it has already read
