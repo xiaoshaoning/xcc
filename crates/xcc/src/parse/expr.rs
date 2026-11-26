@@ -1419,14 +1419,35 @@ impl Parser<'_> {
             self.error_at_current("expected `,` after the address");
         }
         if !exchange {
-            // C11's `expected` is a pointer to what the caller believes is there.
-            match self.assignment_expression().map(|value| self.decay(value)) {
-                Some(expected) => {
-                    parameters.push(expected.ty);
-                    arguments.push(expected);
-                }
-                None => return Value::temporary(self.types.error()),
+            // C11 7.17.7.4: `expected` is a pointer to *an object of the same type*, because a
+            // failed exchange writes the value it found through it. Neither half was checked, and
+            // both were wrong programs rather than diagnostics: a `char *` where an `int *` belongs
+            // let the runtime write four bytes through a one-byte object, and something that was
+            // not a pointer at all was accepted and crashed.
+            let Some(expected) = self.assignment_expression().map(|value| self.decay(value)) else {
+                return Value::temporary(self.types.error());
+            };
+            if !self.types.is_pointer(expected.ty) {
+                let given = self.describe(expected.ty);
+                self.error(
+                    span,
+                    format!("a compare-and-exchange needs the address of the expected value, and these arguments give it {given}"),
+                );
+                return Value::temporary(self.types.error());
             }
+            if !self.types.same(self.types.pointee(expected.ty), pointee) {
+                let (expected_ty, object_ty) = (
+                    self.describe(self.types.pointee(expected.ty)),
+                    self.describe(pointee),
+                );
+                self.error(
+                    span,
+                    format!("`expected` points at `{expected_ty}` and the object is `{object_ty}`: a failed exchange writes what it found through the first, so the two must be the same type"),
+                );
+                return Value::temporary(self.types.error());
+            }
+            parameters.push(expected.ty);
+            arguments.push(expected);
             if !self.eat(",") {
                 self.error_at_current("expected `,` after the expected value's address");
             }

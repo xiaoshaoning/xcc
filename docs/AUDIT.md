@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M35 - 2026-11-25 - the argument nobody checked, and the two ways it was wrong
+
+Reviewing `bbb8ce7` found one thing, and it was a crash rather than a report.
+
+**`expected` in a compare-and-exchange was never checked.** C11 7.17.7.4 says it is a pointer to *an object of the same
+type* as the one being exchanged, because a failed exchange writes the value it found through it. Nothing checked either
+half, so both wrong programs compiled:
+
+```c
+int x = 1;
+char expected = 1;
+atomic_compare_exchange(&x, &expected, 2);   /* the runtime writes 4 bytes through a 1-byte object */
+atomic_compare_exchange(&x, 5, 3);           /* not a pointer at all: accepted, then SIGSEGV */
+```
+
+The first is memory corruption and the second is a segfault, and both were accepted in silence - which is the one thing
+this compiler may not do. Each is a diagnostic now, with the reason in it: *"`expected` points at `char` and the object is
+`int`: a failed exchange writes what it found through the first, so the two must be the same type"*.
+
+What the review found sound: `atomic_kind`'s table (integer widths, `_Bool` as an unsigned byte, a pointer as eight bytes,
+everything else refused), the conversion of the value being stored (`emit_call` converts it to the runtime's parameter
+type, which is where a pointer object becomes an `unsigned long long`), and the result typing - the exchange's is the
+pointee's type and the compare-and-exchange's is `_Bool`, both of which the call instruction carries correctly.
+
+One small thing left behind: the poisoned value after that diagnostic still produces a second, unrelated one from the
+initialiser path. That is the same class as the note-vs-location work in M34 - a diagnostic that has already spoken
+should not have a second one land on top of it - and it is written down there rather than fixed here.
+
+209 unit, 40 exe, 9 real, 1 crt, 30 CLI; fmt and clippy clean.
+
 ### M34 - 2026-11-25 - the queue, measured, and the one that should not be fixed
 
 The three loose ends, taken in order and each answered with a number or a reason rather than a plan.
