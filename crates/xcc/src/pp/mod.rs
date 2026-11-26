@@ -1176,8 +1176,20 @@ impl Preprocessor<'_> {
 
     /// `#include "name"` and `#include <name>`, from the files the host allows.
     fn include(&mut self, rest: &[Raw], span: Span) {
-        // A macro may name the file: expand first, then read the name out.
-        let expanded = self.expand_tokens(rest);
+        // C99 6.10.2p2: `"the name"` and `<the name>` are the name *as written*, and the standard
+        // never macro-expands them - only p4's third form, `#include MACRO`, is expanded, and its
+        // expansion must then look like one of the other two. Expanding first made
+        // `#include <errno.h>` a request for `(*_errno()).h` in every unit where `<errno.h>` had
+        // already been read, because the SDK's header defines `errno` as a macro: mimalloc includes
+        // it twice and was told the second one did not exist.
+        let verbatim = rest.first().is_some_and(|first| {
+            first.token.kind == TokenKind::Str || self.is_punct(&first.token, "<")
+        });
+        let expanded = if verbatim {
+            rest.to_vec()
+        } else {
+            self.expand_tokens(rest)
+        };
         let Some((name, angled)) = self.include_name(&expanded, span) else {
             return;
         };
@@ -2510,6 +2522,35 @@ yes
         let warnings = diagnostics("#warning this is odd\n");
         assert_eq!(warnings[0].severity, Severity::Warning);
         assert_eq!(warnings[0].message, "this is odd");
+    }
+
+    #[test]
+    fn an_include_name_is_not_macro_expanded() {
+        // C99 6.10.2p2: `"the name"` and `<the name>` are the name as written; only p4's
+        // `#include MACRO` is expanded. Expanding first made `#include <errno.h>` a request for
+        // `(*_errno()).h` in every unit that had already read the SDK's `errno.h` - which defines
+        // `errno` as a macro - so mimalloc, which includes it twice, could not compile at all.
+        //
+        // This harness serves no files, so the *name in the diagnostic* is what the test reads: it
+        // must be the one the source wrote, never the one a macro would have made of it.
+        for name in ["stdio.h", "errno.h", "string.h"] {
+            let stem = name.trim_end_matches(".h");
+            let source = format!(
+                "#define {stem} BOOM
+#include <{name}>
+"
+            );
+            let messages: Vec<String> = diagnostics(&source)
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect();
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message == &format!("cannot find `{name}`")),
+                "`<{name}>` was not read as written: {messages:?}"
+            );
+        }
     }
 
     #[test]

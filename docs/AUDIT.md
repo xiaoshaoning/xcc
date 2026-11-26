@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M27 - 2026-11-25 - mimalloc, and the three things it asked for before it could be measured
+
+`mimalloc` is 21 units in `src/` plus an amalgamation (`static.c`) that is the whole library in one object. It compiled
+to the third error in under two seconds, and every one of those three was a C99 conformance bug rather than a feature.
+
+**`#include <errno.h>` was macro-expanded.** `include()` expanded the directive's tokens before reading the name, so in
+any unit where `<errno.h>` had already been read - and the SDK's header defines `errno` as `(*_errno())` - the second
+include of the same file asked for `(*_errno()).h`. C99 6.10.2p2 is not ambiguous: `"the name"` and `<the name>` are the
+name *as written*, and only p4's third form, `#include MACRO`, is expanded. The directive now looks at its first token
+and takes the name verbatim when it is a string or `<`; mimalloc includes `errno.h` twice.
+
+**`__func__` was not declared.** C99 6.4.2.2p1 makes it the enclosing function's name, "as if" the body began with
+`static const char __func__[] = "the name";`. It is answered before either lookup, and only inside a function. The object
+is built by the same function a string literal uses - the tail of `string_literal` is now `literal_object`, and a
+literal's *value* is now `literal_of` - so there is one writer of "an anonymous global with a NUL, and a value that is
+its address". One object per function, memoized: a logging macro that prints `__func__` is expanded a dozen times in one
+body.
+
+**`__thread` was a syntax error.** It is GCC's and clang's spelling of `_Thread_local`, and mimalloc reaches for it in
+the branch for "some other compiler" - which is this one, because `mi_decl_thread` is `__declspec(thread)` for MSVC,
+`__thread` for GCC, and `__thread` again for everybody else. Accepted as the storage class it means, beside
+`_Thread_local`.
+
+**What is left, measured.** The amalgamation now stops at `__readgsqword`, an MSVC intrinsic that is one instruction
+(`mov rax, gs:[disp32]`) and needs a segment override this back end does not encode - a real piece of work, and a real
+feature request, from a library that wants the thread's TEB. And one initialiser in `theap.c` refuses an `int` where a
+`mi_heap_t *` belongs, which needs reading before it is called either a bug or a gap.
+
+209 unit (one more: a p2 include name read as written), 41 parser, 39 exe (one more: `__func__` and `__thread`), 9 real,
+1 crt, 6 invalid, 30 CLI, 5 hostile, 8 C API, 4 bcc20-sys; differential 416 ran, 0 mismatched; 444 corpus programs agree,
+0 wrong; fmt and clippy clean.
+
 ### M26 - 2026-11-25 - the review of the paste and the pass, and two things under them
 
 Reviewing `d27ffbc` found the two bugs it fixed were fixed correctly, and two things *around* them were not.

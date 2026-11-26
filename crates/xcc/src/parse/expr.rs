@@ -1856,22 +1856,7 @@ impl Parser<'_> {
                 // A string literal has an array type of its own (C99 6.2.5p20), which is what
                 // makes `sizeof "abc"` four and lets an initialiser take its length.
                 let (ty, name, _) = self.string_literal();
-                let pointer = self.types.pointer(ty);
-                // A literal is an object, so its value is its address - the same shape a file-scope
-                // object's value has (ADR-004). Without the address, a *cast* of a literal was a
-                // value with nothing in it: `static const unsigned char * const azOne[] =
-                // { (u8*)" " }` - how sqlite builds its one-character set - wrote no bytes at all,
-                // and the table was NULL. Nothing else needed it: an initialiser that is a bare
-                // literal is written by the byte walker before an expression is ever read.
-                let symbol = self.preprocessed.intern(&name);
-                let mut value = Value::new(ty, None, true).with_address(Some((symbol, 0)));
-                if let Some(address) =
-                    self.emit(|builder| builder.global_address(name, pointer, span))
-                {
-                    value.cir = Some(address);
-                    value.place = Some(address);
-                }
-                Some(value)
+                Some(self.literal_of(ty, name, span))
             }
             crate::lex::TokenKind::Punct if self.is_punct(&token, "(") => {
                 // `(int)x` is a cast; `(x)` groups.
@@ -1901,6 +1886,40 @@ impl Parser<'_> {
                 None
             }
         }
+    }
+
+    /// The value of `__func__`: the array a string literal would be, holding the current function's
+    /// name. One object per function, remembered, because a macro that logs it is expanded many times.
+    fn function_name_value(&mut self, span: Span) -> Value {
+        let function = self.current_function.expect("a function is being read");
+        if let Some((ty, name)) = self.func_literals.get(&function) {
+            let (ty, name) = (*ty, name.clone());
+            return self.literal_of(ty, name, span);
+        }
+        let spelled = self.spell_of(function).to_owned();
+        let mut bytes = spelled.into_bytes();
+        bytes.push(0);
+        let character = self
+            .types
+            .fundamental("char")
+            .unwrap_or_else(|| self.types.error());
+        let ty = self.types.array(character, Some(bytes.len() as u64));
+        let name = self.literal_object(ty, &bytes, span);
+        self.func_literals.insert(function, (ty, name.clone()));
+        self.literal_of(ty, name, span)
+    }
+
+    /// The value of a literal object: its type is the array, its value is the address of the object
+    /// (ADR-004), and it is an lvalue because a literal is an object the program may look at.
+    fn literal_of(&mut self, ty: TypeId, name: String, span: Span) -> Value {
+        let pointer = self.types.pointer(ty);
+        let symbol = self.preprocessed.intern(&name);
+        let mut value = Value::new(ty, None, true).with_address(Some((symbol, 0)));
+        if let Some(address) = self.emit(|builder| builder.global_address(name, pointer, span)) {
+            value.cir = Some(address);
+            value.place = Some(address);
+        }
+        value
     }
 
     /// `a.b` and `p->b`: the member's type, and whether it can be assigned to.
@@ -2243,6 +2262,13 @@ impl Parser<'_> {
 
     /// The value of a name: a variable, a function, or an enumeration constant.
     pub(super) fn named_value(&mut self, name: Symbol, span: Span) -> Value {
+        // C99 6.4.2.2p1: `__func__` is the enclosing function's name, "as if" the body began with
+        // `static const char __func__[] = "the name";`. It is not a macro and not a variable the
+        // program declared, so it is answered before either lookup - and only inside a function,
+        // which is the only place the standard gives it a meaning.
+        if self.current_function.is_some() && self.spell_of(name) == "__func__" {
+            return self.function_name_value(span);
+        }
         if self.symbols.lookup(name).is_none() && self.at_punct("(") {
             // A call to a function nothing declared. C99 6.5.2.2p1 makes that a constraint
             // violation, and every compiler on this platform meets it in real code: MSVC calls it

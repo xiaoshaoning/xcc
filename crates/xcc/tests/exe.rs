@@ -377,6 +377,35 @@ int main(void) {
     assert_eq!(out.trim_end(), "own linker 10");
 }
 
+/// Two things C99 has that mimalloc needs and this compiler did not answer: `__func__` (6.4.2.2, the
+/// enclosing function's name as if a `static const char[]` had been declared) and `__thread`, which
+/// is GCC's and clang's spelling of `_Thread_local` - and the one a header library uses in the branch
+/// for "some other compiler", which is this one.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_name_of_the_function_and_the_other_spelling_of_thread_local() {
+    let source = r#"
+#include <stdio.h>
+#include <string.h>
+
+__thread int slot = 7;
+
+static const char *where(void) { return __func__; }
+
+int main(void) {
+    slot = slot + 1;
+    printf("%s %s %zu %d %d\n", __func__, where(), strlen(__func__),
+           (int)sizeof(__func__), slot);
+    return 0;
+}
+"#;
+    let run = run_linked("funcname", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // `main` is four characters, `where` is five, and `sizeof` of the array counts its terminator.
+    assert_eq!(out.trim_end(), "main where 4 5 8");
+}
+
 /// A `_Bool` that came from a comparison, and then converted: the shape `yyjson` wrote as
 /// `(u8)(sign)` where `sign = (*cur == '-')`.
 ///

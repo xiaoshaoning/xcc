@@ -59,6 +59,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         loops: 0,
         current_function: None,
         links: std::collections::HashMap::new(),
+        func_literals: std::collections::HashMap::new(),
         switches: Vec::new(),
         labels: HashMap::new(),
         blocks_reported: std::collections::HashSet::new(),
@@ -308,6 +309,10 @@ struct Parser<'a> {
     function_result: Option<TypeId>,
     /// How many loops surround the statement being read: `continue` needs one.
     loops: usize,
+    /// The `__func__` object of each function that asked for one, by the function's name: one object
+    /// per function rather than one per use, because a logging macro that prints `__func__` is
+    /// expanded a dozen times in one body and twelve copies of one name is twelve copies of bytes.
+    func_literals: std::collections::HashMap<Symbol, (TypeId, String)>,
     /// The names a declaration renamed with `__asm__("...")`: what a symbol is *linked* as, when
     /// that is not what the program calls it. mingw-w64's headers rename every CRT function whose
     /// narrow and wide spellings are the same name here - `vsscanf` is `__mingw_vsscanf`, `_wctime`
@@ -1168,22 +1173,29 @@ impl Parser<'_> {
         let ty = self
             .types
             .array(element, Some(init.len() as u64 / wide as u64));
-        // A literal is an object (ADR-004): an anonymous global holding its bytes and its NUL,
-        // named with a `.` prefix so it can never collide with a C identifier.
+        let name = self.literal_object(ty, &init, span);
+        (ty, name, init)
+    }
+
+    /// The object a string literal is: an anonymous global holding its bytes and their NUL, named
+    /// with a `.` prefix so it can never collide with a C identifier (ADR-004). Two things want one -
+    /// a literal in the source, and `__func__`, which C99 6.4.2.2 says is "as if" one was declared -
+    /// and this is the one place that writes it.
+    fn literal_object(&mut self, ty: TypeId, init: &[u8], span: Span) -> String {
         let name = format!(".str{}", self.literals);
         self.literals += 1;
         self.globals.push(cir::Global {
             name: name.clone(),
             ty,
             defined: true,
-            init: Some(init.clone()),
+            init: Some(init.to_vec()),
             relocations: Vec::new(),
             alignas: 0,
             external: false,
             thread: false,
             span,
         });
-        (ty, name, init)
+        name
     }
 
     /// Record a file-scope object's definition, completing one already there rather than adding
@@ -1454,7 +1466,12 @@ impl Parser<'_> {
         while let Some(token) = self.peek().copied() {
             let word = self.spell(&token).to_owned();
             match word.as_str() {
-                "typedef" | "extern" | "static" | "auto" | "register" | "_Thread_local" => {
+                // `__thread` is GCC's and clang's spelling of `_Thread_local`, and it is the one
+                // header libraries reach for on a compiler they cannot identify: mimalloc's
+                // `mi_decl_thread` is `__declspec(thread)` for MSVC, `__thread` for GCC, and
+                // `__thread` again in the branch for everybody else - which is this one.
+                "typedef" | "extern" | "static" | "auto" | "register" | "_Thread_local"
+                | "__thread" => {
                     if word == "typedef" {
                         specs.is_typedef = true;
                     }
@@ -1464,7 +1481,7 @@ impl Parser<'_> {
                     if word == "extern" {
                         specs.is_extern = true;
                     }
-                    if word == "_Thread_local" {
+                    if word == "_Thread_local" || word == "__thread" {
                         specs.is_thread_local = true;
                     }
                     self.at += 1; // a storage class is not part of the type
