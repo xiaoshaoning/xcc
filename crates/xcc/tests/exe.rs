@@ -483,6 +483,29 @@ int main(void) {
     let out = String::from_utf8_lossy(&run.stdout);
     assert_eq!(run.status.code(), Some(0), "{out}");
     assert_eq!(out.trim_end(), "0 1");
+
+    // ... and the same call with **no header at all**, which is how MSVC is used: the intrinsics are
+    // built into the compiler there, so a program calls them and includes nothing. An implicit `int`
+    // gives the wrong answer rather than a missing one, which is why this is a test and not a
+    // warning: `xxhash`'s XXH3 was a different number from clang's until this table existed.
+    let bare = r#"
+#include <stdio.h>
+
+int main(void) {
+    unsigned long long high = 0;
+    unsigned long long low = _umul128(0x100000000ULL, 0x100000000ULL, &high);
+    printf("%llu %llu\n", low, high);
+    return 0;
+}
+"#;
+    let run = run_linked("intrin_bare", bare, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(
+        out.trim_end(),
+        "0 1",
+        "the intrinsic without a header is still 128 bits"
+    );
 }
 
 /// A pointer narrowed to an integer: C99 6.3.2.3p6 makes the result implementation-defined, and the

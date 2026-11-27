@@ -2473,28 +2473,46 @@ impl Parser<'_> {
                 );
                 return Value::temporary(self.types.error());
             }
-            if self.implicit.insert(name) {
-                self.warning(
+            // **The Microsoft intrinsics are declared by the compiler, because that is what MSVC
+            // does.** A program calls `_umul128` with no header - MSVC's `<intrin.h>` is not needed
+            // for the intrinsics the compiler knows - and taking one as an implicit `int`
+            // *truncates*: `xxhash` lost the high half of a 64x64-to-128 product and produced a
+            // different hash from clang's build, quietly. The table below is the answer, and it is
+            // the same list `include/x86intrin.h` declares - one for a program that includes the
+            // header, one for a program that does not.
+            if let Some(function) = self.intrinsic(name) {
+                let entry = Entry {
+                    ty: function,
+                    kind: Kind::Function,
                     span,
-                    format!(
-                        "`{spelling}` is not declared; it is taken to be a function returning `int`"
-                    ),
-                );
+                    storage: None,
+                    defined: false,
+                };
+                let _ = self.symbols.declare(name, entry);
+            } else {
+                if self.implicit.insert(name) {
+                    self.warning(
+                        span,
+                        format!(
+                            "`{spelling}` is not declared; it is taken to be a function returning `int`"
+                        ),
+                    );
+                }
+                let int = self
+                    .types
+                    .fundamental("int")
+                    .unwrap_or_else(|| self.types.error());
+                let function = self.types.function(int, Vec::new(), true);
+                self.implicit_types.insert(function);
+                let entry = Entry {
+                    ty: function,
+                    kind: Kind::Function,
+                    span,
+                    storage: None,
+                    defined: false,
+                };
+                let _ = self.symbols.declare(name, entry);
             }
-            let int = self
-                .types
-                .fundamental("int")
-                .unwrap_or_else(|| self.types.error());
-            let function = self.types.function(int, Vec::new(), true);
-            self.implicit_types.insert(function);
-            let entry = Entry {
-                ty: function,
-                kind: Kind::Function,
-                span,
-                storage: None,
-                defined: false,
-            };
-            let _ = self.symbols.declare(name, entry);
         }
         let Some(entry) = self.symbols.lookup(name) else {
             let spelling = self.spell_of(name).to_owned();

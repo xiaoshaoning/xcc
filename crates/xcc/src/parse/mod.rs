@@ -213,6 +213,101 @@ impl Value {
 /// The largest alignment this compiler supports: sixteen bytes, which is `max_align_t` on this ABI
 /// and what the stack guarantees. C11 6.7.5p6 lets an implementation decline the *extended*
 /// alignments above it, and this one does, with a diagnostic naming the number asked for.
+/// The Microsoft intrinsics this compiler implements, with the signatures MSVC gives them: the
+/// result type and the parameter types. Pointers are spelled with a trailing ` *`.
+///
+/// A program calls these with no declaration - that is how MSVC works, and its `<intrin.h>` is only
+/// one way to get them - and an implicit `int` is *wrong* rather than merely unchecked: the value is
+/// truncated. The list is the same fifteen `include/x86intrin.h` declares, because a program that
+/// includes the header and a program that does not are the same program.
+const INTRINSICS: &[(&str, &str, &[&str])] = &[
+    ("_mm_mfence", "void", &[]),
+    (
+        "_InterlockedCompareExchange",
+        "long",
+        &["long *", "long", "long"],
+    ),
+    ("_InterlockedExchange", "long", &["long *", "long"]),
+    ("_InterlockedExchangeAdd", "long", &["long *", "long"]),
+    ("_InterlockedIncrement", "long", &["long *"]),
+    ("_InterlockedDecrement", "long", &["long *"]),
+    ("_InterlockedAnd", "long", &["long *", "long"]),
+    ("_InterlockedOr", "long", &["long *", "long"]),
+    ("_InterlockedXor", "long", &["long *", "long"]),
+    (
+        "__shiftright128",
+        "unsigned long long",
+        &["unsigned long long", "unsigned long long", "unsigned char"],
+    ),
+    (
+        "__shiftleft128",
+        "unsigned long long",
+        &["unsigned long long", "unsigned long long", "unsigned char"],
+    ),
+    (
+        "_umul128",
+        "unsigned long long",
+        &[
+            "unsigned long long",
+            "unsigned long long",
+            "unsigned long long *",
+        ],
+    ),
+    (
+        "_mul128",
+        "long long",
+        &["long long", "long long", "long long *"],
+    ),
+    (
+        "__stosb",
+        "void",
+        &["unsigned char *", "unsigned char", "unsigned long long"],
+    ),
+    (
+        "__stosw",
+        "void",
+        &["unsigned short *", "unsigned short", "unsigned long long"],
+    ),
+    (
+        "__stosd",
+        "void",
+        &["unsigned long *", "unsigned long", "unsigned long long"],
+    ),
+    (
+        "__stosq",
+        "void",
+        &[
+            "unsigned long long *",
+            "unsigned long long",
+            "unsigned long long",
+        ],
+    ),
+    (
+        "__movsb",
+        "void",
+        &["unsigned char *", "unsigned char *", "unsigned long long"],
+    ),
+    (
+        "__movsw",
+        "void",
+        &["unsigned short *", "unsigned short *", "unsigned long long"],
+    ),
+    (
+        "__movsd",
+        "void",
+        &["unsigned long *", "unsigned long *", "unsigned long long"],
+    ),
+    (
+        "__movsq",
+        "void",
+        &[
+            "unsigned long long *",
+            "unsigned long long *",
+            "unsigned long long",
+        ],
+    ),
+];
+
 const FUNDAMENTAL_ALIGNMENT: u64 = 16;
 /// The largest alignment an object in a data section may ask for. A page is the widest thing
 /// a linker places specially, and a number past it is a request nobody makes.
@@ -1382,6 +1477,34 @@ impl Parser<'_> {
     }
 
     /// How a name from the symbol table is spelled.
+    /// The type of a Microsoft intrinsic this compiler implements, when `name` is one. Built from
+    /// the spellings in [`INTRINSICS`], which are the headers' own, so the table and the declared
+    /// list cannot name different types by accident.
+    fn intrinsic(&mut self, name: Symbol) -> Option<TypeId> {
+        let spelling = self.spell_of(name);
+        let (_, result, params) = INTRINSICS
+            .iter()
+            .find(|(intrinsic, _, _)| *intrinsic == spelling)?;
+        let result = self.spelled_type(result)?;
+        let mut parameters = Vec::with_capacity(params.len());
+        for param in *params {
+            parameters.push(self.spelled_type(param)?);
+        }
+        Some(self.types.function(result, parameters, false))
+    }
+
+    /// A type by the name a header writes it, with a trailing ` *` for a pointer: the vocabulary the
+    /// intrinsic table is written in.
+    fn spelled_type(&mut self, spelling: &str) -> Option<TypeId> {
+        match spelling.strip_suffix(" *") {
+            Some(inner) => {
+                let base = self.types.fundamental(inner)?;
+                Some(self.pointer_to(base))
+            }
+            None => self.types.fundamental(spelling),
+        }
+    }
+
     fn spell_of(&self, name: Symbol) -> &str {
         self.preprocessed.spell(name)
     }

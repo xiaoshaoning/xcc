@@ -786,6 +786,39 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M56 - 2026-11-25 - the intrinsics are known names, and xxhash agrees with clang
+
+The gap M54 and M55 both pointed at, closed. MSVC *builds its intrinsics into the compiler*: a program calls `_umul128`
+with no header, and MSVC knows it. This compiler took it as an implicit `int`, which is not "unchecked" but **wrong** -
+the high half of a 64x64-to-128 product is lost - and `xxhash`'s XXH3 came out as `b4b513e2cee8b646` where clang's build
+says `e4541a9cacf545aa`. Two of its three hashes agreed, which is what made it a good witness: the one that was wrong was
+the one that multiplies.
+
+`INTRINSICS` is a table of `(name, result, parameters)` in the parser, in the vocabulary a header writes types with
+(`unsigned long long *`), consulted in the one place an undeclared name becomes a function. A name in the table gets the
+signature MSVC gives it and **no warning**, because nothing is wrong; a name that is not gets the implicit `int` and the
+warning it always had.
+
+```
+$ xcc -DXXH_VECTOR=0 xxd.c xxhash.c -o xx.exe && ./xx.exe
+ed714233c5a9a792 e4541a9cacf545aa 66716377
+$ clang ...
+ed714233c5a9a792 e4541a9cacf545aa 66716377
+```
+
+Three hashes, identical, and the "not declared" warning gone.
+
+**The table is the same fifteen names `include/x86intrin.h` declares**, and that duplication is deliberate rather than
+leakage: the header serves a program that *includes* it, the table serves a program that does not, and MSVC has both - a
+header for the documented list and built-in knowledge for the ones a program calls bare. What keeps them from disagreeing
+is the *spellings*: both are transcribed from mingw's own `psdk_inc/intrin-impl.h`, and the table's parameter strings are
+the same C types.
+
+The test is the bare call - **no header at all** - because that is the shape that was broken, and the header path was
+already covered.
+
+210 unit, 43 parser, 42 exe, 10 real, 31 CLI; fmt and clippy clean.
+
 ### M55 - 2026-11-25 - the bridge header that had no test, and the measurement that proved it anyway
 
 Reviewing `33d0aab` found the `intrin.h` bridge **without a test that would fail without it** - the M51/M52 disease for
