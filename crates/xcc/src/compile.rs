@@ -11,6 +11,8 @@ pub struct Artifact {
     object: Vec<u8>,
     /// Where each operation begins in the image, and the source bytes it came from.
     lines: Vec<(u32, Span)>,
+    /// Where `.text` is loaded, so a record's offset becomes an address.
+    text_address: u32,
     /// The compilation's files, in the order a span's `file` indexes them: one per `#include`,
     /// with the names and the line starts a map or a diagnostic needs.
     files: Vec<SourceFile>,
@@ -37,12 +39,14 @@ impl Artifact {
     fn new(
         object: Vec<u8>,
         lines: Vec<(u32, Span)>,
+        text_address: u32,
         files: Vec<SourceFile>,
         diagnostics: Vec<Diagnostic>,
         dependencies: Vec<String>,
     ) -> Self {
         Self {
             lines,
+            text_address,
             files,
             object,
             diagnostics,
@@ -60,6 +64,11 @@ impl Artifact {
     /// answer on its own, and what a crash address is looked up in.
     pub fn lines(&self) -> &[(u32, Span)] {
         &self.lines
+    }
+
+    /// Where `.text` is loaded: an offset from `lines` plus this is the address a crash prints.
+    pub fn text_address(&self) -> u32 {
+        self.text_address
     }
 
     /// The files those spans index, in order.
@@ -353,6 +362,7 @@ impl Compile {
             Ok(linked) => Ok(Artifact::new(
                 linked.bytes,
                 linked.lines,
+                linked.text_address,
                 files,
                 diagnostics,
                 dependencies,
@@ -443,7 +453,7 @@ impl Compile {
         Ok(Outcome {
             // A single object's map is in the object's own `.xccmap` section; the artifact's is for
             // a *link*, where the caller has no object file to read it from.
-            artifact: Artifact::new(object, Vec::new(), Vec::new(), items, dependencies),
+            artifact: Artifact::new(object, Vec::new(), 0, Vec::new(), items, dependencies),
             explanation: explained,
         })
     }

@@ -786,6 +786,29 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M49 - 2026-11-25 - the map that answered a question nobody asked
+
+Reviewing `fd33300` found the map **unusable for its purpose**, and two smaller things around it.
+
+**The addresses were offsets from `.text`, not the addresses a crash prints.** A crash says `0x14012b05d` and a debugger
+shows the same number; the map printed `0000e740`. So the one thing the map exists for - looking up a crash address -
+needed the image base and the section's RVA from somewhere else, which is exactly the arithmetic (objdump plus
+subtraction) the whole line of work set out to remove. `Linked` now carries `text_address`, the artifact carries it too,
+and the map prints `0000000140001007` - the loaded number.
+
+**`-c --map` was accepted and did nothing.** A flag that is read and dropped is the mistake this compiler refuses
+everywhere else in its input, and it was in its own command line. Refused by name, with the reason: an *object* carries
+its map in its `.xccmap` section; the flag is about a link, where offsets become addresses. `--run`, `-E` and `--explain`
+refuse it too - they make no program.
+
+**And the map was printed before the image was written**, so a failed write left a map of a file that did not exist. It
+is printed after now, inside the `Ok` arm.
+
+The test grew both halves: an address that starts with the image base, and the `-c --map` refusal (exit 2, naming the
+section).
+
+210 unit, 41 exe, 10 real, 31 CLI; fmt and clippy clean.
+
 ### M48 - 2026-11-25 - the map reaches the command line, and a crash address has a line
 
 Steps 3 and 4 of M44/M46, and the last piece of the line-number work started in M44.

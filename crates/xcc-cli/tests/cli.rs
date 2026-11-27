@@ -731,15 +731,15 @@ int main(void) { return twice(21) == 42 ? 0 : 1; }
 ",
     );
     let exe = temp.path().join("map.exe");
-    let run = run(xcc()
+    let output = run(xcc()
         .arg("--std=c11")
         .arg("--opt-level=2")
         .arg("--map")
         .arg("-o")
         .arg(&exe)
         .arg(&main));
-    let out = String::from_utf8_lossy(&run.stdout).into_owned();
-    assert_eq!(run.status.code(), Some(0), "{out}");
+    let out = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert_eq!(output.status.code(), Some(0), "{out}");
     assert!(
         out.contains("mapheader.h:1"),
         "the inlined header line is not in the map:
@@ -749,5 +749,26 @@ int main(void) { return twice(21) == 42 ? 0 : 1; }
         out.contains("mapmain.c:2"),
         "the caller's line is not in the map:
 {out}"
+    );
+    // The address is the *loaded* one - what a crash report and a debugger print - so it starts
+    // with the image base every Windows linker picks.
+    assert!(
+        out.lines().any(|line| line.starts_with("0000000140")),
+        "the map names offsets, not the addresses a crash prints: {out}"
+    );
+    // And `-c --map` is refused rather than accepted and ignored: an object has its own section.
+    let refused = run(xcc()
+        .arg("--std=c11")
+        .arg("--opt-level=2")
+        .arg("-c")
+        .arg("--map")
+        .arg(&main)
+        .arg("-o")
+        .arg(&exe));
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(
+        stderr(&refused).contains("`.xccmap`"),
+        "{}",
+        stderr(&refused)
     );
 }

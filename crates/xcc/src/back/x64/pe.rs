@@ -85,6 +85,8 @@ pub(crate) struct Linked {
     /// Where each operation is, from the start of `.text`, and the source bytes it came from. The
     /// offsets are the program's; the file numbering is the compilation's and is not touched here.
     pub lines: Vec<(u32, crate::diag::Span)>,
+    /// Where `.text` is loaded, so an offset becomes the address a crash prints.
+    pub text_address: u32,
 }
 
 /// A name nothing defined and no library offered.
@@ -121,9 +123,11 @@ pub(crate) fn link(
             name: entry.to_owned(),
         })?;
     let lines = program.lines();
+    let text_address = Sections::new(Sizes::of(&program)).text.address;
     Ok(Linked {
         bytes: program.write()?,
         lines,
+        text_address,
     })
 }
 

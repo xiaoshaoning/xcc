@@ -201,6 +201,19 @@ fn compile_command_line() -> ExitCode {
         eprintln!("xcc: --explain is a mode of its own: no -c, -E or --run with it");
         return ExitCode::from(2);
     }
+    if args.map && args.compile_only {
+        // An object carries its own map, in its `.xccmap` section; the flag is about a *link*,
+        // where offsets become the addresses a crash prints. Accepting it and doing nothing is the
+        // one thing a flag may not do.
+        eprintln!(
+            "xcc: --map names a linked program's lines: an object carries them in its `.xccmap` section"
+        );
+        return ExitCode::from(2);
+    }
+    if args.map && (args.preprocess_only || args.run || args.explain) {
+        eprintln!("xcc: --map names a linked program's lines, and this mode makes none");
+        return ExitCode::from(2);
+    }
     if args.depfile.is_some() && (args.run || args.preprocess_only || args.explain) {
         eprintln!("xcc: --depfile names what a mode wrote, and this one writes no file");
         return ExitCode::from(2);
@@ -401,11 +414,12 @@ fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
                 .output
                 .clone()
                 .unwrap_or_else(|| args.inputs[0].with_extension("exe"));
-            if args.map {
-                print_map(&artifact, &path);
-            }
             match std::fs::write(&path, artifact.bytes()) {
                 Ok(()) => {
+                    // After the write: a map for a file that was never written is a map of nothing.
+                    if args.map {
+                        print_map(&artifact, &path);
+                    }
                     if let Some(depfile) = &args.depfile {
                         let rule = dependencies(&path, artifact.dependencies());
                         if let Err(error) = std::fs::write(depfile, rule) {
@@ -617,7 +631,10 @@ fn print_map(artifact: &xcc::Artifact, path: &std::path::Path) {
             continue;
         };
         let position = file.position(span.start);
-        println!("{address:08x} {}:{}", file.name(), position.line);
+        // The *loaded* address, which is the number a crash reports and a debugger shows - an
+        // offset from `.text` would be an answer to a question nobody asks.
+        let loaded = u64::from(artifact.text_address()) + 0x1_4000_0000 + u64::from(*address);
+        println!("{loaded:016x} {}:{}", file.name(), position.line);
     }
 }
 
