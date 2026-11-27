@@ -786,6 +786,59 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M75 - 2026-11-25 - the census that counted file names, and the frontier it found
+
+The queue was re-measured after `typeof` and statement expressions - 52 275 C programs under `D:/Projects`, 2 000 sampled -
+and the first result was wrong in an instructive way.
+
+**A `.c` file is not a C program.** The top refusal was "expected a type specifier", 156 times, and every sample of it was a
+program's *expected output*: the `acwj` tree keeps its compiler's test results in files named `out.inputNNN.c`, whose text
+is `23 H Hello world`. Counting them made a language gap out of a directory naming convention. The corpus is other people's
+programs, not other people's stdout - the filter is `tests` in the path, and the number moved from 156 to 39.
+
+What the filtered census says:
+
+```
+365 accepted, 1 635 refused
+1 426 refused before the parser - a header this machine does not have   (87 %)
+  209 refused by the parser:  43 __attribute__, 39 "expected a type specifier",
+                              15 not declared, 14 expected an expression, 3 inline assembly
+```
+
+**And the top item is mostly correct to refuse.** The attributes asked for are `ext_vector_type` (17), `no_sanitize` (16),
+`mode` (16), `neon_vector_type` (15), `__vector_size__` (14), `__ms_struct__` (12), `constructor` (11): the vector ones
+*change the type*, `mode` changes the width, `__ms_struct__` changes the layout, and a constructor adds code that must run.
+Adding them to the list of attributes that may be dropped would be the exact lie the refusal exists to prevent. Roughly 55
+of the asks - `no_sanitize`, `target_version`, `disable_tail_calls`, `device` - are hints that cannot change a program on
+this target, and they are worth 2 % of the corpus.
+
+So the honest answer to "what is next" is no longer a language feature. **87 % of the refusals are the header frontier**:
+the compiler now gets past `typeof`, statement expressions, VLAs, atomics and intrinsics, and stops at a `windows.h` this
+machine does not have.
+
+### M74 - 2026-11-25 - the last statement is not the last expression statement
+
+Reviewing the fixes in `421e753` against `clang` found one more divergence, and it is the kind a
+single crafted program hides: the value of `({ ... })` is the block's **last statement**, and only if that statement is an
+expression statement. This compiler took the last expression statement *anywhere*:
+
+```c
+int v = ({ int t = 1; t; int u = 2; });   clang: error, the block has no value
+                                          here:  v is 1
+```
+
+The `1` is the value of a statement two statements back, which the block's own end never provided. The fix is a word:
+`value = produced` where the code had `if let Some(produced) { value = Some(produced) }` - keeping is what let an earlier
+statement answer, and assigning is what makes the last one decide.
+
+The test holds both shapes now, the loop and the trailing declaration, and it was run against the previous rule: it fails
+there with an `Artifact` where it expected a diagnostic.
+
+**And the census that came before this review is worth recording**, because it changed the answer to "what is
+next" - see M75.
+
+211 unit, 48 exe, 51 parser (same count, two more cases), 12 real; fmt and clippy clean.
+
 ### M73 - 2026-11-25 - the operand that was evaluated, and the value that climbed out of a loop
 
 Reviewing `0fbd226` found both halves of GNU's rule missing, each with a measurement that showed it.

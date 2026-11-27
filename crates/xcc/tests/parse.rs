@@ -393,21 +393,28 @@ fn a_statement_expression_without_a_value_says_so() {
 /// `clang` refuses the program, because a block whose last statement is a `for` has no value.
 #[test]
 fn a_statement_expression_ending_in_a_loop_has_no_value() {
-    let source = "int main(void) { int i; int v = ({ int s = 0; for (i = 0; i < 3; i = i + 1) { s = s + i; } }); return v; }\n";
-    let error = xcc::Compile::new(Options::default())
-        .compile("t.c", source)
-        .expect_err("the block's last statement is a loop");
-    let messages: Vec<&str> = error
-        .items()
-        .iter()
-        .map(|diagnostic| diagnostic.message.as_str())
-        .collect();
-    assert!(
-        messages
+    // The rule is the block's **last statement**, not the last expression statement anywhere in
+    // it. Both of these are refused by `clang`; the second was accepted here with the value of the
+    // `t` two statements earlier, which is a value the block's own end never provided.
+    for source in [
+        "int main(void) { int i; int v = ({ int s = 0; for (i = 0; i < 3; i = i + 1) { s = s + i; } }); return v; }\n",
+        "int main(void) { int v = ({ int t = 1; t; int u = 2; }); return v; }\n",
+    ] {
+        let error = xcc::Compile::new(Options::default())
+            .compile("t.c", source)
+            .expect_err("the block's last statement is not an expression statement");
+        let messages: Vec<&str> = error
+            .items()
             .iter()
-            .any(|message| message.contains("must end with an expression")),
-        "{messages:?}"
-    );
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("must end with an expression")),
+            "{messages:?}"
+        );
+    }
 }
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {

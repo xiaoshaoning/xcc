@@ -1802,9 +1802,11 @@ impl Parser<'_> {
                 let before = self.at;
                 self.statement_value = None;
                 self.statement();
-                if let Some(produced) = self.statement_value.take() {
-                    value = Some(produced);
-                }
+                // The block's value is its **last statement**, and only if that statement is an
+                // expression statement: `({ int t = 1; t; int u = 2; })` has no value in GNU C, and
+                // taking the last expression statement *anywhere* answered `1` where `clang` refuses
+                // the program. Assigning rather than keeping is the whole difference.
+                value = self.statement_value.take();
                 if self.at == before {
                     // Nothing was consumed, so nothing will be: step over the token rather than
                     // looping on it.
