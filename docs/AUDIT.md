@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M85 - 2026-11-25 - sqlite, which cannot be folded
+
+M83 ended by saying the corpus could not answer the code-size question, because its programs are decidable before they run.
+This is the answer, on the one program in the suite that is not: `sqlite3.c`, 265 977 lines, compiled and linked by both
+compilers, then *run* on 20 000 inserts and a grouped query.
+
+```
+                             .text        image       the query, 3 runs
+xcc  --opt-level=2        2 183 222    2 464 611     140 / 146 / 146 ms
+clang -O2                   972 592    1 308 776      97 /  98 / 103 ms
+ratio                          2.24x        1.88x     1.46x
+```
+
+**Output identical** - `420000` from both - so this is the same work, timed.
+
+Two things this settles and one it opens.
+
+**Settled**: the 3.44x the corpus reported was clang's folder, exactly as M83 concluded. A program that reads and writes real
+data comes out at **2.24x** its size and runs **1.46x** as long, against a back end with no optimisation beyond mem2reg,
+folding and a linear-scan allocator. Those are numbers a person can defend.
+
+**Settled the other way**: nothing here says the compiler is *slow*. A 46% runtime gap while emitting 2.24x the bytes says
+the extra instructions are mostly not on the hot path - which is what a naive allocator does: it spends instructions on copies
+and frame traffic in the straight-line code between branches, not inside the loops sqlite spends its time in.
+
+**Opened**: our `.data` is 75 880 bytes against clang's 14 464. Literals - string literals and now the aggregate
+initialisers from M82 - are written as initialised globals, and an initialised global goes to `.data`, which is *writable*
+and therefore cannot be shared between processes. Nothing is wrong, and 61 KB on a 2.4 MB image is not worth a project; but
+`.rdata` is where a constant belongs, and that is the next small thing rather than the next big one.
+
+```
+$ ./xcc_bench.exe 20000            $ ./clang_bench.exe 20000
+420000                             420000
+```
+
 ### M84 - 2026-11-25 - the initialiser that ran twice
 
 Reviewing the constant-pool commit (`39d7b36`) found a bug that no test in the suite could see, because no test had a

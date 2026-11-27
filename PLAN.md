@@ -1259,3 +1259,34 @@ docs/                      ADR, this plan
   later milestone with its own acceptance test, and the answer to "make it faster" *this quarter*
   is still "use clang".
 
+
+## Cross-checking the lexer against a highlighter (planned)
+
+`notepad_rust` (D:\Projects\codes\notepad_rust) highlights C with syntect, guessing token
+classes from a Sublime grammar; this project's lexer knows them. A shared token dump
+turns two guesses into one check.
+
+**Step 1 (this repo):** a small tool printing one line per token:
+
+```
+<kind> <start_row> <start_col> <end_row> <end_col>
+```
+
+Rows and columns 1-based, columns in characters. `kind` is reduced to `code`, `string` or
+`comment` — the highlighter exposes nothing finer.
+
+**Step 2 (notepad_rust):** a test converting those character columns to byte offsets and
+comparing them with the spans syntect produces for the same file.
+
+**Step 3:** fix whichever side is wrong. The cases worth testing first, because they are
+where a grammar and a real lexer actually diverge:
+
+| construct | why it diverges |
+|---|---|
+| `#include <stdio.h>` | the header name is not a comparison |
+| backslash-newline | one token spanning two physical lines |
+| `L"..."` / `u8"..."` | the prefix belongs to the literal |
+| `'a'` vs `'AB'` | multi-character constants exist |
+| `<:` `%:` `<%` | digraphs are punctuation, not brackets |
+
+Keep the dump a plain text file: no crate shared with notepad_rust, no version coupling.
