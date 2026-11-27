@@ -2041,13 +2041,14 @@ impl Parser<'_> {
         // MSVC's. Recognising them even when a program declares one itself is what GCC does, and the
         // alternative is worse: an `alloca` reached through an implicit `int` returns a truncated
         // pointer, which is the sort of wrong answer nobody notices until they do.
-        let spelling = self.spell(&token).to_owned();
-        if token.kind == crate::lex::TokenKind::Ident
+        // Asked of every primary expression, so it is asked cheaply: no allocation, and the four
+        // names are compared only for a token that could be one.
+        let is_alloca = token.kind == crate::lex::TokenKind::Ident
             && matches!(
-                spelling.as_str(),
+                self.spell(&token),
                 "__xcc_alloca" | "alloca" | "_alloca" | "__builtin_alloca"
-            )
-        {
+            );
+        if is_alloca {
             self.bump();
             if !self.eat("(") {
                 self.error(span, "a stack allocation is called with a number of bytes");

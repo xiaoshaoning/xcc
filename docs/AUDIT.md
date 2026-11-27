@@ -786,6 +786,30 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M68 - 2026-11-25 - the header that shadowed the SDK, and the spelling asked on every expression
+
+Reviewing `b811ce8` found one regression I had introduced and one piece of work done in the wrong place.
+
+**`malloc.h` shadowed the SDK's.** The commit shipped `malloc.h` to carry `_alloca` - and a shipped header is found
+*before* the SDK's, so a program that includes `<malloc.h>` for `_aligned_malloc` lost it:
+
+```
+error: `_aligned_malloc` is not declared; it is taken to be a function returning `int`
+```
+
+The first fix was to delete the header, since `_alloca` needs none - the parser answers the name the way GCC does. That
+made a common MSVC idiom fail outright (`cannot find malloc.h`), which is worse. The right answer is the one the export
+table supplies: **ship the header, and declare what the UCRT exports under it** - `_aligned_malloc`, `_aligned_realloc`,
+`_aligned_free`, `_aligned_msize`, `_heapmin`. A shadowing header has to be at least as good as what it shadows, and the
+names were in `ucrtbase`'s capture all along. `_aligned_malloc` and `_aligned_free` now link and run (`11 22`), which is
+the test the header did not have.
+
+**The four names were compared by allocating a string.** The builtin check ran on *every* primary expression and did
+`self.spell(&token).to_owned()` before looking, which is one allocation per literal in every program. It is a `matches!`
+over a borrowed spelling now, and only for a token that could be one - the same answer, nothing allocated.
+
+211 unit, 45 exe, 47 parser, 12 real; fmt and clippy clean.
+
 ### M67 - 2026-11-25 - the measured win, and the four names a stack allocation answers to
 
 The measurement was owed, so it came first: a fresh census over the **67 265 C files under `D:/Projects`** - the corpus the

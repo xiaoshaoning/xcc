@@ -48,9 +48,9 @@ fn a_stack_allocation_answers_to_the_names_programs_write() {
         "9\n"
     );
 
-    // Both headers, and the two Microsoft spellings they carry.
+    // The POSIX header, and the three spellings a program writes - `_alloca` needs no header at
+    // all, because the parser answers the name the way GCC does.
     let headers = "#include <alloca.h>\n\
-                   #include <malloc.h>\n\
                    #include <stdio.h>\n\
                    int main(void) {\n\
                      char *a = (char *)alloca(32);\n\
@@ -65,6 +65,28 @@ fn a_stack_allocation_answers_to_the_names_programs_write() {
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).replace("\r", ""),
         "xyz\n"
+    );
+
+    // And the reason `<malloc.h>` ships at all: a program includes it for the *aligned* heap, which
+    // is Microsoft's, not C's. A shipped copy that lacked these names would shadow an SDK header and
+    // lose them - which is what the first version of this header did - so the copy declares what the
+    // UCRT exports under that header.
+    let aligned = "#include <malloc.h>\n\
+                   #include <stdio.h>\n\
+                   int main(void) {\n\
+                     int *p = (int *)_aligned_malloc(16 * sizeof(int), 16);\n\
+                     if (p == 0) return 1;\n\
+                     p[0] = 11;\n\
+                     p[15] = 22;\n\
+                     printf(\"%d %d\\n\", p[0], p[15]);\n\
+                     _aligned_free(p);\n\
+                     return 0;\n\
+                   }\n";
+    let out = run_linked("aligned", aligned, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "11 22\n"
     );
 }
 /// C99 6.7.3.2: an array whose size the program computes at the declaration.

@@ -210,10 +210,10 @@ pub(crate) fn refusal(name: &str) -> Option<&'static str> {
 /// is `mingw-w64`'s: it asks whether the compiler is GCC, `clang` or MSVC, and refuses everything
 /// else by name before any Win32 declaration has been reached.
 const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
-    // The two headers a program reaches for when it wants bytes off the stack, which are not C99's:
-    // `alloca.h` is POSIX's and `malloc.h` is Microsoft's. Both are macros over the compiler's own
-    // operation, because no library can move its caller's stack - and neither belongs in the C99
-    // ledger below, which is a table the standard wrote.
+    // The two headers a program reaches for when it wants bytes off the stack: POSIX's `alloca.h`,
+    // which no SDK here ships, and Microsoft's `malloc.h`, which ships here **because programs write
+    // `#include <malloc.h>` for the aligned heap and would otherwise find nothing** - a shipped copy
+    // shadows an SDK one, so the copy declares everything the UCRT exports under that header.
     (
         "alloca.h",
         Disposition::Shipped(include_str!("../include/alloca.h")),
