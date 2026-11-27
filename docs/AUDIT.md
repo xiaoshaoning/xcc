@@ -786,6 +786,25 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M52 - 2026-11-25 - the widening that could never have fired
+
+Reviewing `90055fe` (docs only - the revert was complete) turned the note's "could not be proved" into something better:
+the change was **provably a no-op**, and the real limit is a different one.
+
+`Parser::span()` answers with *a token's* span - `self.peek().map_or_else(|| last token, ...)` - and every diagnostic in
+this parser passes a span from there. Tokens do not nest: each one's span is its own bytes. So "the expanded token's span
+contains the diagnostic's span" holds **only when the two are equal**. Containment and equality are the same predicate
+here, which is why the case I was hunting could not be constructed: there is no such case.
+
+That does not mean the note is complete. The lookup tries **two** positions - the token just consumed and the one under
+the cursor - and a diagnostic can be reported more than two tokens after the expansion it is about. *That* is the reachable
+limit, and it is a different fix: remember which token carried the span, or search further back, rather than widen a
+predicate that has nothing to widen.
+
+Written down because the next session would otherwise spend its hour on the same dead end I did: containment is not the
+lever, **distance** is. The test to build is a macro expanded three tokens before the diagnostic's span, and the existing
+note test (`in `W`, used at t.c:2:25`) already holds the one-token case.
+
 ### M51 - 2026-11-25 - the note that could not be proved, and why it was not made wider
 
 The note-vs-location work (M34) has a measured limit: `&((char*)0)[X]` reports with the caret on the `&`, and the site
