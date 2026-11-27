@@ -642,9 +642,16 @@ impl Parser<'_> {
         let errors_before = self.errors;
         // The bytes are built by the same walker globals use, so this cannot disagree with what a
         // file-scope definition of the same object would contain.
+        //
+        // **Unevaluated**, and that is not a detail: this is an *attempt*, and the walk below re-reads
+        // the same tokens when it fails. Evaluated, `int big[2] = { f(), f() }` called `f` twice here
+        // and twice again in the fallback - four calls for two. The flag is what makes a failed
+        // attempt cost nothing, the same rule `sizeof` and `typeof` follow.
+        let saved = std::mem::replace(&mut self.unevaluated, true);
         let bytes = self
             .initializer_bytes(ty)
             .filter(|(_, relocations)| relocations.is_empty());
+        self.unevaluated = saved;
         match bytes {
             Some((bytes, _)) => {
                 let span = self.span();

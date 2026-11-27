@@ -437,6 +437,42 @@ int main(void) {\n\
     );
 }
 
+/// A local aggregate whose initialiser is *not* a constant is read exactly once.
+///
+/// The constant-pool path is an *attempt*: it reads the initialiser as bytes, and when that fails the
+/// element walk reads the same tokens again. If the attempt evaluates, the expressions in the list run
+/// twice - `int big[2] = { f(), f() }` called `f` four times, and the program printed a number no
+/// `clang` build produces. The flag that prevents it is the one `sizeof` and `typeof` already use:
+/// read unevaluated while deciding, and evaluate once when the decision is made.
+///
+/// The second half is the case that *must* fall back: an aggregate holding addresses, where the bytes
+/// belong to the linker and cannot be copied out of a literal.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_non_constant_aggregate_initialiser_is_evaluated_once() {
+    let program = "#include <stdio.h>\n\
+\n\
+static int calls = 0;\n\
+int bump(void) { calls = calls + 1; return calls; }\n\
+\n\
+struct S { const char *p; int n; };\n\
+\n\
+int main(void) {\n\
+  int one[4] = { bump(), 10, 20, 30 };\n\
+  int two[8] = { bump(), bump(), 0, 0, 0, 0, 0, 0 };\n\
+  struct S s = { \"text\", 5 };\n\
+  printf(\"%d %d %d %d %s %d\\n\", one[0], one[3], two[0] + two[1], calls, s.p, s.n);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("aggregate-once", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // One `bump` in `one` and two in `two`: three calls, and the numbers a `clang` build prints.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "1 30 5 3 text 5\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

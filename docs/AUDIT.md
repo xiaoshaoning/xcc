@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M84 - 2026-11-25 - the initialiser that ran twice
+
+Reviewing the constant-pool commit (`39d7b36`) found a bug that no test in the suite could see, because no test had a
+side effect in an initialiser list:
+
+```c
+int one[4] = { bump(), 10, 20, 30 };
+int two[8] = { bump(), bump(), 0, ... };
+
+ours:  1 30 7 4      clang:  1 30 5 3
+```
+
+`bump` ran **four** times for three calls in the source. The fast path is an *attempt* - it reads the initialiser as bytes,
+and when that fails the element walk re-reads the same tokens - and the attempt was **evaluated**, so every expression in a
+non-constant list ran twice: once to find out that it was not constant, once to store it.
+
+The fix is the flag three other places in this compiler already use: `typeof`'s operand, a VLA's bound, `sizeof`. Read
+**unevaluated** while deciding, evaluate once when the decision is made. With it, `1 30 5 3`, which is what `clang` prints;
+without it the test fails with `1 30 7 4`.
+
+That is the third time this session that a decision-then-decide-again shape needed `unevaluated`, and the first time the
+absence of it produced a wrong *number* rather than a wrong type: a doubled `f()` in an initialiser is a side effect the
+programmer counted on, and the compiler counted it twice.
+
+The rest of the commit held up: the fast path still applies to constants (128 bytes of `.text` and 296 of `.data` for the
+two test objects), aggregates that hold addresses still take the element walk, and the whole 445-program corpus agrees.
+
+213 unit, **54 exe** (one more), 51 parser, 12 real; 445 corpus programs agree; fmt and clippy clean.
+
 ### M83 - 2026-11-25 - the lever that was not there, and the corpus that flatters an optimiser
 
 The projection before this was "register promotion, not aggregate initialisation", so `mem2reg` was instrumented to say why a
