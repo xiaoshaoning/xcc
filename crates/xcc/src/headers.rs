@@ -210,6 +210,13 @@ pub(crate) fn refusal(name: &str) -> Option<&'static str> {
 /// is `mingw-w64`'s: it asks whether the compiler is GCC, `clang` or MSVC, and refuses everything
 /// else by name before any Win32 declaration has been reached.
 const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
+    // The header a program writes when it wants the MSVC intrinsics: mingw's declares them behind
+    // an identification this compiler does not claim, so `xxhash`'s `_umul128` was an implicit
+    // `int` - a *wrong number*, not a missing one.
+    (
+        "intrin.h",
+        Disposition::Shipped(include_str!("../include/intrin.h")),
+    ),
     (
         "vadefs.h",
         Disposition::Shipped(include_str!("../include/vadefs.h")),

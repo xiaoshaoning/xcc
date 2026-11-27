@@ -859,6 +859,14 @@ impl Parser<'_> {
         {
             return true;
         }
+        // C11 6.7.10's `_Static_assert` belongs to the *declaration* grammar, and `declaration`
+        // answers it before any specifier is read. It is not a specifier, so it was not in the list
+        // and a block-scope assertion fell through to the statement grammar - where it parsed as a
+        // call to an implicit function, and the program failed at *link* with `undefined symbol
+        // `_Static_assert``. `xxhash` puts one inside a function and that is how it was found.
+        if self.spell(token) == "_Static_assert" {
+            return true;
+        }
         SPECIFIERS.contains(&self.spell(token))
     }
 }

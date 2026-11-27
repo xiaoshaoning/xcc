@@ -673,6 +673,9 @@ impl Parser<'_> {
     /// asked. A false one is an error with the message the source gave, which is the point of the
     /// feature - `_Static_assert(sizeof(int) == 4, "32-bit int")` fails a build rather than a program.
     fn static_assertion(&mut self) {
+        // Where the assertion is, for both diagnostics: a caret under `}` - which is where the
+        // cursor is by the time the string has been read - points at nothing a reader can use.
+        let assertion = self.span();
         if self.preprocessed.standard == crate::options::CStandard::C99 {
             let span = self.span();
             self.error(span, "`_Static_assert` is C11: compile with `--std=c11`");
@@ -695,13 +698,13 @@ impl Parser<'_> {
             let (_, _, bytes) = self.string_literal();
             message = String::from_utf8_lossy(&bytes[..bytes.len().saturating_sub(1)]).into_owned();
         }
-        let span = self.span();
         if !self.eat(")") {
             self.error_at_current("expected `)` to end `_Static_assert`");
         }
         if !self.eat(";") {
             self.error_at_current("expected `;` after `_Static_assert`");
         }
+        let span = assertion;
         if condition.and_then(|value| value.constant) == Some(0) {
             let said = if message.is_empty() {
                 String::new()

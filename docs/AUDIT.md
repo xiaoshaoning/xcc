@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M54 - 2026-11-25 - the assert that was a call, and the multiply that lost its high half
+
+`xxhash` was the program, and it produced one fix, one real miscompile, and one root cause worth more than either.
+
+**`_Static_assert` at block scope was a call to a function.** C11 6.7.10's assertion belongs to the *declaration*
+grammar, and `declaration()` answers it before any specifier is read - but the statement grammar decides "is this a
+declaration" with `starts_specifier()`, which asks `SPECIFIERS`, and `_Static_assert` is not a specifier. So a
+block-scope assertion fell through to the expression grammar, parsed as a call to an implicit function, and the program
+failed at **link** with `undefined symbol `_Static_assert``. `xxhash` puts one inside a function. One test, one line, and
+the fix is in the predicate that answers the question. Its caret was also wrong - the cursor is on `}` by the time the
+string has been read - so it points at the assertion now.
+
+**And a silent wrong number**: with the assert fixed, `xxhash` links and runs, and XXH3_64 disagrees with clang's build -
+`b4b513e2cee8b646` against `e4541a9cacf545aa`. XXH64 and XXH32 agree, which is what makes it a good test: two of the three
+hashes were right, and the one that was wrong is the one that multiplies 64x64 into 128.
+
+**The cause is a fact about what this compiler claims to be.** `xcc` defines `_M_X64` and `_M_AMD64` - the Windows SDK
+picks `CONTEXT` by one of them - and it does *not* define `_MSC_VER`. `xxhash` branches on `_M_X64` alone, takes MSVC's
+path, and calls `_umul128` **without a declaration**, because that is what MSVC allows: its intrinsics are built into the
+compiler, not declared by a header. Here an undeclared call is an implicit `int` - a warning, by a decision recorded in
+M11 for MSVC compatibility - and the high half of the product is gone.
+
+So the fix is neither a header nor `_MSC_VER` (which would switch every MSVC-only branch in every SDK header on). It is the
+piece of MSVC this compiler has not copied: **the intrinsics are known names**. `_umul128`, `_mul128`, `__readgsqword` and
+the rest are already in the runtime and already have signatures transcribed in `x86intrin.h`; what is missing is a table
+in the *parser* - when an undeclared name is one of them, synthesise the declaration instead of an implicit `int`, and say
+nothing, because nothing is wrong. That is the next piece of work, and it is the last of the MSVC-shaped gaps this line of
+fixtures has found.
+
+**Also landed**: a bridge `intrin.h` that includes `x86intrin.h`, so a program that writes `#include <intrin.h>` - the
+spelling a program actually uses - gets the fifteen declarations. It does not fix `xxhash`, which never includes it, and
+that is exactly what pointed at the real cause.
+
+210 unit, 43 parser (one more), 41 exe, 10 real; fmt and clippy clean.
+
 ### M53 - 2026-11-25 - xxhash, the alignment that belonged to the frame, and the assert that reached the linker
 
 Two real programs tried; one gap fixed; one bug found; one negative.
