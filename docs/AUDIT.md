@@ -786,6 +786,33 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M71 - 2026-11-25 - the scan that was narrower than the window it replaced
+
+Reviewing `cb86b3b` found the search it widened had become, in one direction, *narrower* than the window it replaced.
+
+The window tried `at - 1` **and** `at`. The scan that replaced it ran `0..at`, which is `at - 1` and everything before it,
+and not `at`. A diagnostic raised *before* the offending token is consumed points at exactly that token:
+
+```c
+#define T (1 + )
+int x = T;                       error: expected an expression, found `)`
+                                 no note, where the two-token window had one
+```
+
+Measured against the commit before, on three programs: `d1` (four tokens back) gained its note, `d2` kept its note on
+`at - 1`, and `d3` **lost** the one it had. One fix, one regression, and the regression was invisible to every test in the
+suite - which is the shape a review is for.
+
+The range is `0..=at` now: a superset of the window, and the scan a diagnostic needs. Two tests hold both directions - the
+note four tokens back, and the note under the cursor - and each was run against the code without its half of the fix. The
+second one fails there with `[]`, no notes at all.
+
+A note on the measurement itself: the first attempt to compare against the previous commit used `git stash` on a **clean**
+tree, which stashes nothing, so the "before" run was the "after" run. `git show <parent>:path` into a copy, then building
+it, is the way; and the difference showed up only when the cases were counted per program instead of eyeballed.
+
+211 unit, 46 exe, **49 parser** (one more), 12 real; fmt and clippy clean.
+
 ### M70 - 2026-11-25 - the note four tokens back, and the shape that was never tried
 
 The item said "the note's limit is distance". Two commits had argued about it - M61 widened the search, found nothing,

@@ -665,13 +665,18 @@ impl Parser<'_> {
         // at the argument, which is the invocation - has no token at all: the invocation was replaced
         // by its expansion before the parser saw it. That one is looked up by span, in the file the
         // parser is reading.
-        // The nearest token before the cursor that carries this span, and that is a scan rather than
-        // a window: a diagnostic about a macro *body* can point at any of its tokens, and the parse
-        // that complains is often several tokens past it. `#define TERN (c ? p : q)` used as
+        // The nearest token at or before the cursor that carries this span, and that is a scan
+        // rather than a window: a diagnostic about a macro *body* can point at any of its tokens, and
+        // the parse that complains is often several tokens past it. `#define TERN (c ? p : q)` used as
         // `int r = TERN;` complains at the `?` - four tokens back - and a two-token window found no
         // token at all, so the note was missing for a reason that looked like a limit on distance but
-        // was a limit on belief. The cost is the distance, and a diagnostic is not raised in a loop.
-        let site = (0..self.at.min(self.tokens().len()))
+        // was a limit on belief.
+        //
+        // **At** the cursor as well as before it: the window this replaced tried `at - 1` *and* `at`,
+        // and a diagnostic raised before the token is consumed - "expected an expression, found `)`"
+        // inside `#define T (1 + )` - points at exactly that one. Leaving it out was a narrower search
+        // than the one it was meant to widen, and it took a measurement of the three cases to see it.
+        let site = (0..=self.at.min(self.tokens().len().saturating_sub(1)))
             .rev()
             .filter_map(|index| self.tokens().get(index))
             .find(|token| token.span == span)

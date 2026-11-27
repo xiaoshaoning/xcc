@@ -340,6 +340,30 @@ fn a_note_is_found_for_a_macro_token_four_tokens_back() {
         .collect();
     assert!(notes.contains(&"in `TERN`, used at t.c:6:11"), "{notes:?}");
 }
+/// The note at the cursor, not just behind it.
+///
+/// A diagnostic raised *before* the offending token is consumed points at that token, and `#define T
+/// (1 + )` used as `int x = T;` is that shape: "expected an expression, found `)`" with the `)` still
+/// under the parser's feet. The scan that replaced the two-token window started at the token *before*
+/// the cursor, so this note disappeared the moment the window became a scan - a narrower search than
+/// the one it replaced. Measured against the commit before, which had the note: this test is the
+/// difference.
+#[test]
+fn a_note_is_found_for_a_macro_token_under_the_cursor() {
+    let source = "#define T (1 + )\nint main(void) { int x = T; return x; }\n";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("an operand is missing");
+    let notes: Vec<&str> = error
+        .items()
+        .iter()
+        .flat_map(|diagnostic| diagnostic.notes.iter().map(String::as_str))
+        .collect();
+    assert!(
+        notes.iter().any(|note| note.starts_with("in `T`")),
+        "{notes:?}"
+    );
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a
