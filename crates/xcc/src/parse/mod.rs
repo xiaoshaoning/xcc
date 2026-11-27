@@ -652,17 +652,19 @@ impl Parser<'_> {
         // from. This does: `14617:40` in sqlite3.c is the definition of `SQLITE_INT_TO_PTR`, and two
         // of its seventeen uses fail, which the diagnostic could not say until now.
         let mut diagnostic = diagnostic.with_file(name).with_span(span);
-        // The token that *had* this span, and it is one of two: the one just consumed (most
-        // diagnostics are reported after the token was read, which is when the name is known) or the
-        // one under the cursor. A span alone cannot identify it - every expansion of one macro
-        // produces tokens with the same body spans - so the site is read from a token rather than
-        // looked up by span, and two candidates is enough because they are the two the parser can be
-        // standing on.
-        // Two routes, because a diagnostic names one of two things. A token *from* a macro body
-        // carries its `expansion`, so the site is read from the token; a span that names the macro
-        // *use* - `f(ARG)`, whose "argument 1 is pointer to char" points at the argument, which is
-        // the invocation - has no token at all, because the invocation was replaced by its
-        // expansion, so the site is looked up by span.
+        // Which macro invocation this diagnostic is about, and there are two routes because it can
+        // name one of two things.
+        //
+        // A token *from* a macro body carries its `expansion`, so the site is read from the token -
+        // and that token is one of two: the one just consumed (most diagnostics are reported after
+        // the token was read, which is when the name is known) or the one under the cursor. A span
+        // alone cannot identify it, because every expansion of one macro produces tokens with the
+        // same body spans.
+        //
+        // A span that names the macro *use* - `f(ARG)`, whose "argument 1 is pointer to char" points
+        // at the argument, which is the invocation - has no token at all: the invocation was replaced
+        // by its expansion before the parser saw it. That one is looked up by span, in the file the
+        // parser is reading.
         let site = [self.at.checked_sub(1), Some(self.at)]
             .into_iter()
             .flatten()
@@ -671,10 +673,6 @@ impl Parser<'_> {
             .and_then(|token| self.preprocessed.site(token))
             .map(|site| (site, true))
             .or_else(|| {
-                let file = self
-                    .tokens()
-                    .get(self.at.saturating_sub(1))
-                    .map_or(0, |t| t.file);
                 self.preprocessed
                     .site_at(file, span)
                     .map(|site| (site, false))

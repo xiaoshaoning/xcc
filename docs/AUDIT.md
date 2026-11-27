@@ -786,6 +786,29 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M63 - 2026-11-25 - three red flags in my own last commit, and the test that proves nothing about the search
+
+Reviewing `3940deb` found three things, all mine.
+
+**Two comments that disagreed.** The route added beside the old one left the old route's paragraph in place, so the code
+carried "two candidates is enough" immediately above "there are two routes". One `if` with two arms, one comment.
+
+**Two notions of which file.** `push` already holds `file` - the file the cursor is reading - and the new route computed
+its own from the token before the cursor. One question, two answers.
+
+**And a search that depends on an order nothing guarantees.** `site_at` was a binary search by offset, justified in its own
+comment by "sites are pushed in expansion order and therefore in source order". That is true *within* a file and false
+across them: every file's offsets start at zero, so a header's sites can follow the main file's at smaller offsets. It is a
+**scan** from the newest site back now, and the comment says why the order cannot be leaned on.
+
+That last one taught the lesson of the commit before it, in the other direction. Two attempts were made to build a program
+that breaks the search - a header included after a main-file expansion, the diagnosed use inside the header - and both
+passed. So the new test, which does exactly that, is **not** evidence about the search; it is evidence that a header's site
+is not confused with the main file's, which is what it now says it is. A test that cannot fail the way its name suggests is
+a test that will be trusted for the wrong reason, and the honest label costs one sentence.
+
+45 parser tests (one more), 211 unit, 42 exe, 12 real; differential 417 ran, 0 mismatched; fmt and clippy clean.
+
 ### M62 - 2026-11-25 - the caret on the wrong parenthesis, and the note that follows from it
 
 M61 stopped with one measurement to make: dump the diagnostic's span beside the site's span, with the source text under

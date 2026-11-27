@@ -205,6 +205,41 @@ int main(void) { return W(1); }
 /// expansion before the parser sees it), so the diagnostic could not say which macro either. The span
 /// is the invocation's now, and the note names it, which is the second route to a site - the first
 /// one reads a token's `expansion` and works for a token from a macro *body*.
+/// A macro used inside a header is noted with its own name, in its own file.
+///
+/// The lookup is by span *and* file, and this is the case where both matter: `main.c` expands `OUTER`
+/// before the header expands `BAD`, so a lookup that confused the two files would either note the
+/// wrong macro or find none.
+#[test]
+fn a_site_in_a_header_is_found_after_a_later_file_reset_the_offsets() {
+    #[derive(Debug)]
+    struct Headers;
+    impl xcc::Includes for Headers {
+        fn read(&self, path: &str) -> Option<String> {
+            (path == "h.h").then(|| {
+                "#define BAD ((char*)1)
+void f(int a);
+void g(void) { f(BAD); }
+"
+                .to_owned()
+            })
+        }
+    }
+    let source = "#define OUTER 1
+static int v = OUTER;
+#include \"h.h\"
+";
+    let error = xcc::Compile::with_includes(Options::default(), Box::new(Headers))
+        .compile("main.c", source)
+        .expect_err("a pointer is not an int");
+    let notes: Vec<&str> = error
+        .items()
+        .iter()
+        .flat_map(|diagnostic| diagnostic.notes.iter().map(String::as_str))
+        .collect();
+    assert!(notes.contains(&"in `BAD`"), "{notes:?}");
+}
+
 #[test]
 fn an_argument_with_the_wrong_type_points_at_the_argument() {
     let source = "#define ARG ((char*)1)
