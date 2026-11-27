@@ -786,6 +786,62 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M80 - 2026-11-25 - where the bytes go, and the tail that is not the average
+
+The standing claim since M10 is "3.44x clang on code size". Nobody had looked at it, so it was profiled two ways: which
+operation pays for the bytes, and how the ratio is distributed across programs.
+
+**Which operation.** A per-`Op` byte tally over the 466 corpus programs (225 052 bytes attributed):
+
+```
+Binary        33.4%      LoadMemory     10.3%      Call        5.4%
+Const         14.2%      StoreLocal      9.2%      LoadLocal   5.3%
+                                    StoreMemory 4.9%   Divide 2.8%
+```
+
+Memory traffic - the four load and store kinds - is 29.7%, and `Binary` is a third: `add r64, r64` is four bytes and there
+is nothing to win in it. Neither is where the problem is.
+
+**How it is distributed**, which is the measurement worth keeping:
+
+```
+                          total          median
+vs clang -O0    1.62x                     0.93x     <- smaller than clang on the typical program
+vs clang -O2    3.44x                     1.54x     <- the standing claim, confirmed
+```
+
+The first run of this compared against `-O0` and produced *1.62x* - which read like the compiler had improved by half since
+M10. It had not: the standing number was always against `-O2`, and brackets are not a formality. That mistake is the reason
+both lines are written down here.
+
+**The tail is the quality problem, and it is one construct.** The worst programs are not 3x the average, they are 26 to 37
+times clang:
+
+```
+37.09x   cc50_corners    3004 vs 81
+32.76x   cc41_mdim       2064 vs 63
+27.64x   cc34_aggrinit   1520 vs 55
+26.48x   cc40_elision    1668 vs 63
+```
+
+Every one is **aggregate initialisation**. A five-line program makes the shape plain:
+
+```c
+int a[10] = {1, 2, 3};      /* 5008 bytes with xcc, 19 with clang -O2 */
+char big[256] = {0};
+```
+
+The zeros are emitted one element at a time, so a zeroed 256-byte array costs a store per byte. The parser already knows how
+to turn a constant initialiser into *bytes* - `initializer_bytes`, which globals use - and a local does not.
+
+**And the gate does not measure it.** `the_corpus_is_within_the_code_size_that_was_measured` asserts an absolute ceiling
+(80 516 bytes, now 60 544) and only *prints* the ratio. A ratio gate would be machine-dependent - the local clang decides
+it - so the ceiling is right to be absolute; but that means the ratio can double and nothing fails. The tail above is what
+a gate cannot see and a person has to.
+
+The instrument that produced this was temporary and is gone: per-`Op` bytes at the call site in `encode.rs`, printed when
+`XCC_SIZE_PROFILE` is set. Twelve lines to bring back, and worth bringing back the next time this question is asked.
+
 ### M79 - 2026-11-25 - the sweep that found the stack growing, and the block that had to give it back
 
 Every commit this session has been reviewed, so this pass swept an **area** instead: the back end took three changes
