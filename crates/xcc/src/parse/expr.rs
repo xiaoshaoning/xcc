@@ -2036,15 +2036,21 @@ impl Parser<'_> {
     pub(super) fn primary_expression(&mut self) -> Option<Value> {
         let token = self.peek().copied()?;
         let span = token.span;
-        // `__xcc_alloca(size)`, recognised by name before any lookup: it has no declaration to find
-        // and no library body can exist for it (see `alloca`).
+        // A stack allocation, recognised by name **before any lookup**: no library body can exist for
+        // it, and these are the four spellings programs write - this compiler's own, GCC's two, and
+        // MSVC's. Recognising them even when a program declares one itself is what GCC does, and the
+        // alternative is worse: an `alloca` reached through an implicit `int` returns a truncated
+        // pointer, which is the sort of wrong answer nobody notices until they do.
+        let spelling = self.spell(&token).to_owned();
         if token.kind == crate::lex::TokenKind::Ident
-            && self.spell(&token) == "__xcc_alloca"
-            && self.symbols.lookup(token.text).is_none()
+            && matches!(
+                spelling.as_str(),
+                "__xcc_alloca" | "alloca" | "_alloca" | "__builtin_alloca"
+            )
         {
             self.bump();
             if !self.eat("(") {
-                self.error(span, "`__xcc_alloca` is called with a number of bytes");
+                self.error(span, "a stack allocation is called with a number of bytes");
                 return Some(Value::temporary(self.types.error()));
             }
             return self.alloca(span);

@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M67 - 2026-11-25 - the measured win, and the four names a stack allocation answers to
+
+The measurement was owed, so it came first: a fresh census over the **67 265 C files under `D:/Projects`** - the corpus the
+old 705 was counted on - and then a **before and after** rather than a grep. Of a random 400 of the 3 862 files whose text
+holds a declaration-shaped `name[identifier]`:
+
+```
+old -> new
+ ('refused','refused')  347
+ ('accepted','accepted')  43
+ ('refused','accepted')   9     <- all nine: "expected a constant expression"
+ ('accepted','refused')    0
+```
+
+Nine files, nothing lost, and every one of the nine failed with the VLA refusal. The remaining 347 stop earlier and 298 of
+those stop at a header this machine does not have - which is what a corpus of other people's build systems looks like, not
+a language gap. The old census counted 705 files that *mention* a VLA-shaped declarator; that number was never the number
+of files that needed one, and now the difference is measured rather than assumed.
+
+**Then the names, because the feature was reachable only through a name nobody writes.** `__xcc_alloca` was this
+compiler's own spelling; `alloca`, `_alloca` and `__builtin_alloca` are the three a program writes. All four now mean the
+same operation, recognised in the parser *before* any lookup - which is what GCC does, and for a reason the census
+supplied: seven files call `alloca` having declared nothing, and the implicit `int` they got truncated a stack pointer to
+its low 32 bits. `<alloca.h>` (POSIX) and `<malloc.h>` (Microsoft) ship as **bridge** headers mapping the names over the
+operation, because neither is a C99 header and the ledger of shipped headers is C99's table.
+
+Corpus effect: of the 114 files that call `alloca(`, 18 compiled and now 24 do; the rest stop at missing headers or at
+attributes this compiler refuses by name.
+
+211 unit, **45 exe** (one more), 47 parser, 12 real; fmt and clippy clean.
+
 ### M66 - 2026-11-25 - the allocation that went to the next declaration, and the name that outlived its function
 
 Reviewing the two commits that landed VLAs (M64, M65) found both of its bookkeeping decisions wrong, and one of them

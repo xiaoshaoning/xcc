@@ -20,6 +20,53 @@ fn linker() -> Option<&'static str> {
         .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
 }
 
+/// `alloca` by the names programs write it.
+///
+/// Four spellings mean one operation: this compiler's own, GCC's two, and MSVC's. The header a
+/// program includes matters no longer - `<alloca.h>` and `<malloc.h>` map the name to the compiler's
+/// operation, and a program that includes nothing at all is answered too, because `alloca` reached
+/// through an implicit `int` returns a *truncated pointer*, which is a wrong answer rather than a
+/// missing feature.
+///
+/// The last case is the one that made the spelling list: seven files in the corpus that call `alloca`
+/// declared nothing, and the pointer they stored was 32 bits of a stack address.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_stack_allocation_answers_to_the_names_programs_write() {
+    // No header at all: `alloca` is the compiler's, the way GCC's is.
+    let bare = "#include <stdio.h>\n\
+                int main(void) {\n\
+                  int *q = (int *)alloca(64);\n\
+                  q[3] = 9;\n\
+                  printf(\"%d\\n\", q[3]);\n\
+                  return 0;\n\
+                }\n";
+    let out = run_linked("alloca-bare", bare, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "9\n"
+    );
+
+    // Both headers, and the two Microsoft spellings they carry.
+    let headers = "#include <alloca.h>\n\
+                   #include <malloc.h>\n\
+                   #include <stdio.h>\n\
+                   int main(void) {\n\
+                     char *a = (char *)alloca(32);\n\
+                     char *b = (char *)_alloca(32);\n\
+                     char *c = (char *)__builtin_alloca(32);\n\
+                     a[0] = 'x'; b[1] = 'y'; c[2] = 'z';\n\
+                     printf(\"%c%c%c\\n\", a[0], b[1], c[2]);\n\
+                     return 0;\n\
+                   }\n";
+    let out = run_linked("alloca-headers", headers, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "xyz\n"
+    );
+}
 /// C99 6.7.3.2: an array whose size the program computes at the declaration.
 ///
 /// The name is a pointer, because nothing can hold "four bytes, five of them" in a type the compiler

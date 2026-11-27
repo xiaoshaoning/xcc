@@ -210,6 +210,18 @@ pub(crate) fn refusal(name: &str) -> Option<&'static str> {
 /// is `mingw-w64`'s: it asks whether the compiler is GCC, `clang` or MSVC, and refuses everything
 /// else by name before any Win32 declaration has been reached.
 const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
+    // The two headers a program reaches for when it wants bytes off the stack, which are not C99's:
+    // `alloca.h` is POSIX's and `malloc.h` is Microsoft's. Both are macros over the compiler's own
+    // operation, because no library can move its caller's stack - and neither belongs in the C99
+    // ledger below, which is a table the standard wrote.
+    (
+        "alloca.h",
+        Disposition::Shipped(include_str!("../include/alloca.h")),
+    ),
+    (
+        "malloc.h",
+        Disposition::Shipped(include_str!("../include/malloc.h")),
+    ),
     // The header a program writes when it wants the MSVC intrinsics: mingw's declares them behind
     // an identification this compiler does not claim, so `xxhash`'s `_umul128` was an implicit
     // `int` - a *wrong number*, not a missing one.

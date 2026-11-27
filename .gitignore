@@ -28,3 +28,9 @@
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# measurement scratch: census lists of corpus files
+.all_c.txt
+.vla_files.txt
+.vla_decls.txt
+.alloca_files.txt
