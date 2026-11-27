@@ -319,6 +319,27 @@ fn a_plain_array_named_like_one_in_another_function_is_not_one() {
     .expect("both arrays are legal");
     assert!(!artifact.bytes().is_empty());
 }
+/// The note that took four tokens to find.
+///
+/// A diagnostic about a token from a macro *body* points at the body - right, because that is where
+/// the token was written - and the note adds the one thing the body cannot say: which use it came
+/// from. The parser kept a two-token window for it, and `int r = TERN;` with `#define TERN (c ? p : q)`
+/// complains at the `?` while the cursor is four tokens further on, so the window found nothing and
+/// the note was simply absent. It is a scan back to the cursor now, and this is the program that made
+/// the difference: before, the diagnostic had no note at all.
+#[test]
+fn a_note_is_found_for_a_macro_token_four_tokens_back() {
+    let source = "#define TERN (c ? p : q)\nint main(void) {\n  int c = 1;\n  int *p = 0;\n  int q = 2;\n  int r = TERN;\n  return r;\n}\n";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("the arms of `?:` have different types");
+    let notes: Vec<&str> = error
+        .items()
+        .iter()
+        .flat_map(|diagnostic| diagnostic.notes.iter().map(String::as_str))
+        .collect();
+    assert!(notes.contains(&"in `TERN`, used at t.c:6:11"), "{notes:?}");
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

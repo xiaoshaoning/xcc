@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M70 - 2026-11-25 - the note four tokens back, and the shape that was never tried
+
+The item said "the note's limit is distance". Two commits had argued about it - M61 widened the search, found nothing,
+and reverted; M62 narrowed it back to two tokens while fixing the *use-site* route. Both were reasoning from crafted
+programs that happened to be wrong, so this time the answer came from a probe: report, for every diagnostic, the nearest
+token carrying its span and whether that token came from a macro.
+
+**The corpus cannot answer the question.** Over 1 200 of the 67 265 C files, the probe fired *zero* times: those files
+stop in the preprocessor, at a header this machine does not have, long before a parser raises anything. A measurement whose
+subject never runs is not a measurement.
+
+**One shape does answer it**, and it took a minute to write once the question was "which diagnostics point at an *early*
+body token":
+
+```c
+#define TERN (c ? p : q)
+int r = TERN;
+
+error: the arms of `?:` are pointer to int and int     <- caret on the `?`, four tokens back
+```
+
+Four is past the window of two, so the note was absent (`= note: in \`TERN\`, used at d1.c:6:11`). Every case M61 tried had
+a span that was a *use site* or an operator outside the macro, so the window looked adequate; none of them pointed into the
+middle of a body.
+
+The search is a scan back from the cursor now, stopping at the first token with that span, with the cost named where it
+lives - the distance, and a diagnostic is not raised in a loop. The test is that program, and it was checked against the
+code without the change: no note there, this note here.
+
+211 unit, 46 exe, **48 parser** (one more), 12 real; differential 417 ran, 0 mismatched; fmt and clippy clean.
+
 ### M69 - 2026-11-25 - sizeof of an array whose size is a number, and the rounding nobody did
 
 `sizeof a` for a variable-length array answers with the number the declaration computed, which is what

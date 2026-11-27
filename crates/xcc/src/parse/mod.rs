@@ -665,9 +665,14 @@ impl Parser<'_> {
         // at the argument, which is the invocation - has no token at all: the invocation was replaced
         // by its expansion before the parser saw it. That one is looked up by span, in the file the
         // parser is reading.
-        let site = [self.at.checked_sub(1), Some(self.at)]
-            .into_iter()
-            .flatten()
+        // The nearest token before the cursor that carries this span, and that is a scan rather than
+        // a window: a diagnostic about a macro *body* can point at any of its tokens, and the parse
+        // that complains is often several tokens past it. `#define TERN (c ? p : q)` used as
+        // `int r = TERN;` complains at the `?` - four tokens back - and a two-token window found no
+        // token at all, so the note was missing for a reason that looked like a limit on distance but
+        // was a limit on belief. The cost is the distance, and a diagnostic is not raised in a loop.
+        let site = (0..self.at.min(self.tokens().len()))
+            .rev()
             .filter_map(|index| self.tokens().get(index))
             .find(|token| token.span == span)
             .and_then(|token| self.preprocessed.site(token))
