@@ -51,6 +51,12 @@ struct Args {
     #[arg(long = "depfile", value_name = "PATH")]
     depfile: Option<PathBuf>,
 
+    /// Print where each operation of the linked program came from: `address file:line`, one per
+    /// line of source that produced code. It is the table a crash address is looked up in - the
+    /// image carries the same records in `.xccmap`, and this reads them back out of the artifact.
+    #[arg(long = "map")]
+    map: bool,
+
     /// Which compiler to be. `dos16` drives borland-reborn's port of Borland C++ 2.0 - the
     /// measuring stick of PLAN.md's M9, not a second product: it writes a 16-bit DOS object for
     /// comparison, and needs `libbcc20` on this machine.
@@ -395,6 +401,9 @@ fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
                 .output
                 .clone()
                 .unwrap_or_else(|| args.inputs[0].with_extension("exe"));
+            if args.map {
+                print_map(&artifact, &path);
+            }
             match std::fs::write(&path, artifact.bytes()) {
                 Ok(()) => {
                     if let Some(depfile) = &args.depfile {
@@ -593,6 +602,23 @@ fn spellings(preprocessed: &xcc::Preprocessed) -> String {
         out.push('\n');
     }
     out
+}
+
+/// One line per place the image has code, as `address file:line`.
+///
+/// The artifact carries the map because a *link* is where an address means something: an object's
+/// own records are in its `.xccmap` section, and a program made of five units has five of those.
+/// A span's `file` indexes the artifact's files, which is why the table travels with it.
+fn print_map(artifact: &xcc::Artifact, path: &std::path::Path) {
+    let files = artifact.files();
+    println!("# {}", path.display());
+    for (address, span) in artifact.lines() {
+        let Some(file) = files.get(usize::from(span.file)) else {
+            continue;
+        };
+        let position = file.position(span.start);
+        println!("{address:08x} {}:{}", file.name(), position.line);
+    }
 }
 
 /// The files `#include` may read: the path as written, then under each `-I` directory.

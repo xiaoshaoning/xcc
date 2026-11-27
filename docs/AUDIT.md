@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M48 - 2026-11-25 - the map reaches the command line, and a crash address has a line
+
+Steps 3 and 4 of M44/M46, and the last piece of the line-number work started in M44.
+
+**Where the file numbering lives**: in the compilation, not the linker. A unit's spans index *that unit's* file table,
+so `Compile::link` rebases each unit's line records by the number of files before it as it builds the program's table -
+which is the trap M47 recorded, closed in the one place that has both facts. The linker learned only about *offsets*:
+`Linked` carries `(address, span)` shifted by where each unit's code landed, which is arithmetic it already did.
+
+**Where it is rendered**: `--map` on the command line, because that is where the sources are - a span is an offset and
+only `SourceFile` knows where its lines begin. The artifact carries both the records and the file table, so the flag is
+a printer and nothing else.
+
+```
+$ xcc --std=c11 --opt-level=2 --map main.c -o main.exe | grep -E 'h[.]h:|main[.]c:'
+0000e740 h.h:1        <- `twice`, inlined from the header
+0000e755 main.c:2     <- the call site
+```
+
+The first entries of any map are the *runtime's*: `xcc-crt/main.c:45`, `:48`, `:52` - because the C runtime is compiled
+into every link, and a map that hid it would be a map that lies about where the program starts.
+
+That is the whole line: a symbol table named a fault (`sqlite3InsertBuiltinFuncs`), a span learned which file it was in,
+the object carries the records as deltas, and the command line turns them into `file.c:42`. What it cost, measured: 28 %
+of `.text` in the object (M47), and nothing at all at run time.
+
 ### M47 - 2026-11-25 - the regression that was my own background jobs, and the trap waiting at step four
 
 Reviewing `ae18a33` started with a scare and ended with a warning.

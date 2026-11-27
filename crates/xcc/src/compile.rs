@@ -6,9 +6,14 @@ use crate::pp::{self, Includes};
 use crate::source::SourceFile;
 
 /// What a successful compilation produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Artifact {
     object: Vec<u8>,
+    /// Where each operation begins in the image, and the source bytes it came from.
+    lines: Vec<(u32, Span)>,
+    /// The compilation's files, in the order a span's `file` indexes them: one per `#include`,
+    /// with the names and the line starts a map or a diagnostic needs.
+    files: Vec<SourceFile>,
     diagnostics: Vec<Diagnostic>,
     /// The files this compilation read that somebody else could rebuild: the source, and whatever
     /// `#include` found on the host. A header that ships inside this compiler is not one of them.
@@ -29,8 +34,16 @@ fn dependencies(files: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 impl Artifact {
-    fn new(object: Vec<u8>, diagnostics: Vec<Diagnostic>, dependencies: Vec<String>) -> Self {
+    fn new(
+        object: Vec<u8>,
+        lines: Vec<(u32, Span)>,
+        files: Vec<SourceFile>,
+        diagnostics: Vec<Diagnostic>,
+        dependencies: Vec<String>,
+    ) -> Self {
         Self {
+            lines,
+            files,
             object,
             diagnostics,
             dependencies,
@@ -43,6 +56,18 @@ impl Artifact {
     }
 
     /// What the compiler produced: a COFF object for `-c`, a PE32+ image for a link.
+    /// Every operation's address in the image, and where it came from: the pair `bytes` cannot
+    /// answer on its own, and what a crash address is looked up in.
+    pub fn lines(&self) -> &[(u32, Span)] {
+        &self.lines
+    }
+
+    /// The files those spans index, in order.
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
+    /// The object a `-c` produced, or the image a link wrote.
     pub fn bytes(&self) -> &[u8] {
         &self.object
     }
@@ -235,6 +260,8 @@ impl Compile {
         }
         let mut images = Vec::new();
         let mut sources = Vec::new();
+        // Every file of every unit, in the order the spans index them.
+        let mut files: Vec<SourceFile> = Vec::new();
         // A warning is about one compilation, and a link makes several: they are collected here so
         // that the caller of a link is told what the caller of `-c` is told.
         let mut diagnostics = Vec::new();
@@ -264,7 +291,17 @@ impl Compile {
             let (module, preprocessed, warnings) = compiled?;
             diagnostics.extend(warnings);
             match crate::back::image(&module, preprocessed.names(), self.options.opt_level) {
-                Ok(Some(image)) => images.push(image),
+                Ok(Some(mut image)) => {
+                    // **A unit's file indices start at zero**, so a program of two units has two
+                    // `h.h`s at index 1. Rebasing here - where the file table is built - keeps that
+                    // arithmetic in one place, and out of the linker, which is about offsets.
+                    let base = u16::try_from(files.len()).unwrap_or(u16::MAX);
+                    for (_, span) in &mut image.lines {
+                        span.file = span.file.saturating_add(base);
+                    }
+                    files.extend(preprocessed.files.clone());
+                    images.push(image)
+                }
                 Ok(None) => unreachable!("the level was checked above"),
                 Err(error) => {
                     let message = match error.not_lowered {
@@ -313,7 +350,13 @@ impl Compile {
             .collect();
 
         match crate::back::x64::pe::link(&images, "mainCRTStartup", &imports) {
-            Ok(linked) => Ok(Artifact::new(linked.bytes, diagnostics, dependencies)),
+            Ok(linked) => Ok(Artifact::new(
+                linked.bytes,
+                linked.lines,
+                files,
+                diagnostics,
+                dependencies,
+            )),
             Err(error) => {
                 use crate::back::x64::pe::LinkError;
                 let message = match error {
@@ -398,7 +441,9 @@ impl Compile {
         let items = truncate_diagnostics(diagnostics, &self.options);
         let dependencies = dependencies(sources.iter().map(|file| file.name().to_owned()));
         Ok(Outcome {
-            artifact: Artifact::new(object, items, dependencies),
+            // A single object's map is in the object's own `.xccmap` section; the artifact's is for
+            // a *link*, where the caller has no object file to read it from.
+            artifact: Artifact::new(object, Vec::new(), Vec::new(), items, dependencies),
             explanation: explained,
         })
     }

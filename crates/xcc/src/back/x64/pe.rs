@@ -82,6 +82,9 @@ pub(crate) struct Imported<'a> {
 pub(crate) struct Linked {
     /// The image: headers, sections, import table, base relocations.
     pub bytes: Vec<u8>,
+    /// Where each operation is, from the start of `.text`, and the source bytes it came from. The
+    /// offsets are the program's; the file numbering is the compilation's and is not touched here.
+    pub lines: Vec<(u32, crate::diag::Span)>,
 }
 
 /// A name nothing defined and no library offered.
@@ -117,8 +120,10 @@ pub(crate) fn link(
         .ok_or_else(|| LinkError::Undefined {
             name: entry.to_owned(),
         })?;
+    let lines = program.lines();
     Ok(Linked {
         bytes: program.write()?,
+        lines,
     })
 }
 
@@ -447,6 +452,21 @@ impl<'a> Program<'a> {
             .flat_map(|library| &library.functions)
             .find(|function| function.name == name)
             .map(|function| sections.text.address + function.thunk)
+    }
+
+    /// Every operation's address in the program, and its span: each unit's own offsets, moved by
+    /// where that unit's code landed in `.text`.
+    fn lines(&self) -> Vec<(u32, crate::diag::Span)> {
+        self.units
+            .iter()
+            .zip(&self.unit_text)
+            .flat_map(|(unit, base)| {
+                let base = *base;
+                unit.lines
+                    .iter()
+                    .map(move |(offset, span)| (base + offset, *span))
+            })
+            .collect()
     }
 
     /// Lay the sections out, fill the relocations in, then write the file.

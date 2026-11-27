@@ -708,3 +708,46 @@ fn run_gives_main_its_arguments_and_reports_a_missing_one() {
         stderr(&output)
     );
 }
+
+/// `--map`: where the linked program's code came from, one line per place it has any.
+///
+/// The unit test for the *collection* is in the back end; this is the end of the pipe - a program of
+/// two files, whose callee is in a header, must map its own lines to the header and the caller's to
+/// the `.c`. The runtime is linked in too, so its lines are in the map as well, and that is why the
+/// assertion looks for two specific lines rather than counting.
+#[test]
+fn the_map_says_which_file_each_line_came_from() {
+    let temp = Temp::new("map");
+    temp.write(
+        "mapheader.h",
+        "static inline int twice(int x) { return x + x; }
+",
+    );
+    let main = temp.path().join("mapmain.c");
+    temp.write(
+        "mapmain.c",
+        "#include \"mapheader.h\"
+int main(void) { return twice(21) == 42 ? 0 : 1; }
+",
+    );
+    let exe = temp.path().join("map.exe");
+    let run = run(xcc()
+        .arg("--std=c11")
+        .arg("--opt-level=2")
+        .arg("--map")
+        .arg("-o")
+        .arg(&exe)
+        .arg(&main));
+    let out = String::from_utf8_lossy(&run.stdout).into_owned();
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert!(
+        out.contains("mapheader.h:1"),
+        "the inlined header line is not in the map:
+{out}"
+    );
+    assert!(
+        out.contains("mapmain.c:2"),
+        "the caller's line is not in the map:
+{out}"
+    );
+}
