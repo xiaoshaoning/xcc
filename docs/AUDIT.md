@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M78 - 2026-11-25 - what the platform search was worth, counted
+
+The change in M76 was measured by its *own* quantity - files stopped by a missing header, 1 071 to 1 042 - and not by the
+one that matters. So the parent commit was built in a worktree and both binaries answered the same 1 500 files:
+
+```
+1 033   missing header -> missing header
+  280   accepted       -> accepted
+  152   refused        -> refused
+   19   missing header -> accepted          <- the win
+   14   missing header -> refused           <- the header stopped hiding the next gap
+    1   timeout        -> timeout
+    1   missing header -> timeout
+```
+
+**19 files, 280 to 299, and nothing went backwards.** The fourteen that moved from `missing header` to `refused` are worth as
+much as the nineteen: a file that now stops *inside the language* is a file whose next gap is visible, and the previous
+census could not see it. Before the change, a missing `<unistd.h>` answered for every fault a file had.
+
+Two of the nineteen are `curl`'s own examples, four are LLVM's tests, and the rest are projects pulled off a shelf - the
+shape the corpus is for.
+
+Nothing here is a gate, and that is deliberate: which files on a machine compile is not something CI can hold. The *tests*
+the change does carry are the two in the CLI - a platform header found without a flag, and `-I` still shadowing it.
+
 ### M77 - 2026-11-25 - the search that stopped one directory short
 
 Reviewing `95cc4b0` found the feature broken for the machine it was written for, and **invisible on this one**.
