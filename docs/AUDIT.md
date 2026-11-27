@@ -786,6 +786,27 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M86 - 2026-11-25 - the section change that was not one, rejected by its own measurement
+
+The previous entry proposed moving literals to `.rdata`: 61 KB of `.data` that is writable and should not be. The estimate was
+"a section-selection change in the data writer plus a test". That estimate was wrong, and the code says so in its own header:
+
+> **Every object is in `.data`**, writable; an `ADDR64` there becomes an absolute address *and* an entry in `.reloc`, so the
+> program works at the base it is given and at any other Windows picks.
+
+That is `pe.rs`'s central model, not a flag: one data section, whose start the RIP-relative addressing and the relocation table
+are both expressed against, holding the objects and the import address table together (`Image.data: Data`, one field). Splitting
+it means a second section in the image, a section table entry, per-section symbol offsets, relocations split in two, and every
+`[rip + disp32]` recomputed against a different base - touching the linker's core to save 61 KB of a 2.4 MB image and make a
+string literal fault instead of accepting a write.
+
+**Rejected**, and recorded here because a rejected idea with a reason is worth more than an unasked question. What would make
+it worth doing is a *reason*: shared memory between processes, a page-count limit, or a program that writes a literal in the
+wild. None of those exist today, and the third would be a bug report about the program.
+
+The next thing is the one that matters more anyway: a real program that needs the new features, so that variable-length
+arrays, `typeof` and statement expressions are gated by something nobody wrote for this compiler.
+
 ### M85 - 2026-11-25 - sqlite, which cannot be folded
 
 M83 ended by saying the corpus could not answer the code-size question, because its programs are decidable before they run.
