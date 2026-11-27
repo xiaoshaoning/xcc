@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M65 - 2026-11-25 - the array whose length is a number, and the two things that ate it
+
+C99 6.7.3.2 lands: `int a[n]` and `int a[n][3]`, compiled, linked and run, agreeing with `clang` on
+`30 285 0 18`. It cost two silent failures, both worth more than the feature.
+
+**The counter that was not the list.** A bound is a constant expression first - that is what makes an array's *type* -
+and only when that fails is it a value. So the constant reading is attempted, and its complaint withdrawn if the bound
+turns out to be a value. Withdrawing the *diagnostic* was not withdrawing the *error*, and `error_count()` reads a
+counter, so every function that declared a variable-length array was thrown away by the emitter's own rule - silently,
+because the message that would have explained it had been withdrawn a moment earlier. A function that vanishes without a
+diagnostic is the worst kind of bug this compiler can have, and one line (`self.errors = errors_before`) is the whole fix.
+
+**The cast that folds only when nothing is emitted.** A bound like `char b[((int)(16 * sizeof(void *) * sizeof(double)))]`
+- how Lua sizes a buffer - folds in an unevaluated reading and does not in an evaluated one. Reading the bound *once*,
+evaluated, therefore turned a constant array into a variable-length one, and `sizeof b` then refused with a message about
+a feature nobody had asked for. So the constant reading comes first, for the reason it is a constant reading, and the
+evaluated one only when it has to.
+
+Three smaller decisions:
+
+- The name is a **pointer to the element**, and the bytes come off the stack where the declaration stands
+  (`Inst::StackAlloc`); the count multiplies the element size and the encoder rounds to sixteen. `int a[rows][3]` works
+  because its element is an array of a constant size, which is still a type.
+- **`sizeof` a VLA is refused by name**, with a message that says the size is not in the name. It could return the
+  computed size, and that is a later change; what it must not do is answer eight.
+- A **parameter's** bound is adjusted to a pointer and never evaluated (C99 6.7.6.2p1, 6.7.6.3p7). Before this, `void
+  f(int n, int a[n])` reported "an array's size at file scope must be a constant expression" - a sentence about the wrong
+  scope, for a construct where nothing needs computing at all.
+
+211 unit, 44 exe (two more), 45 parser, 12 real; 445 corpus programs agree; differential 417 ran, 0 mismatched; fmt and
+clippy clean.
+
 ### M64 - 2026-11-25 - the frame that had to move, and the home area that did not
 
 VLAs start here, and the first thing they need is not in the parser. `encode.rs` opens with the sentence this work had to

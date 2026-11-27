@@ -20,6 +20,46 @@ fn linker() -> Option<&'static str> {
         .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
 }
 
+/// C99 6.7.3.2: an array whose size the program computes at the declaration.
+///
+/// The name is a pointer, because nothing can hold "four bytes, five of them" in a type the compiler
+/// resolves before the program runs - and the bytes come off the stack where the declaration stands.
+/// The numbers are what a `clang` build of the same program prints, and they cover both shapes: a
+/// one-dimensional array whose length is a parameter, and `int a[rows][3]`, whose element type is an
+/// array of a constant size and is therefore still a type.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_variable_length_array_is_as_long_as_the_program_says() {
+    let program = "#include <stdio.h>\n\
+\n\
+int sum(int n) {\n\
+  int a[n];\n\
+  int i;\n\
+  for (i = 0; i < n; i = i + 1) a[i] = i * i;\n\
+  int total = 0;\n\
+  for (i = 0; i < n; i = i + 1) total = total + a[i];\n\
+  return total;\n\
+}\n\
+\n\
+int grid(int rows) {\n\
+  int a[rows][3];\n\
+  int i;\n\
+  for (i = 0; i < rows; i = i + 1) { a[i][0] = i; a[i][1] = i * 2; a[i][2] = i * 3; }\n\
+  return a[rows - 1][0] + a[rows - 1][1] + a[rows - 1][2];\n\
+}\n\
+\n\
+int main(void) {\n\
+  printf(\"%d %d %d %d\\n\", sum(5), sum(10), sum(1), grid(4));\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("vla", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "30 285 0 18\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

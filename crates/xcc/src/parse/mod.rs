@@ -50,6 +50,8 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         at: 0,
         types: Types::new(),
         symbols: Symbols::new(),
+        pending_vla: None,
+        vla_names: Vec::new(),
         diagnostics: Vec::new(),
         dropped: 0,
         errors: 0,
@@ -388,6 +390,13 @@ struct Parser<'a> {
     at: usize,
     types: Types,
     symbols: Symbols,
+    /// The variable-length array the declarator just applied, if it was one: the element count and
+    /// the element type, for the declaration to turn into a stack allocation. Set by
+    /// `apply_declarator`, taken by `declaration` in the same call.
+    pending_vla: Option<(Value, TypeId)>,
+    /// The names in scope that are variable-length arrays, so that `sizeof` can refuse rather than
+    /// answer with the size of a pointer.
+    vla_names: Vec<Symbol>,
     diagnostics: Vec<Diagnostic>,
     /// How many diagnostics the budget refused. A list capped at the budget cannot show that it was
     /// capped - its length is the budget, not one more - so whoever reports it needs this number.
@@ -1141,6 +1150,56 @@ impl Parser<'_> {
                     {
                         if let Some(entry) = self.symbols.here_mut(name) {
                             entry.storage = Some(slot);
+                        }
+                    }
+                }
+            }
+            // A variable-length array's declaration asked for a number of bytes the program works
+            // out: `count * sizeof(element)`, taken off the stack here and stored into the pointer
+            // that is the array's name. `emit_stack_alloc` rounds it to sixteen.
+            if frame_local {
+                if let Some((count, element)) = self.pending_vla.take() {
+                    let span = self.span();
+                    match self.types.size_of(element) {
+                        Some(size) => {
+                            let wide = self
+                                .types
+                                .fundamental("unsigned long long")
+                                .unwrap_or_else(|| self.types.error());
+                            let per = self.constant_of(wide, size as i64, span);
+                            let total = self.emit_binary(
+                                cir::BinOp::Mul,
+                                wide,
+                                wide,
+                                [count, per],
+                                None,
+                                span,
+                            );
+                            let address = self.emit_stack_alloc(total, span);
+                            if let (Some(name), Some(_)) = (name, address.cir) {
+                                self.vla_names.push(name);
+                                if let Some(place) =
+                                    self.symbols.here(name).and_then(|entry| entry.storage)
+                                {
+                                    let target = Value {
+                                        ty,
+                                        constant: None,
+                                        lvalue: true,
+                                        cir: Some(place),
+                                        place: Some(place),
+                                        bits: None,
+                                        address: None,
+                                    };
+                                    self.assign(target, address, span);
+                                }
+                            }
+                        }
+                        None => {
+                            let ty = self.describe(element);
+                            self.error(
+                                span,
+                                format!("a variable-length array of {ty} has no size"),
+                            );
                         }
                     }
                 }
@@ -2363,26 +2422,104 @@ impl Parser<'_> {
         let mut suffixes = Vec::new();
         loop {
             if self.eat("[") {
-                let count = if self.at_punct("]") {
-                    None
-                } else {
-                    match self.constant_expression() {
-                        // C99 6.7.5.2p1: an array's size is greater than zero. One is used after
-                        // the diagnostic because nothing will read it - the declaration is
-                        // refused - and a zero-sized object must not be built on the way.
-                        Some(size) if size <= 0 => {
-                            let span = self.span();
-                            self.error(span, "an array's size must be greater than zero");
-                            Some(1)
-                        }
-                        Some(size) => Some(size as u64),
-                        None => None,
-                    }
+                if self.at_punct("]") {
+                    self.bump();
+                    suffixes.push(Wrapper::Array(None));
+                    continue;
+                }
+                // A bound is a constant expression - that is what makes an array's *type* - and C99
+                // lets it be a value instead, which is a variable-length array. One parse answers
+                // both: a constant has its constant, a computed size has its code. The expression is
+                // read *evaluated* inside a function, because that is what a variable-length array's
+                // length has to be, and unevaluated outside one, where there is no code to put it in.
+                // A constant first, and it has to be first: a cast in a bound - `char b[((int)(16 *
+                // sizeof(void *)))]`, which is how Lua sizes a buffer - folds in an unevaluated
+                // reading and does not in an evaluated one. Only when no constant comes out is the
+                // bound a value the program computes, and reading it again is what gives it code.
+                let began = self.at;
+                let reported = self.diagnostics.len();
+                let errors_before = self.errors;
+                let constant = self.constant_expression();
+                self.diagnostics.truncate(reported);
+                self.errors = errors_before;
+                self.at = began;
+                let evaluated = !self.in_body();
+                let saved = std::mem::replace(&mut self.unevaluated, evaluated);
+                let value = self.assignment_expression();
+                self.unevaluated = saved;
+                let value = value.map(|value| self.decay(value));
+                let width = || {
+                    self.types
+                        .fundamental("unsigned long long")
+                        .unwrap_or_else(|| self.types.error())
                 };
+                match (constant, value) {
+                    (Some(size), _) if size > 0 => {
+                        suffixes.push(Wrapper::Array(Some(size as u64)));
+                    }
+                    (Some(_), _) => {
+                        // C99 6.7.5.2p1: an array's size is greater than zero. One is used after the
+                        // diagnostic because nothing will read it - the declaration is refused - and
+                        // a zero-sized object must not be built on the way.
+                        let span = self.span();
+                        self.error(span, "an array's size must be greater than zero");
+                        suffixes.push(Wrapper::Array(Some(1)));
+                    }
+                    (None, Some(count)) if self.types.is_integer(count.ty) && self.in_body() => {
+                        if count.cir.is_none() {
+                            // A number with no instruction behind it: an expression this compiler
+                            // evaluates but does not emit, standing where the length is read.
+                            let span = self.span();
+                            self.error(
+                                span,
+                                "a variable-length array's length must be computable here",
+                            );
+                            suffixes.push(Wrapper::Array(Some(1)));
+                        } else {
+                            // The count is a value the program computes, so this is the second kind
+                            // of array: the object is still the elements in a row, and the number of
+                            // them is read at the declaration. A pointer to the element is what the
+                            // name becomes, which is C99's own model of a variably modified type,
+                            // minus the type.
+                            let wide = width();
+                            let count = self.convert(count, wide, self.span());
+                            suffixes.push(Wrapper::VariableArray(Box::new(count)));
+                        }
+                    }
+                    (None, Some(_)) if self.captured_parameters => {
+                        // A parameter's array bound is *adjusted* away: C99 6.7.6.3p7 makes
+                        // `int a[n]` a pointer, and 6.7.6.2p1 says the bound is not evaluated, so
+                        // there is nothing to compute and nothing to complain about. `void
+                        // f(int n, int a[n])` is `void f(int n, int *a)`, which is what the caller
+                        // passes anyway.
+                        suffixes.push(Wrapper::Array(None));
+                    }
+                    (None, Some(count)) => {
+                        // Not an integer, or not a number at all: the messages C already has for a
+                        // bound that cannot be one, and never a claim that a variable-length array
+                        // was refused when nothing was asked for.
+                        let described = self.describe(count.ty);
+                        let span = self.span();
+                        if self.types.is_integer(count.ty) {
+                            self.error(
+                                span,
+                                "an array's size at file scope must be a constant expression",
+                            );
+                        } else {
+                            self.error(
+                                span,
+                                format!("expected an integer constant expression, not {described}"),
+                            );
+                        }
+                        suffixes.push(Wrapper::Array(Some(1)));
+                    }
+                    (None, None) => {
+                        suffixes.push(Wrapper::Array(Some(1)));
+                    }
+                }
                 if !self.eat("]") {
                     self.error_at_current("expected `]`");
                 }
-                suffixes.push(Wrapper::Array(count));
                 continue;
             }
             if self.eat("(") {
@@ -2409,6 +2546,14 @@ impl Parser<'_> {
             ty = match wrapper {
                 Wrapper::Pointer => self.types.pointer(ty),
                 Wrapper::Array(count) => self.types.array(ty, count),
+                Wrapper::VariableArray(count) => {
+                    // A variable-length array is the one object whose size the type system cannot
+                    // hold, so the *name* is a pointer to the first element and the bytes are taken
+                    // off the stack where the declaration stands. The element type and the count are
+                    // handed to the declaration, which is the place that can emit the allocation.
+                    self.pending_vla = Some((*count, ty));
+                    self.types.pointer(ty)
+                }
                 Wrapper::Function { params, variadic } => self.types.function(ty, params, variadic),
             };
         }
@@ -2715,6 +2860,9 @@ enum Wrapper {
     Pointer,
     /// `[n]`: an array of the type enclosed.
     Array(Option<u64>),
+    /// `[e]` where `e` is not a constant: a variable-length array (C99 6.7.3.2). The value is the
+    /// element *count*, computed where the declaration stands.
+    VariableArray(Box<crate::parse::Value>),
     /// `(params)`: a function returning the type enclosed.
     Function { params: Vec<TypeId>, variadic: bool },
 }

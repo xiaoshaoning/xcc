@@ -1658,8 +1658,20 @@ impl Parser<'_> {
                 }
             };
         }
-        // C99 6.5.3.4p2: the operand is not evaluated. A variable length array would be the
-        // exception, and this compiler has none.
+        // C99 6.5.3.4p2: the operand is not evaluated - a variable-length array is the exception
+        // p2 names, and its size is a number the program works out, so this refuses rather than
+        // answering with the size of the pointer the array's name has become.
+        let vla = self.peek().copied().filter(|token| {
+            token.kind == crate::lex::TokenKind::Ident && self.vla_names.contains(&token.text)
+        });
+        if let Some(token) = vla {
+            self.bump();
+            self.error(
+                token.span,
+                "`sizeof` a variable-length array: its size is a number the program works out, and this compiler does not carry it in the name",
+            );
+            return Value::temporary(self.types.error());
+        }
         let saved = std::mem::replace(&mut self.unevaluated, true);
         let value = self.unary_expression();
         self.unevaluated = saved;
