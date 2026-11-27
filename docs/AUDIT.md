@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M61 - 2026-11-25 - the distance that was not the reason
+
+The next item was the note-distance fix from M52, whose conclusion was that the macro-site lookup tries only two tokens
+before the cursor and a diagnostic reported further away gets no note. It was built, measured, and **reverted**: the
+distance was not the reason.
+
+The build was the obvious one - scan back from the cursor instead of looking at two tokens - and it changed nothing on any
+of nine crafted programs in which a macro's expansion sits three or more tokens before the complaint. Every one of them
+printed the same diagnostic with the same missing note, before and after.
+
+What the instrumented run showed: those diagnostics do not point at a token *from a macro body* at all. They point at the
+**use**, and a use is not a token. `f(ARG + 1 + 1 + 1)` complains that "argument 1 is pointer to char, expected int" with
+a caret under `ARG` - and `ARG` was replaced by its expansion before the parser ever saw it, so no token in the stream has
+that span, at any distance. The note's first route reads `token.expansion`, which is why it works for a body token
+(`#define W(X) (X + undeclared_thing)` and its note `in \`W\`, used at t.c:2:25`, measured green) and cannot work here.
+
+So the fix needs a **second route**: a span that names a macro use matches no token but does match a `Site`. `Site` already
+carries the invocation's span, and sites are pushed in source order, so it is a binary search. That was written, and then
+the measurement stopped being clean: the argument's span came back as length one, and the site's span did not contain it,
+in a way that survived two rounds of my own arithmetic and no round of certainty. A note is worth having; a note attributed
+by a rule I cannot yet state is worse than none, which is the lesson M52 already taught.
+
+Reverted to `0fa6790`'s code. What stands is the correction: **the note's limit is not distance, it is that a use is not a
+token**, and the next attempt starts by dumping the diagnostic's span beside the site's span for one case, not by widening
+a search.
+
 ### M60 - 2026-11-25 - tre becomes the tenth fixture, and the isascii that was a macro
 
 `tests/fixtures/tre/` is thirteen of tre's units unmodified, with a driver that compiles one extended expression and
