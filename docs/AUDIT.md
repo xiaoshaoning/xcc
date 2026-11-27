@@ -786,6 +786,28 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M51 - 2026-11-25 - the note that could not be proved, and why it was not made wider
+
+The note-vs-location work (M34) has a measured limit: `&((char*)0)[X]` reports with the caret on the `&`, and the site
+lookup asks whether the *just-consumed or current token's span equals the diagnostic's span* - so no note. The obvious fix
+is to look for an expanded token whose span the caret is **inside**, and I wrote it. Then I tried to prove it, and could
+not.
+
+The cases I could construct produce no diagnostic at all: `int a[2] = { ZERO, g };` is a legal file-scope initialiser
+(`g`'s address is a constant), and `char a[WIDTH - 5]` with `WIDTH 4` is refused with a span that is not inside the
+expansion. The shape that fails is sqlite's: a macro expanding *inside* an expression the caret covers only partly. I have
+that measured in M34 and no reproduction of it in a test.
+
+So the change is reverted, and the reason is the one this project keeps relearning: **a rule widened without a failing
+case is a rule nobody can keep honest.** The containment rule is *probably* right - a caret inside a token that came from
+a macro is that macro's business - and "probably" is what the next session should replace with "measured", by taking
+sqlite's own failing line (M34 records it) and reducing it, rather than by inventing a shape that fires nowhere.
+
+The existing note test still holds the current rule: `in `W`, used at t.c:2:25`, for a diagnostic whose caret *is* the
+expanded token.
+
+210 unit, 42 parser, 41 exe; fmt and clippy clean.
+
 ### M50 - 2026-11-25 - a real crash, resolved with the map and nothing else
 
 The line-number work was built for one purpose, stated in M16 as a complaint: `sqlite3_open` faulted at
