@@ -786,6 +786,44 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M50 - 2026-11-25 - a real crash, resolved with the map and nothing else
+
+The line-number work was built for one purpose, stated in M16 as a complaint: `sqlite3_open` faulted at
+`.text+0x129e2d` and naming that function took `objdump`, a symbol table and arithmetic. So the acceptance test is a
+crash, and here it is.
+
+```c
+static int deref(int *p) {
+  return *p;          /* line 4: the fault */
+}
+```
+
+```
+$ xcc --std=c11 --opt-level=2 --map crash.c -o crash.exe > crash.map
+$ gdb -batch -ex run ./crash.exe
+0x000000014000f743 in deref ()
+
+$ grep 000000014000f740 crash.map
+000000014000f740 crash.c:3
+000000014000f743 crash.c:4      <- the faulting instruction
+```
+
+**`crash.c:4`** is `return *p;` - from the map alone: no objdump, no symbol table lookup, no subtraction. The two tools
+are complementary and both are now cheap: gdb says *which function* (`deref`), the map says *which line*, and neither
+needed the other to be useful.
+
+And the file field earned its place in the same output:
+
+```
+0000000140003d16 math.h:27
+000000014000f48d time.h:53
+000000014000f740 crash.c:3
+```
+
+Two of those are code **from headers** - the runtime's own `inline` functions - attributed to `math.h` and `time.h` rather
+than to `xcc-crt/main.c`. Without `Span::file` they would have been reported as lines of whichever file happened to own
+offset 27, which is the lie M46 was written to prevent.
+
 ### M49 - 2026-11-25 - the map that answered a question nobody asked
 
 Reviewing `fd33300` found the map **unusable for its purpose**, and two smaller things around it.
