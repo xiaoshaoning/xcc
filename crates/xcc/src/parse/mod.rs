@@ -51,6 +51,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         types: Types::new(),
         symbols: Symbols::new(),
         statement_value: None,
+        was_expression_statement: false,
         diagnostics: Vec::new(),
         dropped: 0,
         errors: 0,
@@ -398,6 +399,10 @@ struct Parser<'a> {
     /// The value of the expression statement just read, for a statement expression `({ ... })`:
     /// the block's value is its last one. Reused by the next statement, so it is read at once.
     statement_value: Option<Value>,
+    /// Whether the statement just read was an *expression statement*: the only kind that gives a
+    /// statement expression its value. Kept beside the value, and saved and restored by `statement`
+    /// exactly as the value is, so a statement's children cannot answer for it.
+    was_expression_statement: bool,
     diagnostics: Vec<Diagnostic>,
     /// How many diagnostics the budget refused. A list capped at the budget cannot show that it was
     /// capped - its length is the budget, not one more - so whoever reports it needs this number.
@@ -1952,8 +1957,14 @@ impl Parser<'_> {
                         None => {
                             // An expression, with or without its parentheses: `typeof x` is legal
                             // and `typeof(*p)` is the usual spelling.
+                            // **Not evaluated**, like `sizeof`'s operand: `typeof(x++)` asks about
+                            // the type of `x++` and does not increment anything. GNU C's one
+                            // exception is a variably modified type, which this compiler has no
+                            // spelling for here.
                             let parenthesised = self.eat("(");
+                            let saved = std::mem::replace(&mut self.unevaluated, true);
                             let value = self.assignment_expression();
+                            self.unevaluated = saved;
                             if parenthesised && !self.eat(")") {
                                 self.error_at_current("expected `)` after the expression");
                             }

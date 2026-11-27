@@ -384,6 +384,31 @@ fn a_statement_expression_without_a_value_says_so() {
         "{messages:?}"
     );
 }
+/// A statement expression's value is its last expression statement **at its own level**.
+///
+/// The first version let the expression-statement branch write a field and read it afterwards, so a
+/// block ending in a loop answered with the value of a statement *inside* the loop body:
+/// `({ for (...) { s = s + i; } })` returned a value defined in the loop and used after it, and the
+/// verifier said so - "v18 is defined in block 2 and used in block 4 which it does not dominate".
+/// `clang` refuses the program, because a block whose last statement is a `for` has no value.
+#[test]
+fn a_statement_expression_ending_in_a_loop_has_no_value() {
+    let source = "int main(void) { int i; int v = ({ int s = 0; for (i = 0; i < 3; i = i + 1) { s = s + i; } }); return v; }\n";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("the block's last statement is a loop");
+    let messages: Vec<&str> = error
+        .items()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("must end with an expression")),
+        "{messages:?}"
+    );
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

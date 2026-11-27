@@ -89,6 +89,31 @@ fn a_stack_allocation_answers_to_the_names_programs_write() {
         "11 22\n"
     );
 }
+/// `typeof`'s operand is **not evaluated**, the same rule `sizeof` follows.
+///
+/// Both extensions landed in one commit and the second half of GNU's rule was missing: `typeof(x++)`
+/// incremented `x`, because the operand was parsed in evaluated mode. `sizeof` had the right shape
+/// three lines away - `unevaluated` set around the parse - and the fix is the same two lines.
+#[test]
+#[cfg(target_os = "windows")]
+fn typeof_does_not_evaluate_its_operand() {
+    let program = "#include <stdio.h>\n\
+                   int main(void) {\n\
+                     int x = 5;\n\
+                     typeof(x++) y = 1;\n\
+                     typeof(x = 99) z = 2;\n\
+                     printf(\"%d %d %d\\n\", x, (int)sizeof y, z);\n\
+                     return 0;\n\
+                   }\n";
+    let out = run_linked("typeof-unevaluated", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // The same numbers a `clang` build prints: neither `x++` nor `x = 99` happened.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "5 4 2\n"
+    );
+}
+
 /// GNU's two extensions, which travel together because the macros that use them need both.
 ///
 /// `typeof` is three spellings of "the type of this", and it is told from a type name the way

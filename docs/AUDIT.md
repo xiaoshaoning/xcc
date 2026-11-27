@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M73 - 2026-11-25 - the operand that was evaluated, and the value that climbed out of a loop
+
+Reviewing `0fbd226` found both halves of GNU's rule missing, each with a measurement that showed it.
+
+**`typeof` evaluated its operand.** `sizeof` had the right shape three lines away - `unevaluated` set around the parse - and
+`typeof` did not use it:
+
+```
+typeof(x = 99) z = 2;      x is 99 here        clang: x is 5
+```
+
+The fix is the same two lines, and the test is that program.
+
+**A statement expression took its value from anywhere in the block, including inside a loop.** The first version let the
+expression-statement branch write a field and read it afterwards, so a block whose last statement was a `for` answered with
+the value of the assignment *inside* the loop:
+
+```
+error: internal: `main` is not valid: after the front end:
+       v18 is defined in block 2 and used in block 4 which it does not dominate
+```
+
+The verifier caught it as an internal error rather than a wrong number, which is the whole reason it exists. `clang` refuses
+that program - a block whose last statement is a `for` has no value - and so does this compiler now.
+
+The fix is the shape M66 taught: **one fact per place, and the answer travels through the return path of the thing that
+owns it**. `statement()` saves both the value and a `was_expression_statement` flag, clears them, and keeps the result only
+if *this* statement produced one. A statement that contains others puts both fields back the way it found them, so a
+child's value cannot answer for its parent.
+
+211 unit, **48 exe** (one more), **51 parser** (one more), 12 real; fmt and clippy clean.
+
 ### M72 - 2026-11-25 - typeof and the block that has a value, measured before and after
 
 Two GNU extensions, and the same measurement discipline the VLA round used: count first, then build, then count again

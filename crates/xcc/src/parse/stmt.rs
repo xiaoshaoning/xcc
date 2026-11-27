@@ -12,7 +12,32 @@ impl Parser<'_> {
     // `cir` control flow as well; there is no tree in between (ADR-002).
 
     /// One statement. The cursor is at its first token.
+    /// One statement, returning nothing - and **keeping only its own value** in
+    /// `statement_value`, never a value from a statement it contains.
+    ///
+    /// A statement expression's value is its last expression statement (GNU C), and the naive
+    /// version - let the expression-statement branch write a field and read it afterwards - answers
+    /// with the value of a statement *inside* a loop: `({ int s = 0; s = 3; })` is fine, but
+    /// `({ for (...) { s = s + i; } })` returned a value defined inside the loop body and the
+    /// verifier said so - "v18 is defined in block 2 and used in block 4 which it does not dominate".
+    /// `clang` refuses that program outright, because a block whose last statement is a `for` has no
+    /// value at all.
+    ///
+    /// So this saves the caller's value, clears it, and keeps the result **only if this statement
+    /// produced one**; a statement that contains others gets `None` here whatever its children left.
     pub(super) fn statement(&mut self) {
+        let saved_value = self.statement_value.take();
+        let saved_was = std::mem::replace(&mut self.was_expression_statement, false);
+        self.statement_inner();
+        // What *this* statement was, not what a statement it contains was: the children have put
+        // both fields back the way they found them, so `was_expression_statement` is true here only
+        // for an expression statement at this level.
+        let was = std::mem::replace(&mut self.was_expression_statement, saved_was);
+        let own = self.statement_value.take();
+        self.statement_value = if was { own } else { saved_value };
+    }
+
+    fn statement_inner(&mut self) {
         if !self.enter_nesting() {
             self.skip_statement();
             return;
@@ -106,6 +131,7 @@ impl Parser<'_> {
         // that a `({ ... })` holds is a statement this function already reads.
         let value = self.expression();
         self.statement_value = value;
+        self.was_expression_statement = self.statement_value.is_some();
         if self.statement_value.is_some() && !self.eat(";") {
             self.error_at_current("expected `;` after an expression");
             self.skip_until(&[";"], true);
