@@ -43,6 +43,11 @@ pub(crate) struct Entry {
     /// function's body. C99 6.9p5 gives an identifier one, so the second one is
     /// `redefinition of ...` rather than a second symbol for the back end to refuse.
     pub defined: bool,
+    /// Whether this name is a variable-length array: its length was a value, so its size is a
+    /// number the program works out and is not in its type. It lives here, with the name, because
+    /// that is what makes it scoped - a `Row` in one function and a `Row` in another are two names,
+    /// and a list beside the symbol table would answer for whichever was written last.
+    pub variable_length: bool,
 }
 
 /// One scope: the names declared in it, and the `struct`/`union` tags, which live in a
@@ -159,6 +164,7 @@ mod tests {
             span: Span::default(),
             storage: None,
             defined: false,
+            variable_length: false,
         }
     }
 

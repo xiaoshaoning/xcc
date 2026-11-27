@@ -267,6 +267,58 @@ void g(void) { f(ARG + 1 + 1 + 1); }
     );
 }
 
+/// The two ways a variable-length array gets its bookkeeping wrong, both found by reviewing the
+/// commit that added them.
+///
+/// **Where the allocation goes.** The count and the element type came back from the declarator in a
+/// parser field, and the declaration that read it was the *next* one: `typedef int Row[n];` was
+/// refused with a message about a typedef, but the `int` declared after it was allocated the bytes -
+/// `int later = 7;` became "cannot assign pointer to void to int". A declarator's answer is its
+/// return value now, and a variable-length array that is not an automatic object says so at the
+/// declaration that asked.
+///
+/// **Which name is one.** `sizeof a` was refused by asking a list of names that nothing ever pruned,
+/// so a variable-length array in one function made `sizeof` of a plain array called `a` in another
+/// function refuse - a sentence about the wrong function. The fact lives in the symbol entry now,
+/// which the symbol table already scopes.
+#[test]
+fn a_variable_length_array_that_is_not_an_automatic_object_says_so() {
+    let error = xcc::Compile::new(Options::default())
+        .compile(
+            "t.c",
+            "int main(void) { int n = 4; typedef int Row[n]; return n; }",
+        )
+        .expect_err("a typedef cannot be a variable-length array");
+    let messages: Vec<&str> = error
+        .items()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("must be an automatic object")),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_plain_array_named_like_one_in_another_function_is_not_one() {
+    // The `a` in `g` is `int a[3]`, and `sizeof a` is twelve. It was refused while a variable-length
+    // array called `a` existed in a function that had already been compiled.
+    let source = "int f(int n) { int a[n]; a[0] = n; return a[0]; }\n\
+                  int g(void) { int a[3]; return (int)sizeof a; }\n\
+                  int h(void) { return g() + f(9); }\n";
+    // Level 2: the own back end is the only one that can move `rsp`, and a variable-length array
+    // needs that.
+    let artifact = xcc::Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    })
+    .compile("t.c", source)
+    .expect("both arrays are legal");
+    assert!(!artifact.bytes().is_empty());
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

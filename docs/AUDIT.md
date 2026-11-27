@@ -786,6 +786,43 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M66 - 2026-11-25 - the allocation that went to the next declaration, and the name that outlived its function
+
+Reviewing the two commits that landed VLAs (M64, M65) found both of its bookkeeping decisions wrong, and one of them
+produced a wrong message for an innocent declaration.
+
+**The allocation went to the next declaration.** The count and element type came back from the declarator in a parser
+field, and the declaration that read it was whichever came next:
+
+```
+int main(void) { int n = 4; typedef int Row[n]; int later = 7; }
+                error: cannot assign pointer to void to int      <- on `later`
+```
+
+The typedef itself was refused - a variable-length array cannot be a typedef - but the field was never taken, so the
+declaration after it was allocated bytes it never asked for. A declarator's answer is its **return value** now, and the
+field is gone; a variable-length array that is not an automatic object says so where it was written.
+
+**The name outlived its function.** `sizeof a` was refused by asking a list of names nothing pruned:
+
+```
+int f(int n) { int a[n]; ... }
+int g(void) { int a[3]; return (int)sizeof a; }   error: `sizeof` a variable-length array
+```
+
+A sentence about the wrong function, for an array that is twelve bytes. The fact lives in the **symbol entry** now, which
+is the thing that is already scoped - one field, sixteen literal sites, and no list to forget.
+
+Two smaller things the same review turned up:
+
+- The Cranelift refusal for a stack allocation carried a run of twenty spaces, from a Rust string continuation that had
+  swallowed the following line's indentation. A diagnostic is read by a person; that is what a test asserting on message
+  *text* is for, and none did.
+- The refusal only appears below `--opt-level=2`, which is now said in the message rather than implied.
+
+211 unit, **47 parser** (two more), 44 exe, 12 real; 445 corpus programs agree; differential 417 ran, 0 mismatched; fmt
+and clippy clean.
+
 ### M65 - 2026-11-25 - the array whose length is a number, and the two things that ate it
 
 C99 6.7.3.2 lands: `int a[n]` and `int a[n][3]`, compiled, linked and run, agreeing with `clang` on

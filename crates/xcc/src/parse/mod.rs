@@ -50,8 +50,6 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         at: 0,
         types: Types::new(),
         symbols: Symbols::new(),
-        pending_vla: None,
-        vla_names: Vec::new(),
         diagnostics: Vec::new(),
         dropped: 0,
         errors: 0,
@@ -390,13 +388,6 @@ struct Parser<'a> {
     at: usize,
     types: Types,
     symbols: Symbols,
-    /// The variable-length array the declarator just applied, if it was one: the element count and
-    /// the element type, for the declaration to turn into a stack allocation. Set by
-    /// `apply_declarator`, taken by `declaration` in the same call.
-    pending_vla: Option<(Value, TypeId)>,
-    /// The names in scope that are variable-length arrays, so that `sizeof` can refuse rather than
-    /// answer with the size of a pointer.
-    vla_names: Vec<Symbol>,
     diagnostics: Vec<Diagnostic>,
     /// How many diagnostics the budget refused. A list capped at the budget cannot show that it was
     /// capped - its length is the budget, not one more - so whoever reports it needs this number.
@@ -1046,7 +1037,7 @@ impl Parser<'_> {
                 return last;
             };
             let name = tree.name;
-            let ty = self.apply_declarator(tree, base);
+            let (ty, vla) = self.apply_declarator(tree, base);
             // `int _wctime(...) __asm__("_wctime64");` - the SDK renaming a function, read here
             // because this is where a declarator ends and `=`, `,` or `;` may follow.
             self.asm_label(name, ty);
@@ -1057,6 +1048,7 @@ impl Parser<'_> {
             // one attribute over-aligns the second rather than misaligning anything.
             specs.alignas = self.declaration_alignment(began, specs.alignas);
             let entry = Entry {
+                variable_length: false,
                 ty,
                 storage: None,
                 defined: false,
@@ -1157,8 +1149,17 @@ impl Parser<'_> {
             // A variable-length array's declaration asked for a number of bytes the program works
             // out: `count * sizeof(element)`, taken off the stack here and stored into the pointer
             // that is the array's name. `emit_stack_alloc` rounds it to sixteen.
-            if frame_local {
-                if let Some((count, element)) = self.pending_vla.take() {
+            if let Some((count, element)) = vla {
+                // Only an automatic object can be one: a variable-length array is bytes taken off
+                // the stack at the declaration, so a `typedef`, a global and a `static` local have
+                // nowhere to put it. C99 6.7.3.2p2 says the same about the type.
+                if !frame_local {
+                    let span = self.span();
+                    self.error(
+                        span,
+                        "a variable-length array must be an automatic object: its size is read when the declaration is reached",
+                    );
+                } else {
                     let span = self.span();
                     match self.types.size_of(element) {
                         Some(size) => {
@@ -1177,7 +1178,11 @@ impl Parser<'_> {
                             );
                             let address = self.emit_stack_alloc(total, span);
                             if let (Some(name), Some(_)) = (name, address.cir) {
-                                self.vla_names.push(name);
+                                // The name is a variable-length array from here on, which is what
+                                // `sizeof` has to know and what the symbol table already scopes.
+                                if let Some(entry) = self.symbols.here_mut(name) {
+                                    entry.variable_length = true;
+                                }
                                 if let Some(place) =
                                     self.symbols.here(name).and_then(|entry| entry.storage)
                                 {
@@ -2074,6 +2079,7 @@ impl Parser<'_> {
             };
             next_value = value.wrapping_add(1);
             let entry = Entry {
+                variable_length: false,
                 ty: int,
                 kind: Kind::EnumConst(value),
                 span: token.span,
@@ -2265,7 +2271,13 @@ impl Parser<'_> {
                         break;
                     };
                     let name = tree.name;
-                    let ty = self.apply_declarator(tree, base);
+                    let (ty, vla) = self.apply_declarator(tree, base);
+                    if vla.is_some() {
+                        // A member's type is the record's shape, and a record is laid out before the
+                        // program runs: bytes whose count is a value have no place in one.
+                        let span = self.span();
+                        self.error(span, "a struct member cannot be a variable-length array");
+                    }
                     // `bit_width` takes the `:` itself, so it is not eaten here.
                     let bits = if self.at_punct(":") {
                         Some((0, self.bit_width()))
@@ -2540,8 +2552,19 @@ impl Parser<'_> {
     }
 
     /// The type a declarator declares, given the base its specifiers named.
-    fn apply_declarator(&mut self, tree: DeclaratorTree, base: TypeId) -> TypeId {
+    ///
+    /// A variable-length array comes back beside the type, because it is the one declarator whose
+    /// result is not a type: its count and its element type are for the caller to turn into a stack
+    /// allocation. Returning them is what keeps the answer from being *state* - a field set here and
+    /// read by whichever declaration came next, which is how `typedef int Row[n];` handed the
+    /// allocation it never asked for to the `int` declared after it.
+    fn apply_declarator(
+        &mut self,
+        tree: DeclaratorTree,
+        base: TypeId,
+    ) -> (TypeId, Option<(Value, TypeId)>) {
         let mut ty = base;
+        let mut vla = None;
         for wrapper in tree.wrappers {
             ty = match wrapper {
                 Wrapper::Pointer => self.types.pointer(ty),
@@ -2551,13 +2574,13 @@ impl Parser<'_> {
                     // hold, so the *name* is a pointer to the first element and the bytes are taken
                     // off the stack where the declaration stands. The element type and the count are
                     // handed to the declaration, which is the place that can emit the allocation.
-                    self.pending_vla = Some((*count, ty));
+                    vla = Some((*count, ty));
                     self.types.pointer(ty)
                 }
                 Wrapper::Function { params, variadic } => self.types.function(ty, params, variadic),
             };
         }
-        ty
+        (ty, vla)
     }
 
     /// The parameters of a function declarator, from inside the parentheses to past the `)`.
@@ -2605,7 +2628,7 @@ impl Parser<'_> {
                 Some(tree) => {
                     // `int a[][3]` as a parameter is a pointer to `int[3]`, not an array.
                     let name = tree.name;
-                    let declared = self.apply_declarator(tree, base);
+                    let (declared, _) = self.apply_declarator(tree, base);
                     let parameter = self.types.decay(declared);
                     // The parameter *object* keeps its `const`: `int f(const int x) { x = 1; }` is a
                     // write to a const object inside the body. The *function type* drops it
@@ -2634,6 +2657,7 @@ impl Parser<'_> {
         let span = self.span();
         self.last_parameters.push((Some(name), ty, span));
         let entry = Entry {
+            variable_length: false,
             ty,
             kind: Kind::Variable,
             span,

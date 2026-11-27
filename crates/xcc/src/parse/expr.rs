@@ -1662,7 +1662,11 @@ impl Parser<'_> {
         // p2 names, and its size is a number the program works out, so this refuses rather than
         // answering with the size of the pointer the array's name has become.
         let vla = self.peek().copied().filter(|token| {
-            token.kind == crate::lex::TokenKind::Ident && self.vla_names.contains(&token.text)
+            token.kind == crate::lex::TokenKind::Ident
+                && self
+                    .symbols
+                    .lookup(token.text)
+                    .is_some_and(|entry| entry.variable_length)
         });
         if let Some(token) = vla {
             self.bump();
@@ -2547,6 +2551,7 @@ impl Parser<'_> {
             // header, one for a program that does not.
             if let Some(function) = self.intrinsic(name) {
                 let entry = Entry {
+                    variable_length: false,
                     ty: function,
                     kind: Kind::Function,
                     span,
@@ -2570,6 +2575,7 @@ impl Parser<'_> {
                 let function = self.types.function(int, Vec::new(), true);
                 self.implicit_types.insert(function);
                 let entry = Entry {
+                    variable_length: false,
                     ty: function,
                     kind: Kind::Function,
                     span,
@@ -2671,7 +2677,7 @@ impl Parser<'_> {
             return None;
         };
         Some(match self.declarator(false) {
-            Some(tree) => self.apply_declarator(tree, base),
+            Some(tree) => self.apply_declarator(tree, base).0,
             None => base,
         })
     }
@@ -2772,6 +2778,7 @@ impl Parser<'_> {
                     let _ = self.symbols.declare(
                         name,
                         Entry {
+                            variable_length: false,
                             ty,
                             kind: Kind::Variable,
                             span,
@@ -2804,6 +2811,7 @@ impl Parser<'_> {
                     let _ = self.symbols.declare(
                         name,
                         Entry {
+                            variable_length: false,
                             ty,
                             kind: Kind::Variable,
                             span,

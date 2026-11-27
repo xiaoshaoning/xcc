@@ -726,7 +726,7 @@ impl<M: Module> Lowerer<'_, M> {
             // its frame is fixed at the prologue (ADR-008).
             Inst::StackAlloc { span, .. } => {
                 return Err(LoweringError::not_lowered(
-                    "a variable-length array or an `alloca` in the Cranelift back end: its frame is                      fixed at the prologue. Level 2 lowers it"
+                    "a variable-length array or an `alloca` in the Cranelift back end: its frame is fixed at the prologue. Level 2 lowers it"
                         .into(),
                     *span,
                 ))
