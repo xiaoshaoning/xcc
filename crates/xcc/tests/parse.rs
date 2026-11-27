@@ -416,6 +416,45 @@ fn a_statement_expression_ending_in_a_loop_has_no_value() {
         );
     }
 }
+/// An initialiser completes an array of unknown size - **through the symbol**, not only the type.
+///
+/// C99 6.7.8p22: "the type is completed by the initializer". A header declares
+/// `extern struct code codes[];` and the unit that defines it writes the braces, so the completion
+/// happens on a *second* declaration of the same name - and the first one left an incomplete array in
+/// the symbol table. `sizeof codes / sizeof(struct code)` is how codec2 counts its LDPC codes, and it
+/// was refused in the very file that had the array's size in front of it.
+///
+/// Found by surveying real programs that need the features this session added, which is what that
+/// survey is for: no hand-written test had a header and a definition in two declarations.
+#[test]
+fn an_initialiser_completes_an_array_through_its_symbol() {
+    let source = "struct code { const char *name; int rows; };\n\
+                  extern struct code codes[];\n\
+                  struct code codes[] = { { \"a\", 1 }, { \"b\", 2 }, { \"c\", 3 } };\n\
+                  int codes_num(void) { return (int)(sizeof codes / sizeof(struct code)); }\n";
+    // Level 2: the table holds string addresses, and a file-scope address is a relocation the own
+    // back end writes.
+    let artifact = xcc::Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    })
+    .compile("t.c", source)
+    .expect("the initialiser completes the array");
+    assert!(!artifact.bytes().is_empty());
+}
+
+/// The same completion for a plain array of numbers, and for a local one.
+#[test]
+fn a_local_array_of_unknown_size_is_completed_too() {
+    let source = "int main(void) {\n\
+                    int sizes[] = { 1, 2, 3, 4 };\n\
+                    return (int)(sizeof sizes / sizeof sizes[0]);\n\
+                  }\n";
+    let artifact = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect("the local's count comes from its initialiser");
+    assert!(!artifact.bytes().is_empty());
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

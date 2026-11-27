@@ -1319,6 +1319,21 @@ impl Parser<'_> {
                     match self.initializer_bytes(ty) {
                         Some((bytes, relocations)) => {
                             if let Some(name) = name {
+                                // **C99 6.7.8p22: an initialiser completes an array of unknown size.**
+                                // This is where it happens, and it is not a detail: a header declares
+                                // `extern struct LDPC ldpc_codes[];` and the unit that defines it writes
+                                // the braces, so before this the *symbol* kept the incomplete type and
+                                // `sizeof(ldpc_codes) / sizeof(struct LDPC)` - which is how codec2 counts
+                                // its codes - was refused in the file that had the array's size right in
+                                // front of it.
+                                let ty = self.complete_array(ty, bytes.len());
+                                // The *symbol* is what `sizeof` reads afterwards, and the definition's
+                                // type is the one that has the count: an earlier `extern` declaration
+                                // put a different, incomplete array in the table, and completing the
+                                // arena's copy of it completes only that copy.
+                                if let Some(entry) = self.symbols.here_mut(name) {
+                                    entry.ty = ty;
+                                }
                                 self.define_global(
                                     name,
                                     ty,
@@ -2193,6 +2208,30 @@ impl Parser<'_> {
                 return int;
             }
         }
+    }
+
+    /// The type an initialiser left, with an array of unknown size completed from its bytes.
+    ///
+    /// C99 6.7.8p22: "the type is completed by the initializer". The count is the bytes over the
+    /// element's size. Updating the *symbol* is the caller's job, because it is the symbol's type that
+    /// `sizeof` reads afterwards.
+    fn complete_array(&mut self, ty: TypeId, bytes: usize) -> TypeId {
+        let element = match self.types.kind(ty) {
+            crate::types::Type::Array {
+                element,
+                count: None,
+            } => *element,
+            _ => return ty,
+        };
+
+        let Some(size) = self.types.size_of(element) else {
+            return ty;
+        };
+        if size == 0 {
+            return ty;
+        }
+        let count = (bytes as u64) / size;
+        self.types.array(element, Some(count))
     }
 
     /// `struct S`, `struct S { ... }`, `struct { ... }` - and the same for `union`.

@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M87 - 2026-11-25 - the array whose size was in the file, and the program that counted it
+
+The survey of real programs that need this session's features found a conformance bug in the first candidate, before any
+fixture was made.
+
+codec2's `src/ldpc_codes.c` counts its LDPC tables the way C has counted tables for fifty years:
+
+```c
+/* in the header */  extern struct LDPC ldpc_codes[];
+/* in the unit   */  struct LDPC ldpc_codes[] = { ... };
+                     int ldpc_codes_num(void) { return sizeof(ldpc_codes) / sizeof(struct LDPC); }
+```
+
+and this compiler said *"`sizeof` needs a complete type, not array of struct LDPC"* - **in the file that had the array's size in
+front of it**. C99 6.7.8p22 says the initialiser completes the type; the arena's copy of the type *was* completed, and the
+**symbol** still held the incomplete array the `extern` declaration had put there, which is the one `sizeof` reads afterwards.
+
+The fix is two lines in the definition's path: complete the array from the bytes the initialiser produced, and write that type
+back to the symbol. The minimal case is a test now - a struct table, an `extern` and a definition - and so is a local
+`int sizes[] = {1, 2, 3, 4}`, which already worked and is worth holding.
+
+**No hand-written test would have found this.** It needs two declarations of one name: a header and the unit that fills it.
+
+The survey itself, recorded because the answer decides the next round:
+
+- **codec2** - 98 units, 183 files, and `ldpc_enc.c` compiles with nothing but `-Isrc`. It cannot be *built* without CMake:
+  `codec2/version.h` is generated from `cmake/version.h.in`, and 56 units include it. The arithmetic its LDPC encoder does is
+  also deliberately transcendental-heavy, which makes it a poor runtime benchmark. **The bug, not the fixture.**
+- **libosmocore** - 302 units and its own configure step; same class.
+- **polar_codes** - 20 units, no generated headers seen yet, and its VLA is in a simulation driver. **The remaining
+  candidate**, and the next thing to try.
+
+213 unit, 54 exe, **53 parser** (two more), 12 real, 6 invalid; fmt and clippy clean.
+
 ### M86 - 2026-11-25 - the section change that was not one, rejected by its own measurement
 
 The previous entry proposed moving literals to `.rdata`: 61 KB of `.data` that is writable and should not be. The estimate was
