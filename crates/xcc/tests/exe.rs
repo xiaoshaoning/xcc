@@ -89,6 +89,52 @@ fn a_stack_allocation_answers_to_the_names_programs_write() {
         "11 22\n"
     );
 }
+/// GNU's two extensions, which travel together because the macros that use them need both.
+///
+/// `typeof` is three spellings of "the type of this", and it is told from a type name the way
+/// `sizeof (` tells them apart: by trying the type first and putting the cursor back. A statement
+/// expression `({ ... })` is a block whose value is its last expression statement - the ordinary
+/// statement parser reads the statements, and the only new thing is that the last expression
+/// statement's value is kept rather than discarded.
+///
+/// The program below is the shape real code uses: `MAX`, `CLAMP` and the kernel's `container_of`,
+/// with a statement expression inside a loop and one nested inside another. A `clang` build of the
+/// same file prints the same numbers.
+#[test]
+#[cfg(target_os = "windows")]
+fn typeof_and_statement_expressions_agree_with_clang() {
+    let program = "#include <stdio.h>\n\
+#include <stddef.h>\n\
+\n\
+#define MAX(a, b) ({ typeof(a) _a = (a); typeof(b) _b = (b); _a > _b ? _a : _b; })\n\
+#define CLAMP(v, lo, hi) ({ typeof(v) _v = (v); _v < (lo) ? (lo) : (_v > (hi) ? (hi) : _v); })\n\
+#define CONTAINER_OF(ptr, type, member) ((type *)((char *)(ptr) - offsetof(type, member)))\n\
+\n\
+struct node { int value; struct node *next; };\n\
+\n\
+int main(void) {\n\
+  int total = 0;\n\
+  int i;\n\
+  for (i = 0; i < 5; i = i + 1) {\n\
+    total = total + ({ int inner = i * 2; inner + 1; });\n\
+  }\n\
+  int a = 7;\n\
+  int b = 7;\n\
+  struct node n = { 42, 0 };\n\
+  struct node *p = CONTAINER_OF(&n.value, struct node, value);\n\
+  typeof(n) copy = n;\n\
+  printf(\"%d %d %d %d %d %d\\n\", total, MAX(3, 9), CLAMP(12, 1, 10), p->value,\n\
+         ({ typeof(a) t = a + b; t; }), copy.value);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("typeof", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "25 9 10 42 14 42\n"
+    );
+}
+
 /// C99 6.7.3.2: an array whose size the program computes at the declaration.
 ///
 /// The name is a pointer, because nothing can hold "four bytes, five of them" in a type the compiler

@@ -50,6 +50,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         at: 0,
         types: Types::new(),
         symbols: Symbols::new(),
+        statement_value: None,
         diagnostics: Vec::new(),
         dropped: 0,
         errors: 0,
@@ -328,6 +329,12 @@ const SPECIFIERS: &[&str] = &[
     "const",
     "volatile",
     "restrict",
+    // GNU's `typeof`, which a header cannot spell any other way: `MAX(a, b)` and `container_of`
+    // are written in terms of it, and a program that includes such a header is a program this
+    // compiler cannot read without it. Three spellings, one operation.
+    "typeof",
+    "__typeof__",
+    "__typeof",
     "inline",
     "void",
     "_Bool",
@@ -388,6 +395,9 @@ struct Parser<'a> {
     at: usize,
     types: Types,
     symbols: Symbols,
+    /// The value of the expression statement just read, for a statement expression `({ ... })`:
+    /// the block's value is its last one. Reused by the next statement, so it is read at once.
+    statement_value: Option<Value>,
     diagnostics: Vec<Diagnostic>,
     /// How many diagnostics the budget refused. A list capped at the budget cannot show that it was
     /// capped - its length is the budget, not one more - so whoever reports it needs this number.
@@ -1928,6 +1938,32 @@ impl Parser<'_> {
                     self.at += 1;
                     specs.ty = Some(self.record_specifier(kind, token.span));
                     specs.declares_tag = true;
+                    specs.has_type_specifier = true;
+                    return self.finish_specifiers(specs, spelled);
+                }
+                // GNU's `typeof`, which is three spellings of one question: **the type of this**.
+                // `typeof(int)` is a type name and `typeof(x)` is an expression, and the two are
+                // told apart the way `sizeof (` tells them apart - by trying the type first and
+                // putting the cursor back when there is none.
+                "typeof" | "__typeof__" | "__typeof" => {
+                    self.at += 1;
+                    let ty = match self.parenthesised_type() {
+                        Some(ty) => ty,
+                        None => {
+                            // An expression, with or without its parentheses: `typeof x` is legal
+                            // and `typeof(*p)` is the usual spelling.
+                            let parenthesised = self.eat("(");
+                            let value = self.assignment_expression();
+                            if parenthesised && !self.eat(")") {
+                                self.error_at_current("expected `)` after the expression");
+                            }
+                            let ty = value.map_or_else(|| self.types.error(), |value| value.ty);
+                            // C99 6.7.3p10 for the types C has: a `const` lvalue's type keeps its
+                            // qualifier, which is why `typeof(x)` of a `const int` is const.
+                            ty
+                        }
+                    };
+                    specs.ty = Some(ty);
                     specs.has_type_specifier = true;
                     return self.finish_specifiers(specs, spelled);
                 }

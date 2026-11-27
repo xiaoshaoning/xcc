@@ -100,8 +100,13 @@ impl Parser<'_> {
             }
             _ => {}
         }
-        // An expression statement: evaluated for its effect, so its value is discarded.
-        if self.expression().is_some() && !self.eat(";") {
+        // An expression statement: evaluated for its effect, so its value is discarded - except in
+        // a statement expression, where the *last* one is the value of the block. Recording it here
+        // rather than growing a second statement parser is what keeps one grammar: every statement
+        // that a `({ ... })` holds is a statement this function already reads.
+        let value = self.expression();
+        self.statement_value = value;
+        if self.statement_value.is_some() && !self.eat(";") {
             self.error_at_current("expected `;` after an expression");
             self.skip_until(&[";"], true);
         }

@@ -34,3 +34,5 @@ desktop.ini
 .vla_files.txt
 .vla_decls.txt
 .alloca_files.txt
+# every census list of corpus files, whatever the round is called
+.*_files.txt

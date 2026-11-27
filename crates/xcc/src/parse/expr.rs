@@ -1785,6 +1785,56 @@ impl Parser<'_> {
         }
     }
 
+    /// `({ ... })` - a block whose value is its last expression statement.
+    ///
+    /// The statements are the ordinary ones, read by the ordinary statement parser; the only new
+    /// thing is that the *last* expression statement's value is kept rather than discarded, which is
+    /// what `statement_value` exists for. The block has its own scope, like any other.
+    fn statement_expression(&mut self, span: Span) -> Option<Value> {
+        if !self.enter_nesting() {
+            return None;
+        }
+        self.bump(); // `(`
+        self.symbols.push();
+        let mut value: Option<Value> = None;
+        if self.eat("{") {
+            while !self.at_punct("}") && !self.at_eof() {
+                let before = self.at;
+                self.statement_value = None;
+                self.statement();
+                if let Some(produced) = self.statement_value.take() {
+                    value = Some(produced);
+                }
+                if self.at == before {
+                    // Nothing was consumed, so nothing will be: step over the token rather than
+                    // looping on it.
+                    self.bump();
+                }
+            }
+            if !self.eat("}") {
+                self.error_at_current("expected `}` to end a statement expression");
+            }
+        } else {
+            self.error_at_current("expected `{` after `(` in a statement expression");
+        }
+        self.symbols.pop();
+        if !self.eat(")") {
+            self.error_at_current("expected `)` to end a statement expression");
+        }
+        self.leave_nesting();
+        match value {
+            Some(value) => Some(value),
+            None => {
+                // A block with no expression statement has no value: `({ int x = 1; })` is a void
+                // expression in GNU C, and a program that uses it as a value is a program with a
+                // mistake in it. The value is the error type so that the mistake is reported once.
+                let sure = span;
+                self.error(sure, "a statement expression must end with an expression");
+                Some(Value::temporary(self.types.error()))
+            }
+        }
+    }
+
     /// `__xcc_alloca(n)`: `n` bytes taken off the stack now, rounded up to sixteen so that every call
     /// after this one still finds `rsp` aligned. The result is `void *`.
     ///
@@ -2049,6 +2099,14 @@ impl Parser<'_> {
     pub(super) fn primary_expression(&mut self) -> Option<Value> {
         let token = self.peek().copied()?;
         let span = token.span;
+        // GNU's statement expression `({ ... })`: a block whose value is its last expression
+        // statement. `MAX`, `container_of` and half the kernel's headers are written in it, and it
+        // is the reason a `typeof` declaration is useful.
+        if self.is_punct(&token, "(")
+            && self.peek_at(1).is_some_and(|next| self.is_punct(next, "{"))
+        {
+            return self.statement_expression(span);
+        }
         // A stack allocation, recognised by name **before any lookup**: no library body can exist for
         // it, and these are the four spellings programs write - this compiler's own, GCC's two, and
         // MSVC's. Recognising them even when a program declares one itself is what GCC does, and the

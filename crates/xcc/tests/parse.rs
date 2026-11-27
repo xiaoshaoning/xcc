@@ -364,6 +364,26 @@ fn a_note_is_found_for_a_macro_token_under_the_cursor() {
         "{notes:?}"
     );
 }
+/// A statement expression whose block ends without an expression has no value, and GNU C says so by
+/// treating it as `void`. A program that uses it as a value is a mistake, reported once.
+#[test]
+fn a_statement_expression_without_a_value_says_so() {
+    let source = "int main(void) { int x = ({ int y = 1; }); return x; }\n";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("a block with no expression statement has no value");
+    let messages: Vec<&str> = error
+        .items()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("must end with an expression")),
+        "{messages:?}"
+    );
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M72 - 2026-11-25 - typeof and the block that has a value, measured before and after
+
+Two GNU extensions, and the same measurement discipline the VLA round used: count first, then build, then count again
+over the same two corpora of the 67 265 C files on this machine.
+
+```
+typeof-shaped files:      184 files, accepted   1 ->  46
+statement-expression files: 424 files, accepted  72 -> 103
+```
+
+**`typeof` is three spellings of one question** - `typeof`, `__typeof__`, `__typeof` - and it takes a type name or an
+expression. Telling those apart is the trick `sizeof (` already had: try the type first with `parenthesised_type`, which
+puts the cursor back when there is none. It matches `clang` on `typeof(x)`, `typeof(&n)`, `typeof(int)`, `typeof(q)` for
+a record, `typeof(c)` keeping a `const`, and `typeof(a[0])` of a variable-length array's element.
+
+It was also the largest *specific* refusal left in the corpus: 84 files stopped at "expected a type specifier", and that
+message came from this compiler meeting the word and not knowing it.
+
+**A statement expression is a block whose value is its last expression statement**, and the parser already had every part
+of it: the statements are the ordinary ones, read by the ordinary `statement()`. The one new fact is that an expression
+statement's value is *kept* rather than discarded - one field, set where the statement is read, taken by
+`({ ... })` - which is what keeps one statement grammar instead of two.
+
+The test is the shape real code writes: `MAX`, `CLAMP` and the kernel's `container_of`, with a statement expression in a
+loop and another nested inside one. `25 9 10 42 14 42`, the same as `clang`. A block that ends without an expression has
+no value, and says so once - GNU treats it as `void`, and a program that uses it as a value has a mistake.
+
+Two smaller things the round turned up: the build ran out of disk mid-gate (5.5 GB of `target/debug`, deleted), and the
+`MAX` macro's own test produced the note that M70 added - `= note: in \`MAX\`, used at ty1.c:10:68` - which is the first
+time a new feature's first error message arrived with its provenance attached.
+
+211 unit, **47 exe** (one more), **50 parser** (one more), 12 real, 6 invalid; differential 417 ran, 0 mismatched; 445
+corpus programs agree; fmt and clippy clean.
+
 ### M71 - 2026-11-25 - the scan that was narrower than the window it replaced
 
 Reviewing `cb86b3b` found the search it widened had become, in one direction, *narrower* than the window it replaced.
