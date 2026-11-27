@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M59 - 2026-11-25 - the fixture that fails when the fix is undone
+
+Reviewing `622388f` asked one question - does this test earn its place? - and answered it with a mutation rather than an
+opinion: `_umul128` was removed from the intrinsic table and the fixture run.
+
+```
+left:  "ed714233c5a9a792 b4b513e2cee8b646 66716377"
+right: "ed714233c5a9a792 e4541a9cacf545aa 66716377"
+```
+
+The *wrong answer from M54*, exactly - not a compile error, not a skip, the number that made this work necessary. The table
+was restored from git and the suite is green.
+
+That is the check a fixture is supposed to pass and most do not: it detects **the specific regression it was written for**.
+SQLite's fixture detects "sqlite does not compile"; this one detects "an MSVC intrinsic is an implicit `int` again", which
+is a narrower and less obvious failure - and the only symptom in the wild was a hash that differed.
+
+Two things confirmed in the same pass, both worth having written down because they are properties a reader would otherwise
+have to assume:
+
+- **It cannot silently skip.** No `cfg`, no `windows_sdk()`, no host linker: `run_fixture_with` uses this compiler's own
+  linker end to end, and the expected hashes are inline rather than asked of `clang` at run time. The SDK-free check at
+  M40 is what makes this the one new fixture CI can see.
+- **It costs 1.6 seconds**, and `real` is now 11 tests in about 105 seconds.
+
 ### M58 - 2026-11-25 - xxhash becomes the ninth fixture, and the one CI can see
 
 The win is pinned. `tests/fixtures/xxhash/` is `xxhash.c` and `xxhash.h` unmodified, with a driver that prints three
