@@ -95,6 +95,9 @@ pub(crate) fn instruction(
     let v = |value: Value| format!("v{}", value.0);
     let ty = |ty: TypeId| type_text(types, names, ty);
     match inst {
+        Inst::StackAlloc { result, size, .. } => {
+            format!("{} = stackalloc {}", v(*result), v(*size))
+        }
         Inst::Const {
             result,
             ty: of,

@@ -248,7 +248,12 @@ fn unwind_info(unwind: &encode::Unwind) -> Vec<u8> {
     if slots.len() % 2 == 1 {
         slots.push(0);
     }
-    let mut bytes = vec![1, unwind.prologue, slots.len() as u8, 0];
+    // Version 1, no flags; the prologue's length; the codes as words; and the fourth byte is
+    // `FrameRegister:4 | FrameOffset:4` - the register an unwinder must remember when the frame is
+    // not addressed from `rsp`, and its offset in sixteen-byte units, which is zero here because
+    // `rbp` is set to the frame's own base.
+    let frame = unwind.frame_register.map_or(0, |register| register & 0xf);
+    let mut bytes = vec![1, unwind.prologue, slots.len() as u8, frame];
     for slot in slots {
         bytes.extend_from_slice(&slot.to_le_bytes());
     }
@@ -653,6 +658,7 @@ mod tests {
         // for the REX prefix), `sub rsp, 0x28` (four: `83 EC 28`... with a REX prefix, five).
         let unwind = encode::Unwind {
             prologue: 8,
+            frame_register: None,
             codes: vec![
                 encode::UnwindCode {
                     at: 1,

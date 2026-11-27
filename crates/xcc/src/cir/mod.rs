@@ -329,6 +329,20 @@ pub enum Inst {
         /// Where in the source.
         span: Span,
     },
+    /// Bytes taken off the stack at run time, whose address is the value: a variable-length array, or
+    /// an `alloca`. `size` is already a multiple of sixteen, because the call site is the only place
+    /// that knows the element size and a call needs `rsp` aligned.
+    ///
+    /// It is not a `Slot`: a slot's offset is a constant the frame reserves up front, and this one is
+    /// a number the program computes. A function holding one addresses its frame from `rbp`, so
+    /// everything else stays where it was.
+    StackAlloc {
+        /// The address of the bytes.
+        result: Value,
+        /// How many, rounded up to sixteen.
+        size: Value,
+        span: Span,
+    },
     /// Space on the stack for a C variable; the result is a pointer to it. Local variables are
     /// memory until `mem2reg` proves their address never escapes (ADR-002 invariant 3).
     Slot {
@@ -396,6 +410,7 @@ impl Inst {
     fn rewrite_values(&mut self, rewrite: &mut impl FnMut(Value) -> Value) {
         match self {
             Inst::Load { address, .. } => *address = rewrite(*address),
+            Inst::StackAlloc { size, .. } => *size = rewrite(*size),
             Inst::Store { address, value, .. } => {
                 *address = rewrite(*address);
                 *value = rewrite(*value);
@@ -447,6 +462,7 @@ impl Inst {
             | Inst::Unary { result, .. }
             | Inst::Convert { result, .. }
             | Inst::Slot { result, .. }
+            | Inst::StackAlloc { result, .. }
             | Inst::Const { result, .. }
             | Inst::VaStart { result, .. }
             | Inst::VaArg { result, .. }
@@ -468,6 +484,7 @@ impl Inst {
             | Inst::Unary { span, .. }
             | Inst::Convert { span, .. }
             | Inst::Slot { span, .. }
+            | Inst::StackAlloc { span, .. }
             | Inst::Const { span, .. }
             | Inst::Call { span, .. }
             | Inst::VaStart { span, .. }
@@ -875,6 +892,17 @@ impl<'a> Builder<'a> {
             expected,
             desired,
             ty,
+            span,
+        });
+        value
+    }
+
+    /// Bytes taken off the stack at run time; the value is their address. See [`Inst::StackAlloc`].
+    pub fn stack_alloc(&mut self, size: Value, pointer: TypeId, span: Span) -> Value {
+        let value = self.func.mint(pointer, self.current);
+        self.push(Inst::StackAlloc {
+            result: value,
+            size,
             span,
         });
         value
@@ -1497,6 +1525,15 @@ impl Func {
                 }
                 Ok(())
             }
+            Inst::StackAlloc { result, size, .. } => {
+                if self.value(*result).block != here {
+                    return wrong(format!("v{} is not defined by its allocation", result.0));
+                }
+                if !types.is_integer(self.value(*size).ty) {
+                    return wrong(format!("v{} is not an amount of bytes", size.0));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1776,6 +1813,7 @@ fn used_values(inst: &Inst) -> Vec<Value> {
             used
         }
         Inst::VaArg { list, .. } => vec![*list],
+        Inst::StackAlloc { size, .. } => vec![*size],
         Inst::Slot { .. }
         | Inst::Const { .. }
         | Inst::VaStart { .. }

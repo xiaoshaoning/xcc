@@ -584,6 +584,26 @@ impl Parser<'_> {
     }
 
     /// `left op right`, with both operands converted to `operands` as C requires.
+    /// `__xcc_alloca`: the address of `size` bytes taken off the stack here, rounded up by the caller
+    /// to sixteen so that later calls still find `rsp` aligned.
+    pub(super) fn emit_stack_alloc(&mut self, size: Value, span: Span) -> Value {
+        let void = self
+            .types
+            .fundamental("void")
+            .unwrap_or_else(|| self.types.error());
+        let pointer = self.types.pointer(void);
+        if !self.in_body() {
+            return Value::new(pointer, None, false);
+        }
+        match size.cir {
+            Some(size) => match self.emit(|b| b.stack_alloc(size, pointer, span)) {
+                Some(value) => Value::code(pointer, value),
+                None => Value::new(pointer, None, false),
+            },
+            None => Value::new(pointer, None, false),
+        }
+    }
+
     pub(super) fn emit_binary(
         &mut self,
         op: cir::BinOp,

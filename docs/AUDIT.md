@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M64 - 2026-11-25 - the frame that had to move, and the home area that did not
+
+VLAs start here, and the first thing they need is not in the parser. `encode.rs` opens with the sentence this work had to
+argue with: *"The frame is a byte offset from `rsp`, and `rsp` never moves after the prologue"*. A variable-length array
+moves it, so the frame needs a register that does not.
+
+The frame pointer costs two instructions and one unwind code, and **no offset changes**: the prologue does `sub rsp,
+frame` and then `mov rbp, rsp`, so `rbp` and `rsp` name the same byte and every `[rsp+off]` in this file is already
+`[rbp+off]`. What changes is that `rsp` may move afterwards. The unwinder is told so (`UNWIND_INFO`'s `FrameRegister`,
+`rbp`, offset zero) because a stack walk from inside an allocation cannot add back a fixed amount.
+
+Which function sets one is decided by a single flag: a `cir::Inst::StackAlloc` anywhere in the body, which is
+`Op::StackAlloc`, which lowers to `mov r11, n; sub rsp, r11; mov dst, rsp`. The size arrives already rounded to sixteen -
+the front end is the only place that knows the element size, and every later call needs `rsp` aligned.
+
+**The bug that made it worth doing carefully.** With `__xcc_alloca` reachable, three of four numbers were right:
+
+```
+[0]=0 [1]=3 [2]=6 [39]=24        63 117 1 24
+```
+
+Win64 has a callee write the four register arguments into the caller's *home area*, and it finds that area at its own
+`rsp` less the return address - the caller's **live** `rsp`. With no frame pointer that is the same byte the frame
+reserved, which is why this compiler could treat "home area" as a fixed frame offset for eight versions. With a VLA it is
+not: `printf` wrote its arguments into the allocation. A non-variadic call was unaffected, which is what narrowed it. The
+call sequence now moves `rsp` down by the reserved amount when the frame has a pointer, places the arguments at the live
+`rsp`, and puts it back - and the store has to know which register to measure from, so `mov_memory_from_reg` grew a
+`_to(base, ...)` sibling.
+
+Measured: `117 0 3` and `63 117 3`, the same as a `clang` build of the `alloca` equivalent; 211 unit, **43 exe** (one
+more), 45 parser, 12 real; 445 corpus programs agree; fmt and clippy clean.
+
+`__xcc_alloca` is the builtin that made this testable before a single line of VLA grammar existed. The array syntax is the
+next step, and it is parser work: a bound that is not a constant becomes this operation with the element size applied.
+
 ### M63 - 2026-11-25 - three red flags in my own last commit, and the test that proves nothing about the search
 
 Reviewing `3940deb` found three things, all mine.

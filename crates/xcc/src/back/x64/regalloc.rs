@@ -30,8 +30,12 @@ use super::{BlockTerm, MachineFunction, VReg};
 pub(crate) struct Reg(pub u8);
 
 impl Reg {
-    /// The address of the frame pointer, never allocated.
+    /// The stack pointer, never allocated.
     pub(crate) const RSP: Reg = Reg(4);
+    /// The frame pointer, never allocated to a value: a function that moves `rsp` in its body - for a
+    /// variable-length array or an `alloca` - keeps the frame addressed from here, so its locals do
+    /// not move when the body allocates. `UNWIND_INFO` names it too.
+    pub(crate) const RBP: Reg = Reg(5);
     /// The accumulator, which returns values and holds the high half of a division.
     pub(crate) const RAX: Reg = Reg(0);
     /// The count register, which shifts read and the first argument arrives in.

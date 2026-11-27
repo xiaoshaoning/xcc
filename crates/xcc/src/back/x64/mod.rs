@@ -189,6 +189,14 @@ pub(crate) enum Op {
     },
     /// The address of a frame slot: `lea`.
     LocalAddress { dst: VReg, offset: i32 },
+    /// Bytes taken off `rsp` at *run* time, for a variable-length array or an `alloca`: `sub rsp, n`,
+    /// then the value of `rsp` is the address. The function's frame is addressed from `rbp` from the
+    /// first of these on, so the second one moves `rsp` alone.
+    ///
+    /// `ponytail:` no page probe. A run-time size cannot be walked a page at a time the way a constant
+    /// frame is, so a request larger than the stack's committed region faults instead of growing the
+    /// stack; the fix is a probe loop here, and it costs nothing until someone asks for a megabyte.
+    StackAlloc { dst: VReg, size: VReg },
     /// The address of a symbol, by its link name: `lea` with a displacement the object file's
     /// relocation fills in. A string literal, a global object and - since function pointers - a
     /// function are all a name the linker resolves to an address.
@@ -434,6 +442,7 @@ impl Op {
             | Op::FloatConst { dst, .. }
             | Op::FloatConvert { dst, .. }
             | Op::LoadFloat { dst, .. }
+            | Op::StackAlloc { dst, .. }
             | Op::Canonical { dst, .. } => Some(*dst),
             Op::Call { dst, .. } | Op::CallIndirect { dst, .. } => *dst,
             Op::StoreLocal { .. } | Op::StoreMemory { .. } | Op::StoreFloat { .. } => None,
@@ -454,6 +463,8 @@ impl Op {
             // live range here, and the register is handed to `dst` - a read from wherever the
             // destination landed.
             Op::SegmentRead { base, .. } => vec![*base],
+            // The size is computed at run time and read here; the address it produces is `dst`.
+            Op::StackAlloc { size, .. } => vec![*size],
             Op::AtomicCas {
                 pointer,
                 expected,
@@ -623,6 +634,10 @@ pub(crate) struct MachineFunction {
     /// caller's home area, because that is what a `va_list` walks - the four registers, then the stack
     /// arguments, contiguously (ADR-006).
     pub variadic: bool,
+    /// Whether the body moves `rsp`: a variable-length array or an `alloca` allocates at run time,
+    /// which means the frame has to be addressed from `rbp` instead. The encoder reads this flag and
+    /// nothing else.
+    pub dynamic_stack: bool,
     /// The blocks, in layout order.
     pub blocks: Vec<MachineBlock>,
 }

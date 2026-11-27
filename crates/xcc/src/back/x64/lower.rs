@@ -59,6 +59,7 @@ fn lower_function(
         regs: vec![None; func.values().count()],
         next_reg: 0,
         blocks: Vec::new(),
+        dynamic_stack: false,
         order: HashMap::new(),
         param_offsets: Vec::new(),
         frame_bytes: 0,
@@ -104,6 +105,7 @@ fn lower_function(
         param_count: func.params().len(),
         makes_call,
         blocks: lowerer.blocks,
+        dynamic_stack: lowerer.dynamic_stack,
     })
 }
 
@@ -135,6 +137,8 @@ struct FunctionLowering<'a> {
     /// A machine register per `cir` value, mints on first use.
     regs: Vec<Option<VReg>>,
     next_reg: u32,
+    /// Whether anything here allocates at run time, which the encoder turns into a frame pointer.
+    dynamic_stack: bool,
     blocks: Vec<MachineBlock>,
     /// Where each `cir` block went in `blocks`.
     order: HashMap<Block, usize>,
@@ -948,6 +952,17 @@ impl FunctionLowering<'_> {
                 let offset = self.allocate(size, align);
                 let dst = self.address_of(Address::Local(offset), *result, ops);
                 self.classify(dst, Class::Integer);
+            }
+            Inst::StackAlloc { result, size, .. } => {
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                ops.push(Op::StackAlloc {
+                    dst,
+                    size: self.reg_for(*size),
+                });
+                // The frame is addressed from `rbp` from here on: everything else in this function
+                // keeps its offset, but `rsp` is no longer the base they are measured from.
+                self.dynamic_stack = true;
             }
             Inst::VaStart { result, skip, .. } => {
                 let dst = self.reg_for(*result);

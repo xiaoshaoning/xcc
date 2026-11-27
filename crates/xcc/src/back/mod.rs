@@ -722,6 +722,15 @@ impl<M: Module> Lowerer<'_, M> {
                     *span,
                 ))
             }
+            // A run-time stack allocation moves `rsp`, which the Cranelift back end does not allow:
+            // its frame is fixed at the prologue (ADR-008).
+            Inst::StackAlloc { span, .. } => {
+                return Err(LoweringError::not_lowered(
+                    "a variable-length array or an `alloca` in the Cranelift back end: its frame is                      fixed at the prologue. Level 2 lowers it"
+                        .into(),
+                    *span,
+                ))
+            }
             // `gs:[0x30]` is a `mov` with a segment prefix, which Cranelift has no instruction for.
             Inst::SegmentRead { span, .. } => {
                 return Err(LoweringError::not_lowered(

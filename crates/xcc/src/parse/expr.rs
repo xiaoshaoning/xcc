@@ -1749,6 +1749,42 @@ impl Parser<'_> {
         }
     }
 
+    /// `__xcc_alloca(n)`: `n` bytes taken off the stack now, rounded up to sixteen so that every call
+    /// after this one still finds `rsp` aligned. The result is `void *`.
+    ///
+    /// This is the one operation no library can provide, because it moves the *caller's* stack - MSVC
+    /// has `_alloca` as a builtin for the same reason - and a variable-length array is the same
+    /// operation with its size worked out for you.
+    fn alloca(&mut self, span: Span) -> Option<Value> {
+        if !self.enter_nesting() {
+            return None;
+        }
+        let size = self.assignment_expression()?;
+        let size = self.decay(size);
+        if !self.types.is_integer(size.ty) {
+            let ty = self.describe(size.ty);
+            self.error(
+                span,
+                format!("`__xcc_alloca` takes a number of bytes, not {ty}"),
+            );
+        }
+        if !self.eat(")") {
+            self.error_at_current("expected `)`");
+        }
+        let wide = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        let size = self.convert(size, wide, span);
+        let fifteen = self.constant_of(wide, 15, span);
+        let rounded = self.emit_binary(cir::BinOp::Add, wide, wide, [size, fifteen], None, span);
+        let mask = self.constant_of(wide, -16, span);
+        let aligned = self.emit_binary(cir::BinOp::And, wide, wide, [rounded, mask], None, span);
+        let address = self.emit_stack_alloc(aligned, span);
+        self.leave_nesting();
+        Some(address)
+    }
+
     /// A call: the arguments are parsed and checked against the declared parameters.
     pub(super) fn call(&mut self, callee: Value, span: Span) -> Value {
         if self.types.is_error(callee.ty) {
@@ -1984,6 +2020,19 @@ impl Parser<'_> {
     pub(super) fn primary_expression(&mut self) -> Option<Value> {
         let token = self.peek().copied()?;
         let span = token.span;
+        // `__xcc_alloca(size)`, recognised by name before any lookup: it has no declaration to find
+        // and no library body can exist for it (see `alloca`).
+        if token.kind == crate::lex::TokenKind::Ident
+            && self.spell(&token) == "__xcc_alloca"
+            && self.symbols.lookup(token.text).is_none()
+        {
+            self.bump();
+            if !self.eat("(") {
+                self.error(span, "`__xcc_alloca` is called with a number of bytes");
+                return Some(Value::temporary(self.types.error()));
+            }
+            return self.alloca(span);
+        }
         match token.kind {
             crate::lex::TokenKind::Number => {
                 self.bump();

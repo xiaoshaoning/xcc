@@ -20,6 +20,39 @@ fn linker() -> Option<&'static str> {
         .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
 }
 
+/// A stack allocation whose size is a *number the program computes* - the operation a
+/// variable-length array needs, and the one thing no library can do for you, because it moves the
+/// caller's stack.
+///
+/// The frame is addressed from `rsp` by design (see `encode.rs`), so this is also the test for the
+/// frame pointer: a function holding one of these addresses its frame from `rbp`, and says so to the
+/// unwinder. The second half is the bug that made the first half true for one call and false for the
+/// next: a variadic callee finds the caller's home area at the caller's **live** `rsp`, so once `rsp`
+/// had moved, `printf` wrote its arguments into the allocation.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_stack_allocation_is_where_the_next_call_finds_its_home_area() {
+    let program = "#include <stdio.h>\n\
+\n\
+int main(void) {\n\
+  int *q = (int *)__xcc_alloca(160);\n\
+  int i;\n\
+  for (i = 0; i < 40; i = i + 1) q[i] = i * 3;\n\
+  int kept = q[39];\n\
+  printf(\"%d %d %d\\n\", kept, q[0], q[1]);\n\
+  char *p = __xcc_alloca(64);\n\
+  for (i = 0; i < 64; i = i + 1) p[i] = (char)i;\n\
+  printf(\"%d %d %d\\n\", p[63], q[39], q[1]);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("alloca", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace('\r', ""),
+        "117 0 3\n63 117 3\n"
+    );
+}
+
 #[test]
 fn a_program_links_and_exits_with_its_return_value() {
     let Some(linker) = linker() else {

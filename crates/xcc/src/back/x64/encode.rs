@@ -73,6 +73,10 @@ pub(crate) const UWOP_ALLOC_LARGE: u8 = 1;
 pub(crate) const UWOP_ALLOC_SMALL: u8 = 2;
 /// `UWOP_SAVE_XMM128`: sixteen bytes of an XMM register stored into the frame.
 pub(crate) const UWOP_SAVE_XMM128: u8 = 8;
+/// `UWOP_SET_FPREG`: `mov rbp, rsp`, which tells the unwinder the frame is addressed from a register
+/// and no longer from `rsp`. Its `op_info` is unused; the register and the offset live in the
+/// `UNWIND_INFO` header.
+pub(crate) const UWOP_SET_FPREG: u8 = 3;
 
 /// One operation the prologue performed, described the way the unwinder needs to read it: PE/COFF's
 /// `UNWIND_CODE`, plus the extra slot some operations take.
@@ -97,6 +101,11 @@ pub(crate) struct UnwindCode {
 pub(crate) struct Unwind {
     /// How many bytes the prologue is.
     pub prologue: u8,
+    /// The register the frame is addressed from, when the function set one - `UNWIND_INFO`'s
+    /// `FrameRegister`. A function whose `rsp` never moves again after the prologue does not need
+    /// one, and says `None`; a function with a variable-length array or an `alloca` does, because the
+    /// unwinder has to know which register to remember when it cannot add back a fixed amount.
+    pub frame_register: Option<u8>,
     /// The operations, in the order the prologue performed them.
     pub codes: Vec<UnwindCode>,
 }
@@ -199,6 +208,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         body_base,
         spill_base,
         outgoing_base,
+        outgoing_bytes,
         saved_float_base,
         epilogue: func.blocks.len(),
         scratch: func.registers().scratch,
@@ -206,6 +216,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         scratches: Vec::new(),
         unwind: Vec::new(),
         frame,
+        frame_pointer: func.dynamic_stack,
     };
     let prologue_started = encoder.code.len();
     encoder.prologue(func.variadic);
@@ -300,6 +311,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
     } else {
         Some(Unwind {
             prologue,
+            frame_register: encoder.frame_pointer.then_some(Reg::RBP.0),
             codes: encoder.unwind,
         })
     };
@@ -338,6 +350,8 @@ struct Encoder<'a> {
     /// Where the outgoing argument slots start, from `rsp`: above the shadow space, where a callee
     /// reads its fifth argument.
     outgoing_base: i32,
+    /// How many bytes the widest call in this function pushes above the shadow space.
+    outgoing_bytes: i32,
 
     /// Where the saved XMM registers start, from `rsp`: after those, sixteen bytes each.
     saved_float_base: i32,
@@ -361,6 +375,10 @@ struct Encoder<'a> {
     /// moved. **Every offset in the function is measured from there**, which is why the offsets use
     /// this number and the `sub`/`add rsp` use it minus the pushes - the two add up to the same place.
     frame: i32,
+    /// Whether the frame is addressed from `rbp` instead of from `rsp`. Only a function that moves
+    /// `rsp` in its body needs it - a variable-length array or an `alloca` - and it costs two
+    /// instructions: `mov rbp, rsp` in the prologue, `mov rsp, rbp` before the epilogue.
+    frame_pointer: bool,
 }
 
 impl Encoder<'_> {
@@ -369,6 +387,12 @@ impl Encoder<'_> {
     fn prologue(&mut self, variadic: bool) {
         // The pushes come first, so they are outside the frame and need no address: the subtraction
         // is `frame` shorter instead, which is exactly what the layout reserved for them.
+        // `rbp` is saved first when this function addresses its frame from it, so it is popped last:
+        // the pushes are outside the frame either way, and `pushed()` counts it like any other.
+        if self.frame_pointer {
+            self.push(Reg::RBP);
+            self.record_unwind(UWOP_PUSH_NONVOL, Reg::RBP.0, None);
+        }
         let saved = self.allocation.saved.clone();
         for register in &saved {
             self.push(*register);
@@ -399,6 +423,17 @@ impl Encoder<'_> {
                 self.record_unwind(UWOP_ALLOC_LARGE, 1, Some(remaining as u32));
             }
         }
+        if self.frame_pointer {
+            // `rbp` takes the value `rsp` has now, which is the byte every frame offset is measured
+            // from - so `[rbp+off]` and `[rsp+off]` name the same location, and the offsets in this
+            // file did not have to change. What changes is that `rsp` may move again: a
+            // variable-length array's `sub rsp` leaves the frame where it was.
+            self.mov_reg(Reg::RBP, Reg::RSP);
+            // The unwinder reads this as "the frame pointer is `rbp`, and it points at offset zero of
+            // the frame". Without it, a stack walk from inside a body that moved `rsp` would add back
+            // only the prologue's amount and land in the wrong place.
+            self.record_unwind(UWOP_SET_FPREG, 0, None);
+        }
         if variadic {
             // Win64's home area, which is where `va_start` points: the caller reserved it, and a
             // variadic callee is the only function that has to fill it in. Four integer registers and
@@ -411,7 +446,7 @@ impl Encoder<'_> {
         let saved_floats = self.allocation.saved_floats.clone();
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
-            self.float_move(*register, Reg::RSP, offset, 16, Move::StoreUnaligned);
+            self.float_move(*register, self.base(), offset, 16, Move::StoreUnaligned);
             // Sixteen bytes of an `xmm`, named in units of sixteen - which the aligned base above
             // makes exact, so the far form (two slots, for an offset past a megabyte) never applies.
             self.record_unwind(UWOP_SAVE_XMM128, register.0, Some((offset / 16) as u32));
@@ -436,10 +471,15 @@ impl Encoder<'_> {
     }
 
     fn epilogue(&mut self) {
+        if self.frame_pointer {
+            // Whatever the body allocated, the frame is where `rbp` says it is - which is what makes
+            // the rest of this function readable from `rsp` again.
+            self.mov_reg(Reg::RSP, Reg::RBP);
+        }
         let saved_floats = self.allocation.saved_floats.clone();
         for (index, register) in saved_floats.iter().enumerate() {
             let offset = self.saved_float_base + index as i32 * 16;
-            self.float_move(*register, Reg::RSP, offset, 16, Move::LoadUnaligned);
+            self.float_move(*register, self.base(), offset, 16, Move::LoadUnaligned);
         }
         let remaining = self.frame - self.pushed();
         if remaining != 0 {
@@ -449,6 +489,9 @@ impl Encoder<'_> {
         let saved = self.allocation.saved.clone();
         for register in saved.iter().rev() {
             self.pop(*register);
+        }
+        if self.frame_pointer {
+            self.pop(Reg::RBP);
         }
         self.byte(0xC3); // ret
     }
@@ -493,7 +536,7 @@ impl Encoder<'_> {
                     (super::Class::Float, _) => {
                         let register = self.float_destination(*dst);
                         if *on_stack {
-                            self.float_move(register, Reg::RSP, stack_offset, *size, Move::Load);
+                            self.float_move(register, self.base(), stack_offset, *size, Move::Load);
                         } else {
                             self.float_move(
                                 register,
@@ -543,6 +586,19 @@ impl Encoder<'_> {
                 self.bytes(&[0, 0, 0, 0]);
                 self.write(*dst, register);
             }
+            Op::StackAlloc { dst, size } => {
+                // The size arrives already rounded up to sixteen - the front end computes it that way
+                // because it is the one place that knows the element size - so this is `mov r11, n;
+                // sub rsp, r11; mov dst, rsp`. `r11` is the encoder's address scratch and is free
+                // here: `read` may have put the size there itself, and the move is then a no-op.
+                let amount = self.read(*size);
+                let scratch = self.scratch[0];
+                self.mov_reg(scratch, amount);
+                self.sub_rsp_reg(scratch);
+                let register = self.destination(*dst);
+                self.mov_reg(register, Reg::RSP);
+                self.write(*dst, register);
+            }
             Op::LocalAddress { dst, offset } => {
                 let register = self.destination(*dst);
                 self.lea(register, self.body_base + offset);
@@ -588,7 +644,7 @@ impl Encoder<'_> {
                 let offset = self.body_base + offset;
                 if matches!(self.allocation.location(*dst), Location::Float(_)) {
                     let register = self.float_destination(*dst);
-                    self.float_move(register, Reg::RSP, offset, 8, Move::Load);
+                    self.float_move(register, self.base(), offset, 8, Move::Load);
                     self.write_float(*dst, register);
                 } else {
                     let register = self.destination(*dst);
@@ -600,7 +656,7 @@ impl Encoder<'_> {
                 let offset = self.body_base + offset;
                 if matches!(self.allocation.location(*src), Location::Float(_)) {
                     let register = self.read_float(*src);
-                    self.float_move(register, Reg::RSP, offset, 8, Move::Store);
+                    self.float_move(register, self.base(), offset, 8, Move::Store);
                 } else {
                     let register = self.read(*src);
                     self.mov_memory_from_reg(offset, register);
@@ -758,12 +814,31 @@ impl Encoder<'_> {
                 signed,
                 variadic,
             } => {
+                // A variadic callee writes the four register arguments into the caller's home area,
+                // and it finds that area at **its own `rsp`** less the return address - so it is at
+                // the caller's live `rsp`, not at a fixed frame offset. With no frame pointer those
+                // are the same byte and the frame's reservation is the home area. With one they are
+                // not: this moves `rsp` down for the call so the area really is where the callee will
+                // look, and puts it back afterwards. Without this, `printf` after an `alloca` wrote
+                // its arguments into the allocation - measured, not feared.
+                let adjust = if self.frame_pointer {
+                    let bytes = self.outgoing_base + self.outgoing_bytes;
+                    (bytes + 15) / 16 * 16
+                } else {
+                    0
+                };
+                if adjust != 0 {
+                    self.sub_rsp(adjust);
+                }
                 self.place_arguments(args, *variadic);
                 if *variadic {
                     self.no_vector_registers_used();
                 }
                 self.call(name);
                 self.finish_call(*dst, *size, *signed);
+                if adjust != 0 {
+                    self.add_rsp(adjust);
+                }
             }
         }
     }
@@ -1319,7 +1394,13 @@ impl Encoder<'_> {
             Location::Register(_) => unreachable!("an integer value read as floating point"),
             Location::Spill(offset) => {
                 let scratch = self.float_scratch();
-                self.float_move(scratch, Reg::RSP, self.spill_base + offset, 8, Move::Load);
+                self.float_move(
+                    scratch,
+                    self.base(),
+                    self.spill_base + offset,
+                    8,
+                    Move::Load,
+                );
                 scratch
             }
         }
@@ -1337,7 +1418,13 @@ impl Encoder<'_> {
                 unreachable!("a floating-point value written to a general one")
             }
             Location::Spill(offset) => {
-                self.float_move(register, Reg::RSP, self.spill_base + offset, 8, Move::Store);
+                self.float_move(
+                    register,
+                    self.base(),
+                    self.spill_base + offset,
+                    8,
+                    Move::Store,
+                );
             }
         }
     }
@@ -1423,7 +1510,9 @@ impl Encoder<'_> {
                 }
             } else {
                 let slot = position - super::ARGUMENT_REGISTERS.len();
-                Target::Stack(self.outgoing_base + 8 * slot as i32)
+                // The shadow space is the first thirty-two bytes of the area either way; only the
+                // register the area is measured from changes.
+                Target::Stack(32 + 8 * slot as i32)
             };
             plan.push((*argument, class, target));
         }
@@ -1436,11 +1525,11 @@ impl Encoder<'_> {
             match class {
                 super::Class::Integer => {
                     let register = self.read(*argument);
-                    self.mov_memory_from_reg(*offset, register);
+                    self.mov_memory_from_reg_to(self.argument_register(), *offset, register);
                 }
                 super::Class::Float => {
                     let register = self.read_float(*argument);
-                    self.float_move(register, Reg::RSP, *offset, 8, Move::Store);
+                    self.float_move(register, self.argument_register(), *offset, 8, Move::Store);
                 }
             }
             self.release();
@@ -1875,21 +1964,27 @@ impl Encoder<'_> {
     }
 
     fn lea(&mut self, to: Reg, offset: i32) {
-        self.prefix_w(to, Reg::RSP);
+        self.prefix_w(to, self.base());
         self.byte(0x8D);
-        self.memory_operand(to.0, Reg::RSP, offset);
+        self.memory_operand(to.0, self.base(), offset);
     }
 
     fn mov_reg_from_memory(&mut self, to: Reg, offset: i32) {
-        self.prefix_w(to, Reg::RSP);
+        self.prefix_w(to, self.base());
         self.byte(0x8B);
-        self.memory_operand(to.0, Reg::RSP, offset);
+        self.memory_operand(to.0, self.base(), offset);
     }
 
     fn mov_memory_from_reg(&mut self, offset: i32, from: Reg) {
-        self.prefix_w(from, Reg::RSP);
+        self.mov_memory_from_reg_to(self.base(), offset, from);
+    }
+
+    /// The same store, at an offset from a named register: the outgoing argument area is addressed
+    /// from `rsp` in a function that moved it, and everything else from the frame's base.
+    fn mov_memory_from_reg_to(&mut self, base: Reg, offset: i32, from: Reg) {
+        self.prefix_w(from, base);
         self.byte(0x89);
-        self.memory_operand(from.0, Reg::RSP, offset);
+        self.memory_operand(from.0, base, offset);
     }
 
     /// A `[base + offset]` operand: the smallest displacement form that reaches the offset.
@@ -1918,6 +2013,13 @@ impl Encoder<'_> {
 
     /// `sub rsp, bytes`, in the four-byte form or the one-byte form: most frames are small, and six
     /// bytes a function is six bytes over five hundred functions.
+    /// `sub rsp, r64`: the stack moves by an amount only the program knows.
+    fn sub_rsp_reg(&mut self, register: Reg) {
+        self.prefix_w(register, Reg::RSP);
+        self.byte(0x29);
+        self.modrm(3, register.0, Reg::RSP);
+    }
+
     fn sub_rsp(&mut self, bytes: i32) {
         self.adjust_rsp(5, bytes);
     }
@@ -1957,8 +2059,31 @@ impl Encoder<'_> {
     }
 
     /// What the pushes move `rsp` by, which is the part of `frame` the subtraction does not have to.
+    /// The register the frame is addressed from: `rbp` when the body moves `rsp`, `rsp` otherwise.
+    /// Both point at the same byte, so every offset in the frame is the same number either way.
+    fn base(&self) -> Reg {
+        if self.frame_pointer {
+            Reg::RBP
+        } else {
+            Reg::RSP
+        }
+    }
+
+    /// Where an outgoing stack argument goes, as an offset from what `argument_register()` names. A
+    /// function with no frame pointer keeps its home area at a fixed offset in the frame, which is
+    /// where `rsp` already is; one with a frame pointer moved `rsp` down for the call, so the area is
+    /// just above it.
+    /// The register the outgoing area is addressed from.
+    fn argument_register(&self) -> Reg {
+        if self.frame_pointer {
+            Reg::RSP
+        } else {
+            self.base()
+        }
+    }
+
     fn pushed(&self) -> i32 {
-        8 * self.allocation.saved.len() as i32
+        8 * (self.allocation.saved.len() + usize::from(self.frame_pointer)) as i32
     }
 
     /// `push r64`: one byte for the first eight registers, two for the rest, and it does the
@@ -1982,7 +2107,7 @@ impl Encoder<'_> {
     /// `83 /ext ib` when the amount fits in a signed byte, `81 /ext id` otherwise: the same
     /// instruction, and the assembler this back end writes for itself takes the shorter form.
     fn adjust_rsp(&mut self, extension: u8, bytes: i32) {
-        self.prefix_w(Reg(0), Reg::RSP);
+        self.prefix_w(Reg(0), self.base());
         if let Ok(small) = i8::try_from(bytes) {
             self.byte(0x83);
             self.modrm(3, extension, Reg::RSP);
