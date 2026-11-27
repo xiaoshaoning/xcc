@@ -786,6 +786,30 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M58 - 2026-11-25 - xxhash becomes the ninth fixture, and the one CI can see
+
+The win is pinned. `tests/fixtures/xxhash/` is `xxhash.c` and `xxhash.h` unmodified, with a driver that prints three
+hashes over one string, and one test that compares them with what `clang -O0`'s build of the same files prints:
+
+```
+ed714233c5a9a792 e4541a9cacf545aa 66716377
+```
+
+**It is the only one of the four new fixtures that needs no SDK** - SQLite, Lua and mimalloc all reach for `windows.h`
+somewhere, so their run halves skip on CI - and that is a difference worth stating plainly: this one *runs* there. What it
+checks is exactly the thread that produced it: `_umul128` called with no header, the intrinsic table that answers it, and
+the bridge header beside it. Two of the three hashes were right before that work began, which is what makes the test a
+good one: a regression shows up as a disagreement in the third, the one that multiplies.
+
+`-DXXH_VECTOR=0` is the library's own switch for its portable scalar path, and it is the same trade `miniz`'s
+`MINIZ_NO_STDIO` was: this compiler shadows `emmintrin.h` with an empty bridge header on purpose (M12), so `__m128i` is
+not something it can spell.
+
+Eight fixtures were the claim at `v0.1.6`; this is the ninth, and two of them - this one and SQLite - found *wrong
+answers* rather than missing features.
+
+211 unit, 43 parser, 42 exe, **11 real** (one more); fmt and clippy clean.
+
 ### M57 - 2026-11-25 - the two lists, and the const that was not
 
 Reviewing `57f1185` asked the question its own commit message had to argue away: the intrinsic table and

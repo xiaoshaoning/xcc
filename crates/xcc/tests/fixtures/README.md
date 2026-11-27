@@ -16,6 +16,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `lua/` | [Lua](https://lua.org) 5.5.1, `src/` of the release tarball | MIT | the interpreter, the compiler, the GC, patterns, coroutines, `string.pack` |
 | `yyjson/` | [ibireme/yyjson](https://github.com/ibireme/yyjson), master, 2026-11-22 | MIT | a JSON reader and writer, its allocation strategy, and a four-way token paste |
 | `mimalloc/` | [microsoft/mimalloc](https://github.com/microsoft/mimalloc), master, 2026-11-22 | MIT | a production allocator: thread-local heaps, `gs:` reads, `lock cmpxchg`, `rep movs` |
+| `xxhash/` | [Cyan4973/xxHash](https://github.com/Cyan4973/xxHash), master, 2026-11-22 | BSD | three hash functions, and the MSVC intrinsic a program calls with no header |
 
 ## cjson
 
@@ -32,6 +33,23 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## xxhash
+
+`xxhash.c` and `xxhash.h` from [Cyan4973/xxHash](https://github.com/Cyan4973/xxHash), master as of
+2026-11-22, BSD - the notice is in `LICENSE`.
+
+It is here because it found a **wrong number** rather than a missing feature. `_umul128` is an MSVC
+intrinsic that a program calls with no header - MSVC builds its intrinsics into the compiler - and
+this compiler took it as an implicit `int`, so the high half of XXH3's 64x64-to-128 multiply was
+lost. XXH64 and XXH32 were always right; the one that was wrong is the one that multiplies.
+
+It needs **no Windows SDK**, so it is the only one of the last four fixtures that is compiled, linked
+and run on every machine, CI included.
+
+`-DXXH_VECTOR=0` is the library's own switch for its portable scalar path: the vector paths are
+`__m128i` and `__m256i`, and this compiler shadows `emmintrin.h` with an empty bridge header on
+purpose. `driver.c` is ours: three hashes over one string, printed as hex.
 
 ## mimalloc
 

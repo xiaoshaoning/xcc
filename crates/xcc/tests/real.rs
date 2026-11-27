@@ -424,6 +424,34 @@ const YYJSON_EXPECTED: &str = "\
 {\"who\":\"xcc\",\"version\":5}
 ";
 
+/// `xxhash`: 250 KB of hash functions, and the **only** fixture of the last four that needs no
+/// Windows SDK - so unlike SQLite's and Lua's run halves this one is checked on every machine.
+///
+/// It is here because it found a *wrong number*: `_umul128` is an MSVC intrinsic that a program calls
+/// with no header, this compiler took it as an implicit `int`, and XXH3's 64x64-to-128 multiply lost
+/// its high half. The three hashes below are the oracle: XXH64 and XXH32 were always right, and the
+/// one that was wrong is the one that multiplies, so a regression of the intrinsic path shows up as a
+/// disagreement rather than as a memory the next reader has to carry.
+///
+/// `-DXXH_VECTOR=0` is the library's own switch for its portable scalar path: its vector paths are
+/// `__m128i` and `__m256i`, and this compiler shadows `emmintrin.h` with an empty bridge header.
+#[test]
+fn xxhash_agrees_with_clang_on_three_hashes() {
+    let run = run_fixture_with(
+        "xxhash",
+        "xxhash",
+        &["driver.c", "xxhash.c"],
+        &["XXH_VECTOR=0"],
+        xcc::CStandard::default(),
+        &[],
+        &[],
+    );
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // What a `clang -O0` build of the same two files prints.
+    assert_eq!(out.trim_end(), "ed714233c5a9a792 e4541a9cacf545aa 66716377");
+}
+
 /// `mimalloc`: Microsoft's allocator, 21 units and an amalgamation, with its own thread-local heaps,
 /// its own atomics and its own OS layer. It is the fourth real program this compiler runs and the
 /// first that is *about* the machine - thread-local storage, `gs:` reads, `lock cmpxchg`, and the
