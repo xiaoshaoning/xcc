@@ -786,6 +786,28 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M57 - 2026-11-25 - the two lists, and the const that was not
+
+Reviewing `57f1185` asked the question its own commit message had to argue away: the intrinsic table and
+`include/x86intrin.h` are **two lists of the same fifteen names**, and the argument for keeping both was "both are
+transcribed from mingw's `psdk_inc/intrin-impl.h`". That is a claim about care, not a check.
+
+**So the check exists now.** A test walks the table and the header in both directions: every name the parser knows is a
+name the header declares, and every function the header declares is a name the parser knows. A name in one and not the
+other is a program that compiles differently depending on whether it includes a header, which is the exact complaint that
+started this line of work.
+
+**And it found a signature that differed**: the header declares `void __movsb(unsigned char *, const unsigned char *,
+unsigned long long)` - the source is `const` - and the table said `unsigned char *`. A bare call passing a string literal
+compiled anyway (this compiler lets an argument drop `const` with no diagnostic), so the difference was invisible; the
+*types* were still two answers to one question. The table is const-correct now, and `spelled_type` - the small vocabulary
+the table is written in - understands `const`, which it did not.
+
+Three times this session the same shape has appeared: two lists, one fact. Twice the answer was a test that compares them;
+once it was deletion. This is the first of those that found a real disagreement on the day it was written.
+
+211 unit (one more), 43 parser, 42 exe; fmt and clippy clean.
+
 ### M56 - 2026-11-25 - the intrinsics are known names, and xxhash agrees with clang
 
 The gap M54 and M55 both pointed at, closed. MSVC *builds its intrinsics into the compiler*: a program calls `_umul128`

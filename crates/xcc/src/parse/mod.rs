@@ -1496,13 +1496,27 @@ impl Parser<'_> {
     /// A type by the name a header writes it, with a trailing ` *` for a pointer: the vocabulary the
     /// intrinsic table is written in.
     fn spelled_type(&mut self, spelling: &str) -> Option<TypeId> {
-        match spelling.strip_suffix(" *") {
+        // `const` belongs to the type it qualifies, so it is peeled from the pointee and applied
+        // there: `const unsigned char *` is a pointer to a const character, which is what the
+        // header says and what a caller passing a string literal needs.
+        let (spelling, qualified) = match spelling.strip_prefix("const ") {
+            Some(rest) => (rest, true),
+            None => (spelling, false),
+        };
+        let mut ty = match spelling.strip_suffix(" *") {
             Some(inner) => {
-                let base = self.types.fundamental(inner)?;
-                Some(self.pointer_to(base))
+                let base = match inner.strip_prefix("const ") {
+                    Some(inner) => self.types.constant(self.types.fundamental(inner)?),
+                    None => self.types.fundamental(inner)?,
+                };
+                self.pointer_to(base)
             }
-            None => self.types.fundamental(spelling),
+            None => self.types.fundamental(spelling)?,
+        };
+        if qualified {
+            ty = self.types.constant(ty);
         }
+        Some(ty)
     }
 
     fn spell_of(&self, name: Symbol) -> &str {
@@ -2807,6 +2821,41 @@ fn fold(types: &Types, ty: TypeId, operator: &str, left: i64, right: i64) -> Opt
 
 #[cfg(test)]
 mod tests {
+    /// **Two lists of the same thing, and they must name the same names.** The intrinsic table serves
+    /// a program that calls one bare; `include/x86intrin.h` serves a program that includes the header.
+    /// MSVC has both, so this compiler has both - and the only thing that keeps them from drifting is
+    /// this assertion, because a name in one and not the other is a program that compiles one way
+    /// depending on whether it includes a header.
+    #[test]
+    fn the_intrinsic_table_names_what_the_header_declares() {
+        let header = include_str!("../../include/x86intrin.h");
+        for (name, _, _) in super::INTRINSICS {
+            assert!(
+                header.contains(name),
+                "`{name}` is in the parser's table and not in x86intrin.h"
+            );
+        }
+        // And the other direction, for the fifteen the header declares as *functions*: every
+        // declaration line whose name starts with `_` or `__` is one the table must know too.
+        for line in header.lines() {
+            let Some(open) = line.find('(') else { continue };
+            if !line.trim_end().ends_with(';') {
+                continue;
+            }
+            let before = &line[..open];
+            let Some(name) = before.split_whitespace().last() else {
+                continue;
+            };
+            if !name.starts_with('_') || name == "_mm_mfence_declared_nowhere" {
+                continue;
+            }
+            assert!(
+                super::INTRINSICS.iter().any(|(known, _, _)| known == &name),
+                "`{name}` is declared in x86intrin.h and not in the parser's table"
+            );
+        }
+    }
+
     use super::*;
     use crate::intern::Interner;
     use crate::pp::preprocess;
