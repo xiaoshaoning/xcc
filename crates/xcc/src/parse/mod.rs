@@ -585,6 +585,20 @@ impl Parser<'_> {
     }
 
     /// The span of the token at the cursor, for a diagnostic that has nowhere better to point.
+    /// The span of what the parser is standing on, as the *program* wrote it: a token from a macro
+    /// expansion reports the invocation, not the body.
+    ///
+    /// A diagnostic about a token a macro produced points at the definition - right for "this line
+    /// is wrong", and wrong for "argument 1 is wrong", where the thing the reader has to fix is the
+    /// call site. The site is where both facts meet: it is the invocation's span, so the caret lands
+    /// on the use and the note names the macro.
+    fn program_span(&self) -> Span {
+        self.tokens()
+            .get(self.at)
+            .and_then(|token| self.preprocessed.site(token))
+            .map_or_else(|| self.span(), |site| site.span)
+    }
+
     fn span(&self) -> Span {
         self.peek().map_or_else(
             || {
@@ -644,13 +658,28 @@ impl Parser<'_> {
         // produces tokens with the same body spans - so the site is read from a token rather than
         // looked up by span, and two candidates is enough because they are the two the parser can be
         // standing on.
+        // Two routes, because a diagnostic names one of two things. A token *from* a macro body
+        // carries its `expansion`, so the site is read from the token; a span that names the macro
+        // *use* - `f(ARG)`, whose "argument 1 is pointer to char" points at the argument, which is
+        // the invocation - has no token at all, because the invocation was replaced by its
+        // expansion, so the site is looked up by span.
         let site = [self.at.checked_sub(1), Some(self.at)]
             .into_iter()
             .flatten()
             .filter_map(|index| self.tokens().get(index))
             .find(|token| token.span == span)
-            .and_then(|token| self.preprocessed.site(token));
-        if let Some(site) = site {
+            .and_then(|token| self.preprocessed.site(token))
+            .map(|site| (site, true))
+            .or_else(|| {
+                let file = self
+                    .tokens()
+                    .get(self.at.saturating_sub(1))
+                    .map_or(0, |t| t.file);
+                self.preprocessed
+                    .site_at(file, span)
+                    .map(|site| (site, false))
+            });
+        if let Some((site, from_body)) = site {
             let used = self
                 .preprocessed
                 .files
@@ -661,7 +690,14 @@ impl Parser<'_> {
                 })
                 .unwrap_or_default();
             let macro_name = self.spell_of(site.name).to_owned();
-            diagnostic = diagnostic.with_note(format!("in `{macro_name}`, used at {used}"));
+            // A body token needs the use's location, because the caret is under the definition. A
+            // span that *is* the use would repeat the caret's own file:line, so it says only which
+            // macro the text came from.
+            diagnostic = diagnostic.with_note(if from_body {
+                format!("in `{macro_name}`, used at {used}")
+            } else {
+                format!("in `{macro_name}`")
+            });
         }
         self.diagnostics.push(diagnostic);
     }

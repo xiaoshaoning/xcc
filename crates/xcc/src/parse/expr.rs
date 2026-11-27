@@ -1778,6 +1778,10 @@ impl Parser<'_> {
         let mut values: Vec<Value> = Vec::new();
         if !self.eat(")") {
             loop {
+                // The argument's own first token, because "argument 1 is pointer to char" is a
+                // complaint about argument 1 and the caret belongs on it - not on the call's `(`,
+                // which is what the whole call's span points at.
+                let argument_span = self.program_span();
                 let argument = self.assignment_expression().map(|value| self.decay(value));
                 let Some(argument) = argument else { break };
                 if self.types.is_error(argument.ty) {
@@ -1794,7 +1798,7 @@ impl Parser<'_> {
                     if !null_pointer && !self.types.is_assignable(expected, argument.ty) {
                         let (from, to) = (self.describe(argument.ty), self.describe(expected));
                         self.error(
-                            span,
+                            argument_span,
                             format!("argument {} is {from}, expected {to}", given + 1),
                         );
                     }

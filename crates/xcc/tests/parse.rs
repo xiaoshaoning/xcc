@@ -198,6 +198,40 @@ int main(void) { return W(1); }
     assert!(notes.contains(&"in `W`, used at t.c:2:25"), "{notes:?}");
 }
 
+/// "argument 1 is pointer to char" is a complaint about **argument 1**, and the caret belongs on it.
+///
+/// It did not: the diagnostic used the whole call's span, so the caret landed on the call's `(` - and
+/// when the argument is a macro, the use has no token at all (the invocation is replaced by its
+/// expansion before the parser sees it), so the diagnostic could not say which macro either. The span
+/// is the invocation's now, and the note names it, which is the second route to a site - the first
+/// one reads a token's `expansion` and works for a token from a macro *body*.
+#[test]
+fn an_argument_with_the_wrong_type_points_at_the_argument() {
+    let source = "#define ARG ((char*)1)
+void f(int a);
+void g(void) { f(ARG + 1 + 1 + 1); }
+";
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", source)
+        .expect_err("a pointer is not an int");
+    let first = &error.items()[0];
+    assert_eq!(
+        first.span.unwrap().start as usize,
+        source.find("ARG +").expect("the argument is there"),
+        "the caret is on the argument, not on the call's `(`"
+    );
+    assert_eq!(
+        first.span.unwrap().len,
+        3,
+        "and it covers the whole invocation"
+    );
+    assert!(
+        first.notes.iter().any(|note| note == "in `ARG`"),
+        "{:?}",
+        first.notes
+    );
+}
+
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

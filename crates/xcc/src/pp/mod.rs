@@ -119,8 +119,30 @@ impl Preprocessed {
     /// used. `None` for a token the program wrote itself - a diagnostic about a token in a macro
     /// *body* points at the body, which is where it was written, and this is what lets it add the
     /// one thing the body cannot say: which use it came from.
+    /// Which macro invocation produced this token: an index into [`Preprocessed::sites`], or `None`.
     pub fn site(&self, token: &PpToken) -> Option<&Site> {
         token.expansion.and_then(|at| self.sites.get(at as usize))
+    }
+
+    /// The invocation that *is* this span, for a diagnostic that points at a whole macro use.
+    ///
+    /// The other route to a site is [`Self::site`], which reads a token's `expansion` - and it
+    /// covers a diagnostic about a token from a macro *body*. This covers the other half: a span that
+    /// names the use itself, as `f(ARG)` does when the argument's type is wrong. No token has that
+    /// span - the invocation was replaced by its expansion before the parser saw it - so the search
+    /// is over the sites, which are pushed in expansion order and therefore in source order.
+    pub fn site_at(&self, file: u16, span: Span) -> Option<&Site> {
+        let at = match self
+            .sites
+            .binary_search_by_key(&span.start, |site| site.span.start)
+        {
+            Ok(at) => at,
+            Err(0) => return None,
+            Err(at) => at - 1,
+        };
+        self.sites
+            .get(at)
+            .filter(|site| site.file == file && site.span == span)
     }
 
     /// The `#pragma pack` limit in force at token `index`: the limit a record whose body ends

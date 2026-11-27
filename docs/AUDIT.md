@@ -786,6 +786,47 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M62 - 2026-11-25 - the caret on the wrong parenthesis, and the note that follows from it
+
+M61 stopped with one measurement to make: dump the diagnostic's span beside the site's span, with the source text under
+each, so my arithmetic stops being part of the answer. It took one run and it settled two things at once.
+
+```
+diagnostic span (54,1) text="("        - the call's parenthesis
+site       span (55,3) text="ARG"       - correct
+```
+
+So the note was missing for a reason nobody had looked for: **"argument 1 is pointer to char, expected int" pointed at the
+call's opening parenthesis**, not at argument 1. The span was the whole call's, and the parenthesised start of a call is
+`(`. Two of my three earlier readings of that caret column had been wrong - which is exactly why the probe prints text now
+and I do not count characters.
+
+The fix has three parts, and the third is why the note needed a second route at all.
+
+**The argument's span.** `call` now records the `program_span()` of each argument - the span of what the *program* wrote -
+and the type diagnostic uses it. `program_span` is the site's span when the token came from a macro, and the token's own
+otherwise, so it answers "where is this in the source the reader has" for both.
+
+**The second route to a site.** A token from a macro *body* carries `expansion`, which is how the note has always worked.
+A span that *is* the invocation matches no token, because the invocation is replaced by its expansion before the parser
+sees it - so `site_at` searches the sites by span, which are pushed in expansion order and therefore in source order.
+This is what M61 could not state clearly enough to implement; with the span now correct, containment became equality and
+the rule is one sentence.
+
+**Two notes from one site.** A body token needs the use's location, because the caret is under the definition. A span that
+*is* the use would repeat the caret's own file:line, so that route says only `in \`ARG\``.
+
+```
+3 | void g(void) { f(ARG + 1 + 1 + 1); }
+  |                  ^^^
+= note: in `ARG`
+```
+
+The body route is unchanged and still green (`= note: in \`W\`, used at t.c:2:25`).
+
+211 unit, **44 parser** (one more), 42 exe, 12 real, 6 invalid; differential 417 ran, 0 mismatched; 445 corpus programs
+agree; fmt and clippy clean.
+
 ### M61 - 2026-11-25 - the distance that was not the reason
 
 The next item was the note-distance fix from M52, whose conclusion was that the macro-site lookup tries only two tokens
