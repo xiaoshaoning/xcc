@@ -786,6 +786,32 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M69 - 2026-11-25 - sizeof of an array whose size is a number, and the rounding nobody did
+
+`sizeof a` for a variable-length array answers with the number the declaration computed, which is what
+C99 6.5.3.4p2 asks for: the size is the one *at the declaration*, so it is stored in a slot beside the pointer and
+`sizeof` loads it. A later change to the count does not move it - the new test sets `n = 1` after the declaration and
+still reads `20`.
+
+**And it found a bug that shipped in M65.** The first thing the new test did was crash:
+
+```
+Thread 1 received signal SIGSEGV
+0x00007ffe0bccaa97 in ucrtbase!fputs:   movdqa %xmm0,0x370(%rbp)
+```
+
+`movdqa` needs sixteen-byte alignment, so `rsp` was not aligned at the call. The VLA declaration passed
+`n * sizeof(int)` - twenty bytes for five ints - straight to `emit_stack_alloc`, under a comment that said *"the encoder
+rounds it to sixteen"*. **The encoder does not round; the parser's `alloca` did**, and the two callers disagreed. Every
+earlier VLA test had its array in a function that called nothing, and every earlier `alloca` test had a constant size
+that the other path had already rounded.
+
+The rounding moved to `emit_stack_alloc`, which is the one place both callers go through, and `alloca` lost its own copy.
+A comment describing a check the code does not make is worse than no comment, and here it cost a fault inside the C
+runtime rather than a wrong number - the shape a test finds only if it puts the two things in one function.
+
+211 unit, **46 exe** (two more), 47 parser, 12 real; fmt and clippy clean.
+
 ### M68 - 2026-11-25 - the header that shadowed the SDK, and the spelling asked on every expression
 
 Reviewing `b811ce8` found one regression I had introduced and one piece of work done in the wrong place.

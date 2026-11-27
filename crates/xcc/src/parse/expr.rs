@@ -1658,23 +1658,43 @@ impl Parser<'_> {
                 }
             };
         }
-        // C99 6.5.3.4p2: the operand is not evaluated - a variable-length array is the exception
-        // p2 names, and its size is a number the program works out, so this refuses rather than
-        // answering with the size of the pointer the array's name has become.
-        let vla = self.peek().copied().filter(|token| {
-            token.kind == crate::lex::TokenKind::Ident
-                && self
-                    .symbols
-                    .lookup(token.text)
-                    .is_some_and(|entry| entry.variable_length)
-        });
+        // C99 6.5.3.4p2: the operand is **not** evaluated - and a variable-length array is the one
+        // exception that paragraph names, which is why its size has to have been computed at the
+        // declaration and kept. It is kept in a slot beside the pointer, so this is a load: not a
+        // constant, and not the size of the pointer the name has become.
+        // Only when the *name* is the whole operand. `sizeof a[0]` is the size of an element, and
+        // the operand there is a postfix expression - `sizeof` binds a unary expression, so anything
+        // that continues the name (a subscript, a member, a call, a step) means the name is not it.
+        let continues = |parser: &Self, after: usize| {
+            parser.tokens().get(after).is_some_and(|token| {
+                ["[", ".", "->", "(", "++", "--"]
+                    .iter()
+                    .any(|punct| parser.is_punct(token, punct))
+            })
+        };
+        let vla = self
+            .peek()
+            .copied()
+            .filter(|token| {
+                token.kind == crate::lex::TokenKind::Ident
+                    && self
+                        .symbols
+                        .lookup(token.text)
+                        .is_some_and(|entry| entry.variable_length)
+            })
+            .filter(|_| !continues(self, self.at + 1));
         if let Some(token) = vla {
             self.bump();
-            self.error(
-                token.span,
-                "`sizeof` a variable-length array: its size is a number the program works out, and this compiler does not carry it in the name",
-            );
-            return Value::temporary(self.types.error());
+            let size = self
+                .symbols
+                .lookup(token.text)
+                .and_then(|entry| entry.variable_length_size);
+            return match size {
+                Some(slot) => self.read_place(size_type, slot, span),
+                // A size the declaration never computed, because the declaration itself was
+                // refused: zero is not a claim about anything.
+                None => self.constant_of(size_type, 0, span),
+            };
         }
         let saved = std::mem::replace(&mut self.unevaluated, true);
         let value = self.unary_expression();
@@ -1787,16 +1807,9 @@ impl Parser<'_> {
         if !self.eat(")") {
             self.error_at_current("expected `)`");
         }
-        let wide = self
-            .types
-            .fundamental("unsigned long long")
-            .unwrap_or_else(|| self.types.error());
-        let size = self.convert(size, wide, span);
-        let fifteen = self.constant_of(wide, 15, span);
-        let rounded = self.emit_binary(cir::BinOp::Add, wide, wide, [size, fifteen], None, span);
-        let mask = self.constant_of(wide, -16, span);
-        let aligned = self.emit_binary(cir::BinOp::And, wide, wide, [rounded, mask], None, span);
-        let address = self.emit_stack_alloc(aligned, span);
+        // The rounding to sixteen belongs to `emit_stack_alloc`, which both this and a
+        // variable-length array's declaration go through: one place for one rule.
+        let address = self.emit_stack_alloc(size, span);
         self.leave_nesting();
         Some(address)
     }
@@ -2559,6 +2572,7 @@ impl Parser<'_> {
             if let Some(function) = self.intrinsic(name) {
                 let entry = Entry {
                     variable_length: false,
+                    variable_length_size: None,
                     ty: function,
                     kind: Kind::Function,
                     span,
@@ -2583,6 +2597,7 @@ impl Parser<'_> {
                 self.implicit_types.insert(function);
                 let entry = Entry {
                     variable_length: false,
+                    variable_length_size: None,
                     ty: function,
                     kind: Kind::Function,
                     span,
@@ -2786,6 +2801,7 @@ impl Parser<'_> {
                         name,
                         Entry {
                             variable_length: false,
+                            variable_length_size: None,
                             ty,
                             kind: Kind::Variable,
                             span,
@@ -2819,6 +2835,7 @@ impl Parser<'_> {
                         name,
                         Entry {
                             variable_length: false,
+                            variable_length_size: None,
                             ty,
                             kind: Kind::Variable,
                             span,

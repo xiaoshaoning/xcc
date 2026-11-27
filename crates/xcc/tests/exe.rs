@@ -117,18 +117,67 @@ int grid(int rows) {\n\
   return a[rows - 1][0] + a[rows - 1][1] + a[rows - 1][2];\n\
 }\n\
 \n\
+/* A variadic call from the same function as the array, which no earlier test had: the\n\
+   callee writes its home area at this frame's live rsp, and that is below the array. */\n\
+int own(int n) {\n\
+  int a[n];\n\
+  int i;\n\
+  for (i = 0; i < n; i = i + 1) a[i] = i + 1;\n\
+  printf(\"own %d %d\\n\", a[0], a[n - 1]);\n\
+  return a[0];\n\
+}\n\
+\n\
 int main(void) {\n\
   printf(\"%d %d %d %d\\n\", sum(5), sum(10), sum(1), grid(4));\n\
+  printf(\"own returns %d\\n\", own(4));\n\
   return 0;\n\
 }\n";
     let out = run_linked("vla", program, &[]);
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout).replace("\r", ""),
-        "30 285 0 18\n"
+        "30 285 0 18\nown 1 4\nown returns 1\n"
     );
 }
 
+/// `sizeof` a variable-length array: the one `sizeof` operand that *is* evaluated, and the number is
+/// the one the declaration computed (C99 6.5.3.4p2).
+///
+/// It used to refuse, because the size was not in the name - the name is a pointer. It is kept in a
+/// slot beside the pointer now, so a `sizeof` inside a loop reports the size the array actually got
+/// and not the size the count expression has by then.
+///
+/// The second half is the bug that this work found in the *first* VLA commit: the stack allocation's
+/// size was not rounded to sixteen, so a five-element `int` array moved `rsp` by twenty and the
+/// `printf` after it found the stack four mod sixteen - a `movdqa` fault inside `ucrtbase`, not a
+/// wrong number. Every VLA test before this one had its array in a function that called nothing.
+#[test]
+#[cfg(target_os = "windows")]
+fn sizeof_a_variable_length_array_is_the_number_the_declaration_computed() {
+    let program = "#include <stdio.h>\n\
+\n\
+int main(void) {\n\
+  int n = 5;\n\
+  int a[n];\n\
+  char c[7];\n\
+  long long m = 9;\n\
+  double d[m];\n\
+  a[0] = 1;\n\
+  int shrink = (int)sizeof a;\n\
+  n = 1;\n\
+  printf(\"%d %d %d %d %d %d\\n\", shrink, (int)sizeof a, (int)sizeof c,\n\
+         (int)sizeof d, (int)(sizeof a / sizeof a[0]), (int)(sizeof d / sizeof d[0]));\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("sizeof-vla", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // `n` becomes 1 after the declaration, and both `sizeof`s still say twenty: the size is what the
+    // declaration computed, which is what C says and what a recomputation would get wrong.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "20 20 7 72 5 9\n"
+    );
+}
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

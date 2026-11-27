@@ -1049,6 +1049,7 @@ impl Parser<'_> {
             specs.alignas = self.declaration_alignment(began, specs.alignas);
             let entry = Entry {
                 variable_length: false,
+                variable_length_size: None,
                 ty,
                 storage: None,
                 defined: false,
@@ -1177,11 +1178,23 @@ impl Parser<'_> {
                                 span,
                             );
                             let address = self.emit_stack_alloc(total, span);
+                            // `sizeof` needs the size in bytes, and it must be the one computed
+                            // *here*: the count is an expression the program has just evaluated, and
+                            // a `sizeof` in a loop may not evaluate it again (C99 6.5.3.4p2). So the
+                            // number is stored in a slot of its own, beside the pointer.
+                            let wide_pointer = self.pointer_to(wide);
+                            let size_slot = self
+                                .emit(|builder| builder.slot(wide, wide_pointer, span))
+                                .filter(|_| total.cir.is_some());
+                            if let (Some(slot), Some(size_value)) = (size_slot, total.cir) {
+                                self.emit(|builder| builder.store(slot, size_value, span));
+                            }
                             if let (Some(name), Some(_)) = (name, address.cir) {
                                 // The name is a variable-length array from here on, which is what
                                 // `sizeof` has to know and what the symbol table already scopes.
                                 if let Some(entry) = self.symbols.here_mut(name) {
                                     entry.variable_length = true;
+                                    entry.variable_length_size = size_slot;
                                 }
                                 if let Some(place) =
                                     self.symbols.here(name).and_then(|entry| entry.storage)
@@ -2080,6 +2093,7 @@ impl Parser<'_> {
             next_value = value.wrapping_add(1);
             let entry = Entry {
                 variable_length: false,
+                variable_length_size: None,
                 ty: int,
                 kind: Kind::EnumConst(value),
                 span: token.span,
@@ -2658,6 +2672,7 @@ impl Parser<'_> {
         self.last_parameters.push((Some(name), ty, span));
         let entry = Entry {
             variable_length: false,
+            variable_length_size: None,
             ty,
             kind: Kind::Variable,
             span,

@@ -48,6 +48,11 @@ pub(crate) struct Entry {
     /// that is what makes it scoped - a `Row` in one function and a `Row` in another are two names,
     /// and a list beside the symbol table would answer for whichever was written last.
     pub variable_length: bool,
+    /// The address of the slot holding a variable-length array's **size in bytes**, for `sizeof`.
+    /// It is a second fact rather than a recomputation because the count is an expression the program
+    /// evaluated once, at the declaration (C99 6.5.3.4p2: the size is the one asked for then), and a
+    /// `sizeof` inside a loop must not evaluate it again.
+    pub variable_length_size: Option<crate::cir::Value>,
 }
 
 /// One scope: the names declared in it, and the `struct`/`union` tags, which live in a
@@ -165,6 +170,7 @@ mod tests {
             storage: None,
             defined: false,
             variable_length: false,
+            variable_length_size: None,
         }
     }
 

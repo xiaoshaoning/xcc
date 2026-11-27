@@ -584,9 +584,25 @@ impl Parser<'_> {
     }
 
     /// `left op right`, with both operands converted to `operands` as C requires.
-    /// `__xcc_alloca`: the address of `size` bytes taken off the stack here, rounded up by the caller
-    /// to sixteen so that later calls still find `rsp` aligned.
+    /// `__xcc_alloca`: the address of `size` bytes taken off the stack here, **rounded up to sixteen
+    /// by this function** - one place owns that rule, because a call made after the allocation needs
+    /// `rsp` aligned, and a size that is not a multiple of sixteen is the difference between a frame
+    /// and a `movdqa` fault inside the C runtime (measured: a five-element `int` array, twenty bytes,
+    /// four mod sixteen).
     pub(super) fn emit_stack_alloc(&mut self, size: Value, span: Span) -> Value {
+        let wide = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        let size = if size.cir.is_some() && size.ty != wide {
+            self.convert(size, wide, span)
+        } else {
+            size
+        };
+        let fifteen = self.constant_of(wide, 15, span);
+        let rounded = self.emit_binary(cir::BinOp::Add, wide, wide, [size, fifteen], None, span);
+        let mask = self.constant_of(wide, -16, span);
+        let size = self.emit_binary(cir::BinOp::And, wide, wide, [rounded, mask], None, span);
         let void = self
             .types
             .fundamental("void")
