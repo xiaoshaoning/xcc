@@ -600,13 +600,24 @@ impl Encoder<'_> {
             }
             Op::StackAlloc { dst, size } => {
                 // The size arrives already rounded up to sixteen - the front end computes it that way
-                // because it is the one place that knows the element size - so this is `mov r11, n;
-                // sub rsp, r11; mov dst, rsp`. `r11` is the encoder's address scratch and is free
-                // here: `read` may have put the size there itself, and the move is then a no-op.
+                // because it is the one place that knows the element size - so this is `mov rax, n;
+                // call __chkstk; sub rsp, rax; mov dst, rsp`.
+                //
+                // `__chkstk` is the probe, and it is not optional: Windows commits a thread's stack one
+                // page at a time as each access reaches the guard page, and a single `sub rsp, n` of a
+                // whole large frame steps *over* that page so the first write faults instead of
+                // growing the stack. The constant-size path has probed for years; a run-time size
+                // cannot be walked at compile time, so the kernel's own prober does it - with the size
+                // in `rax`, which it leaves there, and `rsp` untouched, which is why the subtraction
+                // follows the call. Measured before this: a 45 KB variable-length array in codec-2-shaped
+                // code faulted, and this is the difference between a working program and a crash.
                 let amount = self.read(*size);
-                let scratch = self.scratch[0];
-                self.mov_reg(scratch, amount);
-                self.sub_rsp_reg(scratch);
+                self.mov_reg(Reg::RAX, amount);
+                self.call(&String::from("__chkstk"));
+                // `sub rsp, rax`: the size is the register the prober read.
+                self.prefix_w(Reg::RAX, Reg::RSP);
+                self.byte(0x29);
+                self.modrm(3, Reg::RAX.0, Reg::RSP);
                 let register = self.destination(*dst);
                 self.mov_reg(register, Reg::RSP);
                 self.write(*dst, register);
@@ -2025,13 +2036,6 @@ impl Encoder<'_> {
 
     /// `sub rsp, bytes`, in the four-byte form or the one-byte form: most frames are small, and six
     /// bytes a function is six bytes over five hundred functions.
-    /// `sub rsp, r64`: the stack moves by an amount only the program knows.
-    fn sub_rsp_reg(&mut self, register: Reg) {
-        self.prefix_w(register, Reg::RSP);
-        self.byte(0x29);
-        self.modrm(3, register.0, Reg::RSP);
-    }
-
     fn sub_rsp(&mut self, bytes: i32) {
         self.adjust_rsp(5, bytes);
     }

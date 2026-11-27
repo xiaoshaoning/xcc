@@ -79,6 +79,11 @@ fn lower_function(
                 // there - which is what a segmentation fault in a *worker thread* turned out to be.
                 || matches!(inst, Inst::GlobalAddress { name, .. }
                     if thread_locals.contains_key(name))
+                // A run-time stack allocation is a call too: the encoder asks `__chkstk` to probe
+                // the pages it is about to commit, and a probe is a call like any other - a value the
+                // allocator left in `r8`-`r11` is destroyed by it. That is the same mistake the
+                // thread-local address above records, one layer down.
+                || matches!(inst, Inst::StackAlloc { .. })
         })
     });
     // The widest call decides how much outgoing room the frame needs; a call with four arguments

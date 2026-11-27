@@ -505,6 +505,78 @@ int main(void) {\n\
     );
 }
 
+/// A stack allocation larger than the stack's committed region **probes the pages it takes**.
+///
+/// Windows commits a thread's stack one page at a time, as each access reaches the guard page below it.
+/// A constant-size frame has been walked a page at a time since the lz4 fixture found this; a
+/// *run-time* size cannot be walked at compile time, and until now it was not walked at all - so a
+/// variable-length array bigger than the committed region stepped over the guard page and the first
+/// store faulted. The encoder asks `__chkstk` now, with the size in `rax` where the prober expects it
+/// and the subtraction after the call, which is MSVC's own sequence.
+///
+/// The program that found it is polar_codes, which declares `int node_type[N*(n+1)]` with N a kilobyte
+/// and faulted on the first write.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_large_variable_length_array_probes_the_stack() {
+    let program = "#include <stdio.h>\n\
+\n\
+int main(void) {\n\
+  int N = 1024;\n\
+  int n = 10;\n\
+  int a[N * (n + 1)];\n\
+  int i;\n\
+  for (i = 0; i < N * (n + 1); i = i + 1) a[i] = i;\n\
+  printf(\"%d %d\\n\", a[0], a[N * (n + 1) - 1]);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("vla-probe", program, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "it did not fault on the first write"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "0 11263\n"
+    );
+}
+
+/// The same for 256 KB, which steps over sixty-odd pages on the way down, and for an array declared
+/// inside a loop, where every pass probes again and the block releases it afterwards.
+///
+/// The sizes matter: a thread's stack is a megabyte by default, so two live megabyte arrays is a
+/// program that overflows it rather than a compiler that fails - which is how the first version of this
+/// test read, and what the probe turned into a clean termination instead of a fault.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_quarter_megabyte_probes_once_per_pass() {
+    let program = "#include <stdio.h>\n\
+\n\
+int main(void) {\n\
+  int n = 64 * 1024;\n\
+  int a[n];\n\
+  int i;\n\
+  int total = 0;\n\
+  for (i = 0; i < n; i = i + 1) a[i] = i;\n\
+  for (i = 0; i < 4; i = i + 1) {\n\
+    int b[n];\n\
+    b[0] = i;\n\
+    b[n - 1] = i;\n\
+    total = total + b[0] + b[n - 1];\n\
+  }\n\
+  printf(\"%d %d\\n\", a[n - 1], total);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("vla-probe-loop", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // 4 passes, each adding i twice: 0+0, 1+1, 2+2, 3+3 = 12.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "65535 12\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

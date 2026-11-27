@@ -786,6 +786,58 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M90 - 2026-11-25 - the probe that was owed, and the crash that was two bugs
+
+The polar_codes crash had no oracle last time. It has one now: **WSL2 is on this machine**, so `gcc -O2 -lm` on Ubuntu builds the
+same two files and runs them to completion - `exit 0` - where this compiler faulted. That settles the direction: the fault was
+ours, and the program's own arithmetic is fine.
+
+**The first bug was the one already written down as a ceiling.** The crash was at `node_type[i_Q + i_n*N] = 0`, and the array is
+a **variable-length array of forty-five kilobytes**:
+
+```c
+int node_type[N*(n+1)];      /* N is a kilobyte */
+```
+
+`Op::StackAlloc` moved `rsp` with a single `sub` and never probed the pages it stepped over. Windows commits a thread's stack one
+page at a time as each access reaches the guard page; the *constant*-size frame has been walked a page at a time since the lz4
+fixture found this, and the run-time one was left with a `ponytail:` comment promising a probe loop.
+
+The encoder asks **`__chkstk`** now - the kernel's own prober, exported by `kernel32` - with the size in `rax` where it expects
+it and the subtraction after the call, which is MSVC's sequence:
+
+```
+mov rax, size        call __chkstk        sub rsp, rax        mov dst, rsp
+```
+
+And the probe is a **call**, so the allocator has to know: `Inst::StackAlloc` joins the thread-local address in the predicate
+that sets `makes_call`, because a value left in `r8`-`r11` is destroyed by it. That is the same mistake the thread-local
+address records, one layer down.
+
+```
+45 KB array       faulted            ->  0 11263
+1 MB array        faulted            ->  262143
+256 KB in a loop  faulted            ->  65535 12
+```
+
+Tested both ways: without the `call __chkstk` the tests fail with `left: Some(-1073741819)`, the access violation.
+
+**The second bug is still open, and it is a different one.** With the probe in place polar_codes gets past `main` and faults
+inside `decode_unrolled` at `functions_SSCL.c:173`:
+
+```
+L[0][i_N + i_list*N] = LLR_Q[i_N];      rbx = 0     <- the row pointer is NULL
+```
+
+A NULL row pointer is not a stack problem. It is the next thing, and it has a reproducer, a line number and an instruction.
+
+**And one of my own tests was wrong**: the first version of the loop test used a *megabyte* array outside the loop and another
+inside, which is two live megabytes on a one-megabyte stack - a program that overflows it, not a compiler that fails. The probe
+turned it into a clean termination, which is what a probe is for; the test now uses 256 KB and checks the numbers.
+
+213 unit, **57 exe** (two more), 53 parser, 12 real; differential 417 ran, 0 mismatched; 445 corpus programs agree; fmt and
+clippy clean.
+
 ### M89 - 2026-11-25 - the count that was the last index, and the global that lost a value
 
 Reviewing the array-completion fix (M87) checked the shapes it had not mentioned, and found a worse bug underneath it.
