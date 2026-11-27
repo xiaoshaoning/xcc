@@ -786,6 +786,35 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M53 - 2026-11-25 - xxhash, the alignment that belonged to the frame, and the assert that reached the linker
+
+Two real programs tried; one gap fixed; one bug found; one negative.
+
+**`_Alignas` above sixteen is the frame's limit, not the data section's.** `xxhash` aligns its accumulators to 64 at file
+scope and was refused with *"this compiler supports 16 and below - what the ABI guarantees"*. That sentence is true about
+the *stack*: the prologue aligns the frame to sixteen, which is the ABI's number, so an automatic object asking for more
+is a promise this compiler cannot keep. It says nothing about the data section, where the object writer places an object
+at an offset - sixty-four is an offset like any other. The check now asks **where** the object lives: file scope is
+allowed up to a page, an automatic one keeps the sixteen and the message says why plus what to do about it (*"give the
+object static storage duration"*).
+
+`_Alignas(16)` and below were already tested through the layout matrix; the new test is the boundary itself, in both
+directions, because the rule now depends on storage duration and a rule with two arms needs two cases.
+
+**And a bug that is not about alignment at all**: with the alignment fixed, `xxhash` compiles, links - and fails at link
+with `undefined symbol `_Static_assert``. A `_Static_assert` is being read as an *expression that calls a function* in some
+context, so the compiler emits a call to a name no library has. That is one of the two shapes this project treats as a
+bug by definition (a wrong program, and a link error is the lucky version of it); it needs the source position, which is
+the next session's first ten minutes.
+
+**The negative**: `xxhash`'s vector paths are `__m128i` and `__m256i`, and this compiler shadows `emmintrin.h` with an
+empty bridge header on purpose (M12). With `-DXXH_VECTOR=0` - the library's own switch for the portable scalar path - it
+compiles to a 102 KB object, and a driver against it prints what clang's build prints:
+`ed714233c5a9a792 e4541a9cacf545aa 66716377`. So xxhash is measurable on the scalar path only, which is the same trade
+miniz's `MINIZ_NO_STDIO` was.
+
+210 unit, 43 parser (one more), 41 exe, 10 real; fmt and clippy clean.
+
 ### M52 - 2026-11-25 - the widening that could never have fired
 
 Reviewing `90055fe` (docs only - the revert was complete) turned the note's "could not be proved" into something better:

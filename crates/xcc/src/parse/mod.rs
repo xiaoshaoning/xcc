@@ -214,6 +214,9 @@ impl Value {
 /// and what the stack guarantees. C11 6.7.5p6 lets an implementation decline the *extended*
 /// alignments above it, and this one does, with a diagnostic naming the number asked for.
 const FUNDAMENTAL_ALIGNMENT: u64 = 16;
+/// The largest alignment an object in a data section may ask for. A page is the widest thing
+/// a linker places specially, and a number past it is a request nobody makes.
+const STATIC_ALIGNMENT_LIMIT: u64 = 4096;
 
 /// The words that can begin a declaration: storage classes, qualifiers, type specifiers and the tag
 /// keywords. `starts_specifier` asks this list, and **a word the specifier reader accepts and this
@@ -1546,12 +1549,26 @@ impl Parser<'_> {
                     if let Some(align) = self.alignment_in_parentheses() {
                         if align == 0 {
                             // No effect, exactly as C11 6.7.5p4 says.
-                        } else if align > FUNDAMENTAL_ALIGNMENT {
+                        } else if align > FUNDAMENTAL_ALIGNMENT && self.in_body() {
+                            // **The limit is the frame's, not the data section's.** An *automatic*
+                            // object is placed by the prologue, which aligns the frame to sixteen -
+                            // the ABI's stack alignment - so asking for more there is a promise this
+                            // compiler cannot keep. An object with static storage duration is placed
+                            // by the object writer, where sixty-four is an offset like any other.
+                            // `xxhash` aligns its accumulators to 64, at file scope, and was refused.
                             let span = self.span();
                             self.error(
                                 span,
                                 format!(
-                                    "`_Alignas({align})` is an extended alignment, and this compiler supports {FUNDAMENTAL_ALIGNMENT} and below - what the ABI guarantees"
+                                    "`_Alignas({align})` on an automatic object is an extended alignment, and this compiler's frame is {FUNDAMENTAL_ALIGNMENT}-aligned - what the ABI guarantees. Give the object static storage duration"
+                                ),
+                            );
+                        } else if align > STATIC_ALIGNMENT_LIMIT {
+                            let span = self.span();
+                            self.error(
+                                span,
+                                format!(
+                                    "`_Alignas({align})` is past this compiler's limit of {STATIC_ALIGNMENT_LIMIT} for an object in the data section"
                                 ),
                             );
                         } else {

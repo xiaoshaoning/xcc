@@ -1331,3 +1331,31 @@ fn a_poisoned_expression_is_diagnosed_once() {
     );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
+
+/// `_Alignas` above sixteen is a promise about the **frame**, not about the data section:
+/// `xxhash` aligns its accumulators to 64 at file scope and was refused.
+#[test]
+fn an_alignment_above_sixteen_belongs_to_static_storage() {
+    let c11 = Options {
+        standard: xcc::CStandard::C11,
+        ..Options::default()
+    };
+    // A file-scope object is placed by the object writer, where 64 is an offset like any other.
+    assert!(check_with(
+        c11.clone(),
+        "_Alignas(64) int counter;
+int main(void) { return counter; }"
+    )
+    .is_empty());
+    // An automatic one is placed by the prologue, which aligns the frame to sixteen - the ABI's
+    // number - so the refusal names that and says what to do.
+    let refused = check_with(
+        c11,
+        "int main(void) { _Alignas(64) int local = 0; return local; }",
+    );
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(
+        refused[0].contains("static storage duration"),
+        "{refused:?}"
+    );
+}
