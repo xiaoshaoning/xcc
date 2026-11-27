@@ -473,6 +473,38 @@ int main(void) {\n\
     );
 }
 
+/// An array of unknown size takes its count from the **largest subscript**, not the last one.
+///
+/// C99 6.7.8p22: "the largest subscript". `int g[] = { [2] = 5, [0] = 1 };` has three elements, and
+/// the walk tracked only the index it was writing, so the count came out 1 and the bytes were then cut
+/// to that length - dropping the `5` that had been written at offset 8. A wrong global with no
+/// diagnostic, which is the worst shape a bug can have.
+///
+/// Found by reviewing the array-completion fix: the completion itself was right, and the number it was
+/// handed was not.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_designated_array_counts_its_largest_subscript() {
+    let program = "#include <stdio.h>\n\
+\n\
+int g[] = { [2] = 5, [0] = 1 };\n\
+\n\
+int main(void) {\n\
+  int local[] = { [3] = 9, [1] = 2 };\n\
+  printf(\"%d %d %d %d %d\\n\", (int)(sizeof g / sizeof g[0]), g[0], g[2],\n\
+         (int)(sizeof local / sizeof local[0]), local[3]);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("designated", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // Three elements each: `[2]` and `[3]` are what decide, and the values written before the walk
+    // reached them must survive the cut to the type's size.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "3 1 5 4 9\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

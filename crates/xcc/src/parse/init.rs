@@ -252,6 +252,11 @@ impl Parser<'_> {
         // no size - an incomplete record in an array - gets offset zero and its own diagnostic.
         let size = self.types.size_of(element).unwrap_or(0) as usize;
         let mut written = 0u64;
+        // The **highest** index any element reached, which is not the last one: `{[2] = 5, [0] = 1}`
+        // has three elements, and the array's size comes from the first (C99 6.7.8p22: "the largest
+        // subscript"). Taking the last index made that array one element long and dropped the `5`
+        // when the bytes were cut to the type's size - a wrong global, silently.
+        let mut extent = 0u64;
         let mut first = true;
         loop {
             if self.at_punct("}") || self.at_eof() {
@@ -307,10 +312,11 @@ impl Parser<'_> {
             } else {
                 self.initializer_body(element, false);
             }
+            extent = extent.max(written + 1);
             written += 1;
         }
         match declared {
-            None => self.types.complete_array(ty, written),
+            None => self.types.complete_array(ty, extent),
             // The list stopped at the last element it had room for; a comma here means more came.
             // C99 6.7.8p2 makes that a constraint violation, so it is diagnosed - and then the surplus
             // is skipped, which is what every compiler that meets it in the wild does: `int a[3] =

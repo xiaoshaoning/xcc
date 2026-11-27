@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M89 - 2026-11-25 - the count that was the last index, and the global that lost a value
+
+Reviewing the array-completion fix (M87) checked the shapes it had not mentioned, and found a worse bug underneath it.
+
+```c
+int g[] = { [2] = 5, [0] = 1 };
+
+ours:  sizeof g / sizeof g[0] is 1, and g[2] is 622879781
+clang: 3, and g[2] is 5
+```
+
+C99 6.7.8p22 says the size comes from **the largest subscript**. The walk tracked the index it was *writing*, so the list
+ended at index 0, the count came out 1, and the bytes were then cut to the type's size - discarding the `5` that had been
+written at offset 8. A wrong global, with no diagnostic: the worst shape a bug can have.
+
+Two lines: an `extent` that keeps the highest index reached, and `complete_array` handed that instead of `written`. Four
+programs checked against `clang`, all four now identical:
+
+```
+int m[][3] = {{1,2,3},{4,5,6}}      2 6      (was correct)
+int local[] = {7,8,9,10}            4 10     (was correct)
+int g[] = {[2]=5,[0]=1}             3 1 5    (was 1 1 622879781)
+int d[] = {[2]=5,[0]=1}  (local)    3 6      (was 1 6)
+```
+
+**The review's own lesson**: the completion from M87 was right, and the *number it was handed* was not. Checking the shape
+the fix did not mention - a designator - found that a pre-existing corruption had been sitting under the same walk, invisible
+while the count was None because nothing read it.
+
+55 exe (one more), 213 unit, 53 parser, 12 real, 6 invalid; 445 corpus programs agree; fmt and clippy clean.
+
 ### M88 - 2026-11-25 - polar_codes: no oracle on this machine, and a crash with its evidence
 
 The third candidate, surveyed properly. `polar_codes/C/SSCL` is the best of the three on paper: a self-contained `main`, a
