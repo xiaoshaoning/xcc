@@ -786,6 +786,33 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M60 - 2026-11-25 - tre becomes the tenth fixture, and the isascii that was a macro
+
+`tests/fixtures/tre/` is thirteen of tre's units unmodified, with a driver that compiles one extended expression and
+matches it once with three groups: `2 8 2 5 5 8`, the same as a `clang -O0` build. It is here because it refused to
+compile until a pointer converted to a **narrower integer** became one of the conversion table's cases (M42), and it is
+the densest preprocessor code in the suite.
+
+Two things had to be got right before it was a fixture at all.
+
+**`-DUSE_LOCAL_TRE_H` is not optional.** Without it `regex.h` includes `<tre/tre.h>` - and **msys2 ships tre**, so the
+first build of this fixture compiled the vendored sources against an *installed* header and printed the right answer
+anyway. A fixture whose oracle comes from a different library than the one being compiled is the "measurement without an
+oracle" failure in a new coat: the numbers agreed because both sides had been told the same thing by someone else. With
+the switch, the vendored `tre.h` is used and its Windows branch reads `basetsd.h` - so this fixture needs the SDK, like
+mimalloc's and unlike xxhash's.
+
+**`isascii` does not exist as a function in the UCRT.** The link failed with `undefined symbol isascii`, and the
+measurement that mattered was one `grep`: `ucrtbase` exports `__isascii` and `__toascii`, and MSVC's own `ctype.h` spells
+`isascii` as a macro over the underscored name. So does this one now - the same shape as `_snprintf` versus `snprintf`,
+which this project already documented. The first attempt declared a *function* `isascii`, which linked no better than not
+declaring it, and the guard written for exactly this - *these names are in no list* - caught the two new declarations by
+name within one test run.
+
+Two `real` tests now need the SDK and one needs none; `tre` is the tenth fixture.
+
+211 unit, 43 parser, 42 exe, **12 real** (one more), 31 CLI; fmt and clippy clean.
+
 ### M59 - 2026-11-25 - the fixture that fails when the fix is undone
 
 Reviewing `622388f` asked one question - does this test earn its place? - and answered it with a mutation rather than an

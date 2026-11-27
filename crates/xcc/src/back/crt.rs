@@ -239,6 +239,10 @@ pub(crate) const C_RUNTIME: &[&str] = &[
     "strtok",
     "strxfrm",
     // ctype.h
+    // The ASCII tests the UCRT exports under underscored names, which is the spelling MSVC's own
+    // `ctype.h` maps `isascii` onto; `tre` calls the name directly.
+    "__isascii",
+    "__toascii",
     "isalnum",
     "isalpha",
     "isblank",

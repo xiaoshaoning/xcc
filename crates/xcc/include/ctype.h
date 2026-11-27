@@ -17,4 +17,12 @@ int isxdigit(int c);
 int tolower(int c);
 int toupper(int c);
 
+/* MSVC keeps the ASCII tests beside the C99 ones, and the UCRT exports the *underscored* names:
+   `isascii` is a macro over `__isascii` there, exactly as `_snprintf` is a function and `snprintf`
+   is not. tre, being a POSIX library, calls `isascii` directly. */
+int __isascii(int c);
+int __toascii(int c);
+#define isascii(c) __isascii(c)
+#define toascii(c) __toascii(c)
+
 #endif

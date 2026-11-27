@@ -17,6 +17,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `yyjson/` | [ibireme/yyjson](https://github.com/ibireme/yyjson), master, 2026-11-22 | MIT | a JSON reader and writer, its allocation strategy, and a four-way token paste |
 | `mimalloc/` | [microsoft/mimalloc](https://github.com/microsoft/mimalloc), master, 2026-11-22 | MIT | a production allocator: thread-local heaps, `gs:` reads, `lock cmpxchg`, `rep movs` |
 | `xxhash/` | [Cyan4973/xxHash](https://github.com/Cyan4973/xxHash), master, 2026-11-22 | BSD | three hash functions, and the MSVC intrinsic a program calls with no header |
+| `tre/` | [laurikari/tre](https://github.com/laurikari/tre), master, 2026-11-22 | BSD | POSIX regular expressions: the most macro-heavy code here, and a pointer-to-narrower-int cast |
 
 ## cjson
 
@@ -33,6 +34,21 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## tre
+
+`tre` from [laurikari/tre](https://github.com/laurikari/tre), master as of 2026-11-22, BSD - the notice
+and license are in `LICENSE` and `NOTICE`. Thirteen of its units are compiled; `tre_all.c` and
+`xmalloc.c` are not needed for the driver.
+
+`-DUSE_LOCAL_TRE_H` is tre's own switch, and it is not optional for a fixture: without it `regex.h`
+includes `<tre/tre.h>` from an **installed** package - msys2 ships one - so the driver would be
+declared against a different library than the one being compiled. With it, the Windows branch of
+`tre-internal.h` reaches for `basetsd.h`, so this fixture needs the SDK.
+
+It is here because it refused to compile until a pointer converted to a **narrower integer** was one
+of the conversion table's cases (M42), and because it is the densest preprocessor code in the suite:
+`tre-config.h`'s `HAVE_*` flags turn into `#define`s that reach the matchers.
 
 ## xxhash
 

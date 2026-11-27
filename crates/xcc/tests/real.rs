@@ -424,6 +424,52 @@ const YYJSON_EXPECTED: &str = "\
 {\"who\":\"xcc\",\"version\":5}
 ";
 
+/// `tre`: 7 663 lines of POSIX regular expressions - the most macro-heavy code in the fixtures -
+/// and the second that needs the SDK, because its Windows branch reads `basetsd.h`.
+///
+/// It is here to pin M42: a pointer converted to a **narrower integer** is a `Truncate`, which was
+/// missing from the conversion table until `tre` refused to compile without it. The driver is one
+/// extended expression matched once with three groups, so the parse, the compile and the parallel
+/// matcher all run.
+///
+/// `-DUSE_LOCAL_TRE_H` is tre's own switch: without it `regex.h` includes `<tre/tre.h>` from an
+/// installed package - which on this machine is msys2's, and a build that took that path would be
+/// comparing this compiler against a *different library* than the one being compiled.
+#[test]
+fn tre_matches_three_groups() {
+    let Some(sdk) = windows_sdk() else {
+        eprintln!("no Windows SDK headers on this machine: the tre test is skipped");
+        return;
+    };
+    let run = run_fixture_with(
+        "tre",
+        "tre",
+        &[
+            "driver.c",
+            "tre-ast.c",
+            "tre-compile.c",
+            "tre-filter.c",
+            "tre-match-approx.c",
+            "tre-match-backtrack.c",
+            "tre-match-parallel.c",
+            "tre-parse.c",
+            "tre-stack.c",
+            "tre-mem.c",
+            "regcomp.c",
+            "regerror.c",
+            "regexec.c",
+        ],
+        &["USE_LOCAL_TRE_H"],
+        xcc::CStandard::default(),
+        &[sdk],
+        &[],
+    );
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // What a `clang -O0` build of the same files prints: match 2..8, group 1 at 2..5, group 2 at 5..8.
+    assert_eq!(out.trim_end(), "2 8 2 5 5 8");
+}
+
 /// `xxhash`: 250 KB of hash functions, and the **only** fixture of the last four that needs no
 /// Windows SDK - so unlike SQLite's and Lua's run halves this one is checked on every machine.
 ///
