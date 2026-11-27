@@ -953,6 +953,17 @@ impl FunctionLowering<'_> {
                 let dst = self.address_of(Address::Local(offset), *result, ops);
                 self.classify(dst, Class::Integer);
             }
+            Inst::StackMark { result, .. } => {
+                let dst = self.reg_for(*result);
+                self.classify(dst, Class::Integer);
+                ops.push(Op::StackMark { dst });
+                self.dynamic_stack = true;
+            }
+            Inst::StackRestore { mark, .. } => {
+                ops.push(Op::StackRestore {
+                    mark: self.reg_for(*mark),
+                });
+            }
             Inst::StackAlloc { result, size, .. } => {
                 let dst = self.reg_for(*result);
                 self.classify(dst, Class::Integer);

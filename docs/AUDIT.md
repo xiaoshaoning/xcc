@@ -786,6 +786,41 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M79 - 2026-11-25 - the sweep that found the stack growing, and the block that had to give it back
+
+Every commit this session has been reviewed, so this pass swept an **area** instead: the back end took three changes
+(frame pointer, `StackAlloc`, the call sequence), each reviewed alone and never together. The interactions:
+
+- variadic **and** VLA in one function - correct (`sum 15`);
+- `longjmp` unwinding *through* a frame holding a VLA - correct (`jumped 7`), which is the `UWOP_SET_FPREG` record doing
+  its job;
+- seven-argument call from a function with a VLA - correct (`spread 28 32`);
+- **a VLA declared inside a loop - a crash.**
+
+```c
+for (i = 0; i < 20000; i = i + 1) { int scratch[n]; /* ... */ }
+```
+
+Twenty thousand passes of eight kilobytes is a hundred and sixty megabytes, and this compiler asked for all of them:
+`rsp` moved down at each declaration and came back only when the function returned. `clang` prints `79997`; this compiler
+segfaulted. C99 6.2.4p6 is the rule that was missing - the array's lifetime ends with **the block**, not the function.
+
+So a block is a stack scope now. `Inst::StackMark` takes the stack pointer as a value, `Inst::StackRestore` puts it back,
+and the parser marks the **first** allocation in a block and restores at the block's end: a block with several arrays
+releases them together, and a block with none costs nothing (no mark is emitted). Two tests hold it - the loop that has to
+not crash, and an inner block releasing only its own array, which a mark per *function* would have got wrong.
+
+A first attempt at the test used `int scratch[2048]`, a constant bound, which is not a VLA at all and passed; the second
+used `scratch[n]` and crashed on the second pass. Worth recording because the first version proved nothing and looked like
+proof.
+
+Known ceiling, written into `C99-SUPPORT.md` rather than hidden: a `goto` or `break` that leaves a block *from inside*
+skips the restore, so those bytes live until the function returns - the same shape GNU's `alloca` has, and the fix is
+landings for jumps, which nothing in the corpus has needed.
+
+213 unit, **50 exe** (two more), 51 parser, 12 real; differential 417 ran, 0 mismatched; 445 corpus programs agree; fmt and
+clippy clean.
+
 ### M78 - 2026-11-25 - what the platform search was worth, counted
 
 The change in M76 was measured by its *own* quantity - files stopped by a missing header, 1 071 to 1 042 - and not by the

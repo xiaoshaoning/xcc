@@ -584,6 +584,27 @@ impl Parser<'_> {
     }
 
     /// `left op right`, with both operands converted to `operands` as C requires.
+    /// Where the stack pointer is now, as a value a block can put back.
+    pub(super) fn emit_stack_mark(&mut self, span: Span) -> Option<Value> {
+        if !self.in_body() {
+            return None;
+        }
+        let void = self
+            .types
+            .fundamental("void")
+            .unwrap_or_else(|| self.types.error());
+        let pointer = self.types.pointer(void);
+        self.emit(|builder| builder.stack_mark(pointer, span))
+            .map(|value| Value::code(pointer, value))
+    }
+
+    /// Put the stack pointer back where `mark` found it.
+    pub(super) fn emit_stack_restore(&mut self, mark: Value, span: Span) {
+        if let Some(value) = mark.cir {
+            self.emit(|builder| builder.stack_restore(value, span));
+        }
+    }
+
     /// `__xcc_alloca`: the address of `size` bytes taken off the stack here, **rounded up to sixteen
     /// by this function** - one place owns that rule, because a call made after the allocation needs
     /// `rsp` aligned, and a size that is not a multiple of sixteen is the difference between a frame

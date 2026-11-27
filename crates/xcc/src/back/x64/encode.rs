@@ -586,6 +586,18 @@ impl Encoder<'_> {
                 self.bytes(&[0, 0, 0, 0]);
                 self.write(*dst, register);
             }
+            Op::StackMark { dst } => {
+                let register = self.destination(*dst);
+                self.mov_reg(register, Reg::RSP);
+                self.write(*dst, register);
+            }
+            Op::StackRestore { mark } => {
+                // `mov rsp, mark`. It is a *value* rather than a compile-time amount because the block
+                // may have allocated any number of them, and each may be any size.
+                let register = self.read(*mark);
+                self.mov_reg(Reg::RSP, register);
+                self.release();
+            }
             Op::StackAlloc { dst, size } => {
                 // The size arrives already rounded up to sixteen - the front end computes it that way
                 // because it is the one place that knows the element size - so this is `mov r11, n;

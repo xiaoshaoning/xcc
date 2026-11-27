@@ -95,6 +95,8 @@ pub(crate) fn instruction(
     let v = |value: Value| format!("v{}", value.0);
     let ty = |ty: TypeId| type_text(types, names, ty);
     match inst {
+        Inst::StackMark { result, .. } => format!("{} = stackmark", v(*result)),
+        Inst::StackRestore { mark, .. } => format!("stackrestore {}", v(*mark)),
         Inst::StackAlloc { result, size, .. } => {
             format!("{} = stackalloc {}", v(*result), v(*size))
         }

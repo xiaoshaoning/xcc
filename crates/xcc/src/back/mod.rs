@@ -724,6 +724,13 @@ impl<M: Module> Lowerer<'_, M> {
             }
             // A run-time stack allocation moves `rsp`, which the Cranelift back end does not allow:
             // its frame is fixed at the prologue (ADR-008).
+            Inst::StackMark { span, .. } | Inst::StackRestore { span, .. } => {
+                return Err(LoweringError::not_lowered(
+                    "a block-scoped stack allocation in the Cranelift back end: its frame is fixed at the prologue. Level 2 lowers it"
+                        .into(),
+                    *span,
+                ))
+            }
             Inst::StackAlloc { span, .. } => {
                 return Err(LoweringError::not_lowered(
                     "a variable-length array or an `alloca` in the Cranelift back end: its frame is fixed at the prologue. Level 2 lowers it"

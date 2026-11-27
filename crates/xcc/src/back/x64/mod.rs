@@ -197,6 +197,10 @@ pub(crate) enum Op {
     /// frame is, so a request larger than the stack's committed region faults instead of growing the
     /// stack; the fix is a probe loop here, and it costs nothing until someone asks for a megabyte.
     StackAlloc { dst: VReg, size: VReg },
+    /// The stack pointer as a value: where the frame ends now.
+    StackMark { dst: VReg },
+    /// Put the stack pointer back where a mark found it.
+    StackRestore { mark: VReg },
     /// The address of a symbol, by its link name: `lea` with a displacement the object file's
     /// relocation fills in. A string literal, a global object and - since function pointers - a
     /// function are all a name the linker resolves to an address.
@@ -443,9 +447,13 @@ impl Op {
             | Op::FloatConvert { dst, .. }
             | Op::LoadFloat { dst, .. }
             | Op::StackAlloc { dst, .. }
-            | Op::Canonical { dst, .. } => Some(*dst),
+            | Op::Canonical { dst, .. }
+            | Op::StackMark { dst } => Some(*dst),
             Op::Call { dst, .. } | Op::CallIndirect { dst, .. } => *dst,
-            Op::StoreLocal { .. } | Op::StoreMemory { .. } | Op::StoreFloat { .. } => None,
+            Op::StoreLocal { .. }
+            | Op::StoreMemory { .. }
+            | Op::StoreFloat { .. }
+            | Op::StackRestore { .. } => None,
         }
     }
 
@@ -457,7 +465,8 @@ impl Op {
             | Op::LocalAddress { .. }
             | Op::SymbolAddress { .. }
             | Op::ThreadAddress { .. }
-            | Op::LoadLocal { .. } => Vec::new(),
+            | Op::LoadLocal { .. }
+            | Op::StackMark { .. } => Vec::new(),
             // The offset is a register the read *uses*, and leaving it out is the mistake the
             // `AtomicCas` note below records: an operand the allocator does not know about ends its
             // live range here, and the register is handed to `dst` - a read from wherever the
@@ -465,6 +474,7 @@ impl Op {
             Op::SegmentRead { base, .. } => vec![*base],
             // The size is computed at run time and read here; the address it produces is `dst`.
             Op::StackAlloc { size, .. } => vec![*size],
+            Op::StackRestore { mark } => vec![*mark],
             Op::AtomicCas {
                 pointer,
                 expected,

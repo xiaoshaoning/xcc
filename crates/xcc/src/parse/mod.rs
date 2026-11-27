@@ -50,6 +50,7 @@ pub(crate) fn parse(preprocessed: &mut Preprocessed, budgets: &Budgets) -> Parse
         at: 0,
         types: Types::new(),
         symbols: Symbols::new(),
+        block_marks: Vec::new(),
         statement_value: None,
         was_expression_statement: false,
         diagnostics: Vec::new(),
@@ -398,6 +399,14 @@ struct Parser<'a> {
     symbols: Symbols,
     /// The value of the expression statement just read, for a statement expression `({ ... })`:
     /// the block's value is its last one. Reused by the next statement, so it is read at once.
+    /// One frame per block being read, in the order they opened: the stack mark a block took before
+    /// its first variable-length array, so the block can put the stack pointer back when it ends
+    /// (C99 6.2.4p6 - the array's lifetime ends with the block, and a loop body that declares one
+    /// would otherwise grow the stack by its size on every pass).
+    ///
+    /// The mark is taken at the *first* allocation in the block, so a block holding none costs
+    /// nothing and a block holding several restores all of them at once.
+    block_marks: Vec<Option<Value>>,
     statement_value: Option<Value>,
     /// Whether the statement just read was an *expression statement*: the only kind that gives a
     /// statement expression its value. Kept beside the value, and saved and restored by `statement`
@@ -1189,6 +1198,16 @@ impl Parser<'_> {
                     let span = self.span();
                     match self.types.size_of(element) {
                         Some(size) => {
+                            // The block's mark, taken before its first allocation: this is what
+                            // lets the block release every array it declared when it ends.
+                            let unmarked =
+                                self.block_marks.last().is_some_and(|frame| frame.is_none());
+                            if unmarked {
+                                let mark = self.emit_stack_mark(span);
+                                if let Some(frame) = self.block_marks.last_mut() {
+                                    *frame = mark;
+                                }
+                            }
                             let wide = self
                                 .types
                                 .fundamental("unsigned long long")

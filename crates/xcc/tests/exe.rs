@@ -249,6 +249,77 @@ int main(void) {\n\
         "20 20 7 72 5 9\n"
     );
 }
+/// A variable-length array inside a loop is released when its block ends.
+///
+/// C99 6.2.4p6: the array's lifetime ends with the block. The first version moved the stack pointer
+/// down and never put it back until the function returned, so
+///
+///     for (i = 0; i < 20000; i = i + 1) { int scratch[2048]; ... }
+///
+/// asked for a hundred and sixty megabytes and crashed - where a `clang` build prints `79997`, because
+/// each pass releases the eight kilobytes the previous one took. Found by sweeping the interactions of
+/// the frame-pointer work rather than by any of its own tests, which is why the sweep was worth doing.
+///
+/// The block is the unit: a mark is taken before the block's **first** allocation and put back when the
+/// block ends, so a block with several arrays releases them together and a block with none costs
+/// nothing.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_variable_length_array_in_a_loop_does_not_grow_the_stack() {
+    let program = "#include <stdio.h>\n\
+                   int main(void) {\n\
+                     int n = 2048;\n\
+                     int total = 0;\n\
+                     int i;\n\
+                     for (i = 0; i < 20000; i = i + 1) {\n\
+                       int scratch[n];\n\
+                       scratch[0] = i;\n\
+                       scratch[n - 1] = 1;\n\
+                       total = total + scratch[0] % 7 + scratch[n - 1];\n\
+                     }\n\
+                     printf(\"%d\\n\", total);\n\
+                     return 0;\n\
+                   }\n";
+    let out = run_linked("vla-loop", program, &[]);
+    assert_eq!(out.status.code(), Some(0), "it did not crash");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "79997\n"
+    );
+}
+
+/// An inner block's array does not release the outer block's.
+///
+/// The mark is per block, not per function: releasing to the frame's base at the end of the inner
+/// block would free the outer array too, and the program below reads it afterwards.
+#[test]
+#[cfg(target_os = "windows")]
+fn an_inner_block_releases_only_its_own_array() {
+    let program = "#include <stdio.h>\n\
+                   int main(void) {\n\
+                     int n = 3;\n\
+                     int m = 2;\n\
+                     int outer[n];\n\
+                     outer[0] = 11;\n\
+                     outer[1] = 22;\n\
+                     outer[2] = 33;\n\
+                     {\n\
+                       int inner[m];\n\
+                       inner[0] = 1;\n\
+                       inner[1] = 2;\n\
+                       outer[0] = outer[0] + inner[1];\n\
+                     }\n\
+                     printf(\"%d %d %d\\n\", outer[0], outer[1], outer[2]);\n\
+                     return 0;\n\
+                   }\n";
+    let out = run_linked("vla-nested", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    // 11 + 2, 22, 33 - the outer array is still there after the inner block released its own.
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "13 22 33\n"
+    );
+}
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

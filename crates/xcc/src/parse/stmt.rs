@@ -146,7 +146,22 @@ impl Parser<'_> {
     }
 
     /// The braces and statements of a block; the caller owns its scope.
+    ///
+    /// The block is also the unit of *stack* scope: a variable-length array declared inside it ends
+    /// with it, so the stack pointer is marked on the way in and put back on the way out if the block
+    /// allocated anything. Without that, `for (i = 0; i < n; i++) { int a[k]; ... }` grew the stack by
+    /// `k` on every pass - a hundred and sixty megabytes for twenty thousand passes of eight
+    /// kilobytes, which is a crash rather than a wasted byte.
     pub(super) fn block_body(&mut self) {
+        self.block_marks.push(None);
+        self.block_body_nested();
+        if let Some(mark) = self.block_marks.pop().flatten() {
+            let span = self.span();
+            self.emit_stack_restore(mark, span);
+        }
+    }
+
+    fn block_body_nested(&mut self) {
         if !self.eat("{") {
             return;
         }

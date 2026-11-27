@@ -343,6 +343,25 @@ pub enum Inst {
         size: Value,
         span: Span,
     },
+    /// The stack pointer, as a value: where the frame currently ends.
+    ///
+    /// A block that declares a variable-length array has to put `rsp` back when it ends - C99 6.2.4p6
+    /// ends the array's lifetime with the block, and a loop body that declares one would otherwise
+    /// grow the stack by its size on every pass (measured: twenty thousand passes of eight kilobytes
+    /// is a hundred and sixty megabytes, and a crash). The mark is taken once, before the block's
+    /// first allocation, and [`Inst::StackRestore`] puts `rsp` back to it.
+    StackMark {
+        /// The stack pointer at this point.
+        result: Value,
+        span: Span,
+    },
+    /// Put the stack pointer back where a [`Inst::StackMark`] found it, releasing everything the
+    /// block allocated after it.
+    StackRestore {
+        /// A value a `StackMark` produced.
+        mark: Value,
+        span: Span,
+    },
     /// Space on the stack for a C variable; the result is a pointer to it. Local variables are
     /// memory until `mem2reg` proves their address never escapes (ADR-002 invariant 3).
     Slot {
@@ -411,6 +430,7 @@ impl Inst {
         match self {
             Inst::Load { address, .. } => *address = rewrite(*address),
             Inst::StackAlloc { size, .. } => *size = rewrite(*size),
+            Inst::StackRestore { mark, .. } => *mark = rewrite(*mark),
             Inst::Store { address, value, .. } => {
                 *address = rewrite(*address);
                 *value = rewrite(*value);
@@ -444,6 +464,7 @@ impl Inst {
                 }
             }
             Inst::Slot { .. }
+            | Inst::StackMark { .. }
             | Inst::Const { .. }
             | Inst::VaStart { .. }
             | Inst::GlobalAddress { .. } => {}
@@ -463,12 +484,13 @@ impl Inst {
             | Inst::Convert { result, .. }
             | Inst::Slot { result, .. }
             | Inst::StackAlloc { result, .. }
+            | Inst::StackMark { result, .. }
             | Inst::Const { result, .. }
             | Inst::VaStart { result, .. }
             | Inst::VaArg { result, .. }
             | Inst::GlobalAddress { result, .. } => Some(*result),
             Inst::Call { result, .. } => *result,
-            Inst::Store { .. } => None,
+            Inst::Store { .. } | Inst::StackRestore { .. } => None,
         }
     }
 
@@ -485,6 +507,8 @@ impl Inst {
             | Inst::Convert { span, .. }
             | Inst::Slot { span, .. }
             | Inst::StackAlloc { span, .. }
+            | Inst::StackMark { span, .. }
+            | Inst::StackRestore { span, .. }
             | Inst::Const { span, .. }
             | Inst::Call { span, .. }
             | Inst::VaStart { span, .. }
@@ -895,6 +919,21 @@ impl<'a> Builder<'a> {
             span,
         });
         value
+    }
+
+    /// The stack pointer as a value. See [`Inst::StackMark`].
+    pub fn stack_mark(&mut self, pointer: TypeId, span: Span) -> Value {
+        let value = self.func.mint(pointer, self.current);
+        self.push(Inst::StackMark {
+            result: value,
+            span,
+        });
+        value
+    }
+
+    /// Put the stack pointer back where a mark found it. See [`Inst::StackRestore`].
+    pub fn stack_restore(&mut self, mark: Value, span: Span) {
+        self.push(Inst::StackRestore { mark, span });
     }
 
     /// Bytes taken off the stack at run time; the value is their address. See [`Inst::StackAlloc`].
@@ -1525,6 +1564,20 @@ impl Func {
                 }
                 Ok(())
             }
+            Inst::StackMark { result, .. } => {
+                if self.value(*result).block != here {
+                    return wrong(format!("v{} is not defined by its mark", result.0));
+                }
+                Ok(())
+            }
+            Inst::StackRestore { mark, .. } => {
+                if !types.is_pointer(self.value(*mark).ty)
+                    && !types.is_integer(self.value(*mark).ty)
+                {
+                    return wrong(format!("v{} is not a stack mark", mark.0));
+                }
+                Ok(())
+            }
             Inst::StackAlloc { result, size, .. } => {
                 if self.value(*result).block != here {
                     return wrong(format!("v{} is not defined by its allocation", result.0));
@@ -1814,6 +1867,8 @@ fn used_values(inst: &Inst) -> Vec<Value> {
         }
         Inst::VaArg { list, .. } => vec![*list],
         Inst::StackAlloc { size, .. } => vec![*size],
+        Inst::StackMark { .. } => Vec::new(),
+        Inst::StackRestore { mark, .. } => vec![*mark],
         Inst::Slot { .. }
         | Inst::Const { .. }
         | Inst::VaStart { .. }
