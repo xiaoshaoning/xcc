@@ -543,7 +543,12 @@ struct Parser<'a> {
     /// stacks cannot say which that is - the bug that made `break` inside a `switch` inside a
     /// `for` leave the *loop*. A `switch` pushes its exit with no continue target, and
     /// `continue` finds the nearest entry that has one.
-    targets: Vec<(cir::Block, Option<cir::Block>)>,
+    /// Where `break` and `continue` go, one entry per loop or `switch`, innermost last: the block a
+    /// `break` leaves, the block a `continue` jumps to, and **how deep the stack of block marks was
+    /// when the loop opened** - so a jump out of a body holding a variable-length array can put the
+    /// stack pointer back on its way out. Without the depth, `for (...) { int a[n]; if (x) continue; }`
+    /// grew the stack by an array on every pass that continued, which is a crash and not a leak.
+    targets: Vec<(cir::Block, Option<cir::Block>, usize)>,
 }
 
 impl Parser<'_> {

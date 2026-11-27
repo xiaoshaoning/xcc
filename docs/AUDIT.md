@@ -786,6 +786,33 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M81 - 2026-11-25 - the ceiling that was a crash
+
+Reviewing the block-scope fix in `4a7a20b` meant testing the ceiling it wrote down, and the ceiling was wrong about itself:
+*"a `goto` or `break` out of such a block leaves the bytes until the function returns"* sounds like a leak. It is a crash.
+
+```c
+for (i = 0; i < 20000; i = i + 1) { int a[2048]; if (i % 2 == 0) continue; ... }
+```
+
+A `continue` leaves the body block in the middle, so the restore at the block's *end* never ran, and every pass added another
+array: a hundred and sixty megabytes, and a fault. `clang` prints `29997`. This shape - an array and a guard clause - is not
+exotic; it is most loops that declare a buffer.
+
+Each loop and `switch` now remembers **how deep the block stack was when it opened** (one `usize` in `targets`), and
+`break`/`continue` release every block they leave, deepest first because each mark was taken under the previous one. The
+`switch` case - `case 1: { int b[n]; ... break; }` - is the same machinery and was checked too (`24002`), since a `switch`
+entry has a `break` and no `continue`.
+
+Tested both ways: with the restores, `29997 24002`; without them, `left: Some(-1073741819)` - the access violation, caught by
+the test rather than by a user.
+
+What remains a real ceiling is a `goto` out of such a block, and it is now honestly small: a `goto` fires once, so at most one
+array's worth of bytes is lost per function. A `goto` *backwards* into a block would repeat it, and that is pathological
+enough to leave written down rather than fixed.
+
+213 unit, **51 exe** (one more), 51 parser, 12 real; fmt and clippy clean.
+
 ### M80 - 2026-11-25 - where the bytes go, and the tail that is not the average
 
 The standing claim since M10 is "3.44x clang on code size". Nobody had looked at it, so it was profiled two ways: which

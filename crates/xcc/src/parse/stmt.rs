@@ -323,7 +323,8 @@ impl Parser<'_> {
             return;
         };
         self.switch_to(body_block);
-        self.targets.push((exit, Some(test)));
+        self.targets
+            .push((exit, Some(test), self.block_marks.len()));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -352,7 +353,8 @@ impl Parser<'_> {
         };
         self.jump(body_block, span);
         self.switch_to(body_block);
-        self.targets.push((exit, Some(test)));
+        self.targets
+            .push((exit, Some(test), self.block_marks.len()));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -488,7 +490,8 @@ impl Parser<'_> {
             self.jump(test, span);
         }
         self.switch_to(body_block);
-        self.targets.push((exit, Some(step)));
+        self.targets
+            .push((exit, Some(step), self.block_marks.len()));
         self.loops += 1;
         self.statement();
         self.loops -= 1;
@@ -514,11 +517,27 @@ impl Parser<'_> {
             // `break` leaves the innermost loop *or* `switch`; `continue` skips to the nearest
             // loop, which is why a switch's entry has no continue target.
             let target = if is_break {
-                self.targets.last().map(|(stop, _)| *stop)
+                self.targets.last().map(|(stop, _, _)| *stop)
             } else {
-                self.targets.iter().rev().find_map(|(_, next)| *next)
+                self.targets.iter().rev().find_map(|(_, next, _)| *next)
             };
             if let Some(target) = target {
+                // Out of every block this jump leaves, releasing what they allocated: the deepest
+                // block first, because each mark was taken under the previous one.
+                let depth = if is_break {
+                    self.targets.last().map_or(0, |(_, _, depth)| *depth)
+                } else {
+                    self.targets
+                        .iter()
+                        .rev()
+                        .find(|(_, next, _)| next.is_some())
+                        .map_or(0, |(_, _, depth)| *depth)
+                };
+                for index in (depth..self.block_marks.len()).rev() {
+                    if let Some(mark) = self.block_marks[index] {
+                        self.emit_stack_restore(mark, span);
+                    }
+                }
                 self.jump(target, span);
             }
         }
@@ -652,7 +671,7 @@ impl Parser<'_> {
         };
         // A `break` inside the switch leaves through this block, and it is nearer than any loop
         // around the switch - which is what pushing it on the same stack says.
-        self.targets.push((exit, None));
+        self.targets.push((exit, None, self.block_marks.len()));
         self.jump(test, span);
         // Statements before the first `case` are unreachable in C, and get a block to be
         // unreachable in rather than the comparison block.

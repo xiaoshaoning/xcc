@@ -320,6 +320,58 @@ fn an_inner_block_releases_only_its_own_array() {
         "13 22 33\n"
     );
 }
+/// A `continue` or `break` out of a body that declared a variable-length array releases its bytes.
+///
+/// The block-scope fix restored the stack pointer at the *end* of a block, which is the path a body
+/// takes when it falls through. A `continue`, a `break` or a `switch`'s `break` leaves the block in the
+/// middle - and the ceiling written down as "a leak until the function returns" turned out, when
+/// measured, to be a **crash**: `for (...) { int a[n]; if (x) continue; }` grew the stack by an array on
+/// every pass that continued. `clang` prints `29997 24002`; this compiler faulted.
+///
+/// Each loop and `switch` remembers how deep the block stack was when it opened, so the jump releases
+/// exactly the blocks it leaves - deepest first, since each mark was taken under the previous one.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_jump_out_of_an_array_block_releases_its_bytes() {
+    let program = "#include <stdio.h>\n\
+\n\
+int continues(int n) {\n\
+  int total = 0;\n\
+  int i;\n\
+  for (i = 0; i < 20000; i = i + 1) {\n\
+    int scratch[n];\n\
+    scratch[0] = i;\n\
+    if (i % 2 == 0) continue;\n\
+    total = total + scratch[0] % 7;\n\
+  }\n\
+  return total;\n\
+}\n\
+\n\
+int switches(int n) {\n\
+  int total = 0;\n\
+  int i;\n\
+  for (i = 0; i < 8000; i = i + 1) {\n\
+    switch (i % 3) {\n\
+      case 0: { int a[n]; a[0] = 7; total = total + a[0]; break; }\n\
+      case 1: { int b[n]; b[0] = 1; total = total + b[0]; break; }\n\
+      default: total = total + 1; break;\n\
+    }\n\
+  }\n\
+  return total;\n\
+}\n\
+\n\
+int main(void) {\n\
+  printf(\"%d %d\\n\", continues(2048), switches(1024));\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("vla-jumps", program, &[]);
+    assert_eq!(out.status.code(), Some(0), "it did not run out of stack");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "29997 24002\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.
