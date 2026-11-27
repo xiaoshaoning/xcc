@@ -786,6 +786,52 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M83 - 2026-11-25 - the lever that was not there, and the corpus that flatters an optimiser
+
+The projection before this was "register promotion, not aggregate initialisation", so `mem2reg` was instrumented to say why a
+slot stays in memory: escaped, no store, no load, type pun, or promoted. Over the worst program (`cc50_corners`, 3028 bytes,
+713 instructions):
+
+```
+promoted 17   escaped 2   other 1   nothing to replace 1
+```
+
+**The projection was wrong.** Nineteen slots and seventeen of them are already values; there is nothing left to promote in the
+program the size profile called the problem. The two escapes are `&one`/`&two`-shaped, which is what escaping means.
+
+So the 248 `mov`s were broken down instead:
+
+```
+112  reg-reg copies        37.7% of the bytes
+ 75  constants
+ 61  stores to memory
+```
+
+Even perfect copy elimination saves a seventh of the instructions - about 11% of the bytes - for a register allocator
+rewrite that is several hundred lines and the riskiest kind of change this back end can take. Not worth it.
+
+**And then the real answer, which ends the question.** `clang -O2` compiles that whole program to **24 instructions**: four
+for `bump` and twenty for `main`.
+
+```
+0000000000000010 <main>:
+  10:  55                    push   %rbp
+  15:  48 8d 6c 24 20        lea    0x20(%rsp),%rbp
+  1f:  48 b8 03 00 00 00 04  movabs $0x400000003,%rax
+```
+
+Every condition in `cc50_corners` is a constant - it is a *correctness* test, written so that each construct can be checked
+by an exit code - so an optimiser erases the program. The same is true of the other outliers, and probably of most of the
+corpus: these files exist to exercise a front end, and their work is decidable before the program runs.
+
+**So "3.44x clang -O2 on the corpus" measures clang's folder, not this compiler's code generation.** The numbers that mean
+something are the ones already written down: 1.62x against `-O0`, and a median of 1.54x against `-O2` across programs where
+the comparison is like for like. The code-size work is finished, and the right conclusion is to stop rather than to spend a
+week on an allocator for a seventh of the instructions.
+
+What this does *not* say: that the back end is good. It says the corpus cannot answer the question. A program with real data
+- sqlite reading a file - is where the answer lives, and nobody has measured that.
+
 ### M82 - 2026-11-25 - the constant pool reaches the locals, and the tail halves
 
 The size profile (M80) named one construct for the whole tail: a local aggregate with a constant initialiser was stored
