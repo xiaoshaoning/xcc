@@ -372,6 +372,71 @@ int main(void) {\n\
     );
 }
 
+/// A local aggregate with a constant initialiser is laid down as a literal and copied in.
+///
+/// The element walk stored every byte and every element, so a zeroed 256-byte array cost 256
+/// instructions - the tail the size profile found, where `char big[256] = {0}` came out twenty-six
+/// times clang. The bytes of a constant initialiser are known before the program runs, and the
+/// compiler already builds them for globals; the local path now uses the same walker, drops them in a
+/// literal beside the string literals, and emits one `memcpy`.
+///
+/// This is a behaviour test, not a size test: the sizes are held by the corpus ceiling, and what a
+/// reader can see here is that the bytes are the right ones - including the zero fill an initialiser
+/// list does not name, the tail bytes of a partial array, and a string inside a record.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_constant_aggregate_initialiser_copies_the_right_bytes() {
+    let program = "#include <stdio.h>\n\
+\n\
+struct P { int x; int y; char tag[8]; };\n\
+\n\
+int main(void) {\n\
+  int a[10] = {1, 2, 3};\n\
+  char big[256] = {0};\n\
+  struct P p = { 7, 8, \"hi\" };\n\
+  int zeros[64] = {0};\n\
+  zeros[63] = 5;\n\
+  big[255] = 'x';\n\
+  p.tag[1] = 'o';\n\
+  printf(\"%d %d %d %d %c %s %d\\n\", a[0], a[2], a[9], zeros[63], big[255], p.tag,\n\
+         p.x + p.y);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("aggregate-pool", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "1 3 0 5 x ho 15\n"
+    );
+}
+
+/// An aggregate whose initialiser names an address keeps the element walk.
+///
+/// `int *p[2] = {&a, &b}` holds addresses the *linker* owns: copying the bytes of a literal would copy
+/// the text of an address, so that case is refused by the fast path and falls back - which is what the
+/// `None` in `constant_aggregate` is for. The test is that the addresses are right.
+#[test]
+#[cfg(target_os = "windows")]
+fn an_aggregate_of_addresses_still_initialises_element_by_element() {
+    let program = "#include <stdio.h>\n\
+\n\
+int one = 11;\n\
+int two = 22;\n\
+\n\
+int main(void) {\n\
+  int *p[2] = { &one, &two };\n\
+  const char *names[3] = { \"a\", \"bc\", \"def\" };\n\
+  printf(\"%d %d %s %d\\n\", *p[0], *p[1], names[2], (int)sizeof names);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("aggregate-relocated", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "11 22 def 24\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.

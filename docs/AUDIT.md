@@ -786,6 +786,49 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M82 - 2026-11-25 - the constant pool reaches the locals, and the tail halves
+
+The size profile (M80) named one construct for the whole tail: a local aggregate with a constant initialiser was stored
+element by element. The compiler already knew how to turn such an initialiser into **bytes** - `initializer_bytes`, which
+file-scope definitions use - so the fix is to use it, put the bytes in a literal beside the string literals, and emit one
+`memcpy`.
+
+Two changes, measured at each step on the same two programs:
+
+```
+int a[10] = {1, 2, 3};  char big[256] = {0};
+  before                       5008 bytes of .text
+  zeros eight at a time         712     (zero_at stored a byte at a time; 8 bytes is the same bytes, a seventh the stores)
+  literal + memcpy              128     + 296 of .data, which is the data itself
+  clang -O2                      19     + its own literal
+```
+
+And over the corpus:
+
+```
+                          text+data, 422 programs      median     cc41_mdim    cc34_aggrinit
+  before            3.44x                              1.54x      32.76x       27.64x
+  after             3.02x                              1.54x      14.95x       14.09x
+```
+
+**The rule that keeps it honest**: the fast path answers `false` and puts the token cursor and the error count back whenever
+the initialiser is not a constant, or holds a relocation - `int *p[2] = {&a, &b}` names addresses the *linker* owns, and
+copying the bytes of a literal would copy the text of an address. Those keep the element walk, which is correct for
+everything, just longer, and a second test holds that case. The bytes are built by the same walker globals use, so a local
+and a file-scope definition of the same object cannot disagree.
+
+**What is left is a different project.** The worst program now is 32.91x, and it is not aggregate initialisation:
+
+```
+cc50_corners   3028 bytes, 713 instructions, of which 248 are `mov`
+```
+
+That is register promotion: a `{ int x = 1; ... }` block whose local lives in a frame slot and is loaded and stored around
+every use. `mem2reg` promotes a slot whose address never escapes, and these escape it or are never offered to it. The next
+lever is there, not in the back end.
+
+213 unit, **53 exe** (two more), 51 parser, 12 real, 6 invalid; 445 corpus programs agree; fmt and clippy clean.
+
 ### M81 - 2026-11-25 - the ceiling that was a crash
 
 Reviewing the block-scope fix in `4a7a20b` meant testing the ceiling it wrote down, and the ceiling was wrong about itself:

@@ -585,6 +585,17 @@ impl Parser<'_> {
             self.initializer(ty);
             return;
         };
+        // An aggregate whose initialiser is a *constant* is bytes before the program runs: lay them
+        // down once, as a literal, and copy them in. The walk below would store every element, and a
+        // zeroed 256-byte array is 256 stores - which is what made `char big[256] = {0}` twenty-six
+        // times clang (M80). A literal and one `memcpy` is what a compiler with a constant pool does,
+        // and the pool is already here for string literals.
+        //
+        // Sixteen bytes is where a call starts to cost less than the stores it replaces: two
+        // registers' worth is two instructions.
+        if self.constant_aggregate(ty, target) {
+            return;
+        }
         // A declared size can have elements or members no list reaches, and C says they are
         // zero. An array whose size came from its initialiser has none *yet* - the count is what
         // the list says, and it is not known until the walk has read it - so the whole object
@@ -609,6 +620,98 @@ impl Parser<'_> {
         self.zero_elements = saved_zeroing;
     }
 
+    /// Initialise an aggregate from a literal, and say whether it did.
+    ///
+    /// It answers `false` - having put the token cursor and the error count back - whenever the
+    /// initialiser is not a constant, or has a relocation in it (`int *p[2] = {&a, &b}` names
+    /// addresses the linker owns, and a copy would be a copy of the *text* of an address). Those keep
+    /// the element-by-element walk, which is correct for everything, just longer.
+    fn constant_aggregate(&mut self, ty: TypeId, target: (cir::Value, TypeId)) -> bool {
+        let Some(size) = self.types.size_of(ty) else {
+            return false;
+        };
+        let aggregate = matches!(
+            self.types.kind(ty),
+            crate::types::Type::Array { .. } | crate::types::Type::Record(_)
+        );
+        if !aggregate || size < 16 || !self.in_body() || !self.at_punct("{") {
+            return false;
+        }
+        let began = self.at;
+        let reported = self.diagnostics.len();
+        let errors_before = self.errors;
+        // The bytes are built by the same walker globals use, so this cannot disagree with what a
+        // file-scope definition of the same object would contain.
+        let bytes = self
+            .initializer_bytes(ty)
+            .filter(|(_, relocations)| relocations.is_empty());
+        match bytes {
+            Some((bytes, _)) => {
+                let span = self.span();
+                let name = self.literal_object(ty, &bytes, span);
+                self.copy_from_literal(target, &name, size as usize, span);
+                true
+            }
+            None => {
+                // Not a constant after all: put everything back and let the walk read it.
+                self.diagnostics.truncate(reported);
+                self.errors = errors_before;
+                self.at = began;
+                false
+            }
+        }
+    }
+
+    /// `memcpy(destination, literal, bytes)`: one call, because a copy of a constant is what a
+    /// `memcpy` is and no loop written here would beat the one in the C runtime.
+    fn copy_from_literal(
+        &mut self,
+        target: (cir::Value, TypeId),
+        name: &str,
+        bytes: usize,
+        span: Span,
+    ) {
+        let (destination, _) = target;
+        let void = self
+            .types
+            .fundamental("void")
+            .unwrap_or_else(|| self.types.error());
+        let void_pointer = self.types.pointer(void);
+        let const_void_pointer = self.types.constant(void_pointer);
+        let wide = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        let signature = self.types.function(
+            void_pointer,
+            vec![void_pointer, const_void_pointer, wide],
+            false,
+        );
+        let pointer = self.types.pointer(signature);
+        let source = span;
+        let Some(callee) =
+            self.emit(|builder| builder.global_address(String::from("memcpy"), pointer, span))
+        else {
+            return;
+        };
+        let Some(address) =
+            self.emit(|builder| builder.global_address(String::from(name), void_pointer, source))
+        else {
+            return;
+        };
+        let count = self.constant_of(wide, bytes as i64, span);
+        // `destination` is the frame slot's address, which is a `cir` value by construction.
+        self.emit(|builder| {
+            builder.call(
+                callee,
+                vec![destination, address, count.cir?],
+                false,
+                None,
+                span,
+            )
+        });
+    }
+
     /// C99 6.7.8p21: what an initialiser list does not name is zero, and a frame slot holds
     /// whatever the frame held. A byte at a time: a byte store is always aligned, and a
     /// wider one is M10's optimiser's job.
@@ -623,11 +726,27 @@ impl Parser<'_> {
         let Some(size) = self.types.size_of(ty) else {
             return;
         };
-        let char = self.types.fundamental("char").unwrap();
         let span = self.span();
-        for offset in 0..size as usize {
+        // Eight bytes at a time, then a byte at a time: the bytes are the same and there are a
+        // seventh as many stores. A zeroed 256-byte array cost 256 instructions, which is most of
+        // what made `char big[256] = {0}` twenty-six times clang - the tail the size profile found
+        // (M80). A store is always aligned here because the *offset* is what moves, and an object
+        // in a frame is laid out by its own alignment.
+        let mut done = 0usize;
+        let wide = self
+            .types
+            .fundamental("unsigned long long")
+            .unwrap_or_else(|| self.types.error());
+        while done + 8 <= size as usize {
+            let zero = self.constant_of(wide, 0, span);
+            self.store_leaf(target, at + done, wide, zero, span);
+            done += 8;
+        }
+        let char = self.types.fundamental("char").unwrap();
+        while done < size as usize {
             let zero = self.constant_of(char, 0, span);
-            self.store_leaf(target, at + offset, char, zero, span);
+            self.store_leaf(target, at + done, char, zero, span);
+            done += 1;
         }
     }
 
