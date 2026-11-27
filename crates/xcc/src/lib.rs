@@ -43,6 +43,7 @@ mod lex;
 mod literal;
 mod options;
 mod parse;
+pub mod platform;
 pub mod pp;
 mod render;
 mod source;

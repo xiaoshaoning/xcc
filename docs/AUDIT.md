@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M76 - 2026-11-25 - the headers the machine has, and the flag nobody should have to pass
+
+The census said 87 % of refusals stop at a missing header, so the next question was *which* headers. The answer was a
+lesson in reading a measurement: `lean/lean.h` (259), `asn_application.h` (165), `lapacke_utils.h` (72), `ogs-core.h`
+(38), `common.h`, `config.h` - **a project's own headers**, the `-I` its build system would supply. And then `unistd.h`
+(10), `strings.h` (9), `fcntl.h` (5), `pthread.h` (4), `immintrin.h` (5) - headers this machine *has*, in the SDK that the
+census never told the compiler about.
+
+That last part was the real gap, and it is not about the corpus: **`xcc` had no way to find the platform's headers without
+`-I`**. Every Windows C compiler finds `windows.h` for its user; this one made the user spell
+`-I/c/msys64/ucrt64/include`, and the test harness had been doing exactly that for two years without anyone noticing it
+meant the compiler could not.
+
+`xcc::platform::platform_directories()` is now the one place that knows where a Windows C installation keeps its headers:
+`INCLUDE` first, because a build system that sets it means it and that is MSVC's own convention; then mingw-w64's two
+include directories (`ucrt64` first - it is the runtime this compiler links against); then Visual Studio's toolsets and the
+Windows SDK's `ucrt`/`shared`/`um`, newest version first, by listing the directory rather than by spelling a version nobody
+should have to spell. The command line puts them **after** the programmer's `-I`s, so `-I` still wins.
+
+It stays out of the library's own path on purpose: the compiler reads nothing by itself, `Headers` wraps whatever
+`Includes` the host builds, and this is knowledge the *host* applies. The C API can use it the same way.
+
+Measured: with no flag at all, `#include <unistd.h>`, `<strings.h>` and `<windows.h>` now resolve, `GetCurrentProcessId()`
+compiles, links and runs, and the missing-header census goes from 1 071 to 1 042 of 1 500 sampled - with `unistd.h`,
+`strings.h`, `fcntl.h`, `pthread.h`, `memory.h` and `immintrin.h` gone from the list entirely. What is left is project
+headers and other architectures' vector headers, which is the correct answer for a corpus of other people's build systems.
+
+212 unit (one more), 48 exe, 51 parser, 12 real, **33 CLI** (two more); differential 417 ran, 0 mismatched; 445 corpus
+programs agree; fmt and clippy clean.
+
 ### M75 - 2026-11-25 - the census that counted file names, and the frontier it found
 
 The queue was re-measured after `typeof` and statement expressions - 52 275 C programs under `D:/Projects`, 2 000 sampled -

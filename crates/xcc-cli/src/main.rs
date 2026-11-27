@@ -267,7 +267,7 @@ fn compile_command_line() -> ExitCode {
         let source = SourceFile::new(name.clone(), text.clone());
         let options = options(&args, opt_level);
         let includes = Box::new(Directories {
-            roots: args.include_paths.clone(),
+            roots: Directories::new(args.include_paths.clone()).roots,
         });
         let mut compiler = Compile::with_includes(options, includes);
         if args.preprocess_only {
@@ -398,9 +398,7 @@ fn link(args: &Args, format: xcc::Format, opt_level: u8) -> ExitCode {
         .iter()
         .map(|(name, text)| SourceFile::new(name.clone(), text.clone()))
         .collect();
-    let includes = Box::new(Directories {
-        roots: args.include_paths.clone(),
-    });
+    let includes = Box::new(Directories::new(args.include_paths.clone()));
     let mut compiler = Compile::with_includes(options(args, opt_level), includes);
     match compiler.link(&borrowed) {
         Ok(artifact) => {
@@ -638,10 +636,23 @@ fn print_map(artifact: &xcc::Artifact, path: &std::path::Path) {
     }
 }
 
-/// The files `#include` may read: the path as written, then under each `-I` directory.
+/// The files `#include` may read: the path as written, then under each `-I` directory, then under the
+/// platform's own header directories.
+///
+/// The platform directories come last on purpose - `-I` is the programmer's answer and it wins - and
+/// they are what makes `#include <windows.h>` work without a flag, which is the one thing every
+/// Windows C compiler does for its user.
 #[derive(Debug)]
 struct Directories {
     roots: Vec<PathBuf>,
+}
+
+impl Directories {
+    fn new(roots: Vec<PathBuf>) -> Self {
+        let mut all = roots;
+        all.extend(xcc::platform::platform_directories());
+        Self { roots: all }
+    }
 }
 
 impl xcc::Includes for Directories {
