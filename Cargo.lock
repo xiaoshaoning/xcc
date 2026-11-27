@@ -72,7 +72,7 @@ checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
 name = "bcc20-sys"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "xcc",
 ]
@@ -665,7 +665,7 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "xcc"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -677,14 +677,14 @@ dependencies = [
 
 [[package]]
 name = "xcc-capi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "xcc",
 ]
 
 [[package]]
 name = "xcc-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bcc20-sys",
  "clap",
