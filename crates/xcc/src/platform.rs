@@ -21,8 +21,13 @@ use std::path::PathBuf;
 /// handful of `is_file` calls on directories that are usually not there.
 pub fn platform_directories() -> Vec<PathBuf> {
     let mut directories: Vec<PathBuf> = Vec::new();
+    // A directory is a search path if it **is** a directory. It used to require `stdio.h`, as a cheap
+    // "is this really a header directory" probe - and that silently dropped the two Windows SDK
+    // directories that hold `windows.h` and nothing from the C runtime, so on a machine with Visual
+    // Studio and no mingw the search found `ucrt` and stopped one directory short. The order below is
+    // what decides preference; existence is all this has to ask.
     let mut add = |path: PathBuf| {
-        if path.join("stdio.h").is_file() && !directories.contains(&path) {
+        if path.is_dir() && !directories.contains(&path) {
             directories.push(path);
         }
     };
@@ -76,19 +81,61 @@ pub fn platform_directories() -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::platform_directories;
+    use std::path::PathBuf;
 
-    /// Whatever this machine has, the answer is directories that exist and hold `stdio.h` - and it is
-    /// the same answer twice. Which of them exist is a fact about the machine, so it is not asserted:
-    /// a test that requires an SDK is a test that fails on the machine that has none.
+    /// Whatever this machine has, the answer is directories that exist - and it is the same answer
+    /// twice. *Which* of them exist is a fact about the machine, so it is not asserted: a test that
+    /// requires an SDK is a test that fails on the machine that has none.
+    ///
+    /// It used to assert `stdio.h` in every one, which passed on this machine and would have hidden
+    /// the bug it was written next to: the Windows SDK keeps `windows.h` in `um` and `shared`, which
+    /// have no `stdio.h`, and those two were being dropped.
+    /// Every directory the Windows SDK keeps `windows.h` in is in the search, not only the one that
+    /// keeps the C runtime's headers.
+    ///
+    /// This is the bug the first version shipped: `add` accepted a path only if it held `stdio.h`, and
+    /// `um` and `shared` hold `windows.h` and no `stdio.h` - so a machine with Visual Studio and no
+    /// mingw found `ucrt` and stopped one directory short, and *nothing on this machine showed it*
+    /// because mingw's own `windows.h` was found first. The assertion is a relationship, so it holds
+    /// whether or not the Kits are installed.
     #[test]
-    fn platform_directories_names_only_directories_that_have_stdio_h() {
+    fn every_sdk_directory_that_holds_windows_h_is_searched() {
+        let kits = PathBuf::from("C:/Program Files (x86)/Windows Kits/10/Include");
+        let Ok(versions) = std::fs::read_dir(&kits) else {
+            eprintln!("no Windows Kits on this machine: the test is skipped");
+            return;
+        };
+        let newest = versions
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.join("um/windows.h").is_file())
+            .max();
+        let Some(newest) = newest else {
+            eprintln!("no Windows Kits with `um/windows.h`: the test is skipped");
+            return;
+        };
+        let searched = platform_directories();
+        for part in ["ucrt", "shared", "um"] {
+            let directory = newest.join(part);
+            if directory.is_dir() {
+                assert!(
+                    searched.contains(&directory),
+                    "{} holds headers and is not searched: {searched:?}",
+                    directory.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn platform_directories_names_only_directories_that_exist_once_each() {
         let first = platform_directories();
         let again = platform_directories();
         assert_eq!(first, again, "the same question, the same answer");
         for directory in &first {
             assert!(
-                directory.join("stdio.h").is_file(),
-                "{} was named and does not hold stdio.h",
+                directory.is_dir(),
+                "{} was named and is not a directory",
                 directory.display()
             );
             assert_eq!(

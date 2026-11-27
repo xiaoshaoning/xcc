@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M77 - 2026-11-25 - the search that stopped one directory short
+
+Reviewing `95cc4b0` found the feature broken for the machine it was written for, and **invisible on this one**.
+
+`add` accepted a directory only if it held `stdio.h`, as a cheap "is this really a header directory" probe. The Windows
+SDK keeps `windows.h` in `um` and `shared`, and neither has a `stdio.h` - so both were dropped:
+
+```
+ucrt   has stdio.h=true  windows.h=false     <- kept
+shared has stdio.h=false windows.h=true      <- dropped
+um     has stdio.h=false windows.h=true      <- dropped
+```
+
+On a machine with Visual Studio and no mingw, the search would have found the C runtime's headers and stopped one directory
+short of `windows.h`, which is the header the whole change exists to find. Here mingw's own `windows.h` masked it, so every
+test passed and the feature looked done.
+
+The rule is `is_dir()` now: a search path is a directory, and the *order* decides preference - existence is all the probe
+has to ask. The two SDK directories are in the list (`ucrt`, `shared`, `um`), and the test asserts the **relationship**
+rather than a machine fact: every SDK directory that holds `windows.h` must be searched. Run against the first version it
+fails with `shared holds headers and is not searched`, which is exactly the bug, on the machine that could not show it by
+behaviour.
+
+The lesson is the one M75 taught in a different coat: a probe that is *nearly* the right question passes on the machine that
+happens to have another answer, and the passing test is what makes the gap invisible.
+
+213 unit (one more), 48 exe, 51 parser, 12 real, 33 CLI; fmt and clippy clean.
+
 ### M76 - 2026-11-25 - the headers the machine has, and the flag nobody should have to pass
 
 The census said 87 % of refusals stop at a missing header, so the next question was *which* headers. The answer was a

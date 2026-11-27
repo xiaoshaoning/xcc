@@ -266,9 +266,7 @@ fn compile_command_line() -> ExitCode {
 
         let source = SourceFile::new(name.clone(), text.clone());
         let options = options(&args, opt_level);
-        let includes = Box::new(Directories {
-            roots: Directories::new(args.include_paths.clone()).roots,
-        });
+        let includes = Box::new(Directories::new(args.include_paths.clone()));
         let mut compiler = Compile::with_includes(options, includes);
         if args.preprocess_only {
             match compiler.preprocess(&name, &text) {
