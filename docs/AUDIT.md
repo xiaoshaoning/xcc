@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M55 - 2026-11-25 - the bridge header that had no test, and the measurement that proved it anyway
+
+Reviewing `33d0aab` found the `intrin.h` bridge **without a test that would fail without it** - the M51/M52 disease for
+the third time in an hour. So the test was written, and then the bridge was removed to prove the test fails: it does.
+
+```
+without the bridge:  error: cannot find `intrin.h`
+with it:             0 1        (2^32 x 2^32 = 2^64: low half zero, high half one)
+```
+
+That is a *narrower* proof than it looks, and the narrowing is worth recording: the test harness serves no SDK, so the
+comparison is "the bridge answers `<intrin.h>`" against "nothing does" - not "ours against the SDK's". On a command line
+with `-I` on the SDK the difference matters, and there the SDK's `intrin.h` declares nothing this compiler can use either
+(its declarations sit behind a compiler identification we do not claim), so the bridge is a strict improvement rather
+than a replacement for something that worked.
+
+Two more things from the same pass:
+
+- **The bridge is safe for the SDK's own users, measured**: the four real fixtures pass (30 minutes of them), and
+  `mimalloc`'s `windows.h` path still compiles - the only refusal it produced was the linker-owned `_Thread_local`, which
+  is what `-c` does to a TLS object.
+- **`xxhash` still cannot use it, and that is the point**: its `#include <intrin.h>` is inside
+  `#if defined(__GNUC__) || defined(__clang__)`, so it never includes the header at all and `_umul128` stays an implicit
+  `int`. The bridge was never going to fix it - M54 says so - and the measurement now agrees with the note.
+
+The root cause from M54 stands unchanged: **this compiler claims `_M_X64` and not `_MSC_VER`, and MSVC's intrinsics are
+built into MSVC** rather than declared by a header. A table in the parser is the fix.
+
+210 unit, 43 parser, 42 exe (one more), 10 real; fmt and clippy clean.
+
 ### M54 - 2026-11-25 - the assert that was a call, and the multiply that lost its high half
 
 `xxhash` was the program, and it produced one fix, one real miscompile, and one root cause worth more than either.

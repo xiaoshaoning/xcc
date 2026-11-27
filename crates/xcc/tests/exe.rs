@@ -456,6 +456,35 @@ int main(void) {
     assert!(refused.is_err(), "writing to `__func__` must be refused");
 }
 
+/// `<intrin.h>` is the header a program writes to get the Microsoft intrinsics, and mingw's declares
+/// them behind a compiler identification this compiler does not claim - so `#include <intrin.h>`
+/// declared nothing, and a program that used one got an implicit `int`. `xxhash` multiplies 64x64
+/// into 128 with `_umul128` and produced a *different hash* from clang's build because of it.
+///
+/// The bridge header is what makes this compile at all: without it, `_umul128` is an `int` and the
+/// high half of the product is whatever was in the register.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_microsoft_intrinsics_are_declared_by_their_own_header() {
+    let source = r#"
+#include <stdio.h>
+#include <intrin.h>
+
+int main(void) {
+    unsigned long long high = 0;
+    /* 2^32 * 2^32 = 2^64: the low half is zero and the high half is one. An implicit `int` gets
+       both wrong, and a compiler that only warns makes a wrong program. */
+    unsigned long long low = _umul128(0x100000000ULL, 0x100000000ULL, &high);
+    printf("%llu %llu\n", low, high);
+    return 0;
+}
+"#;
+    let run = run_linked("intrin", source, &[]);
+    let out = String::from_utf8_lossy(&run.stdout);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert_eq!(out.trim_end(), "0 1");
+}
+
 /// A pointer narrowed to an integer: C99 6.3.2.3p6 makes the result implementation-defined, and the
 /// machine's answer is the low bits - the same truncation an integer of that width gives. `tre` hashes
 /// a pointer with `(int)p`, and this compiler refused the cast.
