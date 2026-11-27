@@ -786,6 +786,43 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M88 - 2026-11-25 - polar_codes: no oracle on this machine, and a crash with its evidence
+
+The third candidate, surveyed properly. `polar_codes/C/SSCL` is the best of the three on paper: a self-contained `main`, a
+fixed seed, twenty units, and **variable-length arrays everywhere**
+
+```c
+float EbN0dB[num_EbN0dB];   int info_nodes[N];   int ind_ord_l[l];
+```
+
+which is exactly what this session added and what no hand-written test covers. It compiles with nothing but the two files and
+links with this compiler - and then it **faults**:
+
+```
+Thread 1 received signal SIGSEGV
+0x000000014000fd9b in main ()     =>  mov %r15d,(%r14)
+r14 = 0x5f0260        r15 = 0
+```
+
+A store of zero through a pointer the program computed two instructions earlier (`add %r10,%r14`). Whether that address is
+wrong because the *program* computed it wrongly or because this compiler computed it wrongly is exactly the question an oracle
+answers - and there is none on this machine:
+
+- `clang -O2` and `gcc -O2` both link and both produce binaries that **will not load**: exit 127, no output, and their import
+  tables name `api-ms-win-crt-private-l1-1-0.dll`, an API set this Windows does not have. `-static` changes nothing.
+- `--opt-level=0` is not an alternative: this program needs variable-length arrays, and the Cranelift back end refuses them
+  by design - so the usual "does the other back end agree" check is unavailable for exactly the programs that need the
+  feature.
+
+So the crash is **open**, recorded with the instruction, the register values and the address, because that is where the next
+attempt starts. What it is not is a claim: a fault inside `main` on a program whose own index arithmetic has not been checked
+against a second implementation says nothing yet about which side is wrong.
+
+**The survey's total**: three candidates, three negatives as fixtures -
+codec2 needs CMake's generated `version.h`, libosmocore needs configure, and polar_codes cannot be checked on this machine - and
+one real conformance bug found and fixed on the way (C99 6.7.8p22, M87). That is what a survey is for: the bug was worth more
+than the fixture would have been.
+
 ### M87 - 2026-11-25 - the array whose size was in the file, and the program that counted it
 
 The survey of real programs that need this session's features found a conformance bug in the first candidate, before any
