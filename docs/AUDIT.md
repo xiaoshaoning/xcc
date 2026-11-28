@@ -786,6 +786,48 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M110 - 2026-11-25 - the answer that ate the program, and the doc that lied about const
+
+Review of the commit that made `windows.h` compile. Three findings, one of them a silent miscompile of a shape I had just
+written.
+
+**`__has_builtin` read until it found a `)`.** Bounded only by the end of the file:
+
+```
+int a = __has_builtin(__builtin_offsetof;
+    printf("%d
+", a);          <- eaten
+return 0;                        <- eaten
+```
+
+Compiled with **no diagnostic**, and the program was missing the statements. The first version scanned `while let Some(token)
+= self.next()` for a closer because "the answer is about one name" - which is true and is exactly why the scan had to stop
+after that name. Two tokens are read now and the bracket is checked:
+
+```rust
+let held = ...self.next()...;                                  // the name
+if !self.next().is_some_and(|t| self.is_punct(&t.token, ")")) { error: "takes one name, in parentheses" }
+```
+
+Both shapes are tests: the unterminated one asserts the diagnostic **and** that the rest of the program survived; `f(x)` - a
+`)` that belongs to a call - asserts the same diagnostic.
+
+**The support table said `const` was ignored.** `docs/C99-SUPPORT.md` still carried "qualifiers ... accepted and ignored ...
+enforcing `const` arrives with the expression checker (M3.2)", three milestones after it arrived - and one commit after a fix
+that made a *member* of a `const` aggregate `const`. A stale row is not a typo: it is the document telling a reader that a
+guarantee does not exist, so the reader stops relying on the one that does. Rewritten with what is enforced (`const`), what
+is dropped and why (`volatile`, `restrict`), and what is kept (`inline`, because it decides linkage).
+
+**And one row added** for the two spellings the SDK needs: `__alignof`/`__alignof__` (type or unevaluated expression, ungated
+because a header cannot change the program's standard) and `__has_builtin` (defined for `#ifdef`, answered for `#if`).
+
+The `__alignof` grammar was checked against the oracle before being trusted: `gcc` prints `4 4` for
+`__alignof(n + 1)`, `sizeof(n + 1)` on this target, and so does this compiler - `long` is 32 bits here, so the unary operand
+is the whole story and no expression is silently re-associated.
+
+215 unit, 57 parser, 60 exe, 14 real, 6 invalid, 1 crt, 33 CLI, 5 hostile, 4 bcc20-sys; the x64 corpus 445 agree; fmt and
+clippy clean.
+
 ### M109 - 2026-11-25 - the SDK's own windows.h compiles
 
 Six gaps, each one measured by the same number, and the number reached zero:

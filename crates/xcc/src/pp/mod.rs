@@ -1706,16 +1706,23 @@ impl Preprocessor<'_> {
             return None;
         }
         self.next(); // the `(`
+                     // **Exactly one name, then the `)`.** Scanning on until a `)` appeared looked harmless and
+                     // was not: `__has_builtin(f(x))` has no `)` where this expected one - the answer ate the
+                     // `)` of the call - and an unterminated `__has_builtin(` swallowed the rest of the file
+                     // with no diagnostic at all, so the program compiled with statements missing from it. Two
+                     // tokens read, and the bracket is checked.
         let held = match self.next() {
             Some(name) => BUILTINS_HELD.contains(&self.spell(name.token.text)),
             None => false,
         };
-        // Anything between the name and the `)` is skipped: the question is about the one name,
-        // and a header that writes more has already made a mistake this answer cannot fix.
-        while let Some(token) = self.next() {
-            if self.is_punct(&token.token, ")") {
-                break;
-            }
+        if !self
+            .next()
+            .is_some_and(|token| self.is_punct(&token.token, ")"))
+        {
+            self.error(
+                raw.token.span,
+                "`__has_builtin` takes one name, in parentheses",
+            );
         }
         let text = self.interner.intern(if held { "1" } else { "0" });
         Some(vec![Raw {
@@ -2251,6 +2258,35 @@ not-held
         let (spellings, diagnostics) = run(source);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert_eq!(spellings.join(" "), "yes held not - held");
+
+        // **And a missing `)` is one diagnostic, not a silent walk to the end of the file.** The
+        // first version read tokens until it found a `)`, so an unterminated `__has_builtin(`
+        // swallowed every statement after it and the program compiled with them missing - and with
+        // nothing said.
+        let (spellings, diagnostics) = run("int a = __has_builtin(one;
+int b;
+");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("takes one name")),
+            "{diagnostics:?}"
+        );
+        assert!(
+            spellings.join(" ").contains("b"),
+            "the rest of the program was eaten: {spellings:?}"
+        );
+
+        // The same mistake in a shape that has a `)` - the bracket of a call - is still reported,
+        // because the name this reads is one token and the next must be the closer.
+        let (_, diagnostics) = run("int a = __has_builtin(f(x));
+");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("takes one name")),
+            "{diagnostics:?}"
+        );
     }
 
     #[test]
