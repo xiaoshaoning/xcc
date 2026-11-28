@@ -786,6 +786,49 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M107 - 2026-11-25 - the stray backslash, where the layer actually is, and 2 400 warnings that hid an error
+
+Four fixes, and the first one succeeded on the fourth attempt because the third attempt was *read* rather than guessed.
+
+**The stray backslash.** Reading `pp::preprocess` answered what three guesses had not: `read_file` lexes a whole file up front,
+`run()` pulls tokens and sends `#`-at-line-start to `directive()` - whose words **never pass through `emit`** - and everything
+else to `emit`, which is where the Stray diagnostic already lived. So the only wrong layer was the **lexer**, which diagnosed at
+lex time. Two changes there:
+
+- a backslash that begins no universal character name **ends the identifier** and says nothing (`universal_character_name`
+  rewinds instead of complaining);
+- a token that consumed nothing becomes one **Stray token**, because without that guard the loop asked again at the same byte
+  for ever - a twenty-gigabyte allocation rather than a wrong answer.
+
+```
+#define M(a) a	b          unused      accepted
+                            used        stray `\` in program
+int x = 1	2;              program     stray `\` in program
+```
+
+Three behaviours, one layer, and the pp and parser edits from the earlier attempts are not needed at all.
+
+**2 400 warnings hid a real error.** With the stray fixed, `#include <windows.h>` reported **zero errors** and exit 1 - because
+the diagnostic *budget* was full of warnings about pragmas this compiler drops: `#pragma region`, `#pragma warning`, `#pragma
+comment`, `#pragma intrinsic`. Nineteen of them are now in `HARMLESS_PRAGMAS`, dropped in silence, and the same rule as the
+attribute list: each is here because dropping it cannot change a byte this compiler emits. The warnings fell to four, and the
+four errors appeared.
+
+**And two more of the toolset's facts**: the SDK's `sal.h` is included by MSVC's `vcruntime.h` and by nothing else, so
+`_Field_range_(1, 2) int _locale_mb_cur_max;` was a member whose type was an annotation; and `uintptr_t`, `intptr_t` and
+`ptrdiff_t` are established by that same header, so a prototype eight lines in reported "expected `)` after the parameters". Both
+are in the fallback now.
+
+**The SDK, measured at each step**: a wall of missing headers, then eleven errors, then ten, then four:
+
+```
+excpt.h:47        expected a type specifier
+winnt.h:189       an array's size at file scope must be a constant expression
+winioctl.h:5255   `DEVICE_DSM_RANGE` is a type, not a value     (three times)
+```
+
+214 unit (one more), 55 parser, 59 exe, 14 real; fmt and clippy clean.
+
 ### M106 - 2026-11-25 - the fix that was not the fix, and the test that proved nothing
 
 Reviewing the pack-pragma commit meant mutating it, and the mutation **passed**: with `single_token_body` deleted, the packing

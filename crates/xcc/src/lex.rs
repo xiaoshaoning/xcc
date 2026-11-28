@@ -226,7 +226,15 @@ impl Lexer<'_> {
                 let kind = self.literal();
                 self.push_scanned(kind, start);
             } else if starts_identifier(byte) {
-                if let Some(decoded) = self.identifier(start) {
+                let decoded = self.identifier(start);
+                if self.at == start {
+                    // An identifier that consumed nothing: a backslash that begins no universal
+                    // character name. One byte, one token - and without this the loop asks again at
+                    // the same byte for ever, which is a twenty-gigabyte allocation rather than a
+                    // wrong answer.
+                    self.at += 1;
+                    self.push_scanned(TokenKind::Stray, start);
+                } else if let Some(decoded) = decoded {
                     let end = self.at;
                     self.push(TokenKind::Ident, &decoded, start, end);
                 } else {
@@ -314,15 +322,12 @@ impl Lexer<'_> {
             if byte == b'\\' {
                 let from = self.at;
                 let Some(character) = self.universal_character_name() else {
-                    // Not a universal character name, and the error is reported: the rest of the
-                    // token is skipped so the next one begins after it.
-                    while self
-                        .bytes
-                        .get(self.at)
-                        .is_some_and(|&b| starts_identifier(b) || b.is_ascii_digit())
-                    {
-                        self.at += 1;
-                    }
+                    // Not a universal character name: the identifier **ends here**, and the backslash
+                    // becomes a token of its own. C99 6.10.3p3 makes each non-white-space character
+                    // that is no token a preprocessing token, so a macro's replacement list may hold
+                    // one - `driverspecs.h` writes `(#kind, param \t)` - and it is an error only when
+                    // it reaches the program. That question is the preprocessor's `emit`, which says
+                    // so; this one may not, because a directive's words never pass through it.
                     return decoded;
                 };
                 let text = match &mut decoded {
@@ -360,7 +365,15 @@ impl Lexer<'_> {
             Some(b'u') => 4,
             Some(b'U') => 8,
             _ => {
-                self.error(start, self.at - start, "stray `\\` in program");
+                // Not a universal character name at all - a bare backslash - and **no diagnostic**:
+                // the caller ends the identifier here, the scanner makes the byte a token of its own,
+                // and whether that is a mistake is decided where the token ends up. C99 6.10.3p3
+                // makes it a preprocessing token, so a directive's replacement list may hold one -
+                // the Windows SDK's `driverspecs.h` writes `(#kind, param\t)` - and only a token that
+                // reaches the program is an error. Which is what the preprocessor's `emit` says, and
+                // the reason nothing here may say it: a directive's words never pass through `emit`,
+                // and the ones that do are program text by definition.
+                self.at = start;
                 return None;
             }
         };
@@ -738,6 +751,28 @@ int x;
             "string is not terminated before the end of its line"
         );
         assert_eq!(lexed.diagnostics[0].span, Some(Span::new(10, 1)));
+    }
+
+    /// A backslash that begins no universal character name **ends** the identifier and becomes a
+    /// token of its own. It is not a diagnostic here: C99 6.10.3p3 makes it a preprocessing token, so
+    /// a macro's replacement list may hold one - the Windows SDK's `driverspecs.h` writes
+    /// `(#kind, param backslash-t)` - and the preprocessor says a word about it only if it reaches the
+    /// program.
+    #[test]
+    fn a_backslash_ends_an_identifier_and_is_a_token_of_its_own() {
+        let (lexed, _) = lexed("a\\tb");
+        assert!(lexed.diagnostics.is_empty(), "{:?}", lexed.diagnostics);
+        let kinds: Vec<TokenKind> = lexed.tokens.iter().map(|token| token.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Ident,
+                TokenKind::Stray,
+                TokenKind::Ident,
+                TokenKind::Eof
+            ],
+            "`a`, the backslash, `tb`"
+        );
     }
 
     #[test]

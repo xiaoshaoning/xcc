@@ -18,6 +18,11 @@
 #define _VCRUNTIME_H
 
 #include <vadefs.h>
+/* Microsoft's own `vcruntime.h` includes this, and the SDK's headers depend on it: `corecrt.h`
+ * writes `_Field_range_(1, 2) int _locale_mb_cur_max;` and every SAL name is defined by `sal.h` and
+ * by nothing else. Without this line `windows.h` reports "expected a member type" at that member,
+ * with the annotation mistaken for a type. */
+#include <sal.h>
 
 /* `corecrt.h` guards its declarations with this pair, which is how the toolset's header tells a C
  * compiler from a C++ one. */
@@ -37,6 +42,23 @@ typedef unsigned __int64 size_t;
 #ifndef _WCHAR_T_DEFINED
 #define _WCHAR_T_DEFINED
 typedef unsigned short wchar_t;
+#endif
+
+/* The pointer-sized integers. Microsoft's header establishes these too, and the SDK's `corecrt.h`
+ * uses `uintptr_t` in a prototype eight lines after including this file - so a compiler that reaches
+ * `_invoke_watson` without them reports "expected `)` after the parameters" at the argument that has
+ * the type. The guards are MSVC's own, so a host that has already defined them keeps its own. */
+#ifndef _INTPTR_T_DEFINED
+#define _INTPTR_T_DEFINED
+typedef __int64 intptr_t;
+#endif
+#ifndef _UINTPTR_T_DEFINED
+#define _UINTPTR_T_DEFINED
+typedef unsigned __int64 uintptr_t;
+#endif
+#ifndef _PTRDIFF_T_DEFINED
+#define _PTRDIFF_T_DEFINED
+typedef __int64 ptrdiff_t;
 #endif
 
 /* The alignment the SDK's headers lay their structures out with. Microsoft's `vcruntime.h` defines

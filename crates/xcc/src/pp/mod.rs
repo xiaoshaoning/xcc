@@ -295,6 +295,33 @@ const HARMLESS_ATTRIBUTES: &[&str] = &[
     "device",
 ];
 
+/// Pragmas that ask for nothing this compiler does, and that a Windows header writes by the
+/// thousand. Dropped in silence, because the alternative is a warning per line: `#pragma region` is
+/// an editor's fold marker, `#pragma warning` is MSVC's diagnostic control, `#pragma comment` asks a
+/// linker to name a library or a version, and `#pragma intrinsic` names a function MSVC inlines -
+/// none of them changes a byte this compiler emits.
+const HARMLESS_PRAGMAS: &[&str] = &[
+    "region",
+    "endregion",
+    "warning",
+    "comment",
+    "intrinsic",
+    "function",
+    "optimize",
+    "auto_inline",
+    "inline_depth",
+    "inline_recursion",
+    "strict_gs_check",
+    "execution_character_set",
+    "detect_mismatch",
+    "message",
+    "float_control",
+    "fenv_access",
+    "fp_contract",
+    "vtordisp",
+    "pointers_to_members",
+];
+
 const PREDEFINED: &[(&str, &str)] = &[
     ("__STDC__", "1"),
     ("__STDC_HOSTED__", "1"),
@@ -1393,6 +1420,13 @@ impl Preprocessor<'_> {
             Some(pop) if self.is_spelled(&pop.token, "pop_macro") => {
                 self.macro_pragma(rest, span, false)
             }
+            // The pragmas a Windows header writes that ask this compiler for nothing, and that would
+            // otherwise warn on every line of every `windows.h` build. Each is here because dropping
+            // it cannot change the program this compiler produces - the test is the same one the
+            // attribute list uses - and because a warning that appears on every run is one a reader
+            // stops seeing: 2 400 of them hid a real error past the diagnostic budget, which is how
+            // this list came to be written.
+            Some(noise) if HARMLESS_PRAGMAS.contains(&self.spell(noise.token.text)) => {}
             Some(known) => {
                 let name = self.spell(known.token.text).to_owned();
                 self.warning(span, format!("unknown `#pragma {name}` ignored"));
