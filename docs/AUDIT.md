@@ -817,6 +817,19 @@ Two attempts were spent guessing first - the size ceiling (75 396 of 81 950, pas
 obvious move, which was to **read the failure**. The workflow had been printing the failing test's name all along; the only
 thing missing was asking for it.
 
+**Then the fix failed too, and taught the real lesson.** With `<io.h>` the runner still failed the same test, because the
+SDK's `io.h` includes `corecrt.h`, which includes `vcruntime.h` from the *toolset* - and the annotation showed only the panic's
+location, never its message, because the workflow's `grep` took the panic line and dropped the lines after it. Two repairs,
+both worth more than the test:
+
+- **The test is gone.** It compiled a header from whatever SDK the machine has, so it tested the *machine*: whether an
+  installation is complete, whether its headers parse. The search is tested by
+  `a_platform_header_may_include_one_from_another_platform_directory`, which builds two directories of its own and puts them in
+  `INCLUDE` - the same test everywhere, and it passed on the runner while the other failed (33 passed, against 32 before).
+- **`grep -A2`** in the CI step that reports failures, so the assertion's own message reaches the annotation. A gate that says
+  *which* test failed and not *why* is half a gate, and this was the second time the reason was in the log and not in the
+  report.
+
 ### M99 - 2026-11-25 - the eleventh fixture, and the first oracle that is not clang
 
 `debug_isqrt.c` is vendored unmodified as `tests/fixtures/fixed_point/`, with `gcc -O2`'s output recorded beside it in

@@ -43,7 +43,10 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          grep -E '^(    [A-Za-z0-9_:]+$|thread .* panicked at|test result: FAILED)' "$RUNNER_TEMP/test.log"             | head -40             | while IFS= read -r line; do echo "::error::xcc ci: $line"; done
+          # `-A2` carries the assertion's own message, which is on the lines *after* the panic: the
+          # first version printed the location and dropped the reason, so a failing run said which
+          # test and not why it failed.
+          grep -A2 -E '^(    [A-Za-z0-9_:]+$|thread .* panicked at|test result: FAILED)' "$RUNNER_TEMP/test.log"             | head -60             | while IFS= read -r line; do echo "::error::xcc ci: $line"; done
           exit 1
       - name: Release build
         run: cargo build --workspace --release

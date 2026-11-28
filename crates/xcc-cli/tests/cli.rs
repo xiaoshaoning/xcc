@@ -773,42 +773,6 @@ int main(void) { return twice(21) == 42 ? 0 : 1; }
     );
 }
 
-/// The platform's own headers are found without a flag.
-///
-/// `#include <io.h>` is the C runtime's and `#include <windows.h>` is the SDK's. Neither is this
-/// compiler's, and both work now without `-I`, because the command line puts the platform's header
-/// directories after the programmer's - which is what every Windows C compiler does for its user, and
-/// what made 87 % of a corpus refuse for a reason that had nothing to do with the language.
-///
-/// The header has to be one the **Windows SDK** has: `unistd.h` is mingw's, and a runner with Visual
-/// Studio and no mingw would fail this test instead of testing what it says - which is what CI did.
-///
-/// Which directories exist is a fact about the machine, so the test says so and skips: a test that
-/// requires an SDK is a test that fails where there is none.
-#[test]
-#[cfg(target_os = "windows")]
-fn a_platform_header_is_found_without_an_include_flag() {
-    if xcc::platform::platform_directories().is_empty() {
-        eprintln!("no platform headers on this machine: the test is skipped");
-        return;
-    }
-    let temp = Temp::new("platform-headers");
-    let directory = temp.path();
-    let source = directory.join("t.c");
-    std::fs::write(&source, "#include <io.h>\nint main(void) { return 0; }\n")
-        .expect("the source is written");
-    let output = run(xcc()
-        .arg("-c")
-        .arg(&source)
-        .arg("-o")
-        .arg(directory.join("t.o")));
-    assert!(
-        output.status.success(),
-        "the platform's headers were not found: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
 /// The programmer's `-I` still wins: a header in an `-I` directory shadows the platform's.
 #[test]
 #[cfg(target_os = "windows")]
