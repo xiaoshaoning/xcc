@@ -786,6 +786,39 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M104 - 2026-11-25 - the fallback header that got past the wall, and the two gaps behind it
+
+Starting the SDK work found that the first barrier is not the SDK at all: `corecrt.h` opens with `#include <vcruntime.h>`,
+and that header belongs to the **Visual Studio toolset**. A machine with the SDK and no Visual Studio can therefore find
+`windows.h` and cannot compile it - which is exactly what CI said.
+
+So the compiler gained a **third tier** of headers. `Headers::read` was `builtin` then `host`, and is now `builtin`, `host`,
+**`fallback`**: a fallback is found only when neither of the other two has the name, which is the opposite of the bridge headers
+and the lesson `malloc.h` taught. A machine with Visual Studio gets Microsoft's `vcruntime.h` and nothing is shadowed; a machine
+without it gets enough to compile instead of `cannot find`.
+
+With the fallback in place, `#include <windows.h>` against the Kits alone now gets **past the wall** - a test pins it, and it
+asserts the *absence* of `cannot find \`vcruntime.h\``, because the SDK does not compile yet and this test is about the one thing
+that changed.
+
+**The two gaps behind it, measured and not fixed**:
+
+```
+excpt.h:11: error: `#pragma pack(_CRT_PACKING)`: the limit here is 1, 2, 4, 8 or 16 ...
+driverspecs.h:401: error: stray `\` in program          (ten times)
+```
+
+- **`#pragma pack` does not expand its argument.** The SDK writes `#pragma pack(push, _CRT_PACKING)` with `_CRT_PACKING` a
+  macro for 8; MSVC expands it, and so does every compiler that reads real Windows headers.
+- **A stray byte in a macro body is diagnosed at definition time.** `driverspecs.h` writes `(#kind, param	)`: under C99
+  6.10.3p3 a backslash is a *preprocessing token*, legal in a replacement list, and a mistake only if the macro is used. Three
+  attempts at this were made and **all three were reverted** - moving the diagnostic from the lexer to the preprocessor to the
+  parser, each time finding that the layer could not tell (the scanner lexes the whole file before the preprocessor reads a
+  directive) and the last one silently accepting a stray byte in real program text. The code is back at `39e7f06` for those three
+  files, and the gap is written down with its reproduction rather than half-fixed.
+
+213 unit, **14 real** (one more), 55 parser; fmt and clippy clean.
+
 ### M103 - 2026-11-25 - the compiler cannot read the real Windows SDK
 
 Allowing the SDK fixtures to run on CI found something bigger than a test bug, and the annotation said it in one line:

@@ -626,6 +626,60 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
     assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
 }
 
+/// The Windows SDK's headers reach `vcruntime.h`, which belongs to the **toolset**, not the SDK.
+///
+/// A machine with the SDK and no Visual Studio finds `windows.h` and cannot compile it - which is what
+/// CI reported the first time the SDK fixtures were allowed to run there. This compiler ships a
+/// *fallback* for that header: read only when neither its own headers nor the host's have the name, so
+/// a machine with Visual Studio gets Microsoft's file and nothing is shadowed - the lesson `malloc.h`
+/// taught, applied in the other direction.
+///
+/// The test is the shape CI failed on, made from the Kits alone: `windows.h` must get **past**
+/// `vcruntime.h`. It does not have to compile yet - it does not - but the missing-header wall is gone,
+/// and the next gap is a diagnostic about a pragma rather than a file that cannot be found.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_sdk_gets_past_the_toolsets_vcruntime_h() {
+    let kits = PathBuf::from("C:/Program Files (x86)/Windows Kits/10/Include");
+    let Ok(versions) = std::fs::read_dir(&kits) else {
+        eprintln!("no Windows Kits on this machine: the test is skipped");
+        return;
+    };
+    let newest = versions
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("um/windows.h").is_file())
+        .max();
+    let Some(newest) = newest else {
+        eprintln!("no Windows Kits with `um/windows.h`: the test is skipped");
+        return;
+    };
+    let roots = vec![
+        newest.join("ucrt"),
+        newest.join("shared"),
+        newest.join("um"),
+    ];
+    let includes = Box::new(Fixtures(roots));
+    let options = Options {
+        opt_level: 2,
+        budgets: xcc::Budgets::for_a_compiler(),
+        ..Options::default()
+    };
+    let error = xcc::Compile::with_includes(options, includes)
+        .compile(
+            "probe.c",
+            "#include <windows.h>
+int main(void) { return 0; }
+",
+        )
+        .expect_err("the SDK is not readable yet: this test pins how far it gets");
+    let text = error.render(xcc::Format::Human);
+    assert!(
+        !text.contains("cannot find `vcruntime.h`"),
+        "the fallback header did not answer: {text}"
+    );
+}
+
 /// Where this machine keeps the platform's headers, or `None` - **asked of the compiler**, which is
 /// the only way to know they can be used.
 ///

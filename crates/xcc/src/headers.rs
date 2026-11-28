@@ -245,6 +245,33 @@ const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
     ),
 ];
 
+/// Headers read **after** the host's include directories, unlike [`BRIDGE_HEADERS`].
+///
+/// The difference is the lesson `malloc.h` taught: a shipped header that shadows the SDK's is a header
+/// that loses whatever the SDK's had. A *fallback* is the other trade - it is found only when neither
+/// this compiler nor the host has the name - so a machine with the real header gets the real header,
+/// and a machine without it gets enough to compile rather than `cannot find`.
+///
+/// The Windows SDK's `corecrt.h` opens with `#include <vcruntime.h>`, and that header belongs to the
+/// **Visual Studio toolset** rather than to the SDK: a machine with the SDK and no Visual Studio can
+/// find `windows.h` and cannot compile it, which is what CI reported the first time the SDK fixtures
+/// were allowed to run there.
+const FALLBACK_HEADERS: &[(&str, Disposition)] = &[(
+    "vcruntime.h",
+    Disposition::Shipped(include_str!("../include/vcruntime.h")),
+)];
+
+/// A header this compiler provides only when nothing else has it.
+fn fallback(name: &str) -> Option<&'static str> {
+    FALLBACK_HEADERS
+        .iter()
+        .find(|(header, _)| *header == name)
+        .and_then(|(_, disposition)| match disposition {
+            Disposition::Shipped(text) => Some(*text),
+            _ => None,
+        })
+}
+
 fn disposition(name: &str) -> Option<&Disposition> {
     C99_HEADERS
         .iter()
@@ -285,6 +312,7 @@ impl Includes for Headers {
         builtin(path)
             .map(str::to_owned)
             .or_else(|| self.host.read(path))
+            .or_else(|| fallback(path).map(str::to_owned))
     }
 }
 
