@@ -18,6 +18,7 @@ front-end bugs and a linker bug, and miniz found three front-end bugs, a pass bu
 | `mimalloc/` | [microsoft/mimalloc](https://github.com/microsoft/mimalloc), master, 2026-11-22 | MIT | a production allocator: thread-local heaps, `gs:` reads, `lock cmpxchg`, `rep movs` |
 | `xxhash/` | [Cyan4973/xxHash](https://github.com/Cyan4973/xxHash), master, 2026-11-22 | BSD | three hash functions, and the MSVC intrinsic a program calls with no header |
 | `tre/` | [laurikari/tre](https://github.com/laurikari/tre), master, 2026-11-22 | BSD | POSIX regular expressions: the most macro-heavy code here, and a pointer-to-narrower-int cast |
+| `fixed_point/` | `fixed_point_library/tools/debug_isqrt.c`, 2026-11-28 | this project's own | a fixed-point square root: 64-bit multiplies, shifts, and the first oracle that is not clang |
 
 ## cjson
 
@@ -34,6 +35,21 @@ domain; the licences are in the files themselves.
 **`miniz_export.h` is ours, not upstream's.** Upstream generates it from a CMake template, and the
 two macros it defines are the whole of it. It is here rather than generated because a fixture that
 needs CMake is a fixture that needs CMake.
+
+## fixed_point
+
+`debug_isqrt.c` from this project's own `fixed_point_library`, unmodified: a fixed-point square root by
+Newton's method on Q30/Q31 values, printing 47 lines of `%llx`, `%f` and `%08x` debug output.
+
+**The oracle is `gcc -O2` on Linux**, not clang, and that is the point: every other fixture compares this
+compiler with a different *invocation* of a compiler it is related to, and this one compares it with a
+second implementation of the language. `expected.txt` beside it is that build's output, recorded once.
+
+It arrived by survey: of 2 000 files in the corpus that compile, 27 build an executable, 13 print
+anything, and this is one of the two that agree byte for byte - the only difference being `
+` against
+`
+`, which is the C runtime's business.
 
 ## tre
 

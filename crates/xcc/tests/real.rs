@@ -470,6 +470,35 @@ fn tre_matches_three_groups() {
     assert_eq!(out.trim_end(), "2 8 2 5 5 8");
 }
 
+/// `fixed_point`: a real program doing real arithmetic, and the **first fixture whose oracle is not
+/// clang**.
+///
+/// 139 lines of fixed-point square root - Newton's method on Q30/Q31 values, with 64-bit multiplies,
+/// shifts and `%llx`/`%f`/`%08x` output. The expected text beside it was produced by `gcc -O2` on Linux,
+/// which makes this the one fixture that checks against a *second* implementation of the language
+/// rather than against a different invocation of the same one.
+///
+/// It arrived by survey rather than by plan: of 2 000 files in the corpus that compile, 27 build an
+/// executable and 13 print anything, and this is one of the two that agree with `gcc` byte for byte
+/// (line endings aside - ours writes through the Windows CRT, `gcc` on Linux does not).
+#[test]
+fn fixed_point_square_roots_agree_with_gcc() {
+    let run = run_fixture_with(
+        "fixed_point",
+        "fixed_point",
+        &["debug_isqrt.c"],
+        &[],
+        xcc::CStandard::default(),
+        &[],
+        &[],
+    );
+    let out = String::from_utf8_lossy(&run.stdout).replace('\r', "");
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    // `gcc -O2`'s output, recorded beside the program.
+    let expected = include_str!("fixtures/fixed_point/expected.txt");
+    assert_eq!(out, expected, "the fixed-point arithmetic disagreed");
+}
+
 /// `xxhash`: 250 KB of hash functions, and the **only** fixture of the last four that needs no
 /// Windows SDK - so unlike SQLite's and Lua's run halves this one is checked on every machine.
 ///

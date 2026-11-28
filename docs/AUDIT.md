@@ -786,6 +786,30 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M99 - 2026-11-25 - the eleventh fixture, and the first oracle that is not clang
+
+`debug_isqrt.c` is vendored unmodified as `tests/fixtures/fixed_point/`, with `gcc -O2`'s output recorded beside it in
+`expected.txt`.
+
+**That is what makes it worth a fixture.** Every other one compares this compiler against a different *invocation* of a compiler
+it shares a lineage with - clang, whose `-O0` output the fixtures record. This one compares it against a second
+*implementation* of the language, on arithmetic where the answers are numbers rather than layouts: Newton's method on Q30/Q31
+values, 64-bit multiplies, shifts, and 47 lines of `%llx`/`%f`/`%08x`.
+
+```
+gcc -O2 on Linux    47 lines
+xcc --opt-level=2   47 lines, identical
+```
+
+It also exercises the pieces this session touched without meaning to: 64-bit multiplies that need the full result, shifts of
+values wider than thirty-two bits, and `printf` with three conversion kinds in one line.
+
+The judgement call the survey left open is recorded in the fixture's README rather than buried: this is *this project's own
+code*, not a third-party library, so the principle the other ten fixtures were built on - a program nobody wrote for this
+compiler - is satisfied in the sense that matters and not in the sense that is easy to state.
+
+213 unit, 58 exe, 55 parser, **13 real** (one more), 6 invalid; fmt and clippy clean.
+
 ### M98 - 2026-11-25 - the survey of what the corpus can actually run
 
 The census says 386 of 2 000 sampled files compile. This asked a harder question of the same sample: **how many build an
