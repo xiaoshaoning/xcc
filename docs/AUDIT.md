@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M92 - 2026-11-25 - the stride that was a value, and the crash that became a sentence
+
+The second polar_codes bug is the shape of the first, one level down. With the stack probe in place the program got past `main`
+and faulted at `L[0][i_N + i_list*N] = LLR_Q[i_N]` with the row pointer NULL - and `L` is
+
+```c
+int L[n+1][l*N];      /* both dimensions are values */
+```
+
+**A two-dimensional variable-length array with a runtime inner dimension.** Every VLA test this session wrote had a *constant*
+inner dimension (`int a[rows][3]`), where the element is still a type. Here the element is `int[l*N]`, whose count is a value,
+and the declarator kept a single "this is a variable-length array" slot - so the outer dimension overwrote the inner and `L` was
+allocated `(n+1) * sizeof(int *)` bytes with a stride of eight. The program crashed; a program that had not crashed would have
+written over its own stack in silence.
+
+Reproduced in five lines (`int m[rows][cols]`, both runtime, print `m[3][4]` and `sizeof m[0]`), against `gcc` on Ubuntu for
+the oracle: `0 34 5 4` there, a fault here.
+
+**Refused by name rather than approximated**, because the honest statement is short: a stride is a value, and a stride lives in
+a type. The message says exactly that, a test holds it word for word, and `C99-SUPPORT.md` records the limit beside the others.
+The one-dimensional cases are untouched - 45 KB, 1 MB, and 256 KB in a loop all still print what `gcc` prints.
+
+What it would take to support it: a pointer-to-array type whose element count is a *value*, which is a variably modified type
+one level deeper than this compiler's model - and every index would multiply by a runtime stride. That is a real project, not a
+patch, and nothing in the ten fixtures needs it.
+
+213 unit, 57 exe, **54 parser** (one more), 12 real; fmt and clippy clean.
+
 ### M91 - 2026-11-25 - the guard that no program could provoke
 
 Reviewing the `__chkstk` commit meant trying to break its own guard: the probe is a call, a call destroys `r8`-`r11`, and the

@@ -455,6 +455,33 @@ fn a_local_array_of_unknown_size_is_completed_too() {
         .expect("the local's count comes from its initialiser");
     assert!(!artifact.bytes().is_empty());
 }
+/// A variable-length array whose **element** is also one is refused by name.
+///
+/// `int m[rows][cols]` with both dimensions runtime has an element type - `int[cols]` - whose count is
+/// a value, and a type here cannot hold one. The declarator kept a single "this is a variable-length
+/// array" slot, so the outer dimension overwrote the inner: `m` was allocated `rows * sizeof(int *)`
+/// bytes and every index used a stride of eight. A crash in polar_codes' DSP code, which declares
+/// `int L[n+1][l*N]`, and a wrong answer waiting for anyone whose program did not fault.
+///
+/// Refused rather than approximated, and the message says why: a stride is a value and a stride lives in
+/// a type.
+#[test]
+fn a_variable_length_array_of_variable_length_arrays_says_so() {
+    let source = "int f(int rows, int cols) { int m[rows][cols]; m[0][0] = 1; return m[0][0]; }\n";
+    let error = xcc::Compile::new(Options {
+        opt_level: 2,
+        ..Options::default()
+    })
+    .compile("t.c", source)
+    .expect_err("a two-dimensional variable-length array has no stride");
+    let messages: Vec<&str> = error
+        .items()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    let wanted = "a variable-length array whose element is also one is not supported: its stride is a value, and a stride lives in a type";
+    assert!(messages.contains(&wanted), "{messages:?}");
+}
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

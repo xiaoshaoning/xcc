@@ -2704,6 +2704,18 @@ impl Parser<'_> {
                 Wrapper::Pointer => self.types.pointer(ty),
                 Wrapper::Array(count) => self.types.array(ty, count),
                 Wrapper::VariableArray(count) => {
+                    // A second variable-length dimension has no representation here: the *element* of
+                    // `int m[rows][cols]` is `int[cols]`, and a count that is a value cannot live in a
+                    // type. Ignoring that made the outer dimension overwrite the inner one, so `m` was
+                    // allocated `rows * sizeof(int *)` bytes and every later index used a stride of
+                    // eight - a crash, in codec-2-shaped DSP code, found by polar_codes.
+                    if vla.is_some() {
+                        let span = self.span();
+                        self.error(
+                            span,
+                            "a variable-length array whose element is also one is not supported: its stride is a value, and a stride lives in a type",
+                        );
+                    }
                     // A variable-length array is the one object whose size the type system cannot
                     // hold, so the *name* is a pointer to the first element and the bytes are taken
                     // off the stack where the declaration stands. The element type and the count are
