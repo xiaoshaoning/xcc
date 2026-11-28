@@ -227,7 +227,9 @@ impl Compile {
         // out, so an object and a JIT run the same code (M10). A pass that breaks a function is a
         // compiler bug, so it says so rather than blaming the source.
         let mut module = parsed.module;
-        if let Err((function, broken)) = crate::cir::pass::optimise(&mut module) {
+        if let Err((function, broken)) =
+            crate::cir::pass::optimise(&mut module, preprocessed.names())
+        {
             diagnostics.push(
                 // Neither layer is named: `optimise` verifies the front end's `cir` before its first
                 // pass, so this covers both, and the function is named either way. The message says

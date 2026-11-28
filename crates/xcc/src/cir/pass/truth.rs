@@ -124,7 +124,8 @@ mod tests {
         let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
         let mut module = parsed.module;
-        let changes = super::super::optimise(&mut module)
+        let names = preprocessed.names().clone();
+        let changes = super::super::optimise(&mut module, &names)
             .unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
         (dump(&module, preprocessed.names()), changes)
     }

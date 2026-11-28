@@ -217,7 +217,7 @@ impl Jit {
         let names = preprocessed.names().clone();
         // The passes run here, in the one place both lowerings come from: `--run` and an object
         // are the same `cir`, so a pass that helps one helps the other.
-        if let Err((function, broken)) = crate::cir::pass::optimise(&mut unit) {
+        if let Err((function, broken)) = crate::cir::pass::optimise(&mut unit, &names) {
             // `optimise` verifies the front end's `cir` before its first pass, so this covers both
             // layers: the message says what is true rather than guessing which half did it.
             return Err(format!(

@@ -15,6 +15,7 @@ pub mod fold;
 pub mod mem2reg;
 pub mod prune;
 pub mod truth;
+pub mod unused;
 
 use super::{Broken, Func, Module};
 use crate::types::Types;
@@ -31,6 +32,8 @@ pub struct Changes {
     pub folded: usize,
     /// Instructions removed because nothing read their result.
     pub dead: usize,
+    /// Functions removed because nothing could reach them.
+    pub functions: usize,
     /// Truth tests removed because the value they tested was already 0 or 1.
     pub simplified: usize,
 }
@@ -57,8 +60,18 @@ fn verified(func: &super::Func, types: &Types, by: &str) -> Result<(), super::Br
 /// bug wherever it is run from - and a caller that forgot to look would get a wrong program
 /// instead of a message. `Broken` names the function and the value, which is what makes a broken
 /// pass debuggable at all.
-pub fn optimise(module: &mut Module) -> Result<Changes, (crate::intern::Symbol, Broken)> {
-    let mut changes = Changes::default();
+pub fn optimise(
+    module: &mut Module,
+    names: &crate::intern::Interner,
+) -> Result<Changes, (crate::intern::Symbol, Broken)> {
+    // First, because it decides *which* functions the rest of this loop sees: a `static` nothing can
+    // reach is dead C (C99 6.1.2.2p7), and dropping it here is the one place both back ends agree -
+    // a header's unused `FORCEINLINE` body cannot fail a link and cannot make the JIT refuse a
+    // program the linker accepts. See [`unused`].
+    let mut changes = Changes {
+        functions: unused::remove(module, names),
+        ..Changes::default()
+    };
     for func in &mut module.funcs {
         // A pass that breaks a function is a compiler bug, so each one is verified under its own
         // name: the message says "after `fold`: ..." rather than "a pass broke it", which was a
@@ -137,7 +150,8 @@ mod tests {
                 .count()
         };
         let before = count(&module);
-        optimise(&mut module).unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
+        let names = preprocessed.names().clone();
+        optimise(&mut module, &names).unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
         (before, count(&module))
     }
 
@@ -148,13 +162,15 @@ mod tests {
         let mut preprocessed = preprocess(&file, &options, &());
         let mut parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
         assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-        let changes = optimise(&mut parsed.module).unwrap_or_else(|(function, broken)| {
-            panic!(
-                "the passes broke `{}`: {}",
-                preprocessed.names().resolve(function),
-                broken.message
-            )
-        });
+        let changes = optimise(&mut parsed.module, preprocessed.names()).unwrap_or_else(
+            |(function, broken)| {
+                panic!(
+                    "the passes broke `{}`: {}",
+                    preprocessed.names().resolve(function),
+                    broken.message
+                )
+            },
+        );
         (dump(&parsed.module, preprocessed.names()), changes)
     }
 

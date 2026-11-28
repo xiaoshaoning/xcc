@@ -1216,8 +1216,25 @@ mod tests {
     /// second such pair cannot be added without this failing.
     #[test]
     fn a_name_is_imported_from_a_library_that_exports_it() {
+        // **Every name every table knows**, not a sample: the property is the whole relation, and a
+        // sample of four was a test of the four - the bug it was written for (`_setjmp` answered
+        // from `ntdll`) was found because one of them happened to be renamed.
+        let mut every: Vec<&str> = sdk_exports()
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .chain([
+                "time",
+                "difftime",
+                "gmtime",
+                "localtime",
+                "mktime",
+                "_setjmp",
+            ])
+            .collect();
+        every.sort_unstable();
+        every.dedup();
         let mut wrong = Vec::new();
-        for (name, (library, exported)) in ["_setjmp", "time", "gmtime", "TlsAlloc"]
+        for (name, (library, exported)) in every
             .into_iter()
             .filter_map(|name| import_for(name).map(|found| (name, found)))
         {
@@ -1250,6 +1267,52 @@ mod tests {
         object(&parsed.module, preprocessed.names(), false, 0)
             .expect("lowering works")
             .bytes
+    }
+
+    /// **The object writer drops it too**, because both paths go through `image`.
+    ///
+    /// The linker needed the rule (a dead `FORCEINLINE` body's call to a name no library has). `-c`
+    /// needs it for the same reason one step earlier: an object that carries an import nothing calls
+    /// makes a *later* link fail, and the object is what a build system keeps.
+    #[test]
+    fn an_object_does_not_carry_a_static_nothing_reaches() {
+        let has =
+            |bytes: &[u8], name: &[u8]| bytes.windows(name.len()).any(|window| window == name);
+        let level_two = |source: &str| {
+            let file = SourceFile::new("t.c", source);
+            let options = Options::default();
+            let mut preprocessed = preprocess(&file, &options, &());
+            let parsed = crate::parse::parse(&mut preprocessed, &options.budgets);
+            // A *warning* about the undeclared name is expected and is not a refusal: the point of
+            // the test is a name nothing defines, which is what a header's dead body names.
+            assert!(
+                !parsed
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| { diagnostic.severity == crate::diag::Severity::Error }),
+                "{:?}",
+                parsed.diagnostics
+            );
+            // The passes run first, as the compiler runs them: the rule that drops a function
+            // nothing reaches lives in `cir::pass::unused`, and an object built without the passes
+            // is an object the compiler never writes.
+            let mut module = parsed.module;
+            crate::cir::pass::optimise(&mut module, preprocessed.names())
+                .unwrap_or_else(|(_, broken)| panic!("{}", broken.message));
+            object(&module, preprocessed.names(), false, 2)
+                .expect("lowering works")
+                .bytes
+        };
+        let bytes = level_two(
+            "static void dead(void) { missing_everywhere(); }
+             int main(void) { return 0; }
+",
+        );
+        assert!(
+            !has(&bytes, b"missing_everywhere"),
+            "a dropped function's import is still in the object"
+        );
+        assert!(has(&bytes, b"main"), "the program's own function is there");
     }
 
     /// The gate PLAN.md puts before M5: does a win64 object from Cranelift carry the unwind

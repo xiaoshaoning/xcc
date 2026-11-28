@@ -786,6 +786,43 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M112 - 2026-11-25 - the rule that belonged one layer up
+
+Review of the link commit. Two findings: the test I wrote sampled four names where the property is about every name, and
+**the rule I added lived in the wrong layer** - which the second test would not have noticed.
+
+**`import_for`'s test was four names.** The bug it was written for (`_setjmp` answered from `ntdll`) was caught because one
+of the four happened to be renamed. The property is the whole relation, and it is cheap to check: every name every capture
+knows, plus the six renamed ones. 8 000 names, 0.04 s, no I/O - and it is a stronger statement than any sample, because a
+tenth library or a second rename cannot be added without it.
+
+**The drop belonged above both back ends.** `drop_unreferenced_statics` was written inside `x64::image`, so it applied to
+`-c` and to a link and not to `--run`. The measurement that shows why that is wrong is one program:
+
+```
+static void dead(void) { this_symbol_is_in_no_library(); }
+int main(void) { return 3; }
+```
+
+`xcc -o` linked it; `xcc --run` refused it with "a JIT can only call what it has". **The same source meant two things** -
+and the reason is that `--run` prepares its module in `back/jit.rs`, where the passes run in a second place. That second
+place is a fact about this compiler, not a detail: the JIT has no linker, so what it calls must already be here.
+
+So the rule moved to `cir::pass::unused`, run from `optimise` - the one function both paths call - and `optimise` grew a
+parameter (`&Interner`), because a `Func`'s name is a `Symbol` and reachability is about link names. Three call sites, one
+rule. `x64::image` went back to what it was: lower, assemble, nothing more.
+
+**And a test that had to change is a test that was measuring the wrong thing.** `an_object_does_not_carry_a_static_nothing_reaches`
+builds its module through `parse` and calls `object` directly, so it kept passing the old invariant and failed the new code -
+correctly. It runs `optimise` now, which is what the compiler does; an object built without the passes is an object the
+compiler never writes.
+
+Both tests were mutated to fail: the object one against the removed drop, the import one against the old lookup, each with
+the message that names the bug. `.text` is unchanged (75 396 bytes, 446 programs) - the bytes were never the point.
+
+217 unit (+1), 57 parser, 60 exe, 14 real, 35 CLI, 5 hostile, 6 x64, 4 bcc20-sys; differential 417 ran / 0 mismatched; fmt
+and clippy clean.
+
 ### M111 - 2026-11-25 - the program that included windows.h links and runs
 
 `#include <windows.h>` compiled to an object yesterday and would not link. It links now, and an 86 KB `.exe` returns what
