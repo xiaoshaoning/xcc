@@ -514,6 +514,42 @@ fn an_attribute_that_changes_a_type_is_still_refused() {
         );
     }
 }
+/// **An error survives a budget full of warnings.**
+///
+/// The budget is one number and the two severities are not equal. A Windows header filled it with
+/// 2 400 warnings about pragmas this compiler drops, and the four errors behind them were never
+/// printed: the compile failed with `exit 1` and nothing in the log said why. An error now evicts the
+/// oldest warning; only a list of nothing but errors drops an error.
+#[test]
+fn an_error_survives_a_budget_full_of_warnings() {
+    // `Options::default()`'s budget is 100 diagnostics, so this overruns it before the mistake.
+    let mut source = String::new();
+    for _ in 0..200 {
+        source.push_str(
+            "#pragma something_unknown
+",
+        );
+    }
+    source.push_str(
+        "int main(void) { int x = ; return x; }
+",
+    );
+    let error = xcc::Compile::new(Options::default())
+        .compile("t.c", &source)
+        .expect_err("the last line is a mistake");
+    let messages: Vec<&str> = error
+        .items()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("expected an expression")),
+        "the error was dropped by the warning budget: {messages:?}"
+    );
+}
+
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {
     // C99 6.4.4.1p5's table has two axes and this compiler implemented one. The *radix*: a

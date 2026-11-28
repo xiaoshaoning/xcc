@@ -666,8 +666,21 @@ impl Parser<'_> {
             self.errors += 1;
         }
         if self.diagnostics.len() >= self.budgets.max_diagnostics {
-            self.dropped += 1;
-            return;
+            // The budget stops warnings as soon as the list is full, and stops **errors only when
+            // the errors themselves have filled it** - a hundred warnings must not keep the next
+            // error out, and a hundred errors must still stop the hundred and first, which is what
+            // bounds the work on a pathological file.
+            let errors = self
+                .diagnostics
+                .iter()
+                .filter(|held| held.severity == crate::diag::Severity::Error)
+                .count();
+            if diagnostic.severity != crate::diag::Severity::Error
+                || errors >= self.budgets.max_diagnostics
+            {
+                self.dropped += 1;
+                return;
+            }
         }
         let file = self.peek().map_or(0, |token| token.file);
         let name = self

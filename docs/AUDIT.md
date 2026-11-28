@@ -786,6 +786,44 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M108 - 2026-11-25 - the budget that spent itself on warnings
+
+Reviewing the commit that fixed the SDK's first barriers found the reason its diagnosis had taken so long: **the diagnostic budget
+was spent on warnings, and the errors were cut**.
+
+```
+#include <windows.h>  2 400 warnings about dropped pragmas  ->  the 4 errors were never printed
+                      exit 1, and nothing in the log saying why
+```
+
+Two places had the same rule wrong, and the fix is one policy expressed twice because the list exists twice: the parser stops
+collecting, and `compile::report` cuts what it collected.
+
+**The parser** stops warnings as soon as the list is full, and stops errors only when the *errors* have filled it:
+
+```rust
+let errors = self.diagnostics.iter().filter(|held| held.severity == Error).count();
+if diagnostic.severity != Error || errors >= self.budgets.max_diagnostics { drop it }
+```
+
+That keeps both halves of the budget's job: a hundred warnings cannot keep the next error out, and a hundred errors still stop the
+hundred and first - which is what bounds the work on a pathological file, and what the existing test
+`a_capped_diagnostic_list_counts_what_it_refused` pins (120 errors, a budget of 10, ten reported).
+
+**`report`** is where the whole list exists, so it is where the *choice* lives: count the errors, let warnings have what is left
+of the budget, and never drop an error while a warning is standing.
+
+```rust
+let errors = diagnostics.iter().filter(|d| d.severity == Error).count();
+let room = budget.saturating_sub(errors);
+```
+then retain in source order, and truncate only if the errors alone overrun the budget.
+
+The test is a program with 200 unknown pragmas and a mistake on the last line, and it fails without the change with the list of
+two hundred warnings - which is exactly what CI's log was.
+
+214 unit, **56 parser** (one more), 59 exe, 14 real, 6 invalid; fmt and clippy clean.
+
 ### M107 - 2026-11-25 - the stray backslash, where the layer actually is, and 2 400 warnings that hid an error
 
 Four fixes, and the first one succeeded on the fourth attempt because the third attempt was *read* rather than guessed.

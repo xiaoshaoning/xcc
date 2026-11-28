@@ -474,6 +474,25 @@ fn report(mut diagnostics: Vec<Diagnostic>, refused: usize, options: &Options) -
     let over = diagnostics.len().saturating_sub(budget);
     let dropped = refused + over;
     if over > 0 {
+        // **An error is never the one dropped.** The budget is one number and the two severities are
+        // not equal: a Windows header filled it with 2 400 warnings about pragmas this compiler drops,
+        // and the four errors behind them were cut here - a compile that failed with `exit 1` and
+        // nothing in the log saying why. So warnings are what the budget is spent on, and the count
+        // of errors decides how much of it they may use.
+        let errors = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Error)
+            .count();
+        let room = budget.saturating_sub(errors);
+        let mut warnings = 0usize;
+        diagnostics.retain(|diagnostic| {
+            if diagnostic.severity == Severity::Error {
+                return true;
+            }
+            warnings += 1;
+            warnings <= room
+        });
+        // More errors than the budget keeps the first ones, in source order.
         diagnostics.truncate(budget);
     }
     if dropped > 0 {
