@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M93 - 2026-11-25 - the half of the nesting the refusal missed
+
+Reviewing the refusal from `9d5154d` meant asking what a *partial* nesting looks like - one variable dimension, one constant -
+and the answer was another shape refused with a sentence about the wrong thing.
+
+```c
+int m[3][cols];        /* constant outer, variable inner */
+
+ours:  error: cannot assign to an array
+gcc:   accepts it, and m[2][4] is 24
+```
+
+The two-variable case was caught by watching the *second* variable wrapper arrive. Here the second wrapper is a **constant**
+array, so nothing fired: the declarator produced "an array of three `int *`" - the inner variable-length array having already
+become a pointer - and the declaration then tried to store the allocation into an array, which is what the message described.
+
+The guard is now on the **result** rather than on the second wrapper: if a variable-length array was found and the type that came
+out is still an array, the outer array's element is the variable-length one and its stride is a value. One condition, both
+shapes, and the same message - which is the one that says why.
+
+Flipped both ways: without the guard the test fails with `["cannot assign to an array"]`, the sentence that sent a reader to the
+assignment that is not there.
+
+213 unit, 57 exe, 54 parser, 12 real, 6 invalid; fmt and clippy clean.
+
 ### M92 - 2026-11-25 - the stride that was a value, and the crash that became a sentence
 
 The second polar_codes bug is the shape of the first, one level down. With the stack probe in place the program got past `main`

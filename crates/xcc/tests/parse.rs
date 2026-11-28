@@ -467,20 +467,27 @@ fn a_local_array_of_unknown_size_is_completed_too() {
 /// a type.
 #[test]
 fn a_variable_length_array_of_variable_length_arrays_says_so() {
-    let source = "int f(int rows, int cols) { int m[rows][cols]; m[0][0] = 1; return m[0][0]; }\n";
-    let error = xcc::Compile::new(Options {
-        opt_level: 2,
-        ..Options::default()
-    })
-    .compile("t.c", source)
-    .expect_err("a two-dimensional variable-length array has no stride");
-    let messages: Vec<&str> = error
-        .items()
-        .iter()
-        .map(|diagnostic| diagnostic.message.as_str())
-        .collect();
-    let wanted = "a variable-length array whose element is also one is not supported: its stride is a value, and a stride lives in a type";
-    assert!(messages.contains(&wanted), "{messages:?}");
+    // Both shapes: two variable dimensions, and a variable one inside a constant array. The second
+    // was refused with "cannot assign to an array" - a sentence about the wrong thing - until the
+    // review that asked what a *partial* nesting looked like.
+    for source in [
+        "int f(int rows, int cols) { int m[rows][cols]; m[0][0] = 1; return m[0][0]; }\n",
+        "int f(int cols) { int m[3][cols]; m[0][0] = 1; return m[0][0]; }\n",
+    ] {
+        let error = xcc::Compile::new(Options {
+            opt_level: 2,
+            ..Options::default()
+        })
+        .compile("t.c", source)
+        .expect_err("an array of variable-length arrays has no stride");
+        let messages: Vec<&str> = error
+            .items()
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        let wanted = "a variable-length array whose element is also one is not supported: its stride is a value, and a stride lives in a type";
+        assert!(messages.contains(&wanted), "{messages:?}");
+    }
 }
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {

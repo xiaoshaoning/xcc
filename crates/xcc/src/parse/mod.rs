@@ -2726,6 +2726,19 @@ impl Parser<'_> {
                 Wrapper::Function { params, variadic } => self.types.function(ty, params, variadic),
             };
         }
+        // A variable-length array wrapped in *anything* - `int m[3][cols]` as well as
+        // `int m[rows][cols]` - is the same unsupported shape: the outer array's element is the
+        // variable-length one, and its stride is a value. Without this the second shape reached the
+        // declaration as "an array of three `int *`" and was refused with "cannot assign to an array",
+        // which is a sentence about the wrong thing - measured against `gcc`, which accepts it.
+        if vla.is_some() && matches!(self.types.kind(ty), crate::types::Type::Array { .. }) {
+            let span = self.span();
+            self.error(
+                span,
+                "a variable-length array whose element is also one is not supported: its stride is a value, and a stride lives in a type",
+            );
+            return (ty, None);
+        }
         (ty, vla)
     }
 
