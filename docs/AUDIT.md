@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M100 - 2026-11-25 - the test that asked the wrong machine
+
+CI failed on three runs in a row, and the annotation named the test:
+
+```
+xcc ci:     a_platform_header_is_found_without_an_include_flag
+```
+
+It compiled a program including `<unistd.h>` and asserted the platform search found it. `unistd.h` is **mingw's** - it does not
+exist in the Windows SDK - so the test passed on the machine that wrote it and failed on `windows-latest`, which has Visual
+Studio and no mingw. A test for "the platform's headers are found" that requires one platform's headers.
+
+The fix: `<io.h>`, which the SDK's `ucrt` has. And a second test for the half of the mechanism CI depends on and no test named:
+a platform header may `#include` one from a *different* platform directory - the SDK's `io.h` includes `vcruntime.h`, which
+lives in the Visual Studio toolset, two directories apart. That one makes the shape from two directories of its own and puts
+them in `INCLUDE`, so it is checked on any machine rather than only where Visual Studio is installed.
+
+**How the failure was diagnosed, which is the part worth keeping**: not by reading the workflow again, but by asking GitHub.
+Public repositories expose their Actions runs without a token, and the API gives the failing step, the annotation the workflow
+already prints (`::error::` lines from the log), and the test's own name:
+
+```
+GET /repos/xiaoshaoning/xcc/actions/runs?per_page=3          -> conclusion: failure
+GET /repos/xiaoshaoning/xcc/actions/jobs                     -> step 7 "Test" failed
+GET /repos/xiaoshaoning/xcc/check-runs/<job>/annotations     -> the test, at crates/xcc-cli/tests/cli.rs:805
+```
+
+Two attempts were spent guessing first - the size ceiling (75 396 of 81 950, passing) and the newest fixture - before the
+obvious move, which was to **read the failure**. The workflow had been printing the failing test's name all along; the only
+thing missing was asking for it.
+
 ### M99 - 2026-11-25 - the eleventh fixture, and the first oracle that is not clang
 
 `debug_isqrt.c` is vendored unmodified as `tests/fixtures/fixed_point/`, with `gcc -O2`'s output recorded beside it in

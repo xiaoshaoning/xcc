@@ -775,10 +775,13 @@ int main(void) { return twice(21) == 42 ? 0 : 1; }
 
 /// The platform's own headers are found without a flag.
 ///
-/// `#include <unistd.h>` is a mingw header; `#include <windows.h>` is the SDK's. Neither is this
+/// `#include <io.h>` is the C runtime's and `#include <windows.h>` is the SDK's. Neither is this
 /// compiler's, and both work now without `-I`, because the command line puts the platform's header
 /// directories after the programmer's - which is what every Windows C compiler does for its user, and
 /// what made 87 % of a corpus refuse for a reason that had nothing to do with the language.
+///
+/// The header has to be one the **Windows SDK** has: `unistd.h` is mingw's, and a runner with Visual
+/// Studio and no mingw would fail this test instead of testing what it says - which is what CI did.
 ///
 /// Which directories exist is a fact about the machine, so the test says so and skips: a test that
 /// requires an SDK is a test that fails where there is none.
@@ -792,11 +795,8 @@ fn a_platform_header_is_found_without_an_include_flag() {
     let temp = Temp::new("platform-headers");
     let directory = temp.path();
     let source = directory.join("t.c");
-    std::fs::write(
-        &source,
-        "#include <unistd.h>\nint main(void) { return 0; }\n",
-    )
-    .expect("the source is written");
+    std::fs::write(&source, "#include <io.h>\nint main(void) { return 0; }\n")
+        .expect("the source is written");
     let output = run(xcc()
         .arg("-c")
         .arg(&source)
@@ -819,12 +819,12 @@ fn an_include_flag_shadows_the_platform() {
     }
     let temp = Temp::new("shadow-platform");
     let directory = temp.path().to_path_buf();
-    let header = directory.join("unistd.h");
+    let header = directory.join("io.h");
     std::fs::write(&header, "#define FROM_MY_INCLUDE 1\n").expect("the header is written");
     let source = directory.join("t.c");
     std::fs::write(
         &source,
-        "#include <unistd.h>\n#ifndef FROM_MY_INCLUDE\n#error platform header was read instead\n#endif\nint main(void) { return 0; }\n",
+        "#include <io.h>\n#ifndef FROM_MY_INCLUDE\n#error platform header was read instead\n#endif\nint main(void) { return 0; }\n",
     )
     .expect("the source is written");
     let output = run(xcc()
@@ -840,4 +840,51 @@ fn an_include_flag_shadows_the_platform() {
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A platform header may `#include` one from a **different** platform directory.
+///
+/// This is what the Windows SDK does and what the mingw install on the development machine does not:
+/// `io.h` lives in the SDK's `ucrt` and includes `vcruntime.h`, which lives in the Visual Studio
+/// toolset - two directories apart, both found by the same search. The test makes the shape from two
+/// directories of its own and puts them in `INCLUDE`, the variable the search reads first, so the
+/// mechanism is checked on any machine rather than only on one with Visual Studio installed.
+///
+/// It exists because CI failed on a header only mingw has: the test for the platform search has to be
+/// about *searching*, not about which machine is running it.
+#[test]
+#[cfg(target_os = "windows")]
+fn a_platform_header_may_include_one_from_another_platform_directory() {
+    let temp = Temp::new("platform-chain");
+    let first = temp.path().join("first");
+    let second = temp.path().join("second");
+    std::fs::create_dir_all(&first).expect("the first directory is made");
+    std::fs::create_dir_all(&second).expect("the second directory is made");
+    std::fs::write(
+        first.join("outer.h"),
+        "#include <inner.h>\n#define OUTER (INNER + 1)\n",
+    )
+    .expect("the outer header is written");
+    std::fs::write(second.join("inner.h"), "#define INNER 41\n")
+        .expect("the inner header is written");
+
+    let source = temp.path().join("t.c");
+    std::fs::write(
+        &source,
+        "#include <outer.h>\nint main(void) { return OUTER == 42 ? 0 : 1; }\n",
+    )
+    .expect("the source is written");
+
+    let include = std::env::join_paths([&first, &second]).expect("two paths");
+    let output = run(xcc()
+        .env("INCLUDE", &include)
+        .arg("-c")
+        .arg(&source)
+        .arg("-o")
+        .arg(temp.path().join("t.o")));
+    assert!(
+        output.status.success(),
+        "a header in one platform directory could not include one in another: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
