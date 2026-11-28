@@ -786,6 +786,42 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M102 - 2026-11-25 - the second search for the same place, and the edition it did not know
+
+The sweep of machine-dependent tests found the class in its most damaging form: **`windows_sdk()` spelled three paths
+itself** - MSYS2's two prefixes and Visual Studio **Community** - while the compiler's `platform_directories()` had, since M76,
+searched `INCLUDE`, both MSYS2 prefixes, all four Visual Studio editions and the Windows SDK.
+
+Two consequences, and the second is the one that matters:
+
+- **Two searches for one place**, which agree only by accident. They had already stopped agreeing: `platform_directories` knows
+  Enterprise and Professional, the test's copy did not.
+- **Every fixture that needs the SDK skipped on CI.** `windows-latest` has Visual Studio *Enterprise*, so the test's search
+  answered `None` and SQLite, Lua, mimalloc and tre were never compiled, linked or run on the runner - the halves that *run* real
+  programs were exercised only on the machine that wrote them.
+
+`windows_sdk()` is the compiler's answer now:
+
+```rust
+fn windows_sdk() -> Option<Vec<PathBuf>> {
+    let directories = xcc::platform::platform_directories();
+    directories.iter().any(|path| path.join("windows.h").is_file()).then_some(directories)
+}
+```
+
+and it returns the whole list rather than one path, because the fixtures need the CRT's headers *and* `windows.h`, which live in
+different directories of the same installation.
+
+**What that means for CI, stated before it is observed**: the SDK fixtures now run there. That is four real programs - 265 977
+lines of SQLite, Lua, 21 units of mimalloc, tre - compiled, linked and run on every push, where before they skipped. If the
+runner cannot do it, the honest outcome is a failing gate and a real bug on a machine nobody develops on, which is what a gate is
+for.
+
+Also aligned: `exe.rs` and `x64.rs` each probe for a host linker, in *different orders* (`cc, gcc, clang` and `clang, cc,
+gcc`), which is two answers to one question on a machine with more than one. Both ask for `clang` first now.
+
+213 unit, 59 exe, 55 parser, 13 real, 6 invalid, 33 CLI; fmt and clippy clean.
+
 ### M101 - 2026-11-25 - the test that passed for the wrong reason, once its neighbour was gone
 
 Removing the machine-dependent test left its sibling with the same flaw, hidden by the neighbour:

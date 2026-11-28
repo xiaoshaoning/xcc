@@ -334,7 +334,7 @@ fn lua_runs_its_driver_script_the_way_clang_does() {
         ],
         &[],
         xcc::CStandard::default(),
-        &[sdk],
+        &sdk,
         // The script, by absolute path: the interpreter takes it as its one argument, which is how
         // the command line runs a program.
         &[&root("lua").join("driver.lua").to_string_lossy()],
@@ -461,7 +461,7 @@ fn tre_matches_three_groups() {
         ],
         &["USE_LOCAL_TRE_H"],
         xcc::CStandard::default(),
-        &[sdk],
+        &sdk,
         &[],
     );
     let out = String::from_utf8_lossy(&run.stdout);
@@ -550,7 +550,7 @@ fn mimalloc_allocates_through_its_own_theaps() {
         // `mimalloc` is C11: `_Atomic`, thread-local storage, and `stdatomic.h`.
         xcc::CStandard::C11,
         // Its own headers live in `include/`, which is not the fixture's root.
-        &[root("mimalloc").join("include"), sdk],
+        &[vec![root("mimalloc").join("include")], sdk].concat(),
         &[],
     );
     let out: Vec<String> = String::from_utf8_lossy(&run.stdout)
@@ -618,7 +618,7 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
         &["driver.c", "sqlite3.c"],
         &[],
         xcc::CStandard::default(),
-        &[sdk],
+        &sdk,
         &[],
     );
     let out = String::from_utf8_lossy(&run.stdout).into_owned();
@@ -626,31 +626,21 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
     assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
 }
 
-/// Where this machine keeps `windows.h`, or `None`. The three places a Windows build host puts it:
-/// MSYS2's two prefixes, and a Visual Studio installation's `ucrt` headers beside `shared`.
-fn windows_sdk() -> Option<PathBuf> {
-    for candidate in [
-        "C:/msys64/ucrt64/include",
-        "C:/msys64/mingw64/include",
-        "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC",
-    ] {
-        let path = PathBuf::from(candidate);
-        if path.join("windows.h").is_file() {
-            return Some(path);
-        }
-        // A Visual Studio SDK keeps `windows.h` in `shared/`, three directories down from the
-        // toolset version - which is a directory name nobody should have to spell.
-        // A directory that cannot be listed is not a machine that has no SDK: try the next
-        // candidate, which is what `?` here was not doing.
-        let Ok(entries) = std::fs::read_dir(&path) else {
-            continue;
-        };
-        for toolset in entries.flatten() {
-            let shared = toolset.path().join("include/shared");
-            if shared.join("windows.h").is_file() {
-                return Some(shared);
-            }
-        }
-    }
-    None
+/// Where this machine keeps the platform's headers, or `None` - **the compiler's own answer**, not a
+/// second search that agrees with it until one of them changes.
+///
+/// This used to spell three paths itself and know only Visual Studio **Community**, which is the one
+/// edition a CI runner does not have: on `windows-latest` it answered `None`, so every fixture that
+/// needs the SDK skipped there, and the halves that *run* SQLite, Lua, mimalloc and tre were never
+/// exercised anywhere but the machine they were written on.
+///
+/// `xcc::platform::platform_directories` is what the compiler searches - `INCLUDE`, MSYS2's two
+/// prefixes, every edition of Visual Studio, and the Windows SDK - so the test asks the same question
+/// the compiler asks, and a machine that can build a program can run these tests.
+fn windows_sdk() -> Option<Vec<PathBuf>> {
+    let directories = xcc::platform::platform_directories();
+    let has_windows = directories
+        .iter()
+        .any(|path| path.join("windows.h").is_file());
+    has_windows.then_some(directories)
 }

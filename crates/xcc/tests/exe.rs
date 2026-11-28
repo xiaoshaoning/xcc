@@ -15,7 +15,10 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
 
 /// Whether a linker is on this machine: without one there is nothing to test.
 fn linker() -> Option<&'static str> {
-    ["cc", "gcc", "clang"]
+    // `clang` first, which is the compiler the comparison tests build against; `x64.rs` asks the same
+    // question in the same order, because two helpers that probe in different orders answer differently
+    // on a machine that has more than one.
+    ["clang", "cc", "gcc"]
         .into_iter()
         .find(|candidate| Command::new(candidate).arg("--version").output().is_ok())
 }
