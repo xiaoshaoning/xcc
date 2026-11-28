@@ -1473,6 +1473,22 @@ impl Preprocessor<'_> {
     ///
     /// `rest` is every token after `#pragma`, so `rest[0]` is `pack` and what follows is the
     /// parenthesised argument list.
+    /// The spelling of an object-like macro's body, when that body is **one token**.
+    ///
+    /// For the directives whose argument is a number and whose argument is written as a name:
+    /// `#pragma pack(push, _CRT_PACKING)`. A function-like macro, or a body of several tokens, is not
+    /// expanded - a pragma's argument is a value, not an expression.
+    fn single_token_body(&self, name: Symbol) -> Option<String> {
+        let definition = self.macros.get(&name)?;
+        if definition.params.is_some() {
+            return None;
+        }
+        let [token] = definition.body.as_slice() else {
+            return None;
+        };
+        Some(self.spell(token.text).to_owned())
+    }
+
     fn pack_pragma(&mut self, rest: &[Raw], span: Span) {
         let mut words: Vec<String> = Vec::new();
         for raw in rest.iter().skip(1) {
@@ -1480,7 +1496,19 @@ impl Preprocessor<'_> {
             if raw.token.kind == TokenKind::Punct {
                 continue;
             }
-            words.push(self.spell(raw.token.text).to_owned());
+            // **A macro names the number, not the number itself**: the Windows SDK writes
+            // `#pragma pack(push, _CRT_PACKING)` and `_CRT_PACKING` is 8. MSVC expands the argument
+            // and so does every compiler that reads real Windows headers, which is why this table is
+            // of *spellings* and had no way to see `8`. Only an object-like macro whose body is one
+            // token is expanded here: anything more would be reading an expression, and a pragma is
+            // not the place for one.
+            let spelling = if raw.token.kind == TokenKind::Ident {
+                self.single_token_body(raw.token.text)
+                    .unwrap_or_else(|| self.spell(raw.token.text).to_owned())
+            } else {
+                self.spell(raw.token.text).to_owned()
+            };
+            words.push(spelling);
         }
         // The action first, so the diagnostics do not have to talk to `&mut self` from inside a
         // match that borrows `words`.

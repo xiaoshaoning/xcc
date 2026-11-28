@@ -678,6 +678,13 @@ int main(void) { return 0; }
         !text.contains("cannot find `vcruntime.h`"),
         "the fallback header did not answer: {text}"
     );
+    // And the packing pragma: `_CRT_PACKING` is defined in the toolset's header too, and every one of
+    // the SDK's packing pragmas names it, so a compiler that cannot expand a pragma's argument never
+    // gets past `excpt.h`.
+    assert!(
+        !text.contains("#pragma pack"),
+        "the packing pragma was not expanded: {text}"
+    );
 }
 
 /// Where this machine keeps the platform's headers, or `None` - **asked of the compiler**, which is

@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M105 - 2026-11-25 - the pragma that names its number, and the last wall before the SDK
+
+Two more of the SDK's barriers, and the second one leaves exactly one error standing.
+
+**`#pragma pack` could not expand its argument.** The table of packing forms compared *spellings* - `"push"`, `"1"`, `"16"` - so
+the SDK's own spelling, `#pragma pack(push, _CRT_PACKING)`, matched nothing. MSVC expands the argument and so does every
+compiler that reads real Windows headers. The reader resolves an **object-like macro whose body is one token** now, and nothing
+more: a pragma's argument is a value, not an expression.
+
+```
+#define LIMIT 1
+#pragma pack(LIMIT)      ->  a struct of { char; long long } is 9 bytes, and 16 after the pop
+```
+
+**`_CRT_PACKING` is not in the SDK at all.** It is defined by the toolset's `vcruntime.h` - the one the fallback stands in for -
+so the fallback gained `#define _CRT_PACKING 8`, which is the value MSVC gives it and the packing of every structure the SDK
+declares. With that, `excpt.h` gets past line 11 and the error count over `#include <windows.h>` falls from eleven to ten.
+
+**What is left is one gap, ten times**: the stray backslash in `driverspecs.h`. So `#include <windows.h>` against the Windows
+Kits alone is now blocked by *one* thing - a preprocessing-token question - rather than by a wall of them. The test in `real.rs`
+pins both of today's fixes by asserting their absence from the diagnostics, which is what a test can do while the target still
+does not compile.
+
+213 unit, 14 real; fmt and clippy clean.
+
 ### M104 - 2026-11-25 - the fallback header that got past the wall, and the two gaps behind it
 
 Starting the SDK work found that the first barrier is not the SDK at all: `corecrt.h` opens with `#include <vcruntime.h>`,

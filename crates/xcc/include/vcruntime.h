@@ -39,6 +39,12 @@ typedef unsigned __int64 size_t;
 typedef unsigned short wchar_t;
 #endif
 
+/* The alignment the SDK's headers lay their structures out with. Microsoft's `vcruntime.h` defines
+ * it - `safeint.h` and the exception records write `#pragma pack(push, _CRT_PACKING)` - and it is
+ * not in the Windows SDK, which is why a machine with the SDK and no toolset could not compile
+ * `excpt.h`. Eight is the value MSVC gives it: the packing of every structure the SDK declares. */
+#define _CRT_PACKING 8
+
 /* A null pointer constant and the two `__pragma` spellings the SDK's headers write. `__pragma` is
  * MSVC's, and this compiler reads `#pragma` at line scope only - `__pragma` inside a macro is
  * dropped, which is what an attribute-style pragma is for. */
