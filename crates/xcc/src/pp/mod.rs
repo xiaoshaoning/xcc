@@ -239,19 +239,15 @@ const HARMLESS_ATTRIBUTES: &[&str] = &[
     // for a diagnostic: `returns_twice` is `setjmp`'s and `minwindef.h` writes it on Win32's
     // callback entry points.
     "returns_twice",
-    "__returns_twice__",
     "naked",
-    "__warning__",
     "error",
     "warning",
     // What a diagnostic would say, in a compiler that does not say it.
     "unused",
-    "__unused__",
     "warn_unused_result",
     "nodiscard",
     "deprecated",
     "format",
-    "__format__",
     "format_arg",
     "nonnull",
     "returns_nonnull",
@@ -260,9 +256,7 @@ const HARMLESS_ATTRIBUTES: &[&str] = &[
     "artificial",
     // What an optimiser would like to know, in a compiler that does not ask.
     "always_inline",
-    "__always_inline__",
     "noinline",
-    "__noinline__",
     "flatten",
     "cold",
     "hot",
@@ -271,21 +265,16 @@ const HARMLESS_ATTRIBUTES: &[&str] = &[
     "target",
     "leaf",
     "pure",
-    "__pure__",
     "const",
-    "__const__",
     "noreturn",
-    "__noreturn__",
     "nothrow",
     "may_alias",
     // Keeping something from a collection that is not done.
     "used",
-    "__used__",
     "retain",
     // Linkage a static link makes moot.
     "visibility",
     "gnu_inline",
-    "__gnu_inline__",
     "externally_visible",
     // The remaining refuse-by-name cases that are *hints for something this target does not do*, and
     // the test for each is the same: dropping it cannot change what the program computes here. A
@@ -805,16 +794,23 @@ impl Preprocessor<'_> {
     }
 
     /// One attribute, by the name the list gave it, found at token `at`.
+    ///
+    /// The name is **normalised first**: GCC accepts every attribute under a `__x__` spelling as well
+    /// as `x`, so the list would otherwise have to hold both of each - and did, for eleven of them -
+    /// while a name added in one spelling only worked in that spelling. `__vector_size__` normalises to
+    /// `vector_size` and is still refused, because normalising changes what is *looked up*, not what is
+    /// allowed.
     fn attribute_named(&mut self, name: &str, argument: Option<&str>, span: Span, at: usize) {
+        let name = name.trim_matches('_');
         if HARMLESS_ATTRIBUTES.contains(&name) {
             return;
         }
-        if matches!(name, "packed" | "__packed__") {
+        if name == "packed" {
             self.layout_attributes
                 .push((at, crate::types::LayoutAttribute::Packed));
             return;
         }
-        if matches!(name, "aligned" | "__aligned__") {
+        if name == "aligned" {
             let alignment = match argument {
                 // `aligned` with no argument is the largest alignment the target has.
                 None => u64::from(crate::types::Types::DEFAULT_PACK),

@@ -786,6 +786,36 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M97 - 2026-11-25 - the second spelling that nobody had listed
+
+Reviewing the nine hint attributes found the reason a name added in one spelling works in one spelling: there is **no
+normalisation**. GCC accepts every attribute as `__x__` as well as `x`, so the list held eleven names twice - `unused` and
+`__unused__`, `pure` and `__pure__` - and everything added since was accepted under only one of its names.
+
+```
+__attribute__((__unused__))     accepted before (listed twice)
+__attribute__((__device__))     refused   - `device` was listed, `__device__` was not
+__attribute__((__no_sanitize__)) refused  - same
+```
+
+The fix is one line where the name arrives:
+
+```rust
+let name = name.trim_matches('_');
+```
+
+and the deletion it enables: **eleven duplicate entries gone** from `HARMLESS_ATTRIBUTES` (54 names to 43), and the two layout
+attributes' `matches!(name, "packed" | "__packed__")` collapsed to `name == "packed"`.
+
+**Normalising changes what is looked up, not what is allowed.** `__vector_size__` reduces to `vector_size`, which is not in
+the list, so it is still refused - and the test now holds both spellings of a refusal as well as both spellings of an
+acceptance, plus `__packed__` still laying a struct out in five bytes and `__aligned__(16)` still aligning to sixteen.
+
+That is the seventh time this session that a name written in two places disagreed with itself, and the first where the
+duplication was the *design*: a list of names that has to know every spelling of every name is a list that will not.
+
+213 unit, **59 exe** (one more), 55 parser, 12 real, 6 invalid; fmt and clippy clean.
+
 ### M96 - 2026-11-25 - the hints that may be dropped, and the ones that may not
 
 The refused-by-name list had ten entries left that are **hints for something this target does not do**, and they are the same

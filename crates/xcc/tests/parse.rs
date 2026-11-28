@@ -492,21 +492,27 @@ fn a_variable_length_array_of_variable_length_arrays_says_so() {
 /// An attribute that decides a type's size is still refused, with the sentence that says why.
 #[test]
 fn an_attribute_that_changes_a_type_is_still_refused() {
-    let source = "int __attribute__((vector_size(16))) v;\nint main(void) { return 0; }\n";
-    let error = xcc::Compile::new(Options::default())
-        .compile("t.c", source)
-        .expect_err("a vector type is not a type this compiler has");
-    let messages: Vec<&str> = error
-        .items()
-        .iter()
-        .map(|diagnostic| diagnostic.message.as_str())
-        .collect();
-    assert!(
-        messages
+    // Normalising the name does not widen the list: `__vector_size__` *is* `vector_size`, and
+    // `vector_size` is refused in either spelling.
+    for source in [
+        "int __attribute__((vector_size(16))) v;\nint main(void) { return 0; }\n",
+        "int __attribute__((__vector_size__(16))) v;\nint main(void) { return 0; }\n",
+    ] {
+        let error = xcc::Compile::new(Options::default())
+            .compile("t.c", source)
+            .expect_err("a vector type is not a type this compiler has");
+        let messages: Vec<&str> = error
+            .items()
             .iter()
-            .any(|message| message.contains("could change the program")),
-        "{messages:?}"
-    );
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("could change the program")),
+            "{messages:?}"
+        );
+    }
 }
 #[test]
 fn a_hex_constant_may_be_unsigned_and_a_declarator_may_hold_two_lists() {

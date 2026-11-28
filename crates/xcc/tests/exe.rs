@@ -605,6 +605,37 @@ int main(void) { printf(\"%d\\n\", a() + b() + c() + d() + e() + f() + g()); ret
     );
 }
 
+/// Every attribute has two spellings, and the compiler normalises rather than listing both.
+///
+/// GCC accepts `__x__` for any attribute `x`, so a list of names has to hold each of them twice - and
+/// did, for eleven - while a name added in one spelling only worked in that spelling, which is how the
+/// nine hint attributes arrived without their `__...__` forms. One `trim_matches('_')` is the rule,
+/// and the layout attributes still apply under either spelling: `__packed__` is a five-byte struct and
+/// `__aligned__(16)` is sixteen bytes of alignment.
+#[test]
+#[cfg(target_os = "windows")]
+fn an_attribute_answers_to_both_of_its_spellings() {
+    let program = "#include <stdio.h>\n\
+\n\
+struct S { int a; char b; } __attribute__((__packed__));\n\
+__attribute__((__unused__)) static int helper(void) { return 1; }\n\
+__attribute__((__device__)) static int cuda(void) { return 2; }\n\
+int __attribute__((__aligned__(16))) wide;\n\
+\n\
+int main(void) {\n\
+  struct S s;\n\
+  printf(\"%d %d %d %d\\n\", (int)sizeof s, helper() + cuda(), (int)sizeof wide,\n\
+         ((unsigned long long)&wide % 16) == 0);\n\
+  return 0;\n\
+}\n";
+    let out = run_linked("attribute-spellings", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "5 3 4 1\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.
