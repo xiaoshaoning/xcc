@@ -786,6 +786,40 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M94 - 2026-11-25 - the corpus, thirty commits later
+
+The census was re-run with the same corpus, seed and filter as M75/M76, after everything this session added - variable-length
+arrays, `typeof`, statement expressions, `alloca`, the platform header search, the aggregate literal pool, the stack probe and
+two conformance fixes.
+
+```
+                   accepted   before the parser   by the parser
+  before (M76)     365 of 2000      1 426              209
+  now              383 of 2000      1 392              225
+```
+
+**Eighteen more files compile, and thirty-four more get past the preprocessor** - which is why the parser's own count went *up*:
+a file that no longer stops at a missing header arrives with its next gap visible. That is the same effect the platform search
+produced on its own (nineteen to accepted, fourteen to the parser), and it is the healthiest number here: the frontier moved
+from "cannot find" to "cannot compile this", which is a frontier the compiler can do something about.
+
+**And the top of that frontier is no longer the language.** The sample of "expected a type specifier" - still 44 files, still
+second - is:
+
+- CLooG output (`for (int c0 = ...)` at file scope), LLVM test fragments (`{` at the top), fragments of programs;
+- Altivec `vector bool char`, another architecture's types;
+- a C++ file named `.c` (`bool sgp4init(...)`);
+- `main () { ... }` - K&R implicit `int`, which C99 removed and this compiler refuses on purpose.
+
+Every one is either not a program or not C. The forty-five `__attribute__` refusals above it are the vector-type attributes that
+cannot be honoured without a vector type (M75). So the ranked queue now reads: attributes that *change types*, fragments, and
+other architectures - and no language feature in sight.
+
+That is what thirty commits of language work bought: not "more files compile" but "the files that do not compile no longer fail
+because of the language". Which is the point at which a compiler stops being measured by a corpus of other people's code and
+starts being measured by the programs it says it runs - the ten fixtures, and the one benchmark that cannot be folded into a
+constant.
+
 ### M93 - 2026-11-25 - the half of the nesting the refusal missed
 
 Reviewing the refusal from `9d5154d` meant asking what a *partial* nesting looks like - one variable dimension, one constant -
