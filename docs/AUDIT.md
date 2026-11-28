@@ -786,6 +786,50 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M111 - 2026-11-25 - the program that included windows.h links and runs
+
+`#include <windows.h>` compiled to an object yesterday and would not link. It links now, and an 86 KB `.exe` returns what
+its `main` says. Three facts about the platform, and one bug of this compiler's own that the first fact exposed.
+
+**1. `MapViewOfFileNuma2` is not a `kernel32` export.** The SDK's `MapViewOfFile2` is `FORCEINLINE` and calls it; this
+machine's `kernel32` exports `MapViewOfFile`, `Ex`, `ExNuma` and `FromApp`, and the body lives in **`KernelBase.dll`**.
+Windows moved the kernel's API into `KernelBase` and left *forwards*, and a forward is not an export - so a capture of
+`kernel32` can never answer for it. `KernelBase.dll` is now a capture and a library, after `kernel32` in the order, and the
+order is what keeps the old answers `kernel32` did have.
+
+**2. `RtlSetVolatileMemory` is in no library at all** - this build's `ntdll` (2 522 exports) does not have it. Nothing
+calls it: `winnt.h`'s `RtlFillVolatileMemory` is a `FORCEINLINE` body, and C99 6.7.4p6 gives an inline definition no
+external definition, so it became a **private function in the unit** - dead, and still emitted, and its call to a name no
+library has failed the link. MSVC never emits it. So:
+
+**A static function nothing reaches is not lowered at all**, by a real walk: roots are every name another unit can call
+(C99 6.1.2.2p7 makes `static` unreachable from outside) and every name an initialiser holds; then what those reach,
+transitively. The first version scanned *every* body for names, which kept a chain of dead statics alive - each named the
+next, so all of them counted as used - and the last one still failed the link. The test is both directions: a dead static
+that calls a name in no library must link, and a static whose address is in a table must **still be an error**.
+
+Measured honestly: `.text` did **not** move - 75 396 bytes over the 446 corpus programs, exactly as before - because the
+offsets are decided by lowering and the bytes are still there. What went away is an import. `ponytail:` compact after the
+drop when code size matters again. The corpus run did get faster, 400 s to 247 s.
+
+**3. And a bug of ours, found by the new library.** `import_for` asked each export table for the *source* spelling and
+answered with the library's own: `_setjmp` is exported by `ntdll` **under that name** and by `ucrtbase` as
+`__intrinsic_setjmp`, so the lookup picked `ntdll` on the strength of a name it was never going to import. Every linked
+program then failed to load with `0xC0000139` - entry point not found - which is what `xcc --test exe` said, sixty tests
+of it. It is the `TlsAlloc` lesson one spelling later: **the name asked about is the name imported**, and a test asserts
+that for every renamed name, and fails against the old code with exactly that pair.
+
+**The oracle**: `a_program_that_includes_the_sdks_windows_h_runs` in `tests/cli.rs` - no `-I` at all, the platform search
+does the work, the program reads a `DWORD` and calls `GetTickCount`, links, runs, and exits 7. Skips with a line when
+there is no SDK.
+
+**Three corpus tests failed once, in the window when the antivirus was deleting `target/release/xcc.exe`** - `ls` showed
+the file and `file` could not open it. They passed on two consecutive runs afterwards. A measurement taken while another
+program was deleting the instrument is not a measurement.
+
+216 unit (+2), 57 parser, 60 exe, 14 real, 35 CLI (+2), 5 hostile, 6 x64; the differential corpus 417 ran / 0 mismatched;
+fmt and clippy clean.
+
 ### M110 - 2026-11-25 - the answer that ate the program, and the doc that lied about const
 
 Review of the commit that made `windows.h` compile. Three findings, one of them a silent miscompile of a shape I had just

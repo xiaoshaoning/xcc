@@ -292,6 +292,86 @@ fn without_c_it_links_an_exe_that_runs() {
     assert_eq!(stdout(&ran).trim_end(), "linked by xcc");
 }
 
+/// **A static function nothing reaches is not linked, so it cannot fail the link.**
+///
+/// This is the `#include <windows.h>` case in miniature. C99 6.7.4p6 gives an inline definition no
+/// external definition, so every header's `FORCEINLINE` body becomes a private function in each unit
+/// that includes it - and an unused one is dead. `winnt.h`'s `RtlFillVolatileMemory` calls
+/// `RtlSetVolatileMemory`, which this machine's `ntdll` does not export: MSVC never emits either
+/// body, and this compiler's linker used to report the missing name and refuse to link a program that
+/// only returned zero.
+///
+/// The second half is the failing direction, and it is the half that matters: a name the program
+/// *can* reach must still be an error. `kept` is a static function's address in a table, which
+/// outlives every call.
+/// **A program that includes the real `windows.h` links and runs.**
+///
+/// The whole arc, end to end and with no `-I` at all: the platform search finds the Kits, the front
+/// end reads ten thousand lines of SDK, and this compiler's own linker resolves the imports - which
+/// needs three facts that only the platform has. `MapViewOfFileNuma2` is exported by `KernelBase` and
+/// by no `kernel32` table at all; the `FORCEINLINE` bodies the headers are made of are dead until
+/// something calls them, and one of them names an `ntdll` function this Windows build does not
+/// export; and a name's *imported* spelling has to be the one the library it comes from exports.
+///
+/// Skips on a machine without the SDK, saying so.
+#[test]
+fn a_program_that_includes_the_sdks_windows_h_runs() {
+    if !xcc::platform::platform_directories()
+        .iter()
+        .any(|path| path.join("windows.h").is_file())
+    {
+        eprintln!("no Windows SDK on this machine: the test is skipped");
+        return;
+    }
+    let temp = Temp::new("sdk-link");
+    let source = temp.write(
+        "t.c",
+        r#"#include <windows.h>
+int main(void) {
+    DWORD answer = 7;
+    return (int)(answer + (GetTickCount() == 0 ? 1 : 0));
+}
+"#,
+    );
+    let exe = temp.path().join("t.exe");
+    let output = run(xcc().arg(&source).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(run(&mut Command::new(&exe)).status.code(), Some(7));
+}
+
+#[test]
+fn a_static_function_nothing_reaches_cannot_fail_the_link() {
+    let temp = Temp::new("dead-static");
+    let source = temp.write(
+        "t.c",
+        r#"static void dead(void) { this_symbol_is_in_no_library(); }
+static void dead_chain(void) { dead(); }
+int main(void) { return 0; }
+"#,
+    );
+    let exe = temp.path().join("t.exe");
+    let output = run(xcc().arg(&source).arg("-o").arg(&exe));
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(run(&mut Command::new(&exe)).status.code(), Some(0));
+
+    // And a reference that *is* reachable stays an error: the address in a table is a reference,
+    // and a linker that dropped it would be dropping a function the program can call.
+    let kept = temp.write(
+        "k.c",
+        r#"static void kept(void) { this_symbol_is_in_no_library(); }
+void (*const table[])(void) = { kept };
+int main(void) { return 0; }
+"#,
+    );
+    let failed = run(xcc().arg(&kept).arg("-o").arg(temp.path().join("k.exe")));
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(
+        stderr(&failed).contains("this_symbol_is_in_no_library"),
+        "{}",
+        stderr(&failed)
+    );
+}
+
 #[test]
 fn two_sources_link_into_one_program() {
     // Two units, not one twice: the second unit's code and data land after the first's, and every

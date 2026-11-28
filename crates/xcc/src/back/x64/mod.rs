@@ -666,9 +666,78 @@ pub(crate) fn image(
     module: &crate::cir::Module,
     names: &crate::intern::Interner,
 ) -> Result<coff::Image, NotYet> {
-    let functions = lower::lower(module, names)?;
+    let mut functions = lower::lower(module, names)?;
     let data = data_section(module)?;
+    drop_unreferenced_statics(&mut functions, module, names, &data);
     Ok(coff::assemble(&functions, data))
+}
+
+/// **A static function nothing refers to is dead, and is not lowered at all.**
+///
+/// `static` means internal linkage (C99 6.1.2.2p7), so no other translation unit can name it, and a
+/// name no relocation in this module mentions cannot be reached - not by a call and not by an
+/// address in an initialiser. Dropping it is therefore not a heuristic.
+///
+/// It matters because of what an *inline* definition is: C99 6.7.4p6 gives it no external definition,
+/// so a header's `FORCEINLINE` body becomes a static function in every unit that includes the header,
+/// and an unused one is dead code. `winnt.h`'s `RtlFillVolatileMemory` calls `RtlSetVolatileMemory`,
+/// which this machine's `ntdll` does not export - MSVC never emits either body, and this compiler's
+/// linker reported the missing name and refused to link a program that only returned zero. The two
+/// halves of the same fact: an inline body counts only when something uses it.
+///
+/// The bytes stay where they were - the offsets are decided by lowering, and compacting `.text` is a
+/// separate job - so this removes an import and not a byte. `ponytail:` compact after the drop when
+/// code size matters again.
+fn drop_unreferenced_statics(
+    functions: &mut Vec<MachineFunction>,
+    module: &crate::cir::Module,
+    names: &crate::intern::Interner,
+    data: &coff::Data,
+) {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    // What each function names. `GlobalAddress` is the only instruction that carries a name, and a
+    // call is a call through the value it produced - so this is the whole of what a body can reach.
+    let mut uses: HashMap<&str, Vec<&str>> = HashMap::new();
+    for function in &module.funcs {
+        let mut used = Vec::new();
+        for block in &function.blocks {
+            for instruction in &block.insts {
+                if let crate::cir::Inst::GlobalAddress { name, .. } = instruction {
+                    used.push(name.as_str());
+                }
+            }
+        }
+        uses.insert(names.resolve(function.name), used);
+    }
+    // The roots: every name another unit can call, and every name an initialiser holds - a table of
+    // pointers to functions outlives every call.
+    let mut reachable: HashSet<&str> = HashSet::new();
+    let mut pending: VecDeque<&str> = VecDeque::new();
+    for function in &module.funcs {
+        if function.external {
+            let name = names.resolve(function.name);
+            if reachable.insert(name) {
+                pending.push_back(name);
+            }
+        }
+    }
+    for relocation in &data.relocations {
+        let name = relocation.symbol.as_str();
+        if reachable.insert(name) {
+            pending.push_back(name);
+        }
+    }
+    // **And then what those reach, transitively.** Scanning every body instead of this walk kept a
+    // chain of dead statics alive: each one named the next, so all of them counted as used by
+    // something, and the last one's call to a symbol no library has failed the link.
+    while let Some(name) = pending.pop_front() {
+        for used in uses.get(name).map(Vec::as_slice).unwrap_or_default() {
+            if reachable.insert(used) {
+                pending.push_back(used);
+            }
+        }
+    }
+    functions.retain(|function| function.external || reachable.contains(function.name.as_str()));
 }
 
 /// The objects in the data section: their bytes, laid out in the order the module holds them, each

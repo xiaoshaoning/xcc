@@ -205,6 +205,12 @@ pub(crate) fn made_by_the_linker(name: &str) -> bool {
 const SDK_LIBRARIES: &[(&str, &str)] = &[
     ("ucrtbase.dll", include_str!("ucrtbase-exports.txt")),
     ("kernel32.dll", include_str!("kernel32-exports.txt")),
+    // **After `kernel32`, because it is what `kernel32` forwards to.** Windows moved the body of
+    // most of the kernel's API into `KernelBase.dll` and left a forward in its place - and a
+    // *forward* is not an export: `MapViewOfFileNuma2` is in `KernelBase` and in no `kernel32`
+    // export table at all, which is why a program that included `<windows.h>` linked no further
+    // than it. The order matters: a name `kernel32` really exports resolves there first, as it
+    // always has, and only what it forwards falls through to here.
     ("user32.dll", include_str!("user32-exports.txt")),
     ("gdi32.dll", include_str!("gdi32-exports.txt")),
     ("advapi32.dll", include_str!("advapi32-exports.txt")),
@@ -213,6 +219,11 @@ const SDK_LIBRARIES: &[(&str, &str)] = &[
     ("oleaut32.dll", include_str!("oleaut32-exports.txt")),
     ("comctl32.dll", include_str!("comctl32-exports.txt")),
     ("ws2_32.dll", include_str!("ws2_32-exports.txt")),
+    ("kernelbase.dll", include_str!("kernelbase-exports.txt")),
+    // And below that, the layer the other two are written on. `winnt.h`'s `Rtl*` declarations are
+    // these names: an inline body in the SDK's own headers is what reaches them, and there is no
+    // other library that has them.
+    ("ntdll.dll", include_str!("ntdll-exports.txt")),
 ];
 
 /// Which library exports `name`, and nothing else: the captures, built once.
@@ -241,9 +252,16 @@ pub(crate) fn import_for(name: &str) -> Option<(&'static str, String)> {
     // `TlsAlloc` is the lesson in both directions: it is in `ucrtbase`'s *dump* as an import of the
     // kernel's, and it is in `C_RUNTIME` because this compiler's own thread support calls it, and
     // answering `ucrtbase` for it made every linked program fail to load with `0xC0000139`.
+    // **The name asked about is the name returned.** Asking each table for the *source* spelling and
+    // then answering with the library's own was a wrong pair waiting for a library to disagree about
+    // which spelling it exports: `_setjmp` is exported by `ntdll` under that name and by `ucrtbase`
+    // as `__intrinsic_setjmp`, so the lookup answered `ntdll!__intrinsic_setjmp` - a name `ntdll`
+    // does not have - and every linked program failed to load with `0xC0000139`. It is the
+    // `TlsAlloc` lesson, one spelling later.
     for (library, names) in sdk_exports() {
-        if names.contains(name) {
-            return Some((library, exported_as(name).to_owned()));
+        let exported = exported_as(name);
+        if names.contains(exported) {
+            return Some((library, exported.to_owned()));
         }
     }
     // Then the headers this compiler ships: a name they declare that no export table has is one the
@@ -1187,6 +1205,37 @@ impl<M: Module> Lowerer<'_, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The library a name comes from must export the name that will be imported.**
+    ///
+    /// `_setjmp` is exported by `ntdll` under that spelling and by `ucrtbase` as
+    /// `__intrinsic_setjmp`. The lookup asked each table for the source spelling and answered with
+    /// the library's own, so it picked `ntdll` - on the strength of a name it was not going to
+    /// import - and every linked program failed to load with `0xC0000139` (entry point not found).
+    /// The assertion is the general rule, over every name the tables say something about, so a
+    /// second such pair cannot be added without this failing.
+    #[test]
+    fn a_name_is_imported_from_a_library_that_exports_it() {
+        let mut wrong = Vec::new();
+        for (name, (library, exported)) in ["_setjmp", "time", "gmtime", "TlsAlloc"]
+            .into_iter()
+            .filter_map(|name| import_for(name).map(|found| (name, found)))
+        {
+            let table = sdk_exports()
+                .iter()
+                .find(|(candidate, _)| *candidate == library)
+                .map(|(_, names)| names)
+                .expect("a known library");
+            if !table.contains(exported.as_str()) {
+                wrong.push((name, library, exported.clone()));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "imported from a library that does not export that name: {wrong:?}"
+        );
+    }
+
     use crate::options::Options;
     use crate::pp::preprocess;
     use crate::source::SourceFile;
