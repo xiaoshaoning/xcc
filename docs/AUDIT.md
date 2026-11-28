@@ -786,6 +786,34 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M101 - 2026-11-25 - the test that passed for the wrong reason, once its neighbour was gone
+
+Removing the machine-dependent test left its sibling with the same flaw, hidden by the neighbour:
+
+```rust
+fn an_include_flag_shadows_the_platform() {
+    if platform_directories().is_empty() { skip }
+    write mine/io.h;  #include <io.h>;  expect mine's marker
+}
+```
+
+It wrote its own `io.h` in the `-I` directory and then relied on the **machine** having a platform `io.h` for it to shadow. On a
+machine without one, our header won because there was nothing else - a pass that proves nothing. The same shape as the test that
+was just deleted: assert a property of the compiler by depending on a fact about the machine.
+
+Both directories are the test's own now: `platform/io.h` marked `FROM_PLATFORM`, `mine/io.h` marked `FROM_MY_INCLUDE`, the first
+named in `INCLUDE` (which the search reads before anything else) and the second passed as `-I`. The program `#error`s if the
+platform's header was read.
+
+**Two mutations, and only the second one is the test:**
+
+- putting the *shipped* headers before the host's (`builtin` first) changes nothing - that invariant belongs to `Headers::read`
+  and has its own unit test in `headers.rs`;
+- putting the platform directories before the `-I` roots fails it, with the program's own words: *"the platform header was read
+  instead"*. That is the invariant this test names, and now it holds it.
+
+213 unit, 59 exe, 55 parser, 13 real, 6 invalid, 33 CLI; fmt and clippy clean.
+
 ### M100 - 2026-11-25 - the test that asked the wrong machine
 
 CI failed on three runs in a row, and the annotation named the test:

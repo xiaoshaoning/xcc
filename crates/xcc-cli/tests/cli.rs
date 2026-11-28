@@ -777,33 +777,39 @@ int main(void) { return twice(21) == 42 ? 0 : 1; }
 #[test]
 #[cfg(target_os = "windows")]
 fn an_include_flag_shadows_the_platform() {
-    if xcc::platform::platform_directories().is_empty() {
-        eprintln!("no platform headers on this machine: the test is skipped");
-        return;
-    }
+    // Both directories are the test's own, so this is the same test everywhere: the *platform* one is
+    // named in `INCLUDE` - which the search reads first - and `-I` must still win over it. The version
+    // before this one relied on the machine having a platform `io.h` to shadow, so on a machine without
+    // one it passed for the wrong reason: our header won because there was nothing else.
     let temp = Temp::new("shadow-platform");
-    let directory = temp.path().to_path_buf();
-    let header = directory.join("io.h");
-    std::fs::write(&header, "#define FROM_MY_INCLUDE 1\n").expect("the header is written");
-    let source = directory.join("t.c");
+    let platform = temp.path().join("platform");
+    let mine = temp.path().join("mine");
+    std::fs::create_dir_all(&platform).expect("the platform directory is made");
+    std::fs::create_dir_all(&mine).expect("the -I directory is made");
+    std::fs::write(platform.join("io.h"), "#define FROM_PLATFORM 1\n")
+        .expect("the header is written");
+    std::fs::write(mine.join("io.h"), "#define FROM_MY_INCLUDE 1\n")
+        .expect("the header is written");
+    let source = temp.path().join("t.c");
     std::fs::write(
         &source,
-        "#include <io.h>\n#ifndef FROM_MY_INCLUDE\n#error platform header was read instead\n#endif\nint main(void) { return 0; }\n",
+        "#include <io.h>\n#if !defined(FROM_MY_INCLUDE) || defined(FROM_PLATFORM)\n#error the platform header was read instead\n#endif\nint main(void) { return 0; }\n",
     )
     .expect("the source is written");
+
     let output = run(xcc()
+        .env("INCLUDE", &platform)
         .arg("-c")
         .arg("-I")
-        .arg(&directory)
+        .arg(&mine)
         .arg(&source)
         .arg("-o")
-        .arg(directory.join("t.o")));
+        .arg(temp.path().join("t.o")));
     assert!(
         output.status.success(),
         "`-I` did not win over the platform: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 /// A platform header may `#include` one from a **different** platform directory.
