@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M98 - 2026-11-25 - the survey of what the corpus can actually run
+
+The census says 386 of 2 000 sampled files compile. This asked a harder question of the same sample: **how many build an
+executable that runs and prints something**, and of those, how many agree with another compiler.
+
+```
+2 000 sampled
+   27 with a `main` that build and link
+   13 print something
+    2 agree with gcc on every byte, line endings aside
+```
+
+The thirteen are mostly LLVM and ikos test files (`f1: carp`, `a(1) returns 4`) - programs written to be looked at by a
+debugger - and scratch code. The two that agree:
+
+- **`rs_encode.c`** (64 lines, `work/dnr_c_codes`): Reed-Solomon over GF(256), two 256-entry tables, one line of output.
+  `Parity: 144, 206, 194`, identical to `gcc`.
+- **`debug_isqrt.c`** (139 lines, `fixed_point_library/tools`): a fixed-point square root by Newton's method, 47 lines of
+  `%llx`/`%f`/`%08x` debug output built on 64-bit multiplies and shifts. Identical to `gcc`.
+
+Both were checked byte for byte, and the only difference is `
+` against `
+`, which is the C runtime's business: ours writes
+through the Windows CRT, `gcc` on Linux does not.
+
+**Neither becomes a fixture without a decision that is not mine to make**: both are this project's own code from other
+directories, not a third-party library. The principle the fixtures were built on - *a program nobody wrote for this compiler* -
+is satisfied by either, and vendoring one's own worktree is a different question from vendoring xxHash.
+
+What the survey does establish is worth having on its own: **the compiler's output agrees with GCC's on real fixed-point and
+Galois-field arithmetic**, compiled by two independent implementations of the same language, with no fixture required.
+
 ### M97 - 2026-11-25 - the second spelling that nobody had listed
 
 Reviewing the nine hint attributes found the reason a name added in one spelling works in one spelling: there is **no
