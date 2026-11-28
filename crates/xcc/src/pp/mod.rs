@@ -1473,22 +1473,6 @@ impl Preprocessor<'_> {
     ///
     /// `rest` is every token after `#pragma`, so `rest[0]` is `pack` and what follows is the
     /// parenthesised argument list.
-    /// The spelling of an object-like macro's body, when that body is **one token**.
-    ///
-    /// For the directives whose argument is a number and whose argument is written as a name:
-    /// `#pragma pack(push, _CRT_PACKING)`. A function-like macro, or a body of several tokens, is not
-    /// expanded - a pragma's argument is a value, not an expression.
-    fn single_token_body(&self, name: Symbol) -> Option<String> {
-        let definition = self.macros.get(&name)?;
-        if definition.params.is_some() {
-            return None;
-        }
-        let [token] = definition.body.as_slice() else {
-            return None;
-        };
-        Some(self.spell(token.text).to_owned())
-    }
-
     fn pack_pragma(&mut self, rest: &[Raw], span: Span) {
         let mut words: Vec<String> = Vec::new();
         for raw in rest.iter().skip(1) {
@@ -1496,19 +1480,13 @@ impl Preprocessor<'_> {
             if raw.token.kind == TokenKind::Punct {
                 continue;
             }
-            // **A macro names the number, not the number itself**: the Windows SDK writes
-            // `#pragma pack(push, _CRT_PACKING)` and `_CRT_PACKING` is 8. MSVC expands the argument
-            // and so does every compiler that reads real Windows headers, which is why this table is
-            // of *spellings* and had no way to see `8`. Only an object-like macro whose body is one
-            // token is expanded here: anything more would be reading an expression, and a pragma is
-            // not the place for one.
-            let spelling = if raw.token.kind == TokenKind::Ident {
-                self.single_token_body(raw.token.text)
-                    .unwrap_or_else(|| self.spell(raw.token.text).to_owned())
-            } else {
-                self.spell(raw.token.text).to_owned()
-            };
-            words.push(spelling);
+            // The words arrive **already macro-expanded** - the directive reader expands a pragma's
+            // arguments before this function is reached - so `#pragma pack(push, _CRT_PACKING)` is
+            // `push, 8` here and the table of spellings sees the number. What it cannot see is a name
+            // that is *undefined*, which is why the SDK needed `_CRT_PACKING` in the fallback
+            // `vcruntime.h`: with nothing to expand, the word stayed `_CRT_PACKING` and the limit was
+            // refused.
+            words.push(self.spell(raw.token.text).to_owned());
         }
         // The action first, so the diagnostics do not have to talk to `&mut self` from inside a
         // match that borrows `words`.
@@ -2762,6 +2740,31 @@ int c = V;"
             "the ABI's alignment, untouched"
         );
         assert_eq!(pack_of("#pragma pack(1)\nint x;\n", "x"), 1);
+        // **A macro names the limit**, which is how the Windows SDK writes every one of its
+        // packing pragmas: `#pragma pack(push, _CRT_PACKING)`, with `_CRT_PACKING` a macro for 8.
+        // The words reach this table already expanded - the directive reader does that, not the
+        // reader of this pragma - so these two cases pin a property of the *preprocessor*, and
+        // the first version of this test was written as though they pinned the pragma.
+        assert_eq!(
+            pack_of(
+                "#define LIMIT 1
+#pragma pack(LIMIT)
+int x;
+",
+                "x"
+            ),
+            1
+        );
+        assert_eq!(
+            pack_of(
+                "#define LIMIT 2
+#pragma pack(push, LIMIT)
+int y;
+",
+                "y"
+            ),
+            2
+        );
         let nested = "#pragma pack(push, 2)\nint x;\n#pragma pack(pop)\nint y;\n";
         assert_eq!(pack_of(nested, "x"), 2);
         assert_eq!(pack_of(nested, "y"), 16, "`pop` restores what `push` saved");

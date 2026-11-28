@@ -786,6 +786,38 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M106 - 2026-11-25 - the fix that was not the fix, and the test that proved nothing
+
+Reviewing the pack-pragma commit meant mutating it, and the mutation **passed**: with `single_token_body` deleted, the packing
+test still answered 1 and 2, and the SDK still had no packing error. So the function was dead code, and the real fix had been
+the other half of the commit.
+
+**The pragma's words arrive already macro-expanded.** The directive reader expands a directive's arguments before the pragma
+reader is reached, so `#pragma pack(push, _CRT_PACKING)` had always been `push, 8` *when `_CRT_PACKING` was defined at all*. The
+wall was never the expansion: it was that **`_CRT_PACKING` is not in the Windows SDK** - it lives in the toolset's
+`vcruntime.h`, which the fallback from M104 stands in for. One `#define` was the whole fix, and thirty lines of expansion
+machinery beside it were an invention.
+
+```
+without single_token_body:  a { char; long long } packed by a macro is 9 bytes, and 16 after the pop
+                            #include <windows.h>: no packing error
+```
+
+So the twenty-nine lines are gone, and the comment where they were says what actually happens:
+
+> The words arrive **already macro-expanded** ... What it cannot see is a name that is *undefined*, which is why the SDK needed
+> `_CRT_PACKING` in the fallback `vcruntime.h`.
+
+**And the test was worse than dead.** Its two macro cases had also never landed - `git show` found `LIMIT` only in the commit
+*message* - so the commit shipped a test that did not contain the thing its message described. They are in now, with a comment
+that says what they pin: a property of the *preprocessor*, not of the pragma. Which is the only reason they are worth keeping:
+they would have caught a preprocessor that stopped expanding, and they say nothing at all about the code that was deleted.
+
+The lesson is the one this project keeps relearning in new clothes: **a fix that cannot fail its own test is not a fix** - and
+the way to find out is to delete it and see whether anything notices.
+
+213 unit, 14 real; fmt and clippy clean.
+
 ### M105 - 2026-11-25 - the pragma that names its number, and the last wall before the SDK
 
 Two more of the SDK's barriers, and the second one leaves exactly one error standing.
