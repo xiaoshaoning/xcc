@@ -786,6 +786,31 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M96 - 2026-11-25 - the hints that may be dropped, and the ones that may not
+
+The refused-by-name list had ten entries left that are **hints for something this target does not do**, and they are the same
+kind of thing the list already held: an attribute goes in only if dropping it cannot change what the program computes *here*.
+
+```
+no_sanitize, no_sanitize_address, no_sanitize_thread, no_sanitize_undefined
+target_version, disable_tail_calls, m68k_rtd, mig_server_routine, device
+```
+
+A sanitizer this compiler does not have, diagnostics that do not run, function multiversioning in a program with one dispatch,
+a tail call this back end does not make, and three calling conventions belonging to m68k, Mach and CUDA. Dropped, and the
+program prints what it computes (`28`).
+
+**What is left refused, and it should be**: `vector_size`, `ext_vector_type`, `neon_vector_type`, `mode` and `__ms_struct__` -
+the names that decide a type's size, a member's offset or a field's width. The test keeps one of them refused so the boundary
+stays stated: an attribute that changes a type is not a hint.
+
+**Measured, and the number is small on purpose**: over the same 2 000-file sample, refusals by attribute fall from 45 to 41 and
+accepted files rise from 383 to 386. Four files, because the names that dominate that list are the ones that *cannot* be
+dropped - which is the point. A compiler that dropped `vector_size` would compile more files and produce wrong programs, and the
+count of files compiled is not the measure that matters.
+
+213 unit, **58 exe** (one more), **55 parser** (one more), 12 real, 6 invalid; fmt and clippy clean.
+
 ### M95 - 2026-11-25 - the map inside the new code, and the overflow that is not a gap
 
 Every commit in this range has a review after it, so this pass swept an area again: four separate fixes landed in the stack

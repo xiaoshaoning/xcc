@@ -287,6 +287,23 @@ const HARMLESS_ATTRIBUTES: &[&str] = &[
     "gnu_inline",
     "__gnu_inline__",
     "externally_visible",
+    // The remaining refuse-by-name cases that are *hints for something this target does not do*, and
+    // the test for each is the same: dropping it cannot change what the program computes here. A
+    // sanitizer that does not exist, a diagnostics pass that does not run, function multiversioning in
+    // a program with one dispatch, a tail call this back end does not make, and three calling
+    // conventions belonging to m68k, Mach and CUDA. Each was measured in the corpus by name (M75's
+    // list of what the refusals asked for) and each is here rather than refused because the honest
+    // sentence for the refusal - "an attribute it dropped could change the program" - is not true of
+    // them.
+    "no_sanitize",
+    "no_sanitize_address",
+    "no_sanitize_thread",
+    "no_sanitize_undefined",
+    "target_version",
+    "disable_tail_calls",
+    "m68k_rtd",
+    "mig_server_routine",
+    "device",
 ];
 
 const PREDEFINED: &[(&str, &str)] = &[

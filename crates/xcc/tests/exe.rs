@@ -577,6 +577,34 @@ int main(void) {\n\
     );
 }
 
+/// An attribute that is a **hint for something this target does not do** may be dropped.
+///
+/// The list in `HARMLESS_ATTRIBUTES` is what may be dropped, not what may not, and each entry is
+/// tested the same way: dropping it cannot change what the program computes here. A sanitizer that
+/// does not exist, function multiversioning in a program with one dispatch, a tail call this back end
+/// does not make, and three calling conventions belonging to m68k, Mach and CUDA.
+///
+/// The second half is the reason the refusal exists at all: an attribute that changes a *type* is
+/// still refused by name, and the message says why.
+#[test]
+fn an_attribute_for_something_this_target_does_not_do_is_dropped() {
+    let source = "#include <stdio.h>\n\
+__attribute__((no_sanitize(\"undefined\"))) int a(void) { return 1; }\n\
+__attribute__((no_sanitize_address)) int b(void) { return 2; }\n\
+__attribute__((target_version(\"default\"))) int c(void) { return 3; }\n\
+__attribute__((disable_tail_calls)) int d(void) { return 4; }\n\
+__attribute__((m68k_rtd)) int e(void) { return 5; }\n\
+__attribute__((mig_server_routine)) int f(void) { return 6; }\n\
+__attribute__((device)) int g(void) { return 7; }\n\
+int main(void) { printf(\"%d\\n\", a() + b() + c() + d() + e() + f() + g()); return 0; }\n";
+    let out = run_linked("attributes", source, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r", ""),
+        "28\n"
+    );
+}
+
 /// A stack allocation whose size is a *number the program computes* - the operation a
 /// variable-length array needs, and the one thing no library can do for you, because it moves the
 /// caller's stack.
