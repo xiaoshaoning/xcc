@@ -786,6 +786,45 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M91 - 2026-11-25 - the guard that no program could provoke
+
+Reviewing the `__chkstk` commit meant trying to break its own guard: the probe is a call, a call destroys `r8`-`r11`, and the
+allocator is allowed to keep values there when a function has two parameters or fewer. So `Inst::StackAlloc` was added to the
+predicate that sets `makes_call`.
+
+The mutation says the predicate cannot be *shown* to matter:
+
+```
+int f(int a, int b) {          /* two parameters: caller-saved registers allowed */
+  int x1..x6 = ...;            /* six live values */
+  int arr[a * b];              /* the probe */
+  ...
+}
+```
+
+with the predicate removed, the program still prints the right number - because the allocator spills those values rather than
+reaching for `r8`-`r11`, and every other VLA test has the same shape. **No program I can write provokes the clobber.**
+
+That leaves two choices, and the wrong one is tempting: delete the predicate, because "a fix that cannot fail its own test is
+not a fix". The rule is right and its *reason* is what decides here - the predicate is not an optimisation whose result can be
+measured, it is a **precondition** of the code that follows. Deleting it would leave a latent clobber, armed for the first
+change to the allocator's heuristic, and invisible until a program in the wild hit it.
+
+So the check moved to the assertion that can see it:
+
+```rust
+debug_assert!(
+    self.makes_call,
+    "a stack allocation calls `__chkstk` and the allocator was not told"
+);
+```
+
+With the predicate removed, `a_variable_length_array_is_as_long_as_the_program_says` now fails inside the encoder with exactly
+that message. The guard is exercised by every variable-length array in the suite - which is the difference between a change
+that cannot fail its test and a change whose test is a different *kind* of test.
+
+213 unit, 57 exe, 53 parser, 12 real; fmt and clippy clean.
+
 ### M90 - 2026-11-25 - the probe that was owed, and the crash that was two bugs
 
 The polar_codes crash had no oracle last time. It has one now: **WSL2 is on this machine**, so `gcc -O2 -lm` on Ubuntu builds the

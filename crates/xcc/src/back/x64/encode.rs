@@ -217,6 +217,7 @@ pub(crate) fn function(func: &MachineFunction, allocation: &Allocation) -> Encod
         unwind: Vec::new(),
         frame,
         frame_pointer: func.dynamic_stack,
+        makes_call: func.makes_call,
     };
     let prologue_started = encoder.code.len();
     encoder.prologue(func.variadic);
@@ -379,6 +380,9 @@ struct Encoder<'a> {
     /// `rsp` in its body needs it - a variable-length array or an `alloca` - and it costs two
     /// instructions: `mov rbp, rsp` in the prologue, `mov rsp, rbp` before the epilogue.
     frame_pointer: bool,
+    /// Whether the function calls anything, from the machine function: the probe a stack
+    /// allocation emits is one, and this is what the assertion above reads.
+    makes_call: bool,
 }
 
 impl Encoder<'_> {
@@ -599,6 +603,17 @@ impl Encoder<'_> {
                 self.release();
             }
             Op::StackAlloc { dst, size } => {
+                // The probe is a call, and a call destroys `r8`-`r11`. Nothing here can check that
+                // the allocator knew: the values it would have put there are spilled already. So the
+                // check is on the *decision* - a function that allocates on the stack must have been
+                // told it makes a call - and every variable-length array in the tests runs it. It is
+                // the same shape as the thread-local address that taught this lesson at a higher
+                // layer, and the same reason a comment is not enough: removing the predicate would
+                // leave a latent clobber that no small program provokes.
+                debug_assert!(
+                    self.makes_call,
+                    "a stack allocation calls `__chkstk` and the allocator was not told"
+                );
                 // The size arrives already rounded up to sixteen - the front end computes it that way
                 // because it is the one place that knows the element size - so this is `mov rax, n;
                 // call __chkstk; sub rsp, rax; mov dst, rsp`.
