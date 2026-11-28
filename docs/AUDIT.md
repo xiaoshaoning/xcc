@@ -786,6 +786,43 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M103 - 2026-11-25 - the compiler cannot read the real Windows SDK
+
+Allowing the SDK fixtures to run on CI found something bigger than a test bug, and the annotation said it in one line:
+
+```
+sqlite does not link: windows.h:31:2: warning: unknown `#pragma region` ignored
+```
+
+Three fixtures failed there - SQLite, Lua, mimalloc - all of them at the same place. **This compiler has never compiled
+against the real Windows SDK.** Every SDK test so far ran on a machine with MSYS2, whose `windows.h` is mingw's: self-contained,
+mingw-flavoured, and nothing like Microsoft's. The SDK's `windows.h` opens with `#pragma region`, includes `vcruntime.h` and
+`sal.h`, and uses MSVC intrinsics - and the search added in M76 *finds* those headers without any trouble, because finding a
+file and reading it are different questions.
+
+That is the honest state of the feature M76 claimed: **the platform headers are found; they are not yet usable.** The claim was
+tested only against mingw, so it was a claim about MSYS2.
+
+Two changes, and the second is the one that keeps CI honest:
+
+- **The gate is a compile, not a directory listing.** `windows_sdk()` builds
+
+  ```c
+  #include <windows.h>
+  int main(void) { return 0; }
+  ```
+
+  and answers with the directories only if that works - the one question whose answer means "this installation is one this
+  compiler can use". Verified both ways: with MSYS2 the fixtures run; with the Windows Kits alone they skip, and the skip *says*
+  `the platform's headers are not usable by this compiler`.
+- **The skip is the finding, printed.** A green tick that hides an unusable SDK is how this went unnoticed for ten commits.
+
+The next real item is therefore not on the old list: **make `#include <windows.h>` compile against the SDK** - `#pragma region`,
+`vcruntime.h`, `sal.h`, `__declspec`, and whatever else Microsoft's own headers ask for. That is the frontier the corpus pointed
+at from a different direction (M75: 87 % of refusals are missing headers), and now it has a one-line reproduction.
+
+213 unit, 13 real, 59 exe, 33 CLI; fmt and clippy clean.
+
 ### M102 - 2026-11-25 - the second search for the same place, and the edition it did not know
 
 The sweep of machine-dependent tests found the class in its most damaging form: **`windows_sdk()` spelled three paths

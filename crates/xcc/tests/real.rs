@@ -626,21 +626,51 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
     assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
 }
 
-/// Where this machine keeps the platform's headers, or `None` - **the compiler's own answer**, not a
-/// second search that agrees with it until one of them changes.
+/// Where this machine keeps the platform's headers, or `None` - **asked of the compiler**, which is
+/// the only way to know they can be used.
 ///
-/// This used to spell three paths itself and know only Visual Studio **Community**, which is the one
-/// edition a CI runner does not have: on `windows-latest` it answered `None`, so every fixture that
-/// needs the SDK skipped there, and the halves that *run* SQLite, Lua, mimalloc and tre were never
-/// exercised anywhere but the machine they were written on.
+/// The search returns directories whether or not this compiler can read what is in them. It cannot
+/// read the real Windows SDK yet: `windows.h` there opens with `#pragma region` and pulls
+/// `vcruntime.h`, `sal.h` and MSVC intrinsics that mingw's headers do not, so a fixture gated on the
+/// *paths* existing fails on a runner that has Visual Studio and no mingw - which is what CI did the
+/// first time these tests were allowed to run there.
 ///
-/// `xcc::platform::platform_directories` is what the compiler searches - `INCLUDE`, MSYS2's two
-/// prefixes, every edition of Visual Studio, and the Windows SDK - so the test asks the same question
-/// the compiler asks, and a machine that can build a program can run these tests.
+/// So the gate is a compile, not a directory listing:
+///
+/// ```
+/// #include <windows.h>
+/// int main(void) { return 0; }
+/// ```
+///
+/// If that builds, the installation is one this compiler can use and the fixtures may run. If it does
+/// not, they skip - and the gap is stated rather than hidden, because a skipped test is a fact about
+/// the compiler that a green tick would otherwise hide.
 fn windows_sdk() -> Option<Vec<PathBuf>> {
     let directories = xcc::platform::platform_directories();
-    let has_windows = directories
+    if !directories
         .iter()
-        .any(|path| path.join("windows.h").is_file());
-    has_windows.then_some(directories)
+        .any(|path| path.join("windows.h").is_file())
+    {
+        return None;
+    }
+    let probe = "#include <windows.h>\nint main(void) { return 0; }\n";
+    let includes = Box::new(Fixtures(directories.clone()));
+    let options = Options {
+        opt_level: 2,
+        budgets: xcc::Budgets::for_a_compiler(),
+        ..Options::default()
+    };
+    match Compile::with_includes(options, includes).compile("probe.c", probe) {
+        Ok(artifact) => {
+            assert!(!artifact.bytes().is_empty(), "the probe wrote no object");
+            eprintln!("the platform's headers are usable by this compiler: the SDK fixtures run");
+            Some(directories)
+        }
+        Err(_) => {
+            eprintln!(
+                "the platform's headers are not usable by this compiler: the SDK fixtures skip"
+            );
+            None
+        }
+    }
 }
