@@ -626,86 +626,52 @@ fn sqlite_runs_a_query_through_its_windows_layer() {
     assert_eq!(out.replace('\r', ""), "6 one,two,three 3.51.3\n0 -1\n");
 }
 
-/// The Windows SDK's headers reach `vcruntime.h`, which belongs to the **toolset**, not the SDK.
+/// **The SDK's own `windows.h` compiles**, which is what the platform search was for.
 ///
-/// A machine with the SDK and no Visual Studio finds `windows.h` and cannot compile it - which is what
-/// CI reported the first time the SDK fixtures were allowed to run there. This compiler ships a
-/// *fallback* for that header: read only when neither its own headers nor the host's have the name, so
-/// a machine with Visual Studio gets Microsoft's file and nothing is shadowed - the lesson `malloc.h`
-/// taught, applied in the other direction.
+/// Every other SDK test asks whether some *program* can use a header. This one asks the question in
+/// the direction that found the long chain of gaps: the Kits' `windows.h` reaches `winnt.h`,
+/// `winioctl.h`, `excpt.h` and `stralign.h`, and between them they wanted SAL annotations,
+/// `_Field_range_`, a qualifier after a struct tag, `__has_builtin`, `__alignof`, `__int64`,
+/// `_CRT_PACKING`, and a header (`excpt.h`) that the SDK does not ship at all. A regression in any
+/// one of them is one line here.
 ///
-/// The test is the shape CI failed on, made from the Kits alone: `windows.h` must get **past**
-/// `vcruntime.h`. It does not have to compile yet - it does not - but the missing-header wall is gone,
-/// and the next gap is a diagnostic about a pragma rather than a file that cannot be found.
+/// Level 2, because `winnt.h` reads the thread environment block through a `gs:` prefix and only
+/// this compiler's own back end writes that segment.
 #[test]
 #[cfg(target_os = "windows")]
-fn the_sdk_gets_past_the_toolsets_vcruntime_h() {
-    let kits = PathBuf::from("C:/Program Files (x86)/Windows Kits/10/Include");
-    let Ok(versions) = std::fs::read_dir(&kits) else {
-        eprintln!("no Windows Kits on this machine: the test is skipped");
+fn the_sdks_own_windows_h_compiles() {
+    let Some(directories) = windows_sdk() else {
         return;
     };
-    let newest = versions
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.join("um/windows.h").is_file())
-        .max();
-    let Some(newest) = newest else {
-        eprintln!("no Windows Kits with `um/windows.h`: the test is skipped");
-        return;
-    };
-    let roots = vec![
-        newest.join("ucrt"),
-        newest.join("shared"),
-        newest.join("um"),
-    ];
-    let includes = Box::new(Fixtures(roots));
+    let includes = Box::new(Fixtures(directories));
     let options = Options {
         opt_level: 2,
         budgets: xcc::Budgets::for_a_compiler(),
         ..Options::default()
     };
-    let error = xcc::Compile::with_includes(options, includes)
-        .compile(
-            "probe.c",
-            "#include <windows.h>
+    let source = "#include <windows.h>
 int main(void) { return 0; }
-",
-        )
-        .expect_err("the SDK is not readable yet: this test pins how far it gets");
-    let text = error.render(xcc::Format::Human);
-    assert!(
-        !text.contains("cannot find `vcruntime.h`"),
-        "the fallback header did not answer: {text}"
-    );
-    // And the packing pragma: `_CRT_PACKING` is defined in the toolset's header too, and every one of
-    // the SDK's packing pragmas names it, so a compiler that cannot expand a pragma's argument never
-    // gets past `excpt.h`.
-    assert!(
-        !text.contains("#pragma pack"),
-        "the packing pragma was not expanded: {text}"
-    );
+";
+    match Compile::with_includes(options, includes).compile("windows.c", source) {
+        Ok(artifact) => assert!(!artifact.bytes().is_empty(), "the object is empty"),
+        Err(diagnostics) => {
+            let messages: Vec<String> = diagnostics
+                .items()
+                .iter()
+                .map(|diagnostic| {
+                    format!(
+                        "{}: {}",
+                        diagnostic.file.clone().unwrap_or_else(|| String::from("?")),
+                        diagnostic.message
+                    )
+                })
+                .take(6)
+                .collect();
+            panic!("the SDK's windows.h did not compile: {messages:#?}");
+        }
+    }
 }
 
-/// Where this machine keeps the platform's headers, or `None` - **asked of the compiler**, which is
-/// the only way to know they can be used.
-///
-/// The search returns directories whether or not this compiler can read what is in them. It cannot
-/// read the real Windows SDK yet: `windows.h` there opens with `#pragma region` and pulls
-/// `vcruntime.h`, `sal.h` and MSVC intrinsics that mingw's headers do not, so a fixture gated on the
-/// *paths* existing fails on a runner that has Visual Studio and no mingw - which is what CI did the
-/// first time these tests were allowed to run there.
-///
-/// So the gate is a compile, not a directory listing:
-///
-/// ```
-/// #include <windows.h>
-/// int main(void) { return 0; }
-/// ```
-///
-/// If that builds, the installation is one this compiler can use and the fixtures may run. If it does
-/// not, they skip - and the gap is stated rather than hidden, because a skipped test is a fact about
-/// the compiler that a green tick would otherwise hide.
 fn windows_sdk() -> Option<Vec<PathBuf>> {
     let directories = xcc::platform::platform_directories();
     if !directories

@@ -99,6 +99,10 @@ wchar_t *wcsncat(wchar_t *restrict to, const wchar_t *restrict from, size_t coun
 int wcscmp(const wchar_t *left, const wchar_t *right);
 int wcscoll(const wchar_t *left, const wchar_t *right);
 int wcsncmp(const wchar_t *left, const wchar_t *right, size_t count);
+
+/* The case-insensitive pair, in the SDK's spelling, for the same reason as `_stricmp`. */
+int _wcsicmp(const wchar_t *left, const wchar_t *right);
+int _wcsnicmp(const wchar_t *left, const wchar_t *right, size_t count);
 size_t wcsxfrm(wchar_t *restrict to, const wchar_t *restrict from, size_t count);
 int wmemcmp(const wchar_t *left, const wchar_t *right, size_t count);
 

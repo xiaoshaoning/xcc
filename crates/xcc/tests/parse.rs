@@ -520,6 +520,60 @@ fn an_attribute_that_changes_a_type_is_still_refused() {
 /// 2 400 warnings about pragmas this compiler drops, and the four errors behind them were never
 /// printed: the compile failed with `exit 1` and nothing in the log said why. An error now evicts the
 /// oldest warning; only a list of nothing but errors drops an error.
+/// **A qualifier after a struct tag is read**, which is how `winioctl.h` writes four thousand
+/// pointer typedefs and how it found this: `typedef struct _X const *PCX;` was refused with
+/// "expected `;` after a declaration", because the `struct` arm of the specifier loop returned
+/// instead of carrying on to the qualifier. `enum` had always carried on.
+#[test]
+fn a_qualifier_may_follow_a_struct_tag() {
+    let source = "struct T { int x; };
+typedef struct T const *PC;
+typedef struct T const *const CPC;
+int main(void) {
+    PC p = 0;
+    struct T t = {1};
+    p = &t;
+    return p->x;
+}
+";
+    assert!(parses(source), "a qualifier after a struct tag is C");
+    // And the qualifier is *on the type the name stands for*: the pointer is const-qualified, so an
+    // assignment through it is refused. A qualifier that was read and dropped would pass above.
+    let refused = check(
+        "struct T { int x; };
+typedef struct T const *PC;
+int main(void) {
+    struct T t = {1};
+    PC p = &t;
+    p->x = 2;
+    return 0;
+}
+",
+    );
+    assert!(
+        refused.iter().any(|message| message.contains("const")),
+        "writing through a pointer to const was accepted: {refused:?}"
+    );
+    // The *leading* spelling too: the hole this found was in the member path, not in which side of
+    // the tag the qualifier was written, and `p->x` is how almost all of it is written.
+    let through_member = check(
+        "struct T { int x; };
+int main(void) {
+    struct T t = {1};
+    const struct T *p = &t;
+    p->x = 2;
+    return 0;
+}
+",
+    );
+    assert!(
+        through_member
+            .iter()
+            .any(|message| message.contains("const")),
+        "a member of a const struct was writable: {through_member:?}"
+    );
+}
+
 #[test]
 fn an_error_survives_a_budget_full_of_warnings() {
     // `Options::default()`'s budget is 100 diagnostics, so this overruns it before the mistake.

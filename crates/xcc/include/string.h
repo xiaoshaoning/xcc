@@ -17,6 +17,11 @@ char *strcat(char *restrict to, const char *restrict from);
 char *strncat(char *restrict to, const char *restrict from, size_t count);
 int strcmp(const char *left, const char *right);
 int strncmp(const char *left, const char *right, size_t count);
+
+/* Case-insensitive comparison: not C99, and what a Windows program calls. The underscore is the
+   SDK's spelling - the UCRT exports these, and the SDK's own `stralign.h` is written in them. */
+int _stricmp(const char *left, const char *right);
+int _strnicmp(const char *left, const char *right, size_t count);
 int strcoll(const char *left, const char *right);
 size_t strxfrm(char *restrict to, const char *restrict from, size_t count);
 char *strchr(const char *text, int needle);

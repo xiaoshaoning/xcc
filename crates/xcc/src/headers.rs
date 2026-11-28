@@ -218,6 +218,13 @@ const BRIDGE_HEADERS: &[(&str, Disposition)] = &[
         "alloca.h",
         Disposition::Shipped(include_str!("../include/alloca.h")),
     ),
+    // The SDK's `winnt.h` includes it and the SDK does not ship it - it is the *toolset's*. What the
+    // host has instead is mingw's, which is written for mingw's runtime and pulls the SDK's
+    // `corecrt.h` when this compiler's search is pointed at the Kits. See the header itself.
+    (
+        "excpt.h",
+        Disposition::Shipped(include_str!("../include/excpt.h")),
+    ),
     (
         "malloc.h",
         Disposition::Shipped(include_str!("../include/malloc.h")),

@@ -981,6 +981,14 @@ impl Parser<'_> {
                 self.bump();
                 Some(self.alignof_expression(span))
             }
+            // The same question in the other two compilers' words, and it is asked of an
+            // **expression** as well as of a type - `winioctl.h` asks
+            // `__alignof(DEVICE_DSM_RANGE)` about a type, and a program may ask it about an object.
+            // Not `_Alignof`'s C11 gate: this spelling is an extension and predates the standard.
+            "__alignof" | "__alignof__" => {
+                self.bump();
+                Some(self.extension_alignof(span))
+            }
             "__builtin_offsetof" => {
                 self.bump();
                 Some(self.offsetof_expression(span))
@@ -1639,6 +1647,33 @@ impl Parser<'_> {
         self.constant_of(size_type, offset as i64, span)
     }
 
+    /// `__alignof ( type-name )` and `__alignof ( expression )` - MSVC's spelling of `_Alignof`,
+    /// which takes only a type.
+    ///
+    /// The type list is tried first and rewinds, as everywhere else a header puts a name the
+    /// compiler must tell apart from an expression (`typeof`), so `__alignof(x)` where `x` is an
+    /// object is the alignment of `x`'s type and not a parse failure.
+    fn extension_alignof(&mut self, span: Span) -> Value {
+        let size_type = self.types.fundamental("unsigned long long").unwrap();
+        let ty = match self.parenthesised_type() {
+            Some(ty) => ty,
+            None => {
+                let saved = std::mem::replace(&mut self.unevaluated, true);
+                let value = self.unary_expression();
+                self.unevaluated = saved;
+                match value {
+                    Some(value) => value.ty,
+                    None => return Value::temporary(self.types.error()),
+                }
+            }
+        };
+        if self.types.is_error(ty) {
+            return Value::temporary(self.types.error());
+        }
+        let align = self.types.align_of(ty).unwrap_or(1);
+        self.constant_of(size_type, align as i64, span)
+    }
+
     pub(super) fn sizeof_expression(&mut self) -> Value {
         let size_type = self.types.fundamental("unsigned long long").unwrap();
         let span = self.span();
@@ -2294,12 +2329,28 @@ impl Parser<'_> {
             self.error(span, format!("`{ty}` is not complete yet"));
             return Value::temporary(self.types.error());
         }
-        let Some(member) = self.types.member(record, token.text) else {
+        // The member is taken out of the record before the type table is asked anything else: the
+        // qualifier below needs `&mut self.types`, and a member borrowed from it would forbid that.
+        let member = self
+            .types
+            .member(record, token.text)
+            .map(|member| (member.ty, member.offset, member.bits));
+        let Some((member_ty, offset, bitfield)) = member else {
             let name = self.spell_of(token.text).to_owned();
             self.error(span, format!("`{name}` is not a member"));
             return Value::temporary(self.types.error());
         };
-        let (member_ty, offset, bitfield) = (member.ty, member.offset, member.bits);
+        // **Every member of a `const`-qualified aggregate is const-qualified** (C99 6.5.2.3p3 with
+        // 6.3.2.1p1), which is what `assign` asks about a `const` object. Without this the member
+        // kept its own type and `p->x = 2` through `const struct T *p` was accepted while
+        // `*p = t` was refused - the same mistake, one operator apart. `winioctl.h` writes
+        // `typedef struct _X const *PCX;` four thousand times, so the qualified spelling is the
+        // common one and the hole was in the path most code takes.
+        let member_ty = if self.types.is_modifiable(aggregate) {
+            member_ty
+        } else {
+            self.types.constant(member_ty)
+        };
         let Some(base_address) = base.cir else {
             // No code: at file scope the base is an address in the data section - a symbol and an
             // offset - and a member is that address plus the member's own offset. `&points[1].y`

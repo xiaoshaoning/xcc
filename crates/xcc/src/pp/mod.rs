@@ -320,6 +320,9 @@ const HARMLESS_PRAGMAS: &[&str] = &[
     "fp_contract",
     "vtordisp",
     "pointers_to_members",
+    // A hint to the *editor and linker*, not to the compiler: `#pragma deprecated(name)` marks a
+    // name at `#pragma` sites and says nothing about the words around it. `wingdi.h` writes two.
+    "deprecated",
 ];
 
 const PREDEFINED: &[(&str, &str)] = &[
@@ -354,6 +357,29 @@ const PREDEFINED: &[(&str, &str)] = &[
     ("__XCC__", "1"),
 ];
 
+/// The builtins this compiler really implements, under the names a header asks about them with.
+///
+/// `__has_builtin` is the question the Windows SDK's `winnt.h` puts before its `FIELD_OFFSET`:
+/// with a yes it writes `__builtin_offsetof`, and with a no it writes
+/// `((LONG)(LONG_PTR)&(((type *)0)->field))` - an address expression this compiler cannot fold at
+/// file scope, so `C_ASSERT(FIELD_OFFSET(...) == 0)` became "an array's size at file scope must be a
+/// constant expression". Answering `__has_builtin` is only honest if the list is the builtins that
+/// are here: a header that is told yes takes the path this compiler must then compile.
+const BUILTINS_HELD: &[&str] = &[
+    "__builtin_alignas",
+    "__builtin_alloca",
+    "__builtin_atomic_cas",
+    "__builtin_atomic_compare_exchange",
+    "__builtin_atomic_exchange",
+    "__builtin_inf",
+    "__builtin_inff",
+    "__builtin_nan",
+    "__builtin_nanf",
+    "__builtin_offsetof",
+    "__builtin_va_arg",
+    "__builtin_va_start",
+];
+
 /// Preprocess `source` with `options`, reading `#include` through `includes`.
 pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Includes) -> Preprocessed {
     let mut interner = Interner::new();
@@ -386,6 +412,12 @@ pub fn preprocess(source: &SourceFile, options: &Options, includes: &dyn Include
         crate::options::CStandard::C11 => "201112L",
     };
     preprocessor.install_define(&format!("__STDC_VERSION__={version}"));
+    // **Defined so that `#ifdef` can see it, answered by `has_builtin` so that `#if` gets the
+    // truth.** The SDK's `winnt.h` asks `#ifdef __has_builtin` *and then* `__has_builtin(...)`: the
+    // first is a question about macro definitions, which no expansion hook can answer, and the
+    // second is a question about this compiler, which the `0` here would answer wrongly. The hook
+    // runs before the macro table, so the `0` is never what a program sees.
+    preprocessor.install_define("__has_builtin(x)=0");
     for (name, value) in PREDEFINED {
         preprocessor.install_define(&format!("{name}={value}"));
     }
@@ -1622,6 +1654,9 @@ impl Preprocessor<'_> {
     /// The macros the language defines itself: `__FILE__`, `__LINE__`, and the standard's.
     fn predefined(&mut self, raw: &Raw) -> Option<Vec<Raw>> {
         let spelling = self.spell(raw.token.text).to_owned();
+        if spelling == "__has_builtin" {
+            return self.has_builtin(raw);
+        }
         // `__LINE__` and `__FILE__` name the line *being read*, which during an expansion is where the
         // macro was invoked - not where its body was written. Without this a program's `assert(e)`
         // reported line 28 of `assert.h` and the file `"assert.h"`.
@@ -1647,6 +1682,45 @@ impl Preprocessor<'_> {
         Some(vec![Raw {
             token: PpToken {
                 kind,
+                text,
+                span: raw.token.span,
+                file: raw.token.file,
+                starts_line: false,
+                expansion: None,
+            },
+            hide: Vec::new(),
+            spliced: true,
+            invoked_at: None,
+        }])
+    }
+
+    /// `__has_builtin(name)`: `1` if this compiler implements `name`, `0` if it does not.
+    ///
+    /// Function-like, so it needs its `(` - and like every other predefined name it is answered
+    /// where it is *used*, not where it was defined.
+    fn has_builtin(&mut self, raw: &Raw) -> Option<Vec<Raw>> {
+        if !self
+            .peek()
+            .is_some_and(|next| self.is_punct(&next.token, "("))
+        {
+            return None;
+        }
+        self.next(); // the `(`
+        let held = match self.next() {
+            Some(name) => BUILTINS_HELD.contains(&self.spell(name.token.text)),
+            None => false,
+        };
+        // Anything between the name and the `)` is skipped: the question is about the one name,
+        // and a header that writes more has already made a mistake this answer cannot fix.
+        while let Some(token) = self.next() {
+            if self.is_punct(&token.token, ")") {
+                break;
+            }
+        }
+        let text = self.interner.intern(if held { "1" } else { "0" });
+        Some(vec![Raw {
+            token: PpToken {
+                kind: TokenKind::Number,
                 text,
                 span: raw.token.span,
                 file: raw.token.file,
@@ -2151,6 +2225,32 @@ mod tests {
         let file = SourceFile::new("t.c", source);
         let preprocessed = preprocess(&file, options, includes);
         (preprocessed.spellings(), preprocessed.diagnostics)
+    }
+
+    /// **`__has_builtin` answers two different questions correctly.**
+    ///
+    /// `#ifdef __has_builtin` is a question about *macro definitions* and `#if __has_builtin(x)` is a
+    /// question about this compiler, and the Windows SDK's `winnt.h` asks both in a row before it
+    /// chooses its `FIELD_OFFSET`. A `0` for the first sends it down a path this compiler cannot
+    /// fold; a `1` for the second about a name that is not here sends it down a path it cannot
+    /// compile. Both answers are checked, and both in both directions.
+    #[test]
+    fn has_builtin_answers_about_definitions_and_about_this_compiler() {
+        let source = "#ifdef __has_builtin
+yes
+#endif
+#if __has_builtin(__builtin_offsetof)
+held
+#endif
+#if __has_builtin(__builtin_not_here)
+wrong
+#else
+not-held
+#endif
+";
+        let (spellings, diagnostics) = run(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(spellings.join(" "), "yes held not - held");
     }
 
     #[test]

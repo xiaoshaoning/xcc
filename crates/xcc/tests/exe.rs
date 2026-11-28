@@ -97,6 +97,30 @@ fn a_stack_allocation_answers_to_the_names_programs_write() {
 /// Both extensions landed in one commit and the second half of GNU's rule was missing: `typeof(x++)`
 /// incremented `x`, because the operand was parsed in evaluated mode. `sizeof` had the right shape
 /// three lines away - `unevaluated` set around the parse - and the fix is the same two lines.
+/// **`__alignof` takes a type or an expression**, which is MSVC's spelling and not `_Alignof`'s.
+///
+/// The numbers are the ones a `gcc` build of the same source prints (`8 8 8 1 4`), and the last one
+/// is the same fact `sizeof` is tested on: an operand in an unevaluated context does not happen -
+/// `__alignof(n++)` may not increment `n`.
+#[test]
+#[cfg(target_os = "windows")]
+fn the_alignment_of_a_type_or_an_expression() {
+    let program = r#"#include <stdio.h>
+struct S { char c; double d; };
+int main(void) {
+    struct S s;
+    long n = 0;
+    printf("%d %d %d %d %d %ld\n", (int)__alignof(struct S), (int)__alignof__(s),
+           (int)__alignof(s.d), (int)__alignof(char), (int)__alignof(n++), n);
+    return 0;
+}
+"#;
+    let out = run_linked("alignof", program, &[]);
+    assert_eq!(out.status.code(), Some(0));
+    let printed = String::from_utf8_lossy(&out.stdout).replace("\r", "");
+    assert_eq!(printed, "8 8 8 1 4 0\n");
+}
+
 #[test]
 #[cfg(target_os = "windows")]
 fn typeof_does_not_evaluate_its_operand() {

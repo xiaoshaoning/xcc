@@ -786,6 +786,61 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M109 - 2026-11-25 - the SDK's own windows.h compiles
+
+Six gaps, each one measured by the same number, and the number reached zero:
+
+```
+a wall of missing headers  ->  11 errors  ->  10  ->  4  ->  2  ->  1  ->  0
+```
+
+`#include <windows.h>` against `Windows Kits/10/Include/10.0.26100.0` now writes a **31 337-byte object** at level 2.
+Linking it is the next frontier (`MapViewOfFileNuma2` is unresolved: `winnt.h`'s SEH helper calls it and this compiler has
+no linker-level answer yet). The object is the claim; a `.exe` is not.
+
+**1. A qualifier after a struct tag.** `typedef struct _X const *PCX;` - `winioctl.h` writes four thousand of them - was
+refused with "expected `;` after a declaration", because the `struct` arm of the specifier loop **returned**
+`finish_specifiers` instead of carrying on to the `const`. The `enum` arm has always carried on; only `struct` and `union`
+stopped. One `continue`, plus a guard so that `struct T int x` still cannot swallow the `int`.
+
+**2. And then a `const` that was read and dropped.** The test for (1) failed: `p->x = 2` through a `const struct T *` was
+accepted. Two holes, one behind the other - `finish_specifiers` returned early when the type came from a tag, before
+applying `is_const`; and `member_access` gave a member its own type, so `p->x` looked modifiable while `*p` did not. C99
+6.5.2.3p3 with 6.3.2.1p1: **every member of a const-qualified aggregate is const-qualified**. Both are fixed, and the test
+asserts the second through the spelling real code uses.
+
+**3. `__alignof`.** MSVC's spelling of `_Alignof`, and it takes an expression as well as a type: `winioctl.h` asks
+`__alignof(DEVICE_DSM_RANGE)` about a *type*. Type first, then an expression, read in an **unevaluated** context - and the
+numbers a `gcc` build prints for `8 8 8 1 4`, including the `4` for `__alignof(n++)` that this compiler also says, are the
+test. `n` is still 0 afterwards.
+
+**4. `excpt.h`, which the SDK does not ship.** `<um/winnt.h>` writes `#include <excpt.h>` in the middle of itself and
+Microsoft's copy lives in the **toolset**. What a machine with the Kits and no toolset has instead is mingw's, whose first
+act is `#include <crtdefs.h>` = `<corecrt.h>` - and in that chain `corecrt.h` is the *SDK's*, which defines neither
+`__MINGW_EXTENSION` nor `_CRTIMP`. The `-E` dump says it plainly: both names survive as **undefined identifiers**. Two C
+runtimes' headers in one translation unit; `clang` refuses the same chain. So `excpt.h` is a **bridge header** now, with
+Microsoft's content - the disposition enumeration, the x86-64 `__C_specific_handler`, the accessor macros - and the header
+itself records why a shipped copy is right here and wrong for `malloc.h`.
+
+**5. `__has_builtin`, which must answer two different questions.** `winnt.h` tests `#ifdef __has_builtin` and *then*
+`__has_builtin(__builtin_offsetof)`: the first asks about macro **definitions** (which no expansion hook can answer) and the
+second about this compiler (which a `#define` cannot). The first attempt answered only the second, and `-E` showed the SDK
+still writing `(LONG)(LONG_PTR) & ( ( ( T * ) 0 ) -> field )` - the fallback, whose address expression this compiler cannot
+fold at file scope, so `C_ASSERT` failed. Now the name is **defined** (`__has_builtin(x)=0`, for `#ifdef`) and **answered**
+by a twelve-entry list of the builtins that are really here. Both directions of both questions are a test.
+
+**6. The small ones.** `#pragma deprecated` joins `HARMLESS_PRAGMAS` (it marks a name for the editor). `_stricmp`,
+`_strnicmp`, `_wcsicmp`, `_wcsnicmp` are declared in `string.h`/`wchar.h` for the SDK's `stralign.h` - and the
+`C_RUNTIME`/`UNAVAILABLE` test caught each one before commit, which is the test doing exactly its job.
+
+**The oracle.** `the_sdks_own_windows_h_compiles` in `tests/real.rs`: the Kits' `windows.h` must compile at level 2, or the
+test says which line stopped it. It skips where there is no SDK, and it fails on any of the six. The old pin
+`the_sdk_gets_past_the_toolsets_vcruntime_h` is **deleted** - it asserted "it does not have to compile yet - it does not",
+and that is now false.
+
+215 unit, 57 parser (+1), 60 exe (+1), 14 real (the pin replaced by the claim), 6 invalid, 1 crt, 33 CLI, 5 hostile,
+the differential corpus 417 ran / 0 mismatched, the x64 corpus 445 agree; fmt and clippy clean.
+
 ### M108 - 2026-11-25 - the budget that spent itself on warnings
 
 Reviewing the commit that fixed the SDK's first barriers found the reason its diagnosis had taken so long: **the diagnostic budget

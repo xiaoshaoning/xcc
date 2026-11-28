@@ -1906,6 +1906,12 @@ impl Parser<'_> {
                 }
                 "void" | "_Bool" | "char" | "short" | "int" | "long" | "float" | "double"
                 | "signed" | "unsigned" | "_Complex" => {
+                    // A type this loop has already settled on cannot be combined with another:
+                    // `struct T int x` is a mistake, and reading the `int` as the declarator is
+                    // how it says so.
+                    if specs.ty.is_some() {
+                        break;
+                    }
                     spelled.push(word);
                     specs.has_type_specifier = true;
                     self.at += 1;
@@ -1996,7 +2002,11 @@ impl Parser<'_> {
                     specs.ty = Some(self.record_specifier(kind, token.span));
                     specs.declares_tag = true;
                     specs.has_type_specifier = true;
-                    return self.finish_specifiers(specs, spelled);
+                    // **Not `return`.** A *qualifier* may follow the tag - `typedef struct T const
+                    // *P;` is how `winioctl.h` writes four thousand pointer typedefs, and this
+                    // loop is the only place a qualifier is read. `enum` has always carried on;
+                    // `struct` and `union` stopped here, which was the whole of the bug.
+                    continue;
                 }
                 // GNU's `typeof`, which is three spellings of one question: **the type of this**.
                 // `typeof(int)` is a type name and `typeof(x)` is an expression, and the two are
@@ -2053,6 +2063,13 @@ impl Parser<'_> {
     /// order, and the counts decide the type.
     fn finish_specifiers(&mut self, mut specs: Specifiers, spelled: Vec<String>) -> Specifiers {
         if specs.ty.is_some() {
+            // A type that came from a *tag* still takes the qualifier: `struct T const` is a const
+            // struct, and `winioctl.h` writes `typedef struct _X const *PCX;` four thousand times.
+            // Returning here without this dropped the `const` silently, so a program could write
+            // through a pointer the source had made read-only.
+            if specs.is_const {
+                specs.ty = specs.ty.map(|ty| self.types.constant(ty));
+            }
             return specs;
         }
         let words: Vec<&str> = spelled
