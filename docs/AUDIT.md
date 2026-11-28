@@ -786,6 +786,37 @@ than only the command line.
 5 refused, 44 skipped, 0 timed out, 0 mismatched) - green; 443 corpus programs agree, 20 refused, 0 wrong, refusal
 oracle 19/0; fmt and clippy clean.
 
+### M95 - 2026-11-25 - the map inside the new code, and the overflow that is not a gap
+
+Every commit in this range has a review after it, so this pass swept an area again: four separate fixes landed in the stack
+machinery (`StackAlloc`, `StackMark`, `StackRestore`, and the `__chkstk` probe), and nothing had checked the one thing a crash
+report depends on - that **`--map` still resolves an address inside a function holding a variable-length array**.
+
+It does. A null store after a VLA declaration:
+
+```
+--map                          gdb
+000000014000f58d mp1.c:8       0x000000014000f58d in main  ->  mov %esi,(%rbx)
+```
+
+`mp1.c:8` is the `*p = 2;` that faulted, and the map's entries either side of it are the lines either side of it in the source.
+The `call __chkstk` the encoder now emits carries the *declaration's* line, because it is emitted inside the declaration's
+operation - so a reader who takes an address out of that region lands on the array, not on an internal helper.
+
+**The one address the map cannot name is a stack overflow**, and that is not a gap:
+
+```
+0x00007ffa9896aad7 in ntdll!.chkstk    =>  test %r11b,(%r11)
+#1  0x000000014000f541 in main ()
+```
+
+The fault is inside the prober, walking down to the guard page - there is no source line there to name, because the code is
+ntdll's. What a reader needs is the *caller*, and the backtrace gives `main`, while the map gives `mp2.c:6` for the addresses
+around the call. Two tools, one answer, which is what the split between `.pdata`/symbols (gdb) and `.xccmap` (lines) is for.
+
+**The negative result is worth as much as a fix here**: the three new operations emit code with spans like everything else, and
+the map has not needed a special case for any of them.
+
 ### M94 - 2026-11-25 - the corpus, thirty commits later
 
 The census was re-run with the same corpus, seed and filter as M75/M76, after everything this session added - variable-length
